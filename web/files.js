@@ -121,11 +121,19 @@ window.PanxuFiles = (() => {
     if(!host?.isConnected || !page) return;
     host.querySelectorAll('[data-file-id]').forEach(row=>{
       const item=page.items.find(entry=>entry.id===row.dataset.fileId); if(!item) return;
-      const result=context.advice(item), labels={keep:'建议保留',review:'需要确认',recommend:'已有处理建议'};
+      const result=context.advice(item);
       const label=row.querySelector('.analysis-state');
-      if(label) label.textContent=result ? labels[result.conclusion] || '已有建议' : context.adviceKnown(item) ? item.risk==='protected' ? '已保护' : '待分析' : '待核对';
+      if(label) updateAnalysisState(label,item,result);
       const action=row.querySelector('.row-analyze'); if(action)action.textContent=result?'查看建议':'分析';
     });
+  }
+  function updateAnalysisState(label,item,result) {
+    const labels={keep:'建议保留',review:'需要确认',recommend:'已有处理建议',advised:'已有建议',protected:'已保护',unanalysed:'待分析',pending:'待核对'};
+    const state=result ? ['keep','review','recommend'].includes(result.conclusion) ? result.conclusion : 'advised'
+      : context.adviceKnown(item) ? item.risk==='protected' ? 'protected' : 'unanalysed' : 'pending';
+    label.textContent=labels[state];
+    label.dataset.state=state;
+    label.dataset.tone=state==='review'?'warning':['keep','recommend','advised'].includes(state)?'info':'neutral';
   }
   async function refreshAdvice() {
     if(!page || !host?.isConnected || !context.lookupAdvice) return;
@@ -160,22 +168,25 @@ window.PanxuFiles = (() => {
     const adviceNote=node('p','file-advice-note field-help');adviceNote.hidden=true;adviceNote.setAttribute('role','status');panel.append(adviceNote);
     const locations=locationLabels(page.items);
     page.items.forEach((item) => {
-      const row = node('div', 'paged-file-row'); row.dataset.fileId = item.id;
+      const row = node('div', 'paged-file-row'); row.dataset.fileId = item.id; row.dataset.fileKind = item.kind;
       const check = node('input'); check.type = 'checkbox'; check.dataset.fileCheck = item.id;
       check.setAttribute('aria-label', '选择分析' + item.name);
       check.addEventListener('change', () => { context.toggle(item, check.checked); selectionChanged(); context.changed(); });
       const copy = node('div', 'paged-file-copy'); const title = button(item.name, () => context.show(item), 'file-name-button');
       title.title = item.path;
-      const location = node('small', '', locations.get(item.id)); location.title = item.path;
+      const location = node('small', 'file-location', locations.get(item.id)); location.title = item.path;
       location.setAttribute('aria-label','完整位置：'+item.path);
-      const titleLine = node('div', 'item-title-line');
+      const titleLine = node('div', 'item-title-line file-name-line');
       const itemIcon = window.PanxuIcons?.create(item);
       if (itemIcon) titleLine.append(itemIcon);
       titleLine.append(title); copy.append(titleLine, location);
       const result = context.advice(item);
-      const labels = {keep:'建议保留',review:'需要确认',recommend:'已有处理建议'};
-      const meta = node('div', 'paged-file-meta'); meta.append(node('span', '', context.bytes(item.size_bytes)),
-        node('small', 'analysis-state', result ? labels[result.conclusion] || '已有建议' : context.adviceKnown(item) ? item.risk === 'protected' ? '已保护' : '待分析' : '待核对'));
+      const extension=String(item.name || '').match(/\.([a-z0-9]{1,8})$/i)?.[1];
+      const type=item.kind==='directory'?'文件夹':extension?`${extension.toUpperCase()} 文件`:'文件';
+      const measurement=node('div','file-meta-measurement');
+      measurement.append(node('span','file-type',type),node('span','file-size',context.bytes(item.size_bytes)));
+      const analysis=node('small','analysis-state semantic-tag');updateAnalysisState(analysis,item,result);
+      const meta = node('div', 'paged-file-meta'); meta.append(measurement,analysis);
       const analyze = button(result ? '查看建议' : '分析', () => context.showAdvice(item), 'button small row-analyze');
       row.append(check, copy, meta, analyze); panel.append(row);
     });

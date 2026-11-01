@@ -525,7 +525,7 @@ def create_server(data_dir, port=0, *, developer_fixtures=False):
                     return self.send(200, app.get(parsed.path, parse_qs(parsed.query)))
                 names = {'/': ('index.html', 'text/html; charset=utf-8'), '/index.html': ('index.html', 'text/html; charset=utf-8'),
                          '/app.js': ('app.js', 'text/javascript; charset=utf-8'), '/tasks.js': ('tasks.js', 'text/javascript; charset=utf-8'), '/files.js': ('files.js', 'text/javascript; charset=utf-8'), '/style.css': ('style.css', 'text/css; charset=utf-8'),
-                         '/stream-view.js': ('stream-view.js', 'text/javascript; charset=utf-8'), '/stream-channel.js': ('stream-channel.js', 'text/javascript; charset=utf-8'), '/icons.js': ('icons.js', 'text/javascript; charset=utf-8'), '/icons.css': ('icons.css', 'text/css; charset=utf-8')}
+                         '/stream-view.js': ('stream-view.js', 'text/javascript; charset=utf-8'), '/stream-channel.js': ('stream-channel.js', 'text/javascript; charset=utf-8'), '/icons.js': ('icons.js', 'text/javascript; charset=utf-8'), '/icons.css': ('icons.css', 'text/css; charset=utf-8'), '/hierarchy.css': ('hierarchy.css', 'text/css; charset=utf-8')}
                 if parsed.path not in names:
                     raise AppError('页面不存在。', 'not_found', 404)
                 name, mime = names[parsed.path]

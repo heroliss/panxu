@@ -1,0 +1,167 @@
+/* Reading roles and semantic states. Theme surfaces remain in style.css. */
+:root {
+  --type-page: 1.75rem;
+  --type-section: 1.125rem;
+  --type-lead: 1rem;
+  --type-body: .875rem;
+  --type-label: .8125rem;
+  --type-meta: .75rem;
+  --reading-leading: 1.85;
+  --reading-measure: 70ch;
+  --tone-info: var(--blue);
+  --tone-info-bg: var(--blue-tint);
+  --tone-warning: var(--amber);
+  --tone-warning-bg: var(--warning-bg);
+  --tone-danger: var(--red);
+  --tone-danger-bg: var(--danger-bg);
+  --tone-success: var(--green);
+  --tone-success-bg: var(--success-bg);
+  --tone-neutral: var(--muted);
+  --tone-neutral-bg: var(--surface-soft);
+}
+
+body { line-height: 1.7; }
+:where(h1, h2, h3, legend) { text-wrap: balance; overflow-wrap: anywhere; }
+:where(p, li) { text-wrap: pretty; }
+.page-heading { margin-bottom: 26px; }
+.page-heading h1 { font-size: var(--type-page); line-height: 1.35; font-weight: 700; letter-spacing: -.018em; }
+.page-heading p { font-size: var(--type-body); line-height: 1.75; margin-top: 9px; max-width: var(--reading-measure); }
+.section-heading h2, .simple-setting h2 { font-size: var(--type-section); line-height: 1.5; font-weight: 650; }
+.field-label { font-size: var(--type-label); font-weight: 600; line-height: 1.65; }
+.field-help, .field-description, .provider-guidance { font-size: var(--type-label); line-height: 1.8; }
+.field-description, .setting-intro { color: var(--muted); max-width: var(--reading-measure); }
+.setting-intro { font-size: var(--type-body); line-height: 1.8; margin: 7px 0 20px; }
+.provider-guidance { margin-top: 9px; max-width: 65ch; }
+.form-panel :is(input, select, textarea) { font-size: var(--type-body); line-height: 1.6; }
+.form-panel textarea { line-height: var(--reading-leading); }
+.form-field { gap: 7px; }
+.button { font-size: var(--type-label); font-weight: 600; }
+.button.primary { min-height: 44px; }
+.plain-button { font-size: var(--type-label); }
+.task-intent strong { font-size: 1.0625rem; font-weight: 650; line-height: 1.5; }
+.task-intent small { font-size: var(--type-label); line-height: 1.75; }
+.task-intent-copy { min-width: 0; }
+.task-intent-symbol { color: var(--blue); }
+
+/* State is always written out; color reinforces the label. */
+:is(.semantic-tag, .connection-test-status)[data-tone="info"] { --tag-ink: var(--tone-info); --tag-bg: var(--tone-info-bg); }
+:is(.semantic-tag, .connection-test-status)[data-tone="warning"] { --tag-ink: var(--tone-warning); --tag-bg: var(--tone-warning-bg); }
+:is(.semantic-tag, .connection-test-status)[data-tone="danger"] { --tag-ink: var(--tone-danger); --tag-bg: var(--tone-danger-bg); }
+:is(.semantic-tag, .connection-test-status)[data-tone="success"] { --tag-ink: var(--tone-success); --tag-bg: var(--tone-success-bg); }
+:is(.semantic-tag, .connection-test-status)[data-tone="neutral"] { --tag-ink: var(--tone-neutral); --tag-bg: var(--tone-neutral-bg); }
+.semantic-tag {
+  display: inline-flex; align-items: center; width: fit-content; max-width: 100%;
+  padding: 3px 8px; border-radius: 6px; margin: 0;
+  color: var(--tag-ink, var(--muted)); background: var(--tag-bg, var(--surface-soft));
+  font-size: var(--type-meta); font-weight: 600; line-height: 1.55;
+  white-space: normal; overflow-wrap: anywhere; vertical-align: middle;
+}
+.connection-test-status:empty { display: none; }
+.connection-test-status:not(:empty) {
+  padding: 11px 13px; margin: 16px 0 0; border-radius: 8px;
+  background: var(--tag-bg, var(--surface-soft)); color: var(--tag-ink, var(--ink));
+  font-size: var(--type-label); line-height: 1.8; max-width: var(--reading-measure);
+}
+.source-badge.real { background: var(--surface-soft); color: var(--muted); }
+.risk-low { background: var(--tone-info-bg); color: var(--tone-info); }
+.risk-protected { background: var(--surface-soft); color: var(--muted); }
+.risk-badge { border-radius: 6px; font-weight: 600; line-height: 1.6; }
+.safety-banner { font-size: var(--type-meta); padding-top: 10px; padding-bottom: 10px; }
+.safety-banner strong { font-weight: 600; }
+
+/* The conclusion owns the first reading position; explanation follows it. */
+.task-summary { margin-bottom: 20px; }
+.task-summary-copy { flex: 1; min-width: 0; max-width: var(--reading-measure); }
+.task-summary .task-summary-text {
+  font-size: var(--type-lead); line-height: var(--reading-leading);
+  font-weight: 500; color: var(--ink); margin: 0; white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.task-status-label { margin-bottom: 11px; }
+.task-summary .spinner { margin-top: 7px; }
+.task-live-reply { padding: 17px 20px; background: var(--surface-soft); border-color: var(--line); }
+.task-live-caption { color: var(--blue); font-size: var(--type-meta); font-weight: 600; margin-bottom: 9px; }
+.stream-view-text { font-size: var(--type-body); line-height: var(--reading-leading); max-width: var(--reading-measure); }
+.stream-view-status { font-size: var(--type-meta); line-height: 1.75; }
+.task-question legend.task-question-title { font-size: var(--type-section); font-weight: 650; line-height: 1.65; margin-bottom: 17px; }
+.task-question-options > label { padding: 15px 17px; }
+.task-question-options .task-option-label { font-size: var(--type-body); font-weight: 600; line-height: 1.7; }
+.task-question-options .task-option-description { font-size: var(--type-label); line-height: 1.8; margin-top: 4px; max-width: 65ch; }
+.task-question textarea { font-size: var(--type-body); line-height: var(--reading-leading); }
+.task-plan-item { padding: 23px 0; }
+.task-item-title { font-size: var(--type-body); line-height: 1.7; font-weight: 650; }
+.task-plan-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; margin: 9px 0 13px; }
+.task-plan-meta .task-action-label { font-size: var(--type-meta); color: var(--blue); background: var(--blue-tint); padding: 3px 8px; border-radius: 6px; margin: 0; }
+.task-plan-meta .task-choice-note { font-size: var(--type-meta); color: var(--amber); background: var(--warning-bg); padding: 3px 8px; border-radius: 6px; margin: 0; }
+.task-explanation { display: grid; grid-template-columns: 5em minmax(0, 1fr); align-items: baseline; gap: 5px 12px; margin: 9px 0; }
+.task-explanation-label { color: var(--muted); font-size: var(--type-label); font-weight: 600; line-height: 1.85; }
+.task-explanation .task-explanation-text, .task-detail .task-explanation-text {
+  color: var(--ink); font-size: var(--type-body); line-height: var(--reading-leading); margin: 0; white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.task-detail > summary { font-size: var(--type-label); line-height: 1.8; }
+.task-path, .task-history-caption { font-size: var(--type-meta); color: var(--muted); line-height: 1.8; }
+.task-item-size { font-size: var(--type-label); font-weight: 600; color: var(--ink); font-variant-numeric: tabular-nums; }
+.task-advice-list { gap: 0; }
+.task-advice-item { padding: 21px 0; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; }
+.task-advice-item:last-child { border-bottom: 0; padding-bottom: 5px; }
+.task-advice-header { display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 8px 14px; margin-bottom: 9px; }
+.task-advice-title-line { min-width: 0; flex: 1 1 230px; }
+.task-advice-title { font-size: var(--type-body); font-weight: 650; line-height: 1.7; overflow-wrap: anywhere; }
+.task-advice-state { flex: 0 1 auto; }
+.task-advice-item > .task-purpose { font-size: var(--type-body); color: var(--ink); line-height: var(--reading-leading); margin: 9px 0 13px; max-width: var(--reading-measure); }
+.task-results { margin-top: 24px; }
+.task-result-item { padding: 15px 0; border-bottom: 1px solid var(--line); }
+.task-result-item:last-child { border-bottom: 0; }
+.task-result-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; }
+.task-result-name { font-size: var(--type-body); font-weight: 600; overflow-wrap: anywhere; }
+.task-detail .task-result-message { margin: 8px 0 0; font-size: var(--type-body); line-height: var(--reading-leading); color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* Names lead scanning; paths, types and source stay one level quieter. */
+.item-name { font-size: var(--type-body); font-weight: 600; line-height: 1.7; }
+.item-secondary, .item-path, .file-location, .paged-file-copy > .file-location { font-size: var(--type-meta); color: var(--muted); line-height: 1.75; }
+.file-name-button { font-size: var(--type-body); font-weight: 600; line-height: 1.65; }
+.file-name-line { min-width: 0; }
+.file-meta-measurement { display: flex; justify-content: flex-end; flex-wrap: wrap; align-items: baseline; gap: 5px 10px; }
+.file-type { font-size: var(--type-meta); color: var(--muted); }
+.file-size { font-size: var(--type-label); font-weight: 600; color: var(--ink); font-variant-numeric: tabular-nums; }
+.analysis-state { margin-top: 7px; }
+.result-table td.size-cell { color: var(--ink); font-size: var(--type-label); font-weight: 600; }
+.result-table th { font-size: var(--type-meta); font-weight: 600; }
+.result-table .kind-label .semantic-tag { font-size: var(--type-meta); }
+.file-page-status, .file-pagination > span { font-size: var(--type-meta); line-height: 1.8; }
+.file-page-host[aria-busy="true"] { opacity: 1; }
+
+/* Debug communication reads as dialogue; protocol detail remains subordinate. */
+.developer-message-meta { gap: 10px; margin-bottom: 13px; }
+.developer-message-meta strong { font-size: var(--type-label); font-weight: 650; }
+.developer-message-meta > span { font-size: var(--type-meta); color: var(--muted); }
+.developer-chat-message { margin: 17px 0 21px; }
+.developer-chat-message .developer-role { font-size: var(--type-meta); }
+.developer-message-title { margin-left: 7px; }
+.developer-text { font-size: var(--type-body); line-height: var(--reading-leading); margin-top: 9px; max-width: var(--reading-measure); }
+.developer-chat-message[data-purpose="transport"] .developer-text { font-size: var(--type-label); color: var(--muted); }
+.developer-public-advice { border: 0; margin: 16px 0; padding: 0 0 0 12px; border-left: 1px solid var(--line); }
+.developer-public-advice > strong { font-size: var(--type-body); font-weight: 600; }
+.developer-public-advice .developer-text { font-size: var(--type-label); line-height: 1.85; }
+.developer-field-label { font-size: var(--type-meta); font-weight: 600; color: var(--muted); margin-right: 7px; }
+.developer-field-value { color: var(--ink); }
+.developer-fields { grid-template-columns: minmax(76px, .32fr) minmax(0, 1fr); gap: 9px 14px; line-height: 1.85; }
+.developer-note { font-size: var(--type-meta); line-height: 1.85; }
+.developer-section > summary, .developer-subsection > summary { font-size: var(--type-meta); }
+.developer-dock article.developer-entry { padding: 22px 0; }
+.developer-stream { padding-bottom: 20px; }
+.developer-stream h3 { font-size: var(--type-label); line-height: 1.7; margin-bottom: 10px; }
+.developer-json, .assistant-trace, .task-facts pre { font-variant-numeric: tabular-nums; }
+
+@media (max-width: 1000px) {
+  .page-heading h1 { font-size: 1.5625rem; }
+  .task-advice-title-line { flex-basis: 200px; }
+}
+@media (max-width: 640px) {
+  .task-explanation { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+  .task-live-reply { padding: 14px; }
+  .task-advice-header { gap: 7px; }
+  .task-summary .task-summary-text { font-size: .9375rem; }
+}
+@media (forced-colors: active) {
+  .semantic-tag, .connection-test-status:not(:empty), .risk-badge { border: 1px solid CanvasText; }
+}

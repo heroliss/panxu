@@ -2,7 +2,7 @@
 
 盘序围绕用户的整理目标组织 LLM、工具与界面。选择“清理 C 盘垃圾”“清理某个磁盘”“清理某个目录”或“查找重复文件”，助手按需调查、解释用途并提出方案。用户可以保留某项、补充要求、审阅和调整，程序把选择与核验结果带回任务。
 
-当前 **0.9 本机便携版已通过本轮验收**，增加实时公开回复、独立整理偏好，以及更清楚的连接保存和测试反馈。默认主题跟随系统，也可手动选择浅色或深色。各版本的最终产物与确切验证范围见[发布记录](docs/RELEASES.md)。**当前只有模拟执行器**：处理与撤销只改变工具内部记录，实际释放空间始终为 0，不删除文件、不控制进程或服务、不卸载软件。界面顶部有测试保护提示。
+当前 **0.9.1 本机便携版已通过本轮验收**，统一文字层级和五种状态语义，让主要结论、文件名称、类型、大小与状态更易分辨，设置反馈及开发通信也按角色分层。延续实时公开回复、独立整理偏好和连接保存/测试流程。默认主题跟随系统，也可手动选择浅色或深色。各版本的最终产物与确切验证范围见[发布记录](docs/RELEASES.md)。**当前只有模拟执行器**：处理与撤销只改变工具内部记录，实际释放空间始终为 0，不删除文件、不控制进程或服务、不卸载软件。界面顶部有测试保护提示。
 
 代码基地：[GitHub · heroliss/panxu](https://github.com/heroliss/panxu)（私有仓库），由 **heroliss** 维护。
 
@@ -72,7 +72,7 @@
 
 ## 工程与验证
 
-[产品设计](docs/DESIGN.md) · [任务驱动方案及源码调研](docs/TASK_FIRST_HARNESS.md) · [决策记录](docs/DECISIONS.md) · [路线图](docs/ROADMAP.md) · [v0.9 模型来源与协议边界](docs/PROVIDER_SOURCES_V090.md) · [开发约定](DEVELOPMENT.md) · [验收步骤](verification/README.md)
+[产品设计](docs/DESIGN.md) · [文字与视觉层级](docs/VISUAL_HIERARCHY.md) · [任务驱动方案及源码调研](docs/TASK_FIRST_HARNESS.md) · [决策记录](docs/DECISIONS.md) · [路线图](docs/ROADMAP.md) · [v0.9 模型来源与协议边界](docs/PROVIDER_SOURCES_V090.md) · [开发约定](DEVELOPMENT.md) · [验收步骤](verification/README.md)
 
 后端验证：`python -W error::ResourceWarning -m unittest discover -s tests -q`。前端检查：`node --check web/app.js`、`node --check web/tasks.js`、`node --check web/files.js`。原生窗口、夹具内容、回环模型和最终产物分别验收，构建成功不替代运行验收。
 

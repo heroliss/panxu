@@ -251,8 +251,8 @@ function initializePanxu() {
     return Math.max(0, total);
   }
   function synthetic(item) { return item.details?.synthetic === true; }
-  function badge(label, cls = '') { return el('span', `source-badge ${cls}`, label); }
-  function riskBadge(item) { const labels = { low: '可处理', review: '你来决定', protected: '保留' }; return el('span', `risk-badge risk-${item.risk || 'review'}`, labels[item.risk] || '需确认'); }
+  function badge(label, cls = '') { const node=el('span', `source-badge semantic-tag ${cls}`, label);node.dataset.tone='neutral';node.dataset.purpose=/\b(real|demo)\b/.test(cls)?'source':'record-state';return node; }
+  function riskBadge(item) { const labels = { low: '可处理', review: '你来决定', protected: '保留' };const node=el('span', `risk-badge semantic-tag risk-${item.risk || 'review'}`, labels[item.risk] || '需确认');node.dataset.tone=item.risk==='low'?'info':item.risk==='protected'?'neutral':'warning';node.dataset.purpose='recommendation';return node; }
   function canSelect(item) {
     if (item && typeof item.can_select === 'boolean') return item.can_select && !item.simulated;
     if (!item || item.risk === 'protected' || item.simulated || !Array.isArray(item.actions) || !item.actions.length) return false;
@@ -510,10 +510,10 @@ function initializePanxu() {
     renderedItems.forEach((item) => {
       const row = el('tr', 'item-row'); row.dataset.adviceId=item.id; const checkCell = el('td', 'check-cell'); const check = el('input'); check.type = 'checkbox'; check.checked = analysisSelected(item);
       check.setAttribute('aria-label', '选择分析' + item.name); check.addEventListener('change', () => { toggleAnalysis(item, check.checked); renderResults(); renderSelection(); }); append(checkCell, check);
-      const copy = el('td', 'name-cell'); append(copy, itemTitle(item, button(item.name, () => showItem(item), 'file-name-button')), el('div', 'item-path', item.owner || kindNames[item.kind]));
+      const copy = el('td', 'name-cell'); append(copy, itemTitle(item, button(item.name, () => showItem(item), 'file-name-button')), el('div', 'item-path item-secondary', item.owner || kindNames[item.kind]));
       const size = el('td', 'size-cell', ['service','startup'].includes(item.kind) ? '—' : bytes(itemSize(item)));
       const result = window.PanxuTasks.adviceFor(item.id, item.signature); const labels = {keep:'建议保留', review:'需要确认', recommend:'已有处理建议'};
-      const status = el('td', 'kind-label', result ? labels[result.conclusion] || '已有建议' : window.PanxuTasks.adviceKnown(item.id,item.signature) ? '待分析' : '待核对'); status.dataset.adviceState='1';
+      const status = el('td', 'kind-label');const adviceBadge=el('span','item-advice-badge semantic-tag',result ? labels[result.conclusion] || '已有建议' : window.PanxuTasks.adviceKnown(item.id,item.signature) ? '待分析' : '待核对');adviceBadge.dataset.adviceState='1';adviceBadge.dataset.conclusion=result?.conclusion || 'pending';adviceBadge.dataset.tone=result?.conclusion==='review'?'warning':result?.conclusion==='recommend'?'info':'neutral';append(status,adviceBadge);
       const action = el('td'); const analyze=button(result ? '查看建议' : '分析', () => showAdvice(item), 'button small');analyze.dataset.rowAdvice='1';append(action,analyze);
       append(row, checkCell, copy, size, status, action); append(body, row);
     });
@@ -522,7 +522,7 @@ function initializePanxu() {
     const adviceNote=el('p','result-note');adviceNote.hidden=true;append(panel,adviceNote);append(host, panel);
     window.PanxuTasks.lookupAdvice(renderedItems,api).then(()=>{
       if(!panel.isConnected || host.firstChild!==panel) return;
-      renderedItems.forEach(item=>{const row=[...body.children].find(r=>r.dataset.adviceId===item.id);if(!row)return;const entry=window.PanxuTasks.adviceFor(item.id,item.signature),labels={keep:'建议保留',review:'需要确认',recommend:'已有处理建议'};row.querySelector('[data-advice-state]').textContent=entry?labels[entry.conclusion] || '已有建议':window.PanxuTasks.adviceKnown(item.id,item.signature)?'待分析':'待核对';row.querySelector('[data-row-advice]').textContent=entry?'查看建议':'分析';});
+      renderedItems.forEach(item=>{const row=[...body.children].find(r=>r.dataset.adviceId===item.id);if(!row)return;const entry=window.PanxuTasks.adviceFor(item.id,item.signature),labels={keep:'建议保留',review:'需要确认',recommend:'已有处理建议'};const status=row.querySelector('[data-advice-state]');status.textContent=entry?labels[entry.conclusion] || '已有建议':window.PanxuTasks.adviceKnown(item.id,item.signature)?'待分析':'待核对';status.dataset.conclusion=entry?.conclusion || 'pending';status.dataset.tone=entry?.conclusion==='review'?'warning':entry?.conclusion==='recommend'?'info':'neutral';row.querySelector('[data-row-advice]').textContent=entry?'查看建议':'分析';});
     }).catch(()=>{if(panel.isConnected){adviceNote.hidden=false;adviceNote.textContent='已有建议暂时无法读取；点击分析时会先重试读取。';}});
   }
   function renderSelection() {
@@ -666,7 +666,7 @@ function initializePanxu() {
     const modelChoice = el('select'); modelChoice.id = 'model-choice'; modelChoice.setAttribute('aria-label','模型'); append(modelBox, modelLabel, modelChoice);
     const key = inputField('API 密钥', 'model-key', 'password'); key.input.autocomplete = 'new-password'; key.input.placeholder = state.settings.has_key ? '已保存，留空保留当前连接的密钥' : '填写服务商提供的 API 密钥'; key.box.classList.add('wide');
     append(grid, providerBox, modelBox, key.box);
-    const note = el('p', 'field-help provider-note');
+    const note = el('p', 'field-help field-description provider-note provider-guidance');
     const advanced = el('details', 'setting-details provider-advanced'); append(advanced, el('summary', '', '高级连接'));
     const base = inputField('服务地址', 'model-base', 'url', state.settings.base_url); base.input.placeholder = 'https://…/v1';
     const model = inputField('模型 ID（可手动输入）', 'model-name', 'text', state.settings.model);
@@ -677,8 +677,8 @@ function initializePanxu() {
     const streaming=el('label','check-line'); const stream=el('input'); stream.id='model-stream'; stream.type='checkbox'; stream.checked=state.settings.stream !== false; append(streaming,stream,el('span','','流式回复'));
     const privacy=el('label','check-line'); const paths=el('input'); paths.type='checkbox'; paths.checked=state.settings.send_paths === true; append(privacy,paths,el('span','','允许发送文件位置'));
     const clear=el('label','check-line'); const clearKey=el('input'); clearKey.type='checkbox'; append(clear,clearKey,el('span','','清除已保存的密钥'));
-    append(advanced,base.box,model.box,protocolBox,effortBox,streaming,el('p','field-help','流式回复会边接收边显示文字，不改变所选协议。不兼容的自定义服务可关闭。'),privacy,clear);
-    const status=el('p','connection-test-status'); status.setAttribute('role','status');
+    append(advanced,base.box,model.box,protocolBox,effortBox,streaming,el('p','field-help field-description','流式回复会边接收边显示文字，不改变所选协议。不兼容的自定义服务可关闭。'),privacy,clear);
+    const status=el('p','connection-test-status'); status.setAttribute('role','status');status.dataset.tone='neutral';
     const save=el('button','button primary','保存并测试'); save.type='submit';
     const onlySave=button('仅保存',()=>saveConnection(false),'plain-button');
     function populateModels(preset, current='') {
@@ -705,8 +705,8 @@ function initializePanxu() {
     if(!initial && state.settings.base_url) advanced.open=true;
     async function saveConnection(test) {
       if(save.disabled) return;
-      if(!provider.value) {status.textContent='请先选择模型服务商。';status.classList.add('field-error');provider.focus();return;}
-      save.disabled=true;onlySave.disabled=true;form.setAttribute('aria-busy','true');status.className='connection-test-status';
+      if(!provider.value) {status.textContent='请先选择模型服务商。';status.classList.add('field-error');status.dataset.state='error';status.dataset.tone='danger';provider.focus();return;}
+      save.disabled=true;onlySave.disabled=true;form.setAttribute('aria-busy','true');status.className='connection-test-status';status.dataset.state='working';status.dataset.tone='info';
       status.textContent=test?'正在保存并验证工具调用，请稍等…':'正在保存…';
       let saved=false;const submittedKey=key.input.value,submittedClear=clearKey.checked;
       function clearSubmittedKey(){if(key.input.value===submittedKey)key.input.value='';if(clearKey.checked===submittedClear)clearKey.checked=false;}
@@ -722,16 +722,17 @@ function initializePanxu() {
           const result=await api('/api/settings/test',{},120000);
           status.textContent=result.passed?(result.message || '连接成功，工具往返测试通过。'):`设置已保存，但测试未通过。${result.message || '请检查配置后重试。'} 当前填写内容已保留。`;
           status.classList.toggle('field-error',!result.passed);
+          status.dataset.state=result.passed?'verified':'warning';status.dataset.tone=result.passed?'success':'warning';
           if(result.passed)clearSubmittedKey();
-        } else {status.textContent='设置已保存。';clearSubmittedKey();}
-      }catch(error){status.textContent=saved?`设置已保存，但测试未完成。${error.message} 当前填写内容已保留。`:`设置未保存。${error.message} 当前填写内容已保留。`;status.classList.add('field-error');}
+        } else {status.textContent='设置已保存。';status.dataset.state='saved';status.dataset.tone='neutral';clearSubmittedKey();}
+      }catch(error){status.textContent=saved?`设置已保存，但测试未完成。${error.message} 当前填写内容已保留。`:`设置未保存。${error.message} 当前填写内容已保留。`;status.classList.add('field-error');status.dataset.state=saved?'warning':'error';status.dataset.tone=saved?'warning':'danger';}
       finally{save.disabled=false;onlySave.disabled=false;form.setAttribute('aria-busy','false');}
     }
     form.addEventListener('submit',(event)=>{event.preventDefault();saveConnection(true);});
-    append(form,grid,note,advanced,el('p','field-help','连接测试只发送固定测试数据，不发送文件清单。官方文档支持不代表当前账号已通过实测。'),append(el('div','form-actions'),save,onlySave),status); append(panel,form); append(root,panel);
+    append(form,grid,note,advanced,el('p','field-help field-description','连接测试只发送固定测试数据，不发送文件清单。官方文档支持不代表当前账号已通过实测。'),append(el('div','form-actions'),save,onlySave),status); append(panel,form); append(root,panel);
     renderOrganizingPreferences(root);
     renderAppearance(root);
-    const preserve=el('section','panel simple-setting');append(preserve,el('h2','','保留的位置'),el('p','','这些位置不会加入推荐处理。'));
+    const preserve=el('section','panel simple-setting');append(preserve,el('h2','','保留的位置'),el('p','setting-intro','这些位置不会加入推荐处理。'));
     const keep=el('details','setting-details');append(keep,el('summary','','管理保留清单'));
     const lab=el('label','field-label','每行一个文件夹或匹配规则');lab.htmlFor='protect-patterns';
     const patterns=el('textarea');patterns.id='protect-patterns';patterns.value=(state.settings.protect_patterns || []).join('\n');
@@ -741,20 +742,21 @@ function initializePanxu() {
   }
   function renderOrganizingPreferences(root) {
     const panel=el('section','panel simple-setting organizing-preferences');
-    append(panel,el('h2','','整理偏好'),el('p','field-help','所有模型共用，用于后续分析。已有方案可继续调查后更新。'));
+    append(panel,el('h2','','整理偏好'),el('p','field-help setting-intro','所有模型共用，用于后续分析。已有方案可继续调查后更新。'));
     const form=el('form','form-panel'),label=el('label','field-label','你的整理习惯与要求');
     const instructions=el('textarea');instructions.id='organizing-instructions';instructions.value=state.settings.custom_instructions || '';instructions.maxLength=4000;
     instructions.placeholder='例如：保留项目源码和个人照片；旧安装包优先建议清理。';label.htmlFor=instructions.id;
-    const status=el('p','connection-test-status');status.setAttribute('role','status');
+    const status=el('p','connection-test-status');status.setAttribute('role','status');status.dataset.tone='neutral';
     const save=el('button','button','保存偏好');save.type='submit';
     form.addEventListener('submit',async event=>{
       event.preventDefault();if(save.disabled)return;
-      const submitted=instructions.value;save.disabled=true;form.setAttribute('aria-busy','true');status.className='connection-test-status';status.textContent='正在保存偏好…';
+      const submitted=instructions.value;save.disabled=true;form.setAttribute('aria-busy','true');status.className='connection-test-status';status.dataset.state='working';status.dataset.tone='info';status.textContent='正在保存偏好…';
       try{
         const data=await api('/api/preferences',{custom_instructions:submitted});
         state.settings.custom_instructions=data.preferences?.custom_instructions ?? data.settings?.custom_instructions ?? submitted;
         status.textContent=instructions.value===submitted?'整理偏好已保存，切换模型也会沿用。':'刚才的偏好已保存；还有新修改尚未保存。';
-      }catch(error){status.textContent=`偏好未保存。${error.message} 当前填写内容已保留。`;status.classList.add('field-error');}
+        status.dataset.state=instructions.value===submitted?'saved':'warning';status.dataset.tone=instructions.value===submitted?'neutral':'warning';
+      }catch(error){status.textContent=`偏好未保存。${error.message} 当前填写内容已保留。`;status.classList.add('field-error');status.dataset.state='error';status.dataset.tone='danger';}
       finally{save.disabled=false;form.setAttribute('aria-busy','false');}
     });
     append(form,label,instructions,append(el('div','form-actions'),save),status);append(panel,form);append(root,panel);
@@ -771,18 +773,18 @@ function initializePanxu() {
   }
   function renderAppearance(root) {
     const panel=el('section','panel simple-setting appearance-setting');
-    const copy=el('div');append(copy,el('h2','','外观'),el('p','','选择看起来更舒适的界面。'));
+    const copy=el('div');append(copy,el('h2','','外观'),el('p','setting-intro','选择看起来更舒适的界面。'));
     const choice=makeSelect([['system','跟随系统（默认）'],['light','浅色'],['dark','深色']],window.PanxuAppearance.get().theme,async value=>{
       feedback.hidden=true;
       try{await saveUiPreferences({theme:value});}
       catch(_){feedback.textContent='本次窗口已切换；暂时无法保存偏好，重新打开后可再试。';feedback.hidden=false;}
     },'界面主题');choice.id='appearance-theme';
-    const feedback=el('p','field-help appearance-feedback');feedback.hidden=true;feedback.setAttribute('role','status');
+    const feedback=el('p','field-help field-description appearance-feedback');feedback.hidden=true;feedback.setAttribute('role','status');feedback.dataset.tone='warning';
     append(panel,copy,choice,feedback);append(root,panel);
   }
   function renderDeveloperEntry(root) {
     const panel=el('section','panel simple-setting developer-entry-setting'),copy=el('div');
-    append(copy,el('h2','','开发模式'),el('p','','在独立面板查看通信与工具记录。打开面板不会开始采集。'));
+    append(copy,el('h2','','开发模式'),el('p','setting-intro','在独立面板查看通信与工具记录。打开面板不会开始采集。'));
     const open=button('打开开发面板',()=>toggleDeveloperDock(true));open.dataset.openDeveloper='1';
     open.setAttribute('aria-controls','developer-dock');open.setAttribute('aria-expanded',String(developerDockOpen));
     append(panel,copy,append(el('div','developer-entry-actions'),open,el('kbd','','F12')));append(root,panel);
@@ -884,7 +886,7 @@ function initializePanxu() {
           const detail=el('details','developer-subsection');append(detail,el('summary','',`${labels[key] || key}${Array.isArray(child)?`（${child.length} 项）`:''}`));
           detail.addEventListener('toggle',()=>{if(detail.open&&!detail.dataset.loaded){detail.dataset.loaded='1';if(depth<3)readableData(child,detail,depth+1);else append(detail,el('p','muted','更多结构信息可在原始 JSON 中查看。'));}});
           append(parent,detail);
-        }else append(fields,el('dt','',labels[key] || key),el('dd','',child==null?'未提供':typeof child==='boolean'?(child?'是':'否'):String(child)));
+        }else append(fields,el('dt','developer-field-label',labels[key] || key),el('dd','developer-field-value',child==null?'未提供':typeof child==='boolean'?(child?'是':'否'):String(child)));
       }
       if(fields.children.length)append(parent,fields);
       if(rows.length>12)append(parent,el('p','muted',`此处展示前 12 项，其余 ${rows.length-12} 项见原始 JSON。`));
@@ -894,11 +896,22 @@ function initializePanxu() {
       const roles={user:'用户',assistant:'助手',system:'系统',tool:'程序工具',developer:'开发指引'};
       for(const message of model.messages){
         const row=el('div','developer-chat-message');row.dataset.role=message.role;
-        append(row,el('strong','developer-role',roles[message.role] || message.role));
-        if(message.title)append(row,el('span','developer-message-title',message.title));
-        if(message.text)append(row,el('p','developer-text',message.text));
+        row.dataset.purpose=entry.kind==='turn_end'?'transport':message.publicCall || (message.role==='assistant'?'reply':message.role==='user'?'input':'instruction');
+        const role=el('strong','developer-role semantic-tag',roles[message.role] || message.role);role.dataset.tone=message.role==='assistant'?'info':'neutral';append(row,role);
+        if(message.title){const title=el('span','developer-message-title',message.title);title.dataset.tone=message.publicCall==='ask_user'?'warning':message.publicCall?'info':'neutral';append(row,title);}
+        if(message.text){const body=el('p','developer-text',message.text);body.dataset.purpose=row.dataset.purpose;append(row,body);}
         if(message.options?.length){const options=el('ul','developer-options');message.options.forEach(option=>{const li=el('li');append(li,el('strong','',option.label));if(option.description)append(li,el('span','',option.description));append(options,li);});append(row,options);}
-        if(message.items?.length)message.items.forEach(item=>{const advice=el('div','developer-public-advice');if(item.name||item.id)append(advice,el('strong','',item.name || item.id));for(const key of ['purpose','conclusion','reason','impact'])if(item[key])append(advice,el('p','developer-text',`${labels[key]}：${{keep:'建议保留',review:'需要确认',recommend:'建议处理'}[item[key]] || item[key]}`));append(row,advice);});
+        if(message.items?.length)message.items.forEach(item=>{
+          const advice=el('div','developer-public-advice');advice.dataset.purpose='recommendation';
+          if(item.name||item.id)append(advice,el('strong','developer-advice-name',item.name || item.id));
+          for(const key of ['purpose','conclusion','reason','impact'])if(item[key]){
+            const field=el('p','developer-text developer-advice-field');field.dataset.field=key;
+            const value=el('span','developer-field-value',({keep:'建议保留',review:'需要确认',recommend:'建议处理'})[item[key]] || item[key]);
+            if(key==='conclusion')value.dataset.tone=item[key]==='review'?'warning':item[key]==='recommend'?'info':'neutral';
+            append(field,el('strong','developer-field-label',`${labels[key]}：`),value);append(advice,field);
+          }
+          append(row,advice);
+        });
         if(message.omittedItems)append(row,el('p','developer-note',`另有 ${message.omittedItems} 项建议，可在原始 JSON 中查看。`));
         if(message.steps?.length){const list=el('ul','developer-options');message.steps.forEach(text=>append(list,el('li','',text)));append(row,list);}
         append(copy,row);
@@ -914,8 +927,8 @@ function initializePanxu() {
       auxiliary.dataset.label=entry.kind==='request'?'随本次发送的说明与资料':'更多调试信息';
       append(auxiliary,el('summary','',auxiliary.dataset.label));
       model.sections.forEach(section=>{
-        const detail=el('details','developer-section');detail.dataset.category=section.kind;
-        append(detail,el('summary','',section.title));
+        const detail=el('details','developer-section');detail.dataset.category=section.kind;detail.dataset.purpose=section.kind;
+        append(detail,el('summary','developer-disclosure-title',section.title));
         detail.addEventListener('toggle',()=>{if(detail.open&&!detail.dataset.loaded){detail.dataset.loaded='1';const body=el('div','developer-section-body');readableData(section.data,body);append(detail,body);}});
         append(auxiliary,detail);
       });
@@ -941,9 +954,9 @@ function initializePanxu() {
       for(const entry of shown){
         let article=entries.get(entry.seq);
         if(!article){
-          article=el('article','developer-entry');article.dataset.seq=entry.seq;
+          article=el('article','developer-entry');article.dataset.seq=entry.seq;article.dataset.entryKind=entry.kind;
           const time=entry.at?new Date(entry.at).toLocaleTimeString('zh-CN',{hour12:false}):'';
-          const header=el('div','developer-message-meta');append(header,el('strong','',names[entry.kind] || entry.kind),el('span','',`#${entry.seq}${time?' · '+time:''}`));append(article,header);
+          const header=el('div','developer-message-meta'),kind=el('strong','developer-entry-kind',names[entry.kind] || entry.kind);kind.dataset.tone=entry.kind==='error'?'danger':entry.kind==='response'?'info':'neutral';append(header,kind,el('span','developer-entry-time',`#${entry.seq}${time?' · '+time:''}`));append(article,header);
           renderReadable(entry,article);
         }
         applyDisplay(article);fresh.set(entry.seq,article);

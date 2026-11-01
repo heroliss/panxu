@@ -1,6 +1,6 @@
 {
   "product": "盘序",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "mode": "simulation",
   "root": "E:\\GPT-Projects\\win11-disk-assistant",
   "safety": "This build has NO real executor. All apply/undo/reset operations modify only SQLite simulation records. Never unlink/move/kill/control services/edit startup outside app-owned data.",
@@ -109,5 +109,6 @@
   "read_only_evidence": "collect_system_configuration(section=memory_power) observes memory/active vs configured pagefiles/power via fixed APIs and7 registry values; inspect_volume(scope_id) observes only existing task-scope volume capacity/recycle statistics. No root or action targets added; unknown/partial explicit.",
   "icons": "Private known-ID local icon extraction from existing executable resources, desktop registration or stock/type fallback; visible lazy requests, bounded queues/cache, no shell extensions/shortcut resolution or LLM transmission. Icons do not certify publisher or ownership.",
   "developer_readability": "Visible-role text and public communication by default, one closed auxiliary section per event for system/context/facts/skills/tools/metadata/raw sanitized JSON. Protocol-private content stays excluded.",
-  "model_streaming": "Four native protocols with real SSE aggregation; public cumulative previews independent of developer capture; partial tools never executable; cancel/disconnect/budget fail closed. Defaults on, JSON fallback labelled; spring grapheme UI respects reduced motion. Save precedes fixed-data connection test and failed test never rolls back saved settings."
+  "model_streaming": "Four native protocols with real SSE aggregation; public cumulative previews independent of developer capture; partial tools never executable; cancel/disconnect/budget fail closed. Defaults on, JSON fallback labelled; spring grapheme UI respects reduced motion. Save precedes fixed-data connection test and failed test never rolls back saved settings.",
+  "visual_hierarchy": "Platform Chinese typography, six text roles, shared semantic status labels, independent light/dark surfaces; recommendation/source and simulated results do not claim actual operation success. Presentation only, no extra execution authority."
 }

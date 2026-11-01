@@ -108,6 +108,16 @@ window.PanxuTasks = (() => {
     b.addEventListener('click', handler); return b;
   }
   function detail(label, ...children) { return add(node('details', 'task-detail'), node('summary', '', label), ...children); }
+  function semanticTag(label, tone = 'neutral', cls = '') {
+    const tag = node('span', `semantic-tag ${cls}`.trim(), label);
+    tag.dataset.tone = tone;
+    return tag;
+  }
+  function explanation(label, text) {
+    if (!text) return null;
+    return add(node('div', 'task-explanation'), node('span', 'task-explanation-label', label),
+      node('p', 'task-explanation-text', text));
+  }
   function icon(paths, className) {
     const ns='http://www.w3.org/2000/svg', svg=document.createElementNS(ns,'svg');
     Object.entries({viewBox:'0 0 24 24',fill:'none',stroke:'currentColor','stroke-width':'1.6','stroke-linecap':'round','stroke-linejoin':'round','aria-hidden':'true',focusable:'false'}).forEach(([key,value])=>svg.setAttribute(key,value));
@@ -325,15 +335,15 @@ window.PanxuTasks = (() => {
   function question(root) {
     const q=current.question, taskId=current.id;
     const form=node('form','task-question'), choices=node('fieldset','task-question-options');
-    add(choices,node('legend','field-label',q.question));
+    add(choices,node('legend','field-label task-question-title',q.question));
     const submit=node('button','button primary task-primary','继续');submit.type='submit';
     const update=()=>{submit.disabled=pending || (!answerOption && !answerText.trim());};
     q.options.forEach(option=>{
       const label=node('label','task-question-option'), radio=node('input');
       radio.type='radio';radio.name='task-answer';radio.value=option.id;radio.checked=answerOption===option.id;radio.disabled=pending;
       radio.addEventListener('change',()=>{answerOption=option.id;update();});
-      const copy=node('span','task-option-copy');add(copy,node('strong','',option.label));
-      if(option.description)add(copy,node('span','field-help',option.description));
+      const copy=node('span','task-option-copy');add(copy,node('strong','task-option-label',option.label));
+      if(option.description)add(copy,node('span','field-help task-option-description',option.description));
       add(choices,add(label,radio,copy));
     });
     const input=node('textarea');input.value=answerText;input.maxLength=2000;input.disabled=pending;
@@ -398,10 +408,11 @@ window.PanxuTasks = (() => {
         disable_startup: '关闭开机启动', stop_service: '停止后台服务', stop_process: '结束应用', uninstall: '卸载软件'};
       const titleLine=node('div','item-title-line');
       add(titleLine,window.PanxuIcons?.create(item),title);
-      add(copy, titleLine, node('span', 'task-action-label', actionNames[item.action] || item.action),
-        item.personal_choice_required ? node('span', 'task-choice-note', '由你选择') : null,
-        node('p', '', item.reason));
-      const info = detail('了解影响', node('p', '', item.impact), node('p', 'task-path', item.path),
+      add(copy, titleLine, add(node('div', 'task-plan-meta'),
+        semanticTag(actionNames[item.action] || item.action, 'info', 'task-action-label'),
+        item.personal_choice_required ? semanticTag('由你选择', 'warning', 'task-choice-note') : null),
+        explanation('建议原因', item.reason));
+      const info = detail('了解影响', explanation('影响', item.impact), node('p', 'task-path', item.path),
         action('保留这项', () => request('/api/tasks/' + current.id + '/feedback', {keep_ids: [item.id]}), 'plain-button'));
       add(copy, info);
       add(card, check, copy, node('span', 'task-item-size', item.kind === 'file' || item.kind === 'directory' ? '约 ' + context.bytes(item.size_bytes) : ''));
@@ -431,8 +442,17 @@ window.PanxuTasks = (() => {
     const pendingCount=Math.max(0,result.total-result.succeeded);
     const box = detail(`本轮结果：${result.succeeded} 项预演完成${pendingCount?`，${pendingCount} 项未完成或待核实`:''}`,
       node('p', 'result-protection-note', '测试保护下完成预演，实际文件和系统未改动。'));
-    result.items.forEach((item) => add(box, add(node('div', 'item-title-line'), window.PanxuIcons?.create(item), node('p', '', item.current_state === 'undone'
-      ? `${item.name}：已撤销这次预演。` : `${item.name}：${labels[item.status] || '待核实'}。${item.message}`))));
+    box.className += ' task-results';
+    const tones = {succeeded:'info', failed:'danger', unverified:'warning', cancelled:'neutral', running:'warning'};
+    result.items.forEach((item) => {
+      const undone = item.current_state === 'undone';
+      const row = node('article', 'task-result-item');
+      const heading = add(node('div', 'task-result-heading'),
+        add(node('div', 'item-title-line'), window.PanxuIcons?.create(item), node('strong', 'task-result-name', item.name)),
+        semanticTag(undone ? '已撤销预演' : labels[item.status] || '待核实', undone ? 'neutral' : tones[item.status] || 'warning', 'task-result-state'));
+      add(row, heading, node('p', 'task-result-message', undone ? '已撤销这次预演。' : item.message));
+      add(box, row);
+    });
     add(root, box);
   }
   function renderAdvice(root) {
@@ -455,8 +475,12 @@ window.PanxuTasks = (() => {
         (data.items || []).forEach((entry) => {
           const labels = {keep:'建议保留',review:'需要确认',recommend:'建议处理'};
           const card = node('article', 'task-advice-item');
-          add(card, add(node('div','item-title-line'),window.PanxuIcons?.create(entry),node('strong', '', entry.name)), node('span', 'advice-label', entry.stale ? '内容已变化，需重新核对' : entry.user_kept ? '你已选择保留' : labels[entry.conclusion] || '待确认'),
-            node('p', '', entry.purpose), node('p', '', entry.reason), detail('了解影响', node('p', '', entry.impact)));
+          const label = entry.stale ? '内容已变化，需重新核对' : entry.user_kept ? '你已选择保留' : labels[entry.conclusion] || '待确认';
+          const tone = entry.stale ? 'warning' : entry.user_kept ? 'neutral' : {keep:'neutral', review:'warning', recommend:'info'}[entry.conclusion] || 'warning';
+          add(card, add(node('div', 'task-advice-header'),
+            add(node('div','item-title-line task-advice-title-line'),window.PanxuIcons?.create(entry),node('strong', 'task-advice-title', entry.name)),
+            semanticTag(label, tone, 'task-advice-state')),
+            node('p', 'task-purpose', entry.purpose), explanation('建议原因', entry.reason), detail('了解影响', explanation('影响', entry.impact)));
           if(!busy())directControls(card,entry,taskId);
           add(list, card);
         });
@@ -479,7 +503,13 @@ window.PanxuTasks = (() => {
     const panel = node('section', 'panel task-session');
     const summary = node('div', 'task-summary'); summary.setAttribute('role', 'status');
     if (busy()) add(summary, node('span', 'spinner'));
-    if(!current.question || busy())add(summary, node('p', '', current.summary));
+    if(!current.question || busy()){
+      const copy = node('div', 'task-summary-copy');
+      const statuses = {completed:['本轮建议','info'], error:['调查未完成','danger'], paused:['已暂停','neutral'],
+        awaiting_review:['待你确认','warning'], budget_exhausted:['调查待继续','warning']};
+      if(!busy() && statuses[current.status])add(copy, semanticTag(...statuses[current.status], 'task-status-label'));
+      add(copy, node('p', 'task-summary-text', current.summary));add(summary, copy);
+    }
     if(summary.childNodes.length)add(panel, summary);
     if(!busy() && context.modelProfile?.model && current.handoff?.model?.model && ['provider','model','protocol'].some(key=>(context.modelProfile[key] || '')!==(current.handoff.model[key] || ''))) add(panel,node('p','field-help',`继续调查将使用当前连接的 ${context.modelProfile.model}，已有目标、事实和保留选择会继续使用。`));
     if (current.last_result && current.last_result.succeeded < current.last_result.total) {
