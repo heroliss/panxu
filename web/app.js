@@ -2,7 +2,7 @@
 
 // Resolve the appearance before CSS; application setup waits for the DOM below.
 window.PanxuAppearance = (() => {
-  const defaults={theme:'dark',developer_live:false,developer_conversation:true,developer_skills:true,developer_tools:false};
+  const defaults={theme:'system',developer_live:false,developer_conversation:true,developer_skills:true,developer_tools:false};
   const storageKey='panxu.ui-preferences.v1';
   let cached={};try{cached=JSON.parse(localStorage.getItem(storageKey) || '{}');}catch(_){}
   let values={...defaults};
@@ -42,6 +42,7 @@ function initializePanxu() {
   const state = { csrf: '', view: 'overview', items: [], summary: {}, settings: {}, history: [], disks: [], source: 'demo', warnings: [], selected: new Set(), focused: null, query: '', risk: 'all', origin: 'all', subtype: 'all', limit: 300, busy: false, job: null, plan: null, scanPath: '', inspector: false, assistant: null, recommendations: [], checked: false, analyzing: false, filesExpanded: false, backgroundExpanded: false, inventoryTarget: 'startup', checkDestination: 'overview', showAllCards: new Set() };
   let toastTimer;
   let developerCleanup=null;
+  let developerController=null,developerDockOpen=false,developerReturnFocus=null;
   let unitCache = new Map();
   let protectedFiles = [];
   let defaultPathLoaded = false;
@@ -232,7 +233,6 @@ function initializePanxu() {
     toggleInspector(false); render();
   }
   function render() {
-    developerCleanup?.();developerCleanup=null;
     window.PanxuFiles?.unmount();
     const root = $('workspace'); root.replaceChildren();
     const renderers = { overview: renderOverview, files: renderFiles, background: renderBackground, software: renderSoftware, history: renderHistory, model: renderModel };
@@ -596,7 +596,7 @@ function initializePanxu() {
     const patterns=el('textarea');patterns.id='protect-patterns';patterns.value=(state.settings.protect_patterns || []).join('\n');
     append(keep,lab,patterns,button('保存保留清单',()=>task(async()=>{accept(await api('/api/settings',settingsPayload({protect_patterns:patterns.value.split(/\r?\n/).map(v=>v.trim()).filter(Boolean)})));accept(await api('/api/bootstrap?compact=1'));render();toast('保留清单已保存。');})));append(preserve,keep);append(root,preserve);
     append(root,button('高级选项',()=>$('advanced-toggle').click(),'plain-button advanced-entry'));
-    renderDeveloper(root);
+    renderDeveloperEntry(root);
   }
   let preferenceSave=Promise.resolve(),preferenceRevision=0;
   function saveUiPreferences(patch) {
@@ -611,7 +611,7 @@ function initializePanxu() {
   function renderAppearance(root) {
     const panel=el('section','panel simple-setting appearance-setting');
     const copy=el('div');append(copy,el('h2','','外观'),el('p','','选择看起来更舒适的界面。'));
-    const choice=makeSelect([['dark','深色（默认）'],['light','浅色'],['system','跟随系统']],window.PanxuAppearance.get().theme,async value=>{
+    const choice=makeSelect([['system','跟随系统（默认）'],['light','浅色'],['dark','深色']],window.PanxuAppearance.get().theme,async value=>{
       feedback.hidden=true;
       try{await saveUiPreferences({theme:value});}
       catch(_){feedback.textContent='本次窗口已切换；暂时无法保存偏好，重新打开后可再试。';feedback.hidden=false;}
@@ -619,8 +619,27 @@ function initializePanxu() {
     const feedback=el('p','field-help appearance-feedback');feedback.hidden=true;feedback.setAttribute('role','status');
     append(panel,copy,choice,feedback);append(root,panel);
   }
+  function renderDeveloperEntry(root) {
+    const panel=el('section','panel simple-setting developer-entry-setting'),copy=el('div');
+    append(copy,el('h2','','开发模式'),el('p','','在独立面板查看通信与工具记录。打开面板不会开始采集。'));
+    const open=button('打开开发面板',()=>toggleDeveloperDock(true));open.dataset.openDeveloper='1';
+    open.setAttribute('aria-controls','developer-dock');open.setAttribute('aria-expanded',String(developerDockOpen));
+    append(panel,copy,append(el('div','developer-entry-actions'),open,el('kbd','','F12')));append(root,panel);
+  }
+  function toggleDeveloperDock(force) {
+    const dock=$('developer-dock');if(!dock)return;
+    const open=force===undefined?!developerDockOpen:force;
+    if(open&&!developerDockOpen)developerReturnFocus=document.activeElement;
+    developerDockOpen=open;dock.hidden=!open;document.body.classList.toggle('developer-open',open);
+    if(open&&!developerController)developerController=renderDeveloper($('developer-dock-content'));
+    developerController?.setVisible(open);
+    document.querySelectorAll('[data-open-developer]').forEach(button=>button.setAttribute('aria-expanded',String(open)));
+    if(open)$('developer-dock-close').focus();
+    else if(developerReturnFocus?.isConnected)developerReturnFocus.focus();
+    else $('workspace').focus();
+  }
   function renderDeveloper(root) {
-    const panel=el('details','panel developer-panel');append(panel,el('summary','','开发模式'));
+    const panel=el('section','developer-panel');
     const body=el('div','developer-content');append(panel,body);append(root,panel);
     const intro=el('p','field-help','记录保存在本机。采集与显示分别控制；关闭显示不会停止采集。密钥、内部思考和协议私有续接不会显示。');
     const switches=el('div','developer-switches');
@@ -651,10 +670,10 @@ function initializePanxu() {
     const viewer=el('div','developer-viewer');append(viewer,controls,updated,list,paging);
     const displayNote=el('p','field-help','显示已关闭。打开“实时显示通信”后可查看记录；只有此面板可见时才会自动刷新。');
     append(body,intro,switches,filters,status,error,displayNote,viewer);
-    let offset=0,fetching=false,recordBusy=false,loaded=false,active=true,timer=null,readSequence=0,lastData=null,pendingData=null;
+    let offset=0,fetching=false,recordBusy=false,loaded=false,active=true,dockVisible=false,refreshAfterRead=false,timer=null,readSequence=0,lastData=null,pendingData=null;
     const entries=new Map();
     const names={request:'发给模型',response:'模型回复',tool_call:'工具调用',tool_result:'工具结果',skill:'技能参考',skill_read:'读取技能',context_event:'任务反馈'};
-    function visible(){return active&&panel.isConnected&&panel.open&&state.view==='model'&&!document.hidden;}
+    function visible(){return active&&dockVisible&&panel.isConnected&&!document.hidden;}
     function stopPolling(){clearTimeout(timer);timer=null;}
     function schedule(){stopPolling();if(visible()&&live.input.checked&&offset===0&&lastData?.enabled)timer=setTimeout(()=>load(false),2500);}
     function showError(message){error.textContent=message;error.hidden=false;}
@@ -741,7 +760,7 @@ function initializePanxu() {
         if(run!==readSequence||!visible())return;
         renderData(data,force);
       }catch(failure){if(visible()&&run===readSequence)showError(failure.message);}
-      finally{fetching=false;list.setAttribute('aria-busy','false');refresh.disabled=false;if(lastData){previous.disabled=!offset;next.disabled=!lastData.has_more;}schedule();}
+      finally{fetching=false;list.setAttribute('aria-busy','false');refresh.disabled=false;if(lastData){previous.disabled=!offset;next.disabled=!lastData.has_more;}if(refreshAfterRead&&visible()){refreshAfterRead=false;load(false);}else schedule();}
     }
     capture.input.addEventListener('change',async()=>{
       const enabled=capture.input.checked;recordBusy=true;capture.input.disabled=true;readSequence++;stopPolling();error.hidden=true;
@@ -760,9 +779,13 @@ function initializePanxu() {
     });
     const visibility=()=>{stopPolling();if(visible()&&live.input.checked)load(false);};
     document.addEventListener('visibilitychange',visibility);
-    panel.addEventListener('toggle',()=>{stopPolling();if(panel.open&&(!loaded||live.input.checked))load(false);});
-    developerCleanup=()=>{active=false;readSequence++;stopPolling();document.removeEventListener('visibilitychange',visibility);};
+    developerCleanup=()=>{active=false;dockVisible=false;refreshAfterRead=false;readSequence++;stopPolling();document.removeEventListener('visibilitychange',visibility);};
     viewer.hidden=!live.input.checked;displayNote.hidden=live.input.checked;
+    return {setVisible(value){
+      dockVisible=Boolean(value);stopPolling();
+      if(!dockVisible){readSequence++;refreshAfterRead=false;return;}
+      if(fetching)refreshAfterRead=true;else load(false);
+    },destroy:developerCleanup};
   }
   function analysisOutput(data) {
     const output = el('div', 'analysis-output'); append(output, el('div', 'assistant-answer', text(data.answer || '没有返回建议。')));
@@ -791,6 +814,12 @@ function initializePanxu() {
   $('preview-plan').addEventListener('click', () => analyzeList());
   $('plan-close').addEventListener('click', () => $('plan-dialog').close()); $('plan-cancel').addEventListener('click', () => $('plan-dialog').close()); $('plan-execute').addEventListener('click', executePlan);
   $('reset-demo').addEventListener('click', () => task(async () => { const data = await api('/api/reset', {}); accept(data, false); state.selected.clear(); state.focused = null; state.assistant = null; $('advanced-drawer').hidden = true; $('advanced-toggle').setAttribute('aria-expanded', 'false'); render(); toast('预演记录已清空。'); }));
+  $('developer-dock-close')?.addEventListener('click',()=>toggleDeveloperDock(false));
+  document.addEventListener('keydown',event=>{
+    if(event.key!=='F12'&&event.code!=='F12')return;
+    event.preventDefault();event.stopPropagation();if(!event.repeat)toggleDeveloperDock();
+  },true);
+  window.addEventListener('beforeunload',()=>developerCleanup?.());
   document.addEventListener('keydown', (event) => { if (event.key === 'Escape' && !$('advanced-drawer').hidden) $('advanced-close').click(); });
 
   async function boot() {

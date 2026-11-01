@@ -806,3 +806,48 @@ dialog::backdrop{background:var(--overlay);backdrop-filter:none}
 @media(max-width:640px){.task-intent{grid-template-columns:26px minmax(0,1fr) 12px;gap:10px;padding:20px 16px}.task-intent .task-intent-symbol{width:26px;height:30px}.task-intent-symbol svg{width:24px;height:24px}.task-intent-arrow,.task-intent-arrow svg{width:12px}.task-intent-copy strong{font-size:15px}.task-intent-copy>span{font-size:12px}}
 @media(prefers-reduced-motion:reduce){.task-intent:hover .task-intent-arrow{transform:none}}
 .task-skill-sources{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;line-height:1.8;color:var(--muted)}
+
+/* A persistent inspection surface, separate from the task and its navigation. */
+:root{--sidebar-width:214px;--developer-dock-width:clamp(360px,34vw,520px);--developer-dock-height:clamp(300px,46vh,460px)}
+.developer-dock{position:fixed;inset:0 0 0 auto;width:var(--developer-dock-width);display:flex;flex-direction:column;min-width:0;background:var(--panel);border-left:1px solid var(--border-strong);z-index:18}
+.developer-dock-heading{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:16px 20px;border-bottom:1px solid var(--line);flex-shrink:0}
+.developer-dock-heading>div{display:flex;align-items:center;gap:12px}
+.developer-dock-heading h2{font-size:16px;font-weight:600;margin:0;color:var(--ink)}
+.developer-dock kbd,.developer-entry-actions kbd{font-family:inherit;font-size:12px;color:var(--muted);border:1px solid var(--line);border-radius:4px;padding:1px 5px}
+.developer-dock-heading .button{min-height:36px;font-size:12px}
+.developer-dock-scroll{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable;padding:16px 20px}
+.developer-dock .developer-panel{padding:0;margin:0;border:0;border-radius:0;max-width:none}
+.developer-dock .developer-content{padding-top:0}
+.developer-dock .developer-content>p:first-child{margin:0 0 12px}
+.developer-dock .developer-switches{margin:10px 0;gap:6px 16px}
+.developer-dock .developer-switches .check-line{font-size:12px;min-height:30px}
+.developer-dock .developer-state{margin:10px 0}
+.developer-dock .developer-controls{gap:8px;margin:10px 0}
+.developer-dock .developer-controls .button{font-size:12px;min-height:36px}
+.developer-dock .developer-json{max-height:48vh;font-size:12px;margin-bottom:4px}
+.developer-dock .developer-entry>summary{font-size:12px;line-height:1.9}
+.developer-entry-setting{display:flex;align-items:center;justify-content:space-between;gap:18px}
+.developer-entry-setting h2{margin:0 0 5px}
+.developer-entry-setting p{font-size:12px;line-height:1.8;color:var(--muted);max-width:55ch;margin:0}
+.developer-entry-actions{display:flex;align-items:center;gap:10px;flex-shrink:0}
+.developer-entry-actions .button{font-size:12px}
+.developer-open .app-body{width:calc(100% - var(--sidebar-width) - var(--developer-dock-width));margin-right:var(--developer-dock-width)}
+.developer-open .content-grid{grid-template-columns:minmax(0,1fr)}
+.developer-open .inspector{position:fixed;inset:0 var(--developer-dock-width) 0 auto;width:min(360px,calc(100vw - var(--sidebar-width) - var(--developer-dock-width)));height:100vh;overflow:auto;z-index:16;border-left:1px solid var(--line);box-shadow:none}
+@media(min-width:1550px){:root{--sidebar-width:230px}}
+@media(max-width:1200px){:root{--sidebar-width:184px}}
+@media(max-width:1279px){
+  .developer-dock{inset:auto 0 0 var(--sidebar-width);width:auto;height:var(--developer-dock-height);border-left:0;border-top:1px solid var(--border-strong)}
+  .developer-dock-heading{padding:11px 18px}
+  .developer-dock-scroll{padding:12px 18px}
+  .developer-open .app-body{width:calc(100% - var(--sidebar-width));margin-right:0;padding-bottom:var(--developer-dock-height)}
+  .developer-open .selection-bar{bottom:var(--developer-dock-height)}
+  .developer-open .toast{bottom:calc(var(--developer-dock-height) + 16px)}
+  .developer-open .inspector{inset:0 0 var(--developer-dock-height) auto;width:min(380px,calc(100vw - var(--sidebar-width)));height:calc(100vh - var(--developer-dock-height))}
+}
+@media(max-width:760px){
+  :root{--sidebar-width:68px;--developer-dock-height:clamp(280px,46vh,400px)}
+  .developer-entry-setting{align-items:flex-start;flex-direction:column;gap:12px}
+  .developer-dock-heading,.developer-dock-scroll{padding-left:14px;padding-right:14px}
+  .developer-dock .developer-switches{display:flex}
+}

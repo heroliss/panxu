@@ -1,7 +1,13 @@
-盘序 PanXu 0.6.0 · Windows 11 空间与后台助手
+盘序 PanXu 0.7.0 · Windows 11 空间与后台助手
 
 本机试用版；测试保护保持开启，所有处理均为模拟。
 任务驱动方案与功能边界见源码 docs/TASK_FIRST_HARNESS.md。
+
+版权与许可
+Required Notice: Copyright (c) 2026 heroliss (https://github.com/heroliss)
+项目原创部分采用随附LICENSE中的PolyForm Noncommercial 1.0.0。
+超出该许可允许用途的商业使用需另行取得书面授权；第三方组件保留其各自条款。
+详见NOTICE与THIRD_PARTY_NOTICES.md；商业授权联系 https://github.com/heroliss。
 
 启动
 将整个 PanXu 文件夹放到你有写入权限的位置，双击 PanXu.exe。
@@ -38,8 +44,9 @@ Runtime 和 Windows .NET Framework；缺失时可先用下面的浏览器方式�
 普通权限即可使用；程序以 asInvoker 运行，不申请管理员权限。
 
 外观和开发模式
-默认深色，可在设置中改为浅色或跟随系统，偏好随本机数据保存。
-开发模式默认关闭；记录开发通信和实时显示分别控制，可选择模型对话、技能和工具详情。
+默认跟随 Windows 的浅色/深色设置并自动切换，也可在设置中固定深色或浅色；偏好随本机数据保存。
+右侧开发面板默认关闭，可从设置打开或按F12切换。
+记录开发通信和实时显示分别控制，可选择模型对话、技能和工具详情。
 开启记录后可能保存本地任务元数据；密钥、鉴权头、内部推理和协议私有续接不会记录。
 
 数据和隐私

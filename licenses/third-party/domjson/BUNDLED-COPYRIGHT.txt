@@ -1,0 +1,8 @@
+/**
+ * domJSON.js: A simple framework for converting DOM nodes to special JSON objects, and vice versa
+ *
+ * @fileOverview
+ * @author  Alex Zaslavsky
+ * @version 0.1.2
+ * @license The MIT License: Copyright (c) 2013 Alex Zaslavsky
+ */

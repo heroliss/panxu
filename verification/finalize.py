@@ -12,7 +12,7 @@ import hashlib
 import ipaddress
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import struct
 import sys
@@ -55,6 +55,33 @@ def inside_project(path: Path) -> Path:
 
 def linked(path: Path) -> bool:
     return path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction())
+
+
+def legal_sources() -> list[Path]:
+    """Only explicitly inventoried legal files, never a recursive data collect."""
+    manifest = ROOT / 'licenses/third-party/manifest.json'
+    require(manifest.is_file() and all(not linked(parent) for parent in [manifest, *manifest.parents] if parent != ROOT and parent.is_relative_to(ROOT)), 'Third-party notice inventory is missing or linked')
+    data = json.loads(manifest.read_text(encoding='utf-8-sig'))
+    entries = data.get('files')
+    require(isinstance(entries, list) and 0 < len(entries) <= 200, 'Invalid third-party notice inventory')
+    files = [ROOT / name for name in ('LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES.md')]
+    files.append(manifest)
+    seen = set()
+    for entry in entries:
+        require(isinstance(entry, dict), 'Invalid third-party notice entry')
+        name = entry.get('path')
+        require(isinstance(name, str) and name.startswith('licenses/third-party/')
+                and '\\' not in name and ':' not in name and '..' not in PurePosixPath(name).parts
+                and not PurePosixPath(name).is_absolute() and str(PurePosixPath(name)) == name, 'Notice path must stay inside licenses/third-party')
+        require(name.casefold() not in seen and name != 'licenses/third-party/manifest.json', 'Duplicate notice entry')
+        seen.add(name.casefold())
+        path = ROOT / name
+        require(path.is_file() and all(not linked(parent) for parent in [path, *path.parents] if parent != ROOT and parent.is_relative_to(ROOT)), 'Linked or missing third-party notice')
+        require(path.resolve().is_relative_to((ROOT / 'licenses/third-party').resolve()), 'Notice path escaped its directory')
+        require(isinstance(entry.get('sha256'), str) and sha(path) == entry['sha256'], 'Third-party notice checksum differs from inventory')
+        files.append(path)
+    require(all(path.is_file() and not linked(path) for path in files), 'Missing application license or notice')
+    return files
 
 
 def archive_previous(*, apply: bool = False) -> dict:
@@ -151,6 +178,7 @@ def source_snapshot(app_version: str) -> dict:
     for folder, suffixes in (("diskpilot", {".py"}), ("tests", {".py", ".cjs"}), ("web", {".html", ".js", ".css"})):
         sources.update(path for path in (ROOT / folder).rglob("*") if path.is_file() and path.suffix in suffixes)
     sources.update(VERIFY.glob("*.py"))
+    sources.update(legal_sources())
     from diskpilot.knowledge import BUNDLED_SKILL_FILES
     sources.update(ROOT / 'skills' / name for name in BUNDLED_SKILL_FILES)
     files = {}
@@ -208,6 +236,8 @@ def finalize(*, tests_run: int, health_url: str) -> dict:
     from diskpilot.knowledge import BUNDLED_SKILL_FILES
     for name in BUNDLED_SKILL_FILES:
         require(sha(ROOT / 'skills' / name) == sha(release / '_internal' / 'skills' / name), 'Packaged guidance differs from source')
+    for source in legal_sources():
+        require(sha(source) == sha(release / source.relative_to(ROOT)), 'Packaged license notice differs from source')
     files = release_files(release)
     health = read_health(health_url, app_version)
     local_path = VERIFY / "local-acceptance.json"

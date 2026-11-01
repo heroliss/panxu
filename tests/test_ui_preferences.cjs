@@ -9,7 +9,7 @@ const { createContext, runInContext, runInNewContext } = require('node:vm');
 const source = readFileSync(join(__dirname, '..', 'web', 'app.js'), 'utf8');
 const flush = () => new Promise(setImmediate);
 
-function appearance({ serverTheme = 'dark', cached, systemDark = false, storageFails = false } = {}) {
+function appearance({ serverTheme = 'system', cached, systemDark = false, storageFails = false } = {}) {
   const storage = new Map(cached === undefined ? [] : [['panxu.ui-preferences.v1', JSON.stringify(cached)]]);
   const root = { dataset: { themePreference: serverTheme }, style: {} };
   const events = new Map();
@@ -25,11 +25,15 @@ function appearance({ serverTheme = 'dark', cached, systemDark = false, storageF
   return { subject: window.PanxuAppearance, root, storage, media, events };
 }
 
-test('initial dark appearance is applied before app initialization; live display defaults off', () => {
+test('initial appearance follows the system before app initialization; live display defaults off', () => {
   const fixture = appearance();
-  assert.equal(fixture.root.dataset.theme, 'dark');
-  assert.equal(fixture.root.style.colorScheme, 'dark');
-  assert.equal(fixture.root.style.backgroundColor, '#10151e');
+  assert.equal(fixture.subject.get().theme, 'system');
+  assert.equal(fixture.root.dataset.theme, 'light');
+  assert.equal(fixture.root.style.colorScheme, 'light');
+  assert.equal(fixture.root.style.backgroundColor, '#f3f5f8');
+  const darkSystem = appearance({ systemDark: true });
+  assert.equal(darkSystem.root.dataset.theme, 'dark');
+  assert.equal(darkSystem.root.style.backgroundColor, '#10151e');
   assert.equal(typeof fixture.events.get('DOMContentLoaded'), 'function');
   assert.equal(fixture.subject.get().developer_live, false);
   assert.equal(fixture.subject.get().developer_conversation, true);
@@ -43,6 +47,16 @@ test('server theme survives a new origin and takes precedence over an old origin
   assert.equal(fixture.root.style.colorScheme, 'light');
   assert.equal(fixture.root.style.backgroundColor, '#f3f5f8');
   assert.equal(fixture.subject.get().theme, 'light');
+  const explicitDark = appearance({ serverTheme: 'dark', cached: { theme: 'system' }, systemDark: false });
+  assert.equal(explicitDark.subject.get().theme, 'dark');
+  assert.equal(explicitDark.root.dataset.theme, 'dark', 'an explicit saved dark preference must not migrate to system');
+});
+
+test('missing server preference uses the system default before any asynchronous settings request', () => {
+  const fixture = appearance({ serverTheme: '', systemDark: true });
+  assert.equal(fixture.subject.get().theme, 'system');
+  assert.equal(fixture.root.style.colorScheme, 'dark');
+  assert.equal(fixture.root.style.backgroundColor, '#10151e');
 });
 
 test('system mode reacts to OS changes while explicit appearance remains stable', () => {
@@ -127,18 +141,19 @@ function developer({ payload, kind = 'request' } = {}) {
   assert.ok(start !== -1 && end > start, 'developer module remains available to its lifecycle test');
   createContext(context);
   runInContext(source.slice(start, end) + ';this.renderDeveloper=renderDeveloper;', context);
-  context.renderDeveloper(root);
+  const controller = context.renderDeveloper(root);
   const panel = root.children[0];
   const get = (id) => root.all().find((node) => node.id === id);
-  return { root, panel, get, timers, calls, context, document, listeners,
+  return { root, panel, get, timers, calls, context, document, listeners, controller,
     setSequence: (value) => { seq = value; }, captured: () => capture,
-    async open() { panel.open = true; await panel.fire('toggle'); await flush(); },
+    async open() { controller.setVisible(true); await flush(); },
+    close() { controller.setVisible(false); },
     async check(id, checked) { const node = get(id); node.checked = checked; await node.fire('change'); await flush(); },
     async tick() { assert.equal(timers.size, 1); const [id, handler] = [...timers][0]; timers.delete(id); handler(); await flush(); },
   };
 }
 
-test('developer panel does not poll when collapsed or display is off; capture and display are independent', async () => {
+test('developer dock is closed by default; opening and display never implicitly enable capture', async () => {
   const fixture = developer();
   assert.equal(fixture.calls.length, 0);
   await fixture.open();
@@ -156,17 +171,17 @@ test('developer panel does not poll when collapsed or display is off; capture an
   fixture.context.developerCleanup();
 });
 
-test('live records preserve expanded content and do not rebuild the settings container', async () => {
+test('live records preserve expanded content and do not rebuild the dock container', async () => {
   const fixture = developer(); await fixture.open();
   await fixture.check('developer-live', true); await fixture.check('developer-record', true);
-  const body = fixture.panel.children[1];
+  const body = fixture.panel.children[0];
   const entry = fixture.root.all().find((node) => node.className === 'developer-entry');
   entry.open = true; await entry.fire('toggle');
   const pre = entry.querySelector('pre'); pre.scrollTop = 72;
   assert.ok(pre.textContent.includes('fixture dialogue'));
   assert.ok(!pre.textContent.includes('fixture tool definition'), 'large tool details are locally hidden by default');
   fixture.setSequence(2); await fixture.tick();
-  assert.equal(fixture.panel.children[1], body);
+  assert.equal(fixture.panel.children[0], body);
   assert.equal(entry.open, true); assert.equal(pre.scrollTop, 72);
   assert.ok(fixture.root.all().includes(entry), 'new output does not displace the record being read');
   assert.equal(fixture.root.all().find((node) => node.className === 'button developer-update').hidden, false);
@@ -179,7 +194,7 @@ test('live records preserve expanded content and do not rebuild the settings con
   fixture.context.developerCleanup();
 });
 
-test('polling stops while the document is hidden, the panel is closed, or settings are unmounted', async () => {
+test('dock remains live across navigation; hidden or closed dock pauses polling', async () => {
   const fixture = developer(); await fixture.open();
   await fixture.check('developer-live', true); await fixture.check('developer-record', true);
   fixture.document.hidden = true; fixture.listeners.get('visibilitychange')();
@@ -187,25 +202,65 @@ test('polling stops while the document is hidden, the panel is closed, or settin
   const before = fixture.calls.length;
   fixture.document.hidden = false; fixture.listeners.get('visibilitychange')(); await flush();
   assert.equal(fixture.calls.length, before + 1); assert.equal(fixture.timers.size, 1);
-  fixture.panel.open = false; await fixture.panel.fire('toggle'); assert.equal(fixture.timers.size, 0);
+  fixture.context.state.view = 'files';
+  const beforeNavigation = fixture.calls.length;
+  await fixture.tick();
+  assert.equal(fixture.calls.length, beforeNavigation + 1, 'leaving settings must not end dock polling');
+  assert.equal(fixture.timers.size, 1);
+  fixture.close(); assert.equal(fixture.timers.size, 0);
+  assert.equal(fixture.captured(), true, 'closing the dock must not disable capture');
   await fixture.open(); assert.equal(fixture.timers.size, 1);
-  fixture.context.state.view = 'files'; fixture.context.developerCleanup();
+  fixture.context.developerCleanup();
   assert.equal(fixture.timers.size, 0); assert.equal(fixture.listeners.has('visibilitychange'), false);
 });
 
-test('a late polling response after unmount cannot replace records or schedule another read', async () => {
+test('a late polling response after dock closes cannot replace records or schedule another read', async () => {
   const fixture = developer(); await fixture.open();
   await fixture.check('developer-live', true); await fixture.check('developer-record', true);
   const record = fixture.root.all().find((node) => node.className === 'developer-entry');
   let finish;
   fixture.context.api = () => new Promise((resolve) => { finish = resolve; });
   await fixture.tick();
-  fixture.context.developerCleanup();
+  fixture.close();
   finish({ enabled: true, total: 99, entries: [{ seq: 99, kind: 'response', payload: { content: 'late response' } }] });
   await flush();
   assert.ok(fixture.root.all().includes(record));
   assert.equal(fixture.root.all().some((node) => node.dataset.seq === 99), false);
   assert.equal(fixture.timers.size, 0);
+  fixture.context.developerCleanup();
+});
+
+test('closing and reopening during an unfinished read still refreshes the reopened dock', async () => {
+  const fixture = developer(); await fixture.open();
+  await fixture.check('developer-live', true); await fixture.check('developer-record', true);
+  let finish, reads = 0;
+  fixture.context.api = () => {
+    reads++;
+    if (reads === 1) return new Promise((resolve) => { finish = resolve; });
+    return Promise.resolve({ enabled: true, total: 2, entries: [{ seq: 2, kind: 'response', payload: { content: 'new open' } }] });
+  };
+  await fixture.tick(); fixture.close(); await fixture.open();
+  finish({ enabled: true, total: 1, entries: [] }); await flush();
+  assert.equal(reads, 2);
+  assert.ok(fixture.root.all().some((node) => node.dataset.seq === 2));
+  assert.equal(fixture.timers.size, 1);
+  fixture.context.developerCleanup();
+});
+
+test('F12 toggles only the app dock, prevents browser handling, and leaves Escape untouched', () => {
+  const start = source.indexOf("  document.addEventListener('keydown',event=>{");
+  const end = source.indexOf("  window.addEventListener('beforeunload'", start);
+  assert.ok(start !== -1 && end > start);
+  let handler, toggles = 0, prevented = 0, stopped = 0;
+  runInNewContext(source.slice(start, end), {
+    document: { addEventListener(name, callback, capture) { assert.equal(name, 'keydown'); assert.equal(capture, true); handler = callback; } },
+    toggleDeveloperDock: () => { toggles++; },
+  });
+  const event = { key: 'F12', code: 'F12', repeat: false, preventDefault() { prevented++; }, stopPropagation() { stopped++; } };
+  handler(event); handler({ ...event, repeat: true });
+  assert.equal(toggles, 1); assert.equal(prevented, 2); assert.equal(stopped, 2);
+  handler({ ...event, key: 'Escape', code: 'Escape' });
+  assert.equal(toggles, 1); assert.equal(prevented, 2); assert.equal(stopped, 2);
 });
 
 function protocolReply(protocol, calls) {

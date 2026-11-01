@@ -27,7 +27,7 @@ from .trace import DeveloperTrace
 from .windows import disks, inventory, validate_system_items
 
 
-UI_DEFAULTS = dict(theme='dark', developer_live=False, developer_conversation=True,
+UI_DEFAULTS = dict(theme='system', developer_live=False, developer_conversation=True,
                    developer_skills=True, developer_tools=False)
 
 
@@ -445,7 +445,7 @@ def create_server(data_dir, port=0, *, developer_fixtures=False):
                 body = (app.web_root / name).read_bytes()
                 if name == 'index.html':
                     theme = app.ui_preferences()['preferences']['theme'].encode('ascii')
-                    body = body.replace(b'data-theme-preference="dark"', b'data-theme-preference="' + theme + b'"', 1)
+                    body = body.replace(b'data-theme-preference="system"', b'data-theme-preference="' + theme + b'"', 1)
                 return self.send(200, body, mime)
             except AppError as exc:
                 return self.send(exc.status, {'error': str(exc), 'code': exc.code})

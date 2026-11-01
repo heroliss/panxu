@@ -1,0 +1,1520 @@
+{
+  "schema_version": 1,
+  "checked_at": "2026-11-02",
+  "scope": "Installed build dependencies and existing Windows portable package; license inventory, not a legal compliance guarantee.",
+  "components": [
+    {
+      "name": "pywebview",
+      "version": "6.2.1",
+      "delivery": "bundled",
+      "official_url": "https://pypi.org/project/pywebview/6.2.1/",
+      "license_expression": "BSD 3-Clause License"
+    },
+    {
+      "name": "psutil",
+      "version": "7.2.2",
+      "delivery": "bundled",
+      "official_url": "https://pypi.org/project/psutil/7.2.2/",
+      "license_expression": "BSD-3-Clause"
+    },
+    {
+      "name": "pythonnet",
+      "version": "3.1.0",
+      "delivery": "bundled",
+      "official_url": "https://pypi.org/project/pythonnet/3.1.0/",
+      "license_expression": "MIT"
+    },
+    {
+      "name": "clr_loader",
+      "version": "0.3.1",
+      "delivery": "bundled",
+      "official_url": "https://pypi.org/project/clr_loader/0.3.1/",
+      "license_expression": ""
+    },
+    {
+      "name": "cffi",
+      "version": "2.0.0",
+      "delivery": "bundled",
+      "official_url": "https://pypi.org/project/cffi/2.0.0/",
+      "license_expression": "MIT"
+    },
+    {
+      "name": "pycparser",
+      "version": "3.0",
+      "delivery": "bundled",
+      "official_url": "https://pypi.org/project/pycparser/3.0/",
+      "license_expression": "BSD-3-Clause"
+    },
+    {
+      "name": "bottle",
+      "version": "0.13.4",
+      "delivery": "bundled",
+      "official_url": "https://pypi.org/project/bottle/0.13.4/",
+      "license_expression": "MIT"
+    },
+    {
+      "name": "typing_extensions",
+      "version": "4.15.0",
+      "delivery": "bundled",
+      "official_url": "https://pypi.org/project/typing_extensions/4.15.0/",
+      "license_expression": "PSF-2.0"
+    },
+    {
+      "name": "MarkupSafe",
+      "version": "3.0.3",
+      "delivery": "bundled",
+      "official_url": "https://pypi.org/project/MarkupSafe/3.0.3/",
+      "license_expression": "BSD-3-Clause"
+    },
+    {
+      "name": "Jinja2",
+      "version": "3.1.6",
+      "delivery": "bundled",
+      "official_url": "https://pypi.org/project/Jinja2/3.1.6/",
+      "license_expression": ""
+    },
+    {
+      "name": "packaging",
+      "version": "26.2",
+      "delivery": "bundled",
+      "official_url": "https://pypi.org/project/packaging/26.2/",
+      "license_expression": "Apache-2.0 OR BSD-2-Clause"
+    },
+    {
+      "name": "setuptools",
+      "version": "81.0.0",
+      "delivery": "bundled",
+      "official_url": "https://pypi.org/project/setuptools/81.0.0/",
+      "license_expression": "MIT"
+    },
+    {
+      "name": "pyinstaller",
+      "version": "6.21.0",
+      "delivery": "build_tool_and_embedded_bootloader_runtime_hooks",
+      "official_url": "https://pypi.org/project/pyinstaller/6.21.0/",
+      "license_expression": "GPLv2-or-later with a special exception which allows to use PyInstaller to build and distribute non-free programs (including commercial ones)"
+    },
+    {
+      "name": "pyinstaller-hooks-contrib",
+      "version": "2026.6",
+      "delivery": "build_only",
+      "official_url": "https://pypi.org/project/pyinstaller-hooks-contrib/2026.6/",
+      "license_expression": ""
+    },
+    {
+      "name": "altgraph",
+      "version": "0.17.5",
+      "delivery": "build_only",
+      "official_url": "https://pypi.org/project/altgraph/0.17.5/",
+      "license_expression": "MIT"
+    },
+    {
+      "name": "pefile",
+      "version": "2024.8.26",
+      "delivery": "build_only",
+      "official_url": "https://pypi.org/project/pefile/2024.8.26/",
+      "license_expression": "MIT"
+    },
+    {
+      "name": "pywin32-ctypes",
+      "version": "0.2.3",
+      "delivery": "build_only",
+      "official_url": "https://pypi.org/project/pywin32-ctypes/0.2.3/",
+      "license_expression": "BSD-3-Clause"
+    },
+    {
+      "name": "proxy_tools",
+      "version": "0.1.0",
+      "delivery": "bundled",
+      "official_url": "https://github.com/jtushman/proxy_tools",
+      "license_expression": "BSD-2-Clause style upstream text; installed metadata says MIT",
+      "note": "Preserve upstream LICENSE verbatim, including its unusual trailing text; installed source header attributes Armin Ronacher and Jonathan Tushman."
+    }
+  ],
+  "files": [
+    {
+      "path": "licenses/third-party/pywebview/LICENSE",
+      "component": "pywebview",
+      "version": "6.2.1",
+      "kind": "license",
+      "bytes": 1518,
+      "sha256": "4a988dd3598832cd3653de20dc33cb677d0fb53ab5551c879ca31280ae653675",
+      "source": {
+        "type": "installed_distribution",
+        "distribution": "pywebview",
+        "relative_path": "pywebview-6.2.1.dist-info/licenses/LICENSE",
+        "official_url": "https://pypi.org/project/pywebview/6.2.1/"
+      }
+    },
+    {
+      "path": "licenses/third-party/psutil/LICENSE",
+      "component": "psutil",
+      "version": "7.2.2",
+      "kind": "license",
+      "bytes": 1577,
+      "sha256": "c7adc4d5d1337a548b967421f1fbe258b93033a0417708fd6f4e38f8ecbceb80",
+      "source": {
+        "type": "installed_distribution",
+        "distribution": "psutil",
+        "relative_path": "psutil-7.2.2.dist-info/LICENSE",
+        "official_url": "https://pypi.org/project/psutil/7.2.2/"
+      }
+    },
+    {
+      "path": "licenses/third-party/pythonnet/AUTHORS.md",
+      "component": "pythonnet",
+      "version": "3.1.0",
+      "kind": "authors",
+      "bytes": 5096,
+      "sha256": "65a13631f078bed51e9a4033dea257e57a7f23097f3003b1ce1ba1c8a9136c93",
+      "source": {
+        "type": "installed_distribution",
+        "distribution": "pythonnet",
+        "relative_path": "pythonnet-3.1.0.dist-info/licenses/AUTHORS.md",
+        "official_url": "https://pypi.org/project/pythonnet/3.1.0/"
+      }
+    },
+    {
+      "path": "licenses/third-party/pythonnet/LICENSE",
+      "component": "pythonnet",
+      "version": "3.1.0",
+      "kind": "license",
+      "bytes": 1104,
+      "sha256": "e1dc3a6ff017a6800dc27a7220500f512b95fbcd996d38ebbbff85c693245369",
+      "source": {
+        "type": "installed_distribution",
+        "distribution": "pythonnet",
+        "relative_path": "pythonnet-3.1.0.dist-info/licenses/LICENSE",
+        "official_url": "https://pypi.org/project/pythonnet/3.1.0/"
+      }
+    },
+    {
+      "path": "licenses/third-party/clr_loader/LICENSE",
+      "component": "clr_loader",
+      "version": "0.3.1",
+      "kind": "license",
+      "bytes": 1079,
+      "sha256": "dd6bdca10cdc3b24c6b0b6cef5fd611b7feb6917f127833283ddcdb310d3b453",
+      "source": {
+        "type": "installed_distribution",
+        "distribution": "clr_loader",
+        "relative_path": "clr_loader-0.3.1.dist-info/licenses/LICENSE",
+        "official_url": "https://pypi.org/project/clr_loader/0.3.1/"
+      }
+    },
+    {
+      "path": "licenses/third-party/cffi/AUTHORS",
+      "component": "cffi",
+      "version": "2.0.0",
+      "kind": "authors",
+      "bytes": 208,
+      "sha256": "2a67a60bbfb33759d67d645ff131b8e6d6bc4cafc232d751fcac3eda4d314cc8",
+      "source": {
+        "type": "installed_distribution",
+        "distribution": "cffi",
+        "relative_path": "cffi-2.0.0.dist-info/licenses/AUTHORS",
+        "official_url": "https://pypi.org/project/cffi/2.0.0/"
+      }
+    },
+    {
+      "path": "licenses/third-party/cffi/LICENSE",
+      "component": "cffi",
+      "version": "2.0.0",
+      "kind": "license",
+      "bytes": 1123,
+      "sha256": "5ba24ddc57067f9249add644c3afc41a5d6dc37e23433ef759d95df370b0af63",
+      "source": {
+        "type": "installed_distribution",
+        "distribution": "cffi",
+        "relative_path": "cffi-2.0.0.dist-info/licenses/LICENSE",
+        "official_url": "https://pypi.org/project/cffi/2.0.0/"
+      }
+    },
+    {
+      "path": "licenses/third-party/pycparser/LICENSE",
+      "component": "pycparser",
+      "version": "3.0",
+      "kind": "license",
+      "bytes": 1543,
+      "sha256": "0c846399369ea76ddd7b5c44fe6d16497415fcf015f5cbb508c24bf98b81c5b1",
+      "source": {
+        "type": "installed_distribution",
+        "distribution": "pycparser",
+        "relative_path": "pycparser-3.0.dist-info/licenses/LICENSE",
+        "official_url": "https://pypi.org/project/pycparser/3.0/"
+      }
+    },
+    {
+      "path": "licenses/third-party/bottle/LICENSE",
+      "component": "bottle",
+      "version": "0.13.4",
+      "kind": "license",
+      "bytes": 1066,
+      "sha256": "af150257b1f7cce92b6207854f2e8f90ea9ae52d7cac758d13a47bd12e2a2443",
+      "source": {
+        "type": "installed_distribution",
+        "distribution": "bottle",
+        "relative_path": "bottle-0.13.4.dist-info/licenses/LICENSE",
+        "official_url": "https://pypi.org/project/bottle/0.13.4/"
+      }
+    },
+    {
+      "path": "licenses/third-party/typing_extensions/LICENSE",
+      "component": "typing_extensions",
+      "version": "4.15.0",
+      "kind": "license",
+      "bytes": 13936,
+      "sha256": "3b2f81fe21d181c499c59a256c8e1968455d6689d269aa85373bfb6af41da3bf",
+      "source": {
+        "type": "installed_distribution",
+        "distribution": "typing_extensions",
+        "relative_path": "typing_extensions-4.15.0.dist-info/licenses/LICENSE",
+        "official_url": "https://pypi.org/project/typing_extensions/4.15.0/"
+      }
+    },
+    {
+      "path": "licenses/third-party/markupsafe/LICENSE.txt",
+      "component": "MarkupSafe",
+      "version": "3.0.3",
+      "kind": "license",
+      "bytes": 1503,
+      "sha256": "4631ec0db5fd90a547e336817264c6798214338146f8ac94b4a57f96ee8c9ec4",
+      "source": {
+        "type": "installed_distribution",
+        "distribution": "MarkupSafe",
+        "relative_path": "markupsafe-3.0.3.dist-info/licenses/LICENSE.txt",
+        "official_url": "https://pypi.org/project/MarkupSafe/3.0.3/"
+      }
+    },
+    {
+      "path": "licenses/third-party/jinja2/LICENSE.txt",
+      "component": "Jinja2",
+      "version": "3.1.6",
+      "kind": "license",
+      "bytes": 1475,
+      "sha256": "3b49dcee4105eb37bac10faf1be260408fe85d252b8e9df2e0979fc1e094437b",
+      "source": {
+        "type": "installed_distribution",
+        "distribution": "Jinja2",
+        "relative_path": "jinja2-3.1.6.dist-info/licenses/LICENSE.txt",
+        "official_url": "https://pypi.org/project/Jinja2/3.1.6/"
+      }
+    },
+    {
+      "path": "licenses/third-party/packaging/LICENSE",
+      "component": "packaging",
+      "version": "26.2",
+      "kind": "license",
+      "bytes": 197,
+      "sha256": "cad1ef5bd340d73e074ba614d26f7deaca5c7940c3d8c34852e65c4909686c48",
+      "source": {
+        "type": "installed_distribution",
+        "distribution": "packaging",
+        "relative_path": "packaging-26.2.dist-info/licenses/LICENSE",
+        "official_url": "https://pypi.org/project/packaging/26.2/"
+      }
+    },
+    {
+      "path": "licenses/third-party/packaging/LICENSE.APACHE",
+      "component": "packaging",
+      "version": "26.2",
+      "kind": "license",
+      "bytes": 10174,
+      "sha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594",
+      "source": {
+        "type": "installed_distribution",
+        "distribution": "packaging",
+        "relative_path": "packaging-26.2.dist-info/licenses/LICENSE.APACHE",
+        "official_url": "https://pypi.org/project/packaging/26.2/"
+      }
+    },
+    {
+      "path": "licenses/third-party/packaging/LICENSE.BSD",
+      "component": "packaging",
+      "version": "26.2",
+      "kind": "license",
+      "bytes": 1344,
+      "sha256": "b70e7e9b742f1cc6f948b34c16aa39ffece94196364bc88ff0d2180f0028fac5",
+      "source": {
+        "type": "installed_distribution",
+        "distribution": "packaging",
+        "relative_path": "packaging-26.2.dist-info/licenses/LICENSE.BSD",
+        "official_url": "https://pypi.org/project/packaging/26.2/"
+      }
+    },
+    {
+      "path": "licenses/third-party/setuptools/LICENSE",
+      "component": "setuptools",
+      "version": "81.0.0",
+      "kind": "license",
+      "bytes": 1023,
+      "sha256": "86da0f01aeae46348a3c3d465195dc1ceccde79f79e87769a64b8da04b2a4741",
+      "source": {
+        "type": "installed_distribution",
+        "distribution": "setuptools",
+        "relative_path": "setuptools-81.0.0.dist-info/licenses/LICENSE",
+        "official_url": "https://pypi.org/project/setuptools/81.0.0/"
+      }
+    },
+    {
+      "path": "licenses/third-party/pyinstaller/COPYING.txt",
+      "component": "PyInstaller",
+      "version": "6.21.0",
+      "kind": "license",
+      "bytes": 32138,
+      "sha256": "dcf75fdb959db1e3b41c0f8505069d2ece781b5ec6b3d0a4d30975cfc6580245",
+      "source": {
+        "type": "installed_distribution",
+        "distribution": "pyinstaller",
+        "relative_path": "pyinstaller-6.21.0.dist-info/licenses/COPYING.txt",
+        "official_url": "https://pypi.org/project/pyinstaller/6.21.0/"
+      }
+    },
+    {
+      "path": "licenses/third-party/pyinstaller-hooks-contrib/LICENSE",
+      "component": "pyinstaller-hooks-contrib",
+      "version": "2026.6",
+      "kind": "license",
+      "bytes": 27666,
+      "sha256": "91d0baaff00773038e72c0a1fc9d5d2d38706b7a2b9c04f34296608f931b9cd0",
+      "source": {
+        "type": "installed_distribution",
+        "distribution": "pyinstaller-hooks-contrib",
+        "relative_path": "pyinstaller_hooks_contrib-2026.6.dist-info/licenses/LICENSE",
+        "official_url": "https://pypi.org/project/pyinstaller-hooks-contrib/2026.6/"
+      }
+    },
+    {
+      "path": "licenses/third-party/altgraph/LICENSE",
+      "component": "altgraph",
+      "version": "0.17.5",
+      "kind": "license",
+      "bytes": 1002,
+      "sha256": "6c194d6db0c64d45535d10c95142b9b0cda7b7dcc7f1ddee302b3d536f3dbe46",
+      "source": {
+        "type": "installed_distribution",
+        "distribution": "altgraph",
+        "relative_path": "altgraph-0.17.5.dist-info/LICENSE",
+        "official_url": "https://pypi.org/project/altgraph/0.17.5/"
+      }
+    },
+    {
+      "path": "licenses/third-party/pefile/LICENSE",
+      "component": "pefile",
+      "version": "2024.8.26",
+      "kind": "license",
+      "bytes": 1083,
+      "sha256": "b44409c067c6da52bfb54bb6624fb11a7b52157c3a13ae1400232f8196e86ad3",
+      "source": {
+        "type": "installed_distribution",
+        "distribution": "pefile",
+        "relative_path": "pefile-2024.8.26.dist-info/LICENSE",
+        "official_url": "https://pypi.org/project/pefile/2024.8.26/"
+      }
+    },
+    {
+      "path": "licenses/third-party/pywin32-ctypes/LICENSE.txt",
+      "component": "pywin32-ctypes",
+      "version": "0.2.3",
+      "kind": "license",
+      "bytes": 1644,
+      "sha256": "dfa83b3e2709adfcdb838d9ad55823ca674abb780e60563d9dd9544ccbf785e9",
+      "source": {
+        "type": "installed_distribution",
+        "distribution": "pywin32-ctypes",
+        "relative_path": "pywin32_ctypes-0.2.3.dist-info/LICENSE.txt",
+        "official_url": "https://pypi.org/project/pywin32-ctypes/0.2.3/"
+      }
+    },
+    {
+      "path": "licenses/third-party/python/LICENSE.txt",
+      "component": "CPython",
+      "version": "3.14.0",
+      "kind": "license",
+      "bytes": 35407,
+      "sha256": "935cf13e19f8c31b497d20b05d73623431a226b230c3599bc30fa3348979bc68",
+      "source": {
+        "type": "installed_python_distribution",
+        "relative_path": "${sys.base_prefix}/LICENSE.txt",
+        "official_url": "https://docs.python.org/3.14/license.html"
+      }
+    },
+    {
+      "path": "licenses/third-party/python/incorporated-software-license.rst.txt",
+      "component": "CPython",
+      "version": "3.14.0",
+      "kind": "license",
+      "bytes": 58766,
+      "sha256": "ebbbf1b21cf1d27ebc0cf7e74971728238252a7ba52a7a2abe1e73f444e3f864",
+      "source": {
+        "type": "installed_python_distribution",
+        "relative_path": "${sys.base_prefix}/Doc/html/_sources/license.rst.txt",
+        "official_url": "https://docs.python.org/3.14/license.html"
+      }
+    },
+    {
+      "path": "licenses/third-party/setuptools-vendor/backports.tarfile-1.2.0.dist-info/LICENSE",
+      "component": "backports.tarfile",
+      "version": "1.2.0",
+      "kind": "license",
+      "bytes": 1023,
+      "sha256": "86da0f01aeae46348a3c3d465195dc1ceccde79f79e87769a64b8da04b2a4741",
+      "source": {
+        "type": "installed_distribution",
+        "distribution": "setuptools",
+        "relative_path": "setuptools/_vendor/backports.tarfile-1.2.0.dist-info/LICENSE",
+        "official_url": "https://github.com/pypa/setuptools/tree/v81.0.0/setuptools/_vendor"
+      }
+    },
+    {
+      "path": "licenses/third-party/setuptools-vendor/importlib_metadata-8.7.1.dist-info/LICENSE",
+      "component": "importlib_metadata",
+      "version": "8.7.1",
+      "kind": "license",
+      "bytes": 10278,
+      "sha256": "458502e12d97bbf64438606a20044aa85eb05fb0a8a807bb35dbec253fd1fc04",
+      "source": {
+        "type": "installed_distribution",
+        "distribution": "setuptools",
+        "relative_path": "setuptools/_vendor/importlib_metadata-8.7.1.dist-info/licenses/LICENSE",
+        "official_url": "https://github.com/pypa/setuptools/tree/v81.0.0/setuptools/_vendor"
+      }
+    },
+    {
+      "path": "licenses/third-party/setuptools-vendor/jaraco.text-4.0.0.dist-info/LICENSE",
+      "component": "jaraco.text",
+      "version": "4.0.0",
+      "kind": "license",
+      "bytes": 1023,
+      "sha256": "86da0f01aeae46348a3c3d465195dc1ceccde79f79e87769a64b8da04b2a4741",
+      "source": {
+        "type": "installed_distribution",
+        "distribution": "setuptools",
+        "relative_path": "setuptools/_vendor/jaraco.text-4.0.0.dist-info/LICENSE",
+        "official_url": "https://github.com/pypa/setuptools/tree/v81.0.0/setuptools/_vendor"
+      }
+    },
+    {
+      "path": "licenses/third-party/setuptools-vendor/jaraco_context-6.1.0.dist-info/LICENSE",
+      "component": "jaraco_context",
+      "version": "6.1.0",
+      "kind": "license",
+      "bytes": 1076,
+      "sha256": "9755a18519666e5f0f4cae3daad3d7012bcae48a600b31237d75e9fe134e6683",
+      "source": {
+        "type": "installed_distribution",
+        "distribution": "setuptools",
+        "relative_path": "setuptools/_vendor/jaraco_context-6.1.0.dist-info/licenses/LICENSE",
+        "official_url": "https://github.com/pypa/setuptools/tree/v81.0.0/setuptools/_vendor"
+      }
+    },
+    {
+      "path": "licenses/third-party/setuptools-vendor/jaraco_functools-4.4.0.dist-info/LICENSE",
+      "component": "jaraco_functools",
+      "version": "4.4.0",
+      "kind": "license",
+      "bytes": 1076,
+      "sha256": "5a57cb4db85e2a2dd88c290628908add57e3451449e0a9a71fdfb38776fd759d",
+      "source": {
+        "type": "installed_distribution",
+        "distribution": "setuptools",
+        "relative_path": "setuptools/_vendor/jaraco_functools-4.4.0.dist-info/licenses/LICENSE",
+        "official_url": "https://github.com/pypa/setuptools/tree/v81.0.0/setuptools/_vendor"
+      }
+    },
+    {
+      "path": "licenses/third-party/setuptools-vendor/more_itertools-10.8.0.dist-info/LICENSE",
+      "component": "more_itertools",
+      "version": "10.8.0",
+      "kind": "license",
+      "bytes": 1053,
+      "sha256": "09f1c8c9e941af3e584d59641ea9b87d83c0cb0fd007eb5ef391a7e2643c1a46",
+      "source": {
+        "type": "installed_distribution",
+        "distribution": "setuptools",
+        "relative_path": "setuptools/_vendor/more_itertools-10.8.0.dist-info/licenses/LICENSE",
+        "official_url": "https://github.com/pypa/setuptools/tree/v81.0.0/setuptools/_vendor"
+      }
+    },
+    {
+      "path": "licenses/third-party/setuptools-vendor/packaging-26.0.dist-info/LICENSE",
+      "component": "packaging",
+      "version": "26.0",
+      "kind": "license",
+      "bytes": 197,
+      "sha256": "cad1ef5bd340d73e074ba614d26f7deaca5c7940c3d8c34852e65c4909686c48",
+      "source": {
+        "type": "installed_distribution",
+        "distribution": "setuptools",
+        "relative_path": "setuptools/_vendor/packaging-26.0.dist-info/licenses/LICENSE",
+        "official_url": "https://github.com/pypa/setuptools/tree/v81.0.0/setuptools/_vendor"
+      }
+    },
+    {
+      "path": "licenses/third-party/setuptools-vendor/packaging-26.0.dist-info/LICENSE.APACHE",
+      "component": "packaging",
+      "version": "26.0",
+      "kind": "license",
+      "bytes": 10174,
+      "sha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594",
+      "source": {
+        "type": "installed_distribution",
+        "distribution": "setuptools",
+        "relative_path": "setuptools/_vendor/packaging-26.0.dist-info/licenses/LICENSE.APACHE",
+        "official_url": "https://github.com/pypa/setuptools/tree/v81.0.0/setuptools/_vendor"
+      }
+    },
+    {
+      "path": "licenses/third-party/setuptools-vendor/packaging-26.0.dist-info/LICENSE.BSD",
+      "component": "packaging",
+      "version": "26.0",
+      "kind": "license",
+      "bytes": 1344,
+      "sha256": "b70e7e9b742f1cc6f948b34c16aa39ffece94196364bc88ff0d2180f0028fac5",
+      "source": {
+        "type": "installed_distribution",
+        "distribution": "setuptools",
+        "relative_path": "setuptools/_vendor/packaging-26.0.dist-info/licenses/LICENSE.BSD",
+        "official_url": "https://github.com/pypa/setuptools/tree/v81.0.0/setuptools/_vendor"
+      }
+    },
+    {
+      "path": "licenses/third-party/setuptools-vendor/tomli-2.4.0.dist-info/LICENSE",
+      "component": "tomli",
+      "version": "2.4.0",
+      "kind": "license",
+      "bytes": 1072,
+      "sha256": "b80816b0d530b8accb4c2211783790984a6e3b61922c2b5ee92f3372ab2742fe",
+      "source": {
+        "type": "installed_distribution",
+        "distribution": "setuptools",
+        "relative_path": "setuptools/_vendor/tomli-2.4.0.dist-info/licenses/LICENSE",
+        "official_url": "https://github.com/pypa/setuptools/tree/v81.0.0/setuptools/_vendor"
+      }
+    },
+    {
+      "path": "licenses/third-party/setuptools-vendor/wheel-0.46.3.dist-info/LICENSE.txt",
+      "component": "wheel",
+      "version": "0.46.3",
+      "kind": "license",
+      "bytes": 1107,
+      "sha256": "30c23618679108f3e8ea1d2a658c7ca417bdfc891c98ef1a89fa4ff0c9828654",
+      "source": {
+        "type": "installed_distribution",
+        "distribution": "setuptools",
+        "relative_path": "setuptools/_vendor/wheel-0.46.3.dist-info/licenses/LICENSE.txt",
+        "official_url": "https://github.com/pypa/setuptools/tree/v81.0.0/setuptools/_vendor"
+      }
+    },
+    {
+      "path": "licenses/third-party/setuptools-vendor/zipp-3.23.0.dist-info/LICENSE",
+      "component": "zipp",
+      "version": "3.23.0",
+      "kind": "license",
+      "bytes": 1076,
+      "sha256": "5a57cb4db85e2a2dd88c290628908add57e3451449e0a9a71fdfb38776fd759d",
+      "source": {
+        "type": "installed_distribution",
+        "distribution": "setuptools",
+        "relative_path": "setuptools/_vendor/zipp-3.23.0.dist-info/licenses/LICENSE",
+        "official_url": "https://github.com/pypa/setuptools/tree/v81.0.0/setuptools/_vendor"
+      }
+    },
+    {
+      "path": "licenses/third-party/setuptools/config/NOTICE/NOTICE.txt",
+      "component": "setuptools validation code",
+      "version": "81.0.0",
+      "kind": "notice",
+      "bytes": 493,
+      "sha256": "2dddf08818297a3b89d43d95ff659d8da85741108c9136dfa3a4d856c0623bd8",
+      "source": {
+        "type": "installed_distribution",
+        "distribution": "setuptools",
+        "relative_path": "setuptools/config/NOTICE",
+        "official_url": "https://github.com/pypa/setuptools/tree/v81.0.0/setuptools/config"
+      }
+    },
+    {
+      "path": "licenses/third-party/setuptools/config/_validate_pyproject/NOTICE/NOTICE.txt",
+      "component": "setuptools validation code",
+      "version": "81.0.0",
+      "kind": "notice",
+      "bytes": 18737,
+      "sha256": "5d300dbfa643138b013b75ac9caeee591f951b8b0ee24288c34ccd926c4780c8",
+      "source": {
+        "type": "installed_distribution",
+        "distribution": "setuptools",
+        "relative_path": "setuptools/config/_validate_pyproject/NOTICE",
+        "official_url": "https://github.com/pypa/setuptools/tree/v81.0.0/setuptools/config"
+      }
+    },
+    {
+      "path": "licenses/third-party/setuptools/covered-source/__init__.py.txt",
+      "component": "setuptools embedded validation source",
+      "version": "81.0.0",
+      "kind": "covered_source",
+      "bytes": 1042,
+      "sha256": "767a7a4fb78f3f5479cf83ae0bb15dd9d905948aed21f8b351fbe91893fa9f3d",
+      "source": {
+        "type": "installed_distribution",
+        "distribution": "setuptools",
+        "relative_path": "setuptools/config/_validate_pyproject/__init__.py",
+        "official_url": "https://github.com/pypa/setuptools/blob/v81.0.0/setuptools/config/_validate_pyproject/__init__.py"
+      }
+    },
+    {
+      "path": "licenses/third-party/setuptools/covered-source/error_reporting.py.txt",
+      "component": "setuptools embedded validation source",
+      "version": "81.0.0",
+      "kind": "covered_source",
+      "bytes": 11813,
+      "sha256": "99e95d0fb9c141da25421bc6fb8debd547be814d67ece440251f3abe1dd1aef9",
+      "source": {
+        "type": "installed_distribution",
+        "distribution": "setuptools",
+        "relative_path": "setuptools/config/_validate_pyproject/error_reporting.py",
+        "official_url": "https://github.com/pypa/setuptools/blob/v81.0.0/setuptools/config/_validate_pyproject/error_reporting.py"
+      }
+    },
+    {
+      "path": "licenses/third-party/setuptools/covered-source/extra_validations.py.txt",
+      "component": "setuptools embedded validation source",
+      "version": "81.0.0",
+      "kind": "covered_source",
+      "bytes": 2858,
+      "sha256": "f86506e52fbe8a363c59f5db7573e81e5eb2c06b32105f5db43a5e9d2a093c78",
+      "source": {
+        "type": "installed_distribution",
+        "distribution": "setuptools",
+        "relative_path": "setuptools/config/_validate_pyproject/extra_validations.py",
+        "official_url": "https://github.com/pypa/setuptools/blob/v81.0.0/setuptools/config/_validate_pyproject/extra_validations.py"
+      }
+    },
+    {
+      "path": "licenses/third-party/setuptools/covered-source/fastjsonschema_exceptions.py.txt",
+      "component": "setuptools embedded validation source",
+      "version": "81.0.0",
+      "kind": "covered_source",
+      "bytes": 1612,
+      "sha256": "c3be3d260a8a8bc72504570e6dd71b655aac985e2827f401ca16754866d414dc",
+      "source": {
+        "type": "installed_distribution",
+        "distribution": "setuptools",
+        "relative_path": "setuptools/config/_validate_pyproject/fastjsonschema_exceptions.py",
+        "official_url": "https://github.com/pypa/setuptools/blob/v81.0.0/setuptools/config/_validate_pyproject/fastjsonschema_exceptions.py"
+      }
+    },
+    {
+      "path": "licenses/third-party/setuptools/covered-source/fastjsonschema_validations.py.txt",
+      "component": "setuptools embedded validation source",
+      "version": "81.0.0",
+      "kind": "covered_source",
+      "bytes": 354682,
+      "sha256": "162843e5970cea9efb04f674e021aa877044c153683cc289649032b89a64014d",
+      "source": {
+        "type": "installed_distribution",
+        "distribution": "setuptools",
+        "relative_path": "setuptools/config/_validate_pyproject/fastjsonschema_validations.py",
+        "official_url": "https://github.com/pypa/setuptools/blob/v81.0.0/setuptools/config/_validate_pyproject/fastjsonschema_validations.py"
+      }
+    },
+    {
+      "path": "licenses/third-party/setuptools/covered-source/formats.py.txt",
+      "component": "setuptools embedded validation source",
+      "version": "81.0.0",
+      "kind": "covered_source",
+      "bytes": 13564,
+      "sha256": "4c44e890904af618e5f9c560d6896ca23909c0bc5f3fbfdc860250366cc007df",
+      "source": {
+        "type": "installed_distribution",
+        "distribution": "setuptools",
+        "relative_path": "setuptools/config/_validate_pyproject/formats.py",
+        "official_url": "https://github.com/pypa/setuptools/blob/v81.0.0/setuptools/config/_validate_pyproject/formats.py"
+      }
+    },
+    {
+      "path": "licenses/third-party/proxy_tools/LICENSE.txt",
+      "component": "proxy_tools",
+      "version": "0.1.0",
+      "kind": "license",
+      "bytes": 1436,
+      "sha256": "a428fb8a2e762af3eb0a6edbbb88e9b42ccfee80fd9b423958bcacf9b9abbfe4",
+      "source": {
+        "type": "official_upstream_source",
+        "url": "https://raw.githubusercontent.com/jtushman/proxy_tools/db43f1e35d4f90a65c5a4d56d9e9af88212ec6e6/LICENSE.txt"
+      }
+    },
+    {
+      "path": "licenses/third-party/domjson/LICENSE.md",
+      "component": "domJSON",
+      "version": "0.1.2 bundled; upstream license snapshot",
+      "kind": "license",
+      "bytes": 1093,
+      "sha256": "bb23d3c05427c6dcec0a085c8943a50bd3ba2e1ec589faf4cf5ec57f1b9b08d2",
+      "source": {
+        "type": "official_upstream_source",
+        "url": "https://raw.githubusercontent.com/azaslavsky/domJSON/1ebdaf47e8229eac2ec2e7c98660fe724594afd0/LICENSE.md"
+      }
+    },
+    {
+      "path": "licenses/third-party/openssl/LICENSE.txt",
+      "component": "OpenSSL",
+      "version": "3.0.18",
+      "kind": "license",
+      "bytes": 10175,
+      "sha256": "7d5450cb2d142651b8afa315b5f238efc805dad827d91ba367d8516bc9d49e7a",
+      "source": {
+        "type": "official_upstream_source",
+        "url": "https://raw.githubusercontent.com/openssl/openssl/openssl-3.0.18/LICENSE.txt"
+      }
+    },
+    {
+      "path": "licenses/third-party/zlib-ng/LICENSE.md",
+      "component": "zlib-ng",
+      "version": "2.2.4",
+      "kind": "license",
+      "bytes": 867,
+      "sha256": "6c9f0d975b41afaa34d22f55bb8986ce69e5cb7ad327cb2b28820cd425edf5ee",
+      "source": {
+        "type": "official_upstream_source",
+        "url": "https://raw.githubusercontent.com/zlib-ng/zlib-ng/2.2.4/LICENSE.md"
+      }
+    },
+    {
+      "path": "licenses/third-party/xz/COPYING",
+      "component": "XZ liblzma",
+      "version": "5.2.5",
+      "kind": "license",
+      "bytes": 2775,
+      "sha256": "bcb02973ef6e87ea73d331b3a80df7748407f17efdb784b61b47e0e610d3bb5c",
+      "source": {
+        "type": "official_upstream_source",
+        "url": "https://raw.githubusercontent.com/tukaani-project/xz/v5.2.5/COPYING"
+      }
+    },
+    {
+      "path": "licenses/third-party/proxy_tools/BUNDLED-COPYRIGHT.txt",
+      "component": "proxy_tools",
+      "version": "0.1.0",
+      "kind": "notice",
+      "bytes": 220,
+      "sha256": "277fc3f98cd3a25d40ea11e779cff2473d674cb620931114e2797e4004c60914",
+      "source": {
+        "type": "installed_distribution_header",
+        "distribution": "proxy_tools",
+        "relative_path": "proxy_tools/__init__.py",
+        "original_file_sha256": "d1539d95e1a713c068ca81d42e047b2c76568964cf277596d4e19efb22f476be"
+      }
+    },
+    {
+      "path": "licenses/third-party/domjson/BUNDLED-COPYRIGHT.txt",
+      "component": "pywebview",
+      "version": "6.2.1",
+      "kind": "notice",
+      "bytes": 234,
+      "sha256": "895df664c6afd06e60f8c024e50141e0092be41adca07f06d96db01844d8d6cb",
+      "source": {
+        "type": "installed_distribution_header",
+        "distribution": "pywebview",
+        "relative_path": "webview/js/lib/dom_json.js",
+        "original_file_sha256": "70fae2a8a8ebc790dc616aa7976074cedd802275c173c90ad4bf3bd14163f9c4"
+      }
+    },
+    {
+      "path": "licenses/third-party/webview2-sdk/LICENSE.txt",
+      "component": "Microsoft.Web.WebView2 SDK",
+      "version": "1.0.3856.49",
+      "kind": "license",
+      "bytes": 1487,
+      "sha256": "0af8f1b807512aae39c2ac1aa4d0cae65cabecb6fd554b8439a5162a0d6eca55",
+      "source": {
+        "type": "official_nuget_package",
+        "url": "https://api.nuget.org/v3-flatcontainer/microsoft.web.webview2/1.0.3856.49/microsoft.web.webview2.1.0.3856.49.nupkg",
+        "package_sha256": "bc0f76eb911b569838dc4aa8f8d325269b966bedb592863d26211aef3a099f1a",
+        "archive_path": "LICENSE.txt"
+      }
+    },
+    {
+      "path": "licenses/third-party/webview2-sdk/NOTICE.txt",
+      "component": "Microsoft.Web.WebView2 SDK",
+      "version": "1.0.3856.49",
+      "kind": "notice",
+      "bytes": 3894,
+      "sha256": "106423785c5b7eba0a8e61d1837f2132e9c828e20ad530f565d981c1df60dd90",
+      "source": {
+        "type": "official_nuget_package",
+        "url": "https://api.nuget.org/v3-flatcontainer/microsoft.web.webview2/1.0.3856.49/microsoft.web.webview2.1.0.3856.49.nupkg",
+        "package_sha256": "bc0f76eb911b569838dc4aa8f8d325269b966bedb592863d26211aef3a099f1a",
+        "archive_path": "NOTICE.txt"
+      }
+    },
+    {
+      "path": "licenses/third-party/dotnet-reference/LICENSE.TXT",
+      "component": "Microsoft .NET licensing reference; facade binary origin pending",
+      "version": "NETStandard.Library 2.0.3 reference only",
+      "kind": "reference_license",
+      "bytes": 1115,
+      "sha256": "fc95de1436a321aadbfafd21f8a8506a2f4678bfc003bd806d6b59d3088efadc",
+      "source": {
+        "type": "official_nuget_package_reference_not_binary_match",
+        "url": "https://api.nuget.org/v3-flatcontainer/netstandard.library/2.0.3/netstandard.library.2.0.3.nupkg",
+        "package_sha256": "3eb87644f79bcffb3c0331dbdac3c7837265f2cdf58a7bfd93e431776f77c9ba",
+        "archive_path": "LICENSE.TXT"
+      }
+    },
+    {
+      "path": "licenses/third-party/dotnet-reference/THIRD-PARTY-NOTICES.TXT",
+      "component": "Microsoft .NET licensing reference; facade binary origin pending",
+      "version": "NETStandard.Library 2.0.3 reference only",
+      "kind": "reference_notice",
+      "bytes": 1617,
+      "sha256": "0684b2349427ee28e392ae8914645832e59731dba8a38a984f72b3fb8769c76b",
+      "source": {
+        "type": "official_nuget_package_reference_not_binary_match",
+        "url": "https://api.nuget.org/v3-flatcontainer/netstandard.library/2.0.3/netstandard.library.2.0.3.nupkg",
+        "package_sha256": "3eb87644f79bcffb3c0331dbdac3c7837265f2cdf58a7bfd93e431776f77c9ba",
+        "archive_path": "THIRD-PARTY-NOTICES.TXT"
+      }
+    },
+    {
+      "path": "licenses/third-party/sqlite/COPYRIGHT.html.txt",
+      "component": "SQLite",
+      "version": "3.50.4 (runtime); copyright page checked 2026-11-02",
+      "kind": "public_domain_declaration",
+      "bytes": 8351,
+      "sha256": "44ca9f793055c8e32fc65f65a4f5bcf813a33f5bdaaa084067dd617a4ed3cc70",
+      "source": {
+        "type": "official_licensing_page_verbatim_html",
+        "url": "https://sqlite.org/copyright.html"
+      }
+    }
+  ],
+  "runtime_versions": {
+    "python": "3.14.0",
+    "openssl": "OpenSSL 3.0.18 30 Sep 2025",
+    "sqlite": "3.50.4",
+    "zlib": "1.3.1.zlib-ng",
+    "expat": "expat_2.7.3",
+    "libmpdec": "4.0.0",
+    "zstd": "1.5.7"
+  },
+  "observed_bundle": {
+    "path": "dist/PanXu",
+    "exe_sha256": "75e58b443219d59bfabad904afe9b95b7dafbfc5804142b68dcf4099c9bdf263",
+    "third_party_top_level_modules": [
+      "_distutils_hack",
+      "bottle",
+      "cffi",
+      "clr",
+      "clr_loader",
+      "jinja2",
+      "markupsafe",
+      "packaging",
+      "proxy_tools",
+      "psutil",
+      "pycparser",
+      "pythonnet",
+      "setuptools",
+      "typing_extensions",
+      "webview"
+    ],
+    "vendored_modules": [
+      "setuptools._vendor.backports",
+      "setuptools._vendor.backports.tarfile",
+      "setuptools._vendor.backports.tarfile.compat",
+      "setuptools._vendor.backports.tarfile.compat.py38",
+      "setuptools._vendor.importlib_metadata",
+      "setuptools._vendor.importlib_metadata._adapters",
+      "setuptools._vendor.importlib_metadata._collections",
+      "setuptools._vendor.importlib_metadata._compat",
+      "setuptools._vendor.importlib_metadata._functools",
+      "setuptools._vendor.importlib_metadata._itertools",
+      "setuptools._vendor.importlib_metadata._meta",
+      "setuptools._vendor.importlib_metadata._text",
+      "setuptools._vendor.importlib_metadata._typing",
+      "setuptools._vendor.importlib_metadata.compat",
+      "setuptools._vendor.importlib_metadata.compat.py311",
+      "setuptools._vendor.importlib_metadata.compat.py39",
+      "setuptools._vendor.jaraco",
+      "setuptools._vendor.jaraco.context",
+      "setuptools._vendor.jaraco.functools",
+      "setuptools._vendor.jaraco.text",
+      "setuptools._vendor.more_itertools",
+      "setuptools._vendor.more_itertools.more",
+      "setuptools._vendor.more_itertools.recipes",
+      "setuptools._vendor.packaging",
+      "setuptools._vendor.packaging._elffile",
+      "setuptools._vendor.packaging._manylinux",
+      "setuptools._vendor.packaging._musllinux",
+      "setuptools._vendor.packaging._parser",
+      "setuptools._vendor.packaging._structures",
+      "setuptools._vendor.packaging._tokenizer",
+      "setuptools._vendor.packaging.markers",
+      "setuptools._vendor.packaging.requirements",
+      "setuptools._vendor.packaging.specifiers",
+      "setuptools._vendor.packaging.tags",
+      "setuptools._vendor.packaging.utils",
+      "setuptools._vendor.packaging.version",
+      "setuptools._vendor.tomli",
+      "setuptools._vendor.tomli._parser",
+      "setuptools._vendor.tomli._re",
+      "setuptools._vendor.tomli._types",
+      "setuptools._vendor.wheel",
+      "setuptools._vendor.wheel.macosx_libfile",
+      "setuptools._vendor.wheel.wheelfile",
+      "setuptools._vendor.zipp",
+      "setuptools._vendor.zipp._functools",
+      "setuptools._vendor.zipp.compat",
+      "setuptools._vendor.zipp.compat.overlay",
+      "setuptools._vendor.zipp.compat.py310",
+      "setuptools._vendor.zipp.compat.py313",
+      "setuptools._vendor.zipp.glob"
+    ],
+    "embedded_hooks": [
+      "pyiboot01_bootstrap",
+      "pyi_rth_pkgutil",
+      "pyi_rth_multiprocessing",
+      "pyi_rth_inspect",
+      "pyi_rth_setuptools"
+    ]
+  },
+  "webview2_sdk_binary_matches": [
+    {
+      "path": "_internal/webview/lib/Microsoft.Web.WebView2.Core.dll",
+      "sha256": "8219a3135436c147f8eb02fb831e99596103eebc18b6d7b794ca93f4c67018a2",
+      "matches_official_nuget_paths": [
+        "lib/net462/Microsoft.Web.WebView2.Core.dll",
+        "lib_manual/netcoreapp3.0/Microsoft.Web.WebView2.Core.dll"
+      ]
+    },
+    {
+      "path": "_internal/webview/lib/Microsoft.Web.WebView2.WinForms.dll",
+      "sha256": "c48f8d729dc531288d2c53a6241effe7922ed1b947850b2442008a945c098c48",
+      "matches_official_nuget_paths": [
+        "lib/net462/Microsoft.Web.WebView2.WinForms.dll"
+      ]
+    },
+    {
+      "path": "_internal/webview/lib/runtimes/win-x86/native/WebView2Loader.dll",
+      "sha256": "04814b2c59314c6452d61b821a4a3a5c5f8e8577b55b985f6a7a4b59f8907ec5",
+      "matches_official_nuget_paths": [
+        "build/native/x86/WebView2Loader.dll",
+        "runtimes/win-x86/native/WebView2Loader.dll"
+      ]
+    },
+    {
+      "path": "_internal/webview/lib/runtimes/win-x64/native/WebView2Loader.dll",
+      "sha256": "eb5335edeaa6f2122c044e82aab2351dc8c9b4e0fe5e578c71922fb61be285e7",
+      "matches_official_nuget_paths": [
+        "build/native/x64/WebView2Loader.dll",
+        "runtimes/win-x64/native/WebView2Loader.dll"
+      ]
+    },
+    {
+      "path": "_internal/webview/lib/runtimes/win-arm64/native/WebView2Loader.dll",
+      "sha256": "0937030efc718f3da77c5e0978fb5046e381d0bb7b01acaad31a535a1b588a33",
+      "matches_official_nuget_paths": [
+        "build/native/arm64/WebView2Loader.dll",
+        "runtimes/win-arm64/native/WebView2Loader.dll"
+      ]
+    }
+  ],
+  "pending_before_public_binary_distribution": [
+    {
+      "component": "Microsoft/.NET Framework facade assemblies shipped under pythonnet/runtime",
+      "status": "pending_exact_upstream_provenance_and_redistribution_terms",
+      "reason": "Preserved Pythonnet distribution license and .NET reference notices. Facade DLL versions/hashes are recorded, but sample hashes do not match NETStandard.Library 2.0.0/2.0.3; do not relabel these Microsoft files as PanXu PolyForm or assume Pythonnet MIT covers them. No public binary redistribution assurance is made."
+    },
+    {
+      "component": "Native Windows redistributables",
+      "status": "preserve_original_vendor_terms_and_recheck_for_public_distribution",
+      "reason": "Current package contains Python Windows DLL/pyd/UCRT/VC runtime redistribution files. The installed Python LICENSE includes Additional Conditions for this Windows binary build; retain those and do not relicense Microsoft code."
+    }
+  ],
+  "facade_binary_inventory": [
+    {
+      "path": "_internal/pythonnet/runtime/Microsoft.Win32.Primitives.dll",
+      "sha256": "5eaa2e82a26b0b302280d08f54dc9da25165dd0e286be52440a271285d63f695",
+      "bytes": 21216
+    },
+    {
+      "path": "_internal/pythonnet/runtime/netstandard.dll",
+      "sha256": "8be4a2270f8b2bea40f33f79869fdcca34e07bb764e63b81ded49d90d2b720dd",
+      "bytes": 98616
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.AppContext.dll",
+      "sha256": "9dc115ac4aadd6a94d87c7a8a3f61803cc25a3d73501d7534867df6b0d8a0d39",
+      "bytes": 21176
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Collections.Concurrent.dll",
+      "sha256": "cc62f3b867d50083c2932061f20662c698d2e1a741c4d2f9df1fd2d435e3ef3c",
+      "bytes": 21224
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Collections.dll",
+      "sha256": "c2250e9e51b44d8ab8c5b892592766925f6580ee00b95026621d0afb037c2707",
+      "bytes": 21696
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Collections.NonGeneric.dll",
+      "sha256": "529943c0cdf24f57e94bf03fac5f40b94a638625027a02df79e1e8cb5d9bc696",
+      "bytes": 21224
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Collections.Specialized.dll",
+      "sha256": "938da38561da54793944e95e94b6e11cf83aacd667487297d428fbce1c06dc9c",
+      "bytes": 21224
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.ComponentModel.dll",
+      "sha256": "5e61d755616cb10524f5f31e9b70c65a7fff8e30e25ce711ac8b354d657ab479",
+      "bytes": 21192
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.ComponentModel.EventBasedAsync.dll",
+      "sha256": "22108e32e0b6e42f5f52a4cb17b9b6fa3dfd547ecd9eef9c67226dbec54d23e5",
+      "bytes": 21768
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.ComponentModel.Primitives.dll",
+      "sha256": "bfcd867f71c887429dfe008d7ec5d1853d15b3932d4ce8991694293477b5be37",
+      "bytes": 21752
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.ComponentModel.TypeConverter.dll",
+      "sha256": "0dbb92ecd5dfa7fc258bc6deed4cecf1b37f895457fd06976496926abdb317bb",
+      "bytes": 22784
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Console.dll",
+      "sha256": "b537313413f80105f143cc144feeae2ac93f44747727de309a71d57d2650034a",
+      "bytes": 21160
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Data.Common.dll",
+      "sha256": "1c7bff6f16bb618648e699b723aeafe511515cd6aad699c25faae2a507e22811",
+      "bytes": 154448
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Diagnostics.Contracts.dll",
+      "sha256": "9c4ae61e0e8365762efe3d34c5595029f2c12e0079e6070720e2cef0882c84e5",
+      "bytes": 21736
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Diagnostics.Debug.dll",
+      "sha256": "55a30d92d163cf1807bea6dc13b4c13e70aebbb034dc77eaef4f4394730dcd8e",
+      "bytes": 21208
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Diagnostics.FileVersionInfo.dll",
+      "sha256": "7c25a74772e135257235640a0264ddc05235e14f3627896cfe735e9955155f83",
+      "bytes": 21248
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Diagnostics.Process.dll",
+      "sha256": "28b165cddb82a2507114394ae398995ef8a50c549214f8678aa66054f6927754",
+      "bytes": 21728
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Diagnostics.StackTrace.dll",
+      "sha256": "cae99f910874288afbf810968d13b79d755cd4b2006609ec036ea4934181cba5",
+      "bytes": 23936
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Diagnostics.TextWriterTraceListener.dll",
+      "sha256": "63eab38ee9f4dcd686c8e6a4f01e1e2a9bb91e52b20ab4dde0c28061e9261860",
+      "bytes": 21280
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Diagnostics.Tools.dll",
+      "sha256": "260c6250ef9b57dca99b4cecc533f9a34857b5a32b5351202f776163841200aa",
+      "bytes": 21208
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Diagnostics.TraceSource.dll",
+      "sha256": "c81a57d0634c462a6cf49844059e9b170f650ccdf0789519ffd4ae7d28e2718d",
+      "bytes": 21744
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Diagnostics.Tracing.dll",
+      "sha256": "b84b93be455cc7d14ec0c88ce08dafac7b6aac2e549c969e7126eb48c31f8b1c",
+      "bytes": 31608
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Drawing.Primitives.dll",
+      "sha256": "2805a18724a24034ad6acb315dac516e479cecc5f3753204052657e560932d5d",
+      "bytes": 21208
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Dynamic.Runtime.dll",
+      "sha256": "f600acc811720183c639cebe5618baf9c8135b85b9cbdc0758bc9b2dcc6dd7a9",
+      "bytes": 22224
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Globalization.Calendars.dll",
+      "sha256": "b56ffb65b842daae13f3020b0b04646db92f89801d2a2f89087d145a996d43f7",
+      "bytes": 21744
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Globalization.dll",
+      "sha256": "56bd0c02c734abf4d7fd1ef2e8b6a9e4bf5e4bab4e606cd1023d63b02852fa61",
+      "bytes": 21192
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Globalization.Extensions.dll",
+      "sha256": "c7e91bd148ed22ee1ff8ebd3e58b199a30af90aa37499bcf8da34409672f2ed9",
+      "bytes": 25992
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.IO.Compression.dll",
+      "sha256": "da18d61bb6b7d35c56cb4f392fae0844cca73f72a043a08994beccb531ff3b77",
+      "bytes": 110944
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.IO.Compression.ZipFile.dll",
+      "sha256": "7720ee13405ea8a3c204703a181e67dc6d66835e9df263c09d04d8b48b41eb26",
+      "bytes": 21224
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.IO.dll",
+      "sha256": "c191a43029edd4eb8eee003356f1fe79aa45071c25433a7a3589590e9089eed9",
+      "bytes": 21144
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.IO.FileSystem.dll",
+      "sha256": "9a4595dbb128e2d8f373b3ac45478e7131f4d181b50ec821ec8cb88bd46bd5b8",
+      "bytes": 21192
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.IO.FileSystem.DriveInfo.dll",
+      "sha256": "984575c44cab17d46587af6cc8c22c409b79bec280fd771e6af93a0a0c20e5b0",
+      "bytes": 21232
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.IO.FileSystem.Primitives.dll",
+      "sha256": "5c84dd40d67c0e59906511d2b09da8e28c454b5979eb5fde74213f9d4bdbc564",
+      "bytes": 21232
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.IO.FileSystem.Watcher.dll",
+      "sha256": "c9e2562f1a1b86acdb6957cf916aced9c4f8b71ebb16dfa0050252146205ad37",
+      "bytes": 21224
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.IO.IsolatedStorage.dll",
+      "sha256": "0e80a2e256d16e487bc847d1857ed7cd088f176254ba2a385d675338b836b0fc",
+      "bytes": 21208
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.IO.MemoryMappedFiles.dll",
+      "sha256": "81b6527ac2d18782ac24ae463c11dd1d70ab1bc89f626b7347a592229b371a1d",
+      "bytes": 21216
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.IO.Pipes.dll",
+      "sha256": "80a229b2917fc3a5d941ff9745a6be0065028afdf9509300410d2721c71f1198",
+      "bytes": 21168
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.IO.UnmanagedMemoryStream.dll",
+      "sha256": "86f1f12e47f260985b08bb966598123578eb5e48bef9bb086f04e16e9d53bb32",
+      "bytes": 21232
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Linq.dll",
+      "sha256": "349c7fbe9ae2b78c2f90239bddfcea5b16a0faac1fe83553a816c50c3e9089b1",
+      "bytes": 21152
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Linq.Expressions.dll",
+      "sha256": "bf97f67165231c2a42b95f11d80337b082e2b2be54351da44c8a10c06194b369",
+      "bytes": 22224
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Linq.Parallel.dll",
+      "sha256": "30a49d16436e3a05569c99a0c2d21755c2fa323c5b925f9f21c10287cc97d9c9",
+      "bytes": 21192
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Linq.Queryable.dll",
+      "sha256": "719ac73bb261e0a13574f5a198126ccf40352264958defb555280d005134c704",
+      "bytes": 21192
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Net.Http.dll",
+      "sha256": "b5d20736f84f335ef4c918a5ba41c3a0d7189397c71b166ccc6c342427a94ece",
+      "bytes": 198472
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Net.NameResolution.dll",
+      "sha256": "222bd77c5692c2961e8c3638f6511d6f7cbeb9e0977e2d5c3bca6739a5311f37",
+      "bytes": 21208
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Net.NetworkInformation.dll",
+      "sha256": "2e2d28a0802d8c8c08c0d422f48733ad8bf1dfae75f5682a4a3df8898e7e819f",
+      "bytes": 22248
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Net.Ping.dll",
+      "sha256": "4d97e8481b9a27042bb903245625735d82ff627c66797de619303c1e705d0d6a",
+      "bytes": 21168
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Net.Primitives.dll",
+      "sha256": "9a8ba725f8e953c933285065228a9409036f9137d03016b127ccea8a19452466",
+      "bytes": 22216
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Net.Requests.dll",
+      "sha256": "f2e74a3ec2dc753c9a48fa9a677775f949eb1e02fc1bb8bf38c39e8d2ab147eb",
+      "bytes": 21184
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Net.Security.dll",
+      "sha256": "d0d90152136a0acf340fb345098f2e5c718bb13f3b5a809d7be4d9948b8574d4",
+      "bytes": 21696
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Net.Sockets.dll",
+      "sha256": "694f4c61b6bae0aefac07a1e861c12c03cb6002f30091e4c8b05bb9c8ccf0d3d",
+      "bytes": 30544
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Net.WebHeaderCollection.dll",
+      "sha256": "69b48ff8e6f40b84cdddb95bcdbb34e1184a2e29cb4ccc0fc9f1a2493648ee37",
+      "bytes": 21232
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Net.WebSockets.Client.dll",
+      "sha256": "19766a20b62b038abc3e863f2d6e7b55fabee4d9cbcad3eb1d7bd3ebfe8d023a",
+      "bytes": 21224
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Net.WebSockets.dll",
+      "sha256": "99920ce34a01a0c07efd86d6e134bb401993515d001b7567a4116ad222993a63",
+      "bytes": 21192
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.ObjectModel.dll",
+      "sha256": "870ee1141cb61abfce44507e39bfdd734f2335e34d89ecfffb13838195a6b936",
+      "bytes": 21696
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Reflection.dll",
+      "sha256": "63aaf632ee7f3bc852c4d71c742cf1d26f18f784f6c89113e056b2599ba8f514",
+      "bytes": 22200
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Reflection.Extensions.dll",
+      "sha256": "3d2551d6458b84566025fddfe5dad479cab5785428efd6814860d36ad1811c9a",
+      "bytes": 21224
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Reflection.Primitives.dll",
+      "sha256": "0383dc02fdf0b5d4612d8caaad13d594cac1609c8240b73dfd6ea5803f5e17ea",
+      "bytes": 21736
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Resources.Reader.dll",
+      "sha256": "e3036362506d96c9c00ed6393a2afcacd9f2e71cd2a35c1d638a61e85d2fb040",
+      "bytes": 21200
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Resources.ResourceManager.dll",
+      "sha256": "62dce4679e33c079e11f41b096bc803b30b1d963a1ea79efa84187cebbc06afe",
+      "bytes": 21232
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Resources.Writer.dll",
+      "sha256": "daaabd07f1b94be19d72913360286e469f454886850afcc603506eaab03150e4",
+      "bytes": 21200
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Runtime.CompilerServices.VisualC.dll",
+      "sha256": "18a610b8bad43cf784cde4d4902a238f2281c2a677daae790cab55f6da915979",
+      "bytes": 21784
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Runtime.dll",
+      "sha256": "50ad612d4cf6113de26b2870da099c4817f59e64a2da98f05803b4a2e2304919",
+      "bytes": 29360
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Runtime.Extensions.dll",
+      "sha256": "f9feb277f86241f55425182a26decf50a210675d4f040ec542af3fb3dd287de6",
+      "bytes": 21720
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Runtime.Handles.dll",
+      "sha256": "7a81d2a001b543b2a55c9affc845a5df7edab1fd308c6979bbd982b1b826b57c",
+      "bytes": 21200
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Runtime.InteropServices.dll",
+      "sha256": "383a1f9dac655c6805c24d4a03bc5fbeb9abd1536de5510f5756259eefcb4871",
+      "bytes": 24296
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Runtime.InteropServices.RuntimeInformation.dll",
+      "sha256": "76432f414458e93b54ceb02fc348e652a84744108102f3a83792d8a804040eb8",
+      "bytes": 28624
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Runtime.Numerics.dll",
+      "sha256": "16e7efd6c19b2e3e516ae1bc7b3175d0e22f1ad357701f229e353da348eee182",
+      "bytes": 21200
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Runtime.Serialization.Formatters.dll",
+      "sha256": "c343f7bf08a4c97a90ba607a492c721533333173fa63f65f6e5de9ceee65fc16",
+      "bytes": 21264
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Runtime.Serialization.Json.dll",
+      "sha256": "e8d531f0aaa674f794b7f43ec76e4e32ad93f3c136020cf4b6e3433832f9c0df",
+      "bytes": 21240
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Runtime.Serialization.Primitives.dll",
+      "sha256": "575e26a455892f1fd77b730e6928f70b760e76094afe5bcb677d854daf869ac5",
+      "bytes": 27048
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Runtime.Serialization.Xml.dll",
+      "sha256": "557858e44a51a74646ad07a85cba56af1da13ad26ac2f74ee5d8c3e8a171c221",
+      "bytes": 24816
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Security.Claims.dll",
+      "sha256": "8270d1248950ee8aee5c2ac2e321df07e65c7a94004ae03c857deacd231a5542",
+      "bytes": 21200
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Security.Cryptography.Algorithms.dll",
+      "sha256": "967dddbfe7f1ceb933b5875d65c59cdb835bb063f287a361e8b35dd814a9b14d",
+      "bytes": 47016
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Security.Cryptography.Csp.dll",
+      "sha256": "566775f5502c3c1fa70acade145293df5d02c1a9f031820d429605e9b4584b44",
+      "bytes": 21240
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Security.Cryptography.Encoding.dll",
+      "sha256": "1f5c1abe1b2720680170388569354d8cda9d558b53aff7caf175ce0f7e3733e5",
+      "bytes": 21256
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Security.Cryptography.Primitives.dll",
+      "sha256": "b755d0b55a465d07c9dd3fc11822487d1e649b684aef91a4ce9b935b416a01b9",
+      "bytes": 21784
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Security.Cryptography.X509Certificates.dll",
+      "sha256": "3c8630acb43c12a6a317227ff2922056ecd991fe945464fdf7ea81f1293a479f",
+      "bytes": 22832
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Security.Principal.dll",
+      "sha256": "02416bc542be82002b8b81adbbbcdcc8d098104020d09b571dc674b5bc19a177",
+      "bytes": 21208
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Security.SecureString.dll",
+      "sha256": "18032d190d0d599823e59c8dd8b588909bef8888b8bf304723a138b61f1b911f",
+      "bytes": 22392
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Text.Encoding.dll",
+      "sha256": "0ab1f7f87b7c2afca57d394e4f4e262c82ba3209cb0a750cd66401fb33f21eca",
+      "bytes": 21696
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Text.Encoding.Extensions.dll",
+      "sha256": "cbe29672cd2b6a0ea97b55f3844fbede3e591996f39c3aa1f829f2fa50551fa9",
+      "bytes": 21232
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Text.RegularExpressions.dll",
+      "sha256": "c98a52bd017df01aea7b955e6f219537d391a62c2c2b976684da282f9cd7cacf",
+      "bytes": 21232
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Threading.dll",
+      "sha256": "4dc8d588ec63641c28422d648e8de5e2c030eb7afec2071a99dd3bd9a204557f",
+      "bytes": 22192
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Threading.Overlapped.dll",
+      "sha256": "f17ff442b77a6cfe9c118d2f8fae1ab6c814a0d4f35c5844996be84f3fcc8592",
+      "bytes": 37752
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Threading.Tasks.dll",
+      "sha256": "0110616dfe870b8bcf25df8f6ce38ef5aac39e728ddaa3420ea199f5a7e80a16",
+      "bytes": 22224
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Threading.Tasks.Parallel.dll",
+      "sha256": "3468e0c875db94a8f45d56ab76bbcc677b942ca51a23649ba3c5ad1b20e391f1",
+      "bytes": 21232
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Threading.Thread.dll",
+      "sha256": "9d4faea9892d4ecfabf61986687fc6cb30f5f51a6b62819b9571ff58e04c4dd5",
+      "bytes": 21200
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Threading.ThreadPool.dll",
+      "sha256": "3d9ebc81b1bd3234666c8ce403a5f17a726867c68ffa5de4ec8ee92599335658",
+      "bytes": 21216
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Threading.Timer.dll",
+      "sha256": "04b9235f64c9c846f8a767230714895da87c7ae2cd0105e9d14835ae46f0fed8",
+      "bytes": 21200
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.ValueTuple.dll",
+      "sha256": "efd8155cec6f3683b701fe94f555d225332d283126bb36b36d9a20ea9d7fc724",
+      "bytes": 79176
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Xml.ReaderWriter.dll",
+      "sha256": "5f560e1dd529bb2529d7052e04008449f58d0439c2bb43437d7b5d39f84f949f",
+      "bytes": 21712
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Xml.XDocument.dll",
+      "sha256": "4f6a14e4ba2a2b26b8b8433d5f82f75a96af5a4f036d9447373b07271493917b",
+      "bytes": 21696
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Xml.XmlDocument.dll",
+      "sha256": "8957f0bcea6ab8a011a53ae62466505199f11a228f87f3809931d974f87078ce",
+      "bytes": 21712
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Xml.XmlSerializer.dll",
+      "sha256": "21493f7f615a099e795f7fae7ecce6082414d1d427790bdf4b103623a3ab34eb",
+      "bytes": 21712
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Xml.XPath.dll",
+      "sha256": "24daa1faee0478ba58febe8ee789eb88be0a14d350b57ad8b10690c55976b2e1",
+      "bytes": 21176
+    },
+    {
+      "path": "_internal/pythonnet/runtime/System.Xml.XPath.XDocument.dll",
+      "sha256": "b33d08149a756a401628d11bfddfeeaca1f03c0578395bb061dae44f8a12ce5d",
+      "bytes": 22904
+    }
+  ],
+  "upstream_version_evidence": {
+    "cpython_external_dependencies": "https://github.com/python/cpython/blob/v3.14.0/PCbuild/get_externals.bat",
+    "note": "The installed Python 3.14.0 binary runtime versions agree with its release dependency pins for OpenSSL3.0.18, SQLite3.50.4, XZ5.2.5, zlib-ng2.2.4; Python license notices are copied from this exact installed distribution."
+  }
+}

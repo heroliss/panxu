@@ -1,6 +1,6 @@
 {
   "product": "盘序",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "mode": "simulation",
   "root": "E:\\GPT-Projects\\win11-disk-assistant",
   "safety": "This build has NO real executor. All apply/undo/reset operations modify only SQLite simulation records. Never unlink/move/kill/control services/edit startup outside app-owned data.",
@@ -93,10 +93,13 @@
   "privacy": "No user file body read for LLM. Metadata only; send_paths false by default. No real provider key expected in tests. LLM cannot execute or approve plans.",
   "agent_task": "statuses ready/investigating/awaiting_review/executing/needs_input/needs_model/paused/budget_exhausted/error/completed. Up to 6 model responses and 12 tools per turn. Personal files default unchecked; unknown/protected/out-of-scope and stale plans cannot bypass factual checks. Tool text is untrusted.",
   "action_runtime": "simulation backend only. Per-item durable intent plus atomic overlay/receipt, status succeeded/failed/partial/cancelled/unverified. Recovery verifies receipts without blind replay. User undo is separately visible as current_state=undone. Actual reclaimed bytes always zero.",
-  "release_status": "validated_portable_checkpoint",
-  "installed_release": "0.5.0_profile_preserved",
+  "release_status": "passed_local_portable",
+  "installed_release": "0.7.0_profile_restored",
   "task_memory": "Durable goal, choices, versioned plan, simulation receipts, up to300 historical facts/task with32MiB global fact-payload retention. Model connection change reconstructs fresh context, not private provider continuation. Request attempts/tools/work counted; missing provider token usage is unknown.",
   "task_scan": "ScanIndex durable name/metadata spool, stable keyset cursor; steps1..512, rows<=100000/scan. Interrupted unfinished enumeration replays with explicit work accounting; acquired rows retained. Whole-directory actions require separate current subtree validation. All20 tool schemas still sent each model turn; discover_tools is help, not lazy loading.",
   "guidance": "Fixed9 bundled markdown resources, max32KiB each. list_skills/read_skill expose bounded public guidance with versions/fingerprints/sources; no dynamic path/URL access or system capability granted.",
-  "user_actions": "Model questions have independent monotonic versions; answers/skip durable but not approval. Host direct-plan preflights current identity in task scope, then same approve/runtime; source, chosen IDs, results flow back. Legacy manual history only intersects task-known IDs for model awareness."
+  "user_actions": "Model questions have independent monotonic versions; answers/skip durable but not approval. Host direct-plan preflights current identity in task scope, then same approve/runtime; source, chosen IDs, results flow back. Legacy manual history only intersects task-known IDs for model awareness.",
+  "license": "PolyForm-Noncommercial-1.0.0; Required Notice copyright 2026 heroliss. Scope original PanXu material; third-party components retain their licenses. Explicit user choice 2026-11-02.",
+  "developer_dock": "Closed by default; settings entry and F12 toggle. Same bounded capture/view filters in right-side dock; mounted independently of current task view. No auto capture when opening.",
+  "appearance": "Default follows system; explicit saved light/dark preserved; live media changes apply without restart."
 }

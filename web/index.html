@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN" data-theme="dark" data-theme-preference="dark">
+<html lang="zh-CN" data-theme="system" data-theme-preference="system">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -43,6 +43,10 @@
       <footer class="app-footer"><span>盘序</span><span id="connection-status">正在连接</span></footer>
     </div>
   </div>
+  <aside id="developer-dock" class="developer-dock" aria-labelledby="developer-dock-heading" hidden>
+    <header class="developer-dock-heading"><div><h2 id="developer-dock-heading">开发面板</h2><kbd>F12</kbd></div><button id="developer-dock-close" class="button small" type="button" aria-label="关闭开发面板">关闭</button></header>
+    <div id="developer-dock-content" class="developer-dock-scroll"></div>
+  </aside>
   <aside id="advanced-drawer" class="advanced-drawer" aria-labelledby="advanced-heading" hidden><div class="drawer-heading"><h2 id="advanced-heading">高级选项</h2><button id="advanced-close" class="icon-button" aria-label="关闭高级选项">关闭</button></div><label class="field-label" for="scan-limit">每次检查的项目上限</label><select id="scan-limit"><option value="1000">1,000 项</option><option value="4000" selected>4,000 项</option><option value="10000">10,000 项</option></select><p class="field-help">超过上限的文件夹不会整组处理。</p><label class="check-line"><input id="show-evidence" type="checkbox">在详情里显示识别依据</label><hr><h3>选择范围</h3><p>文件页的“全选本页”只覆盖当前页，后台清单的全选只覆盖当前筛选结果。其他页面的分析选择会保留，分析不会自动授权处理。</p><p>下载资料、个人文件和后台程序需要你自行决定。保护清单优先于所有建议。</p><button id="reset-demo" class="button">清空预演变更</button><p class="field-help">仅清空测试保护下记录的处理状态。</p></aside>
   <dialog id="plan-dialog" aria-labelledby="plan-title"><div class="dialog-heading"><div><h2 id="plan-title">确认处理清单</h2></div><button id="plan-close" class="icon-button">关闭</button></div><div id="plan-content"></div><div class="dialog-actions"><button id="plan-cancel" class="button">返回调整</button><button id="plan-execute" class="button primary">确认处理</button></div></dialog>
   <div id="toast" class="toast" role="status" hidden></div>

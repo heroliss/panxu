@@ -281,7 +281,7 @@ class TaskInteractionApiTests(unittest.TestCase):
 
     def test_ui_preferences_persist_in_separate_store_and_validate_allowlist(self):
         defaults = self.app.get('/api/ui-preferences', {})['preferences']
-        self.assertEqual(defaults['theme'], 'dark')
+        self.assertEqual(defaults['theme'], 'system')
         changed = self.app.post('/api/ui-preferences', {'theme': 'light', 'developer_live': True})['preferences']
         self.assertTrue(changed['developer_conversation'])
         self.assertTrue(changed['developer_live'])
@@ -305,27 +305,34 @@ class TaskInteractionApiTests(unittest.TestCase):
                 self.app.get(path, {})
 
     def test_theme_survives_new_port_and_static_html_keeps_csp(self):
-        store = self.root / 'theme-http'
-        for index in range(2):
-            server = create_server(store)
-            thread = threading.Thread(target=server.serve_forever, daemon=True)
-            thread.start()
-            try:
-                if not index:
-                    server.app.post('/api/ui-preferences', {'theme': 'light', 'developer_live': True})
-                else:
-                    self.assertEqual(server.app.get('/api/ui-preferences', {})['preferences']['theme'], 'light')
-                with urllib.request.urlopen(f'http://127.0.0.1:{server.server_port}/', timeout=5) as response:
-                    self.assertIn("script-src 'self'", response.headers['Content-Security-Policy'])
-                    body = response.read().decode('utf-8')
-                self.assertIn('data-theme-preference="light"', body)
-                self.assertNotIn('data-theme-preference="dark"', body)
-                self.assertFalse(server.app.trace.page()['enabled'])
-            finally:
-                server.shutdown()
-                server.server_close()
-                server.app.close()
-                thread.join(timeout=5)
+        for theme in ('light', 'dark'):
+            with self.subTest(theme=theme):
+                store = self.root / ('theme-http-' + theme)
+                for index in range(2):
+                    server = create_server(store)
+                    thread = threading.Thread(target=server.serve_forever, daemon=True)
+                    thread.start()
+                    try:
+                        if not index:
+                            self.assertEqual(server.app.ui_preferences()['preferences']['theme'], 'system')
+                            with urllib.request.urlopen(f'http://127.0.0.1:{server.server_port}/', timeout=5) as response:
+                                initial_body = response.read().decode('utf-8')
+                            self.assertIn('data-theme-preference="system"', initial_body)
+                            self.assertLess(initial_body.index('<script src="/app.js">'), initial_body.index('<link rel="stylesheet"'))
+                            server.app.post('/api/ui-preferences', {'theme': theme, 'developer_live': True})
+                        else:
+                            self.assertEqual(server.app.get('/api/ui-preferences', {})['preferences']['theme'], theme)
+                        with urllib.request.urlopen(f'http://127.0.0.1:{server.server_port}/', timeout=5) as response:
+                            self.assertIn("script-src 'self'", response.headers['Content-Security-Policy'])
+                            body = response.read().decode('utf-8')
+                        self.assertIn('data-theme-preference="' + theme + '"', body)
+                        self.assertNotIn('data-theme-preference="system"', body)
+                        self.assertFalse(server.app.trace.page()['enabled'])
+                    finally:
+                        server.shutdown()
+                        server.server_close()
+                        server.app.close()
+                        thread.join(timeout=5)
 
 
 if __name__ == '__main__':

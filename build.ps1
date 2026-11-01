@@ -66,6 +66,7 @@ VSVersionInfo(
     StringStruct('InternalName', 'PanXu'),
     StringStruct('OriginalFilename', 'PanXu.exe'),
     StringStruct('ProductName', 'PanXu'),
+    StringStruct('LegalCopyright', 'Copyright (c) 2026 heroliss'),
     StringStruct('ProductVersion', '$appVersion')
   ])]), VarFileInfo([VarStruct('Translation', [1033, 1200])])]
 )
@@ -123,6 +124,14 @@ try {
     $env:PYINSTALLER_CONFIG_DIR = $previousConfigDir
 }
 Copy-Item -LiteralPath $readmePath -Destination (Join-Path $packageRoot 'README.txt')
+$legalFilesJson = & $pythonPath -c "import sys,json; sys.path.insert(0,sys.argv[1]); from verification.finalize import legal_sources,ROOT; print(json.dumps([p.relative_to(ROOT).as_posix() for p in legal_sources()]))" $projectRoot
+if ($LASTEXITCODE -ne 0) { throw 'License notice inventory validation failed.' }
+foreach ($notice in ($legalFilesJson | ConvertFrom-Json)) {
+    $noticePath = Join-Path $projectRoot $notice
+    $noticeTarget = Assert-ProjectPath (Join-Path $packageRoot $notice)
+    $null = New-Item -ItemType Directory -Path ([IO.Path]::GetDirectoryName($noticeTarget)) -Force
+    Copy-Item -LiteralPath $noticePath -Destination $noticeTarget
+}
 
 $verify = @'
 import hashlib, importlib.metadata as m, json, pathlib, platform, re, struct, sys
@@ -133,6 +142,7 @@ from PyInstaller.utils.win32.winmanifest import read_manifest_from_executable
 root, package, report = map(pathlib.Path, sys.argv[1:4])
 sys.path.insert(0,str(root))
 from diskpilot.knowledge import BUNDLED_SKILL_FILES
+from verification.finalize import legal_sources
 exe = package / 'PanXu.exe'
 sha256 = lambda p: hashlib.file_digest(p.open('rb'), 'sha256').hexdigest()
 files = sorted(p for p in package.rglob('*') if p.is_file())
@@ -146,6 +156,10 @@ skill_assets=[]
 for name in BUNDLED_SKILL_FILES:
     source,target=root/'skills'/name,package/'_internal'/'skills'/name
     skill_assets.append({'path':str(target.relative_to(package)),'bytes':target.stat().st_size if target.exists() else None,'sha256':sha256(target) if target.exists() else None,'matches_source':target.exists() and sha256(source)==sha256(target)})
+legal_assets=[]
+for source in legal_sources():
+    target=package/source.relative_to(root)
+    legal_assets.append({'path':str(target.relative_to(package)),'bytes':target.stat().st_size if target.exists() else None,'sha256':sha256(target) if target.exists() else None,'matches_source':target.exists() and sha256(source)==sha256(target)})
 required_names = ('python314.dll', 'Python.Runtime.dll', 'Microsoft.Web.WebView2.Core.dll', 'Microsoft.Web.WebView2.WinForms.dll', 'WebView2Loader.dll')
 runtime_resources = {name: [str(p.relative_to(package)) for p in files if p.name.casefold() == name.casefold()] for name in required_names}
 archive = CArchiveReader(str(exe))
@@ -163,7 +177,7 @@ with exe.open('rb') as f:
 manifest = read_manifest_from_executable(str(exe)).decode('utf-8')
 as_invoker = 'level="asInvoker"' in manifest or "level='asInvoker'" in manifest
 version = re.search(r'__version__\s*=\s*[\"\']([^\"\']+)', (root / 'diskpilot' / '__init__.py').read_text(encoding='utf-8')).group(1)
-passed = all(a['matches_source'] for a in assets+skill_assets) and all(runtime_resources.values()) and all(required_modules.values()) and not forbidden and not linked and not forbidden_modules and machine == 0x8664 and subsystem == 2 and as_invoker
+passed = all(a['matches_source'] for a in assets+skill_assets+legal_assets) and all(runtime_resources.values()) and all(required_modules.values()) and not forbidden and not linked and not forbidden_modules and machine == 0x8664 and subsystem == 2 and as_invoker
 result = {
     'status': 'passed' if passed else 'failed',
     'verification_scope': 'Static Windows portable package verification; GUI launch and end-to-end acceptance are separate.',
@@ -173,6 +187,7 @@ result = {
     'package': {'directory': str(package), 'file_count': len(files), 'total_bytes': sum(p.stat().st_size for p in files), 'exe_path': str(exe), 'exe_bytes': exe.stat().st_size, 'exe_sha256': sha256(exe), 'readme_included': (package / 'README.txt').exists()},
     'web_resources': assets,
     'skill_resources': skill_assets,
+    'legal_resources': legal_assets,
     'runtime_resources': runtime_resources,
     'required_modules': required_modules,
     'forbidden_paths_found': forbidden,
