@@ -89,7 +89,7 @@ $arguments = @(
 )
 # Explicit application asset allowlist: never collect the project directory,
 # verification fixtures, model settings, API keys, databases, or user histories.
-foreach ($asset in @('index.html', 'style.css', 'app.js', 'tasks.js')) {
+foreach ($asset in @('index.html', 'style.css', 'app.js', 'tasks.js', 'files.js')) {
     $assetPath = Join-Path (Join-Path $projectRoot 'web') $asset
     if (-not (Test-Path -LiteralPath $assetPath -PathType Leaf)) { throw "Missing web asset: $assetPath" }
     if ((Get-Item -LiteralPath $assetPath -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
@@ -127,7 +127,7 @@ files = sorted(p for p in package.rglob('*') if p.is_file())
 linked = [str(p.relative_to(package)) for p in package.rglob('*') if p.is_symlink() or (hasattr(p, 'is_junction') and p.is_junction())]
 forbidden = [str(p.relative_to(package)) for p in files if any(part.casefold() in {'verification', 'tests', 'userdata', '.git', '.venv'} for part in p.relative_to(package).parts) or p.name.casefold() in {'.env', 'model_settings.json', 'simulation.sqlite3', 'simulation.sqlite3-wal', 'simulation.sqlite3-shm'}]
 assets = []
-for name in ('index.html', 'style.css', 'app.js', 'tasks.js'):
+for name in ('index.html', 'style.css', 'app.js', 'tasks.js', 'files.js'):
     source, target = root / 'web' / name, package / '_internal' / 'web' / name
     assets.append({'path': str(target.relative_to(package)), 'bytes': target.stat().st_size if target.exists() else None, 'sha256': sha256(target) if target.exists() else None, 'matches_source': target.exists() and sha256(source) == sha256(target)})
 required_names = ('python314.dll', 'Python.Runtime.dll', 'Microsoft.Web.WebView2.Core.dll', 'Microsoft.Web.WebView2.WinForms.dll', 'WebView2Loader.dll')

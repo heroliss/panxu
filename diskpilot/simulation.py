@@ -34,6 +34,37 @@ def within(child, parent):
     return a == b or a.startswith(b.rstrip('\\/') + ('\\' if ':' in b else os.sep))
 
 
+def _parent(path):
+    return ntpath.dirname(path) if ':' in path or path.startswith('\\\\') else os.path.dirname(path)
+
+
+def has_ancestor(path, directories, *, include_self=False):
+    """Directory set lookup proportional to path depth, never pairwise scans."""
+    current = canonical(path)
+    if include_self and current in directories:
+        return True
+    while True:
+        parent = _parent(current)
+        if not parent or parent == current:
+            return False
+        if parent in directories:
+            return True
+        current = parent
+
+
+def top_level_items(items):
+    files = [i for i in items if i['kind'] in ('file', 'directory')]
+    directories = {canonical(i['path']) for i in files if i['kind'] == 'directory'}
+    seen, roots = set(), []
+    for item in files:
+        path = canonical(item['path'])
+        if path in seen or (item['kind'] != 'directory' and path in directories) or has_ancestor(path, directories):
+            continue
+        seen.add(path)
+        roots.append(item)
+    return roots
+
+
 def is_reparse(st):
     return stat.S_ISLNK(st.st_mode) or bool(getattr(st, 'st_file_attributes', 0) & 0x400)
 
@@ -91,7 +122,7 @@ def policy_hash(patterns):
 
 def logical_estimate(items):
     """Count observed shared entities once, without claiming allocation savings."""
-    roots = [x for x in items if x['kind'] in ('file', 'directory') and not any(x['id'] != y['id'] and y['kind'] == 'directory' and within(x['path'], y['path']) for y in items if y['kind'] in ('file', 'directory'))]
+    roots = top_level_items(items)
     total, identities = 0, {}
     for item in roots:
         total += item.get('size_bytes', 0) or 0
@@ -126,6 +157,8 @@ class SimulationState:
         ''')
         self.plans = {}
         self.revision = 0
+        self._cached_key = None
+        self._cached_view = None
 
     def close(self):
         with self.lock:
@@ -199,7 +232,25 @@ class SimulationState:
             self.plans.clear()
         return self.view()
 
+    def snapshot(self, patterns=()):
+        """Internal read-only snapshot. Call view() for an independent copy."""
+        with self.lock:
+            key = (self.revision, tuple(patterns))
+            if self._cached_key != key:
+                self._cached_view = self._build_view(patterns)
+                self._cached_key = key
+            return self._cached_view
+
     def view(self, patterns=()):
+        with self.lock:
+            return copy.deepcopy(self.snapshot(patterns))
+
+    def overview(self, patterns=()):
+        with self.lock:
+            snap = self.snapshot(patterns)
+            return {key: copy.deepcopy(snap[key]) for key in ('mode', 'source', 'summary', 'history')}
+
+    def _build_view(self, patterns=()):
         with self.lock:
             items = self._rows()
             overlays = {x['item_id']: x for x in self.db.execute('SELECT * FROM overlay WHERE active=1 ORDER BY rowid')}
@@ -214,18 +265,18 @@ class SimulationState:
                     item['actions'] = []
                     item['recommendation'] = '用户规则保留'
                     item['reason'] = '命中保护清单。'
+            simulated_paths = {canonical(p) for p in simulated_dirs}
             for item in items:
-                if item['kind'] in ('file', 'directory') and any(within(item['path'], p) for p in simulated_dirs):
+                if item['kind'] in ('file', 'directory') and has_ancestor(item['path'], simulated_paths, include_self=True):
                     item['simulated'] = True
             file_items = [x for x in items if x['kind'] in ('file', 'directory')]
-            roots = [x for x in file_items if not any(x['id'] != y['id'] and y['kind'] == 'directory' and within(x['path'], y['path']) for y in file_items)]
             simulated = [x for x in file_items if x['simulated']]
-            sim_roots = [x for x in simulated if not any(x['id'] != y['id'] and y['kind'] == 'directory' and within(x['path'], y['path']) for y in simulated)]
             summary = dict(mode='simulation', source=self.source(), total_items=len(items),
                            visible_items=sum(not x['simulated'] for x in items),
                            simulated_items=sum(x['simulated'] for x in items),
-                           logical_bytes=logical_estimate(roots),
-                           simulated_bytes=logical_estimate(sim_roots),
+                           logical_bytes=logical_estimate(file_items),
+                           simulated_bytes=logical_estimate(simulated),
+                           visible_file_items=sum(not x['simulated'] for x in file_items),
                            process_memory_bytes=sum(x.get('details', {}).get('memory_bytes', 0) or 0 for x in items if x['kind'] == 'process'),
                            by_kind={kind: sum(x['kind'] == kind for x in items) for kind in ('file', 'directory', 'startup', 'service', 'process', 'software')},
                            actual_reclaimed_bytes=0)

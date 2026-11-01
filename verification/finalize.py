@@ -197,7 +197,7 @@ def finalize(*, tests_run: int, health_url: str) -> dict:
     require(exe.is_file() and sha(exe) == package.get("package", {}).get("exe_sha256"), "Executable differs from static report")
     require((release / "README.txt").is_file() and sha(release / "README.txt") == sha(ROOT / "README.txt"),
             "Release README differs from current source")
-    for name in ("index.html", "style.css", "app.js", "tasks.js"):
+    for name in ("index.html", "style.css", "app.js", "tasks.js", "files.js"):
         require(sha(ROOT / "web" / name) == sha(release / "_internal" / "web" / name), "Packaged web asset differs from source")
     files = release_files(release)
     health = read_health(health_url, app_version)

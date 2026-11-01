@@ -12,6 +12,16 @@ window.PanxuTasks = (() => {
   let selected = new Set();
   let pending = false;
   let lastError = '';
+  let intent = '';
+  const intents = {
+    c_cleanup: ['清理 C 盘垃圾', '先找常见缓存和临时内容'],
+    disk_cleanup: ['清理某个磁盘', '逐步找出值得清理的内容'],
+    downloads: ['整理下载文件夹', '看看旧安装包和下载资料'],
+    duplicates: ['查找重复文件', '在本地核对内容是否一致'],
+    background: ['优化开机与后台', '看看哪些应用可以按需运行'],
+    installers: ['清理旧安装包', '区分安装包与仍在使用的程序'],
+    custom: ['其他整理要求', '用自己的话告诉助手']
+  };
   const busy = () => current && ['investigating', 'executing'].includes(current.status);
 
   function node(tag, cls, text) {
@@ -76,26 +86,55 @@ window.PanxuTasks = (() => {
     if (busy()) schedule();
   }
   function newTask() {
-    current = null; planKey = ''; selected.clear(); lastError = ''; feedbackDraft = ''; redraw();
+    current = null; intent = ''; planKey = ''; selected.clear(); lastError = ''; feedbackDraft = ''; redraw();
+  }
+  function choose(preset) {
+    if (preset === 'c_cleanup' || preset === 'downloads' || preset === 'background') {
+      request('/api/tasks', {preset}); return;
+    }
+    intent = preset; draftPath = ''; draftGoal = ''; redraw();
   }
   function welcome(root) {
-    add(root, context.heading('想整理哪些内容？', '告诉助手你的目标，它会先调查、解释，再给出方案。'));
+    if (!intent) {
+      add(root, context.heading('今天想整理什么？', '助手先调查并解释，再由你确认处理。'));
+      const grid = node('div', 'task-intents');
+      ['c_cleanup', 'disk_cleanup', 'downloads', 'duplicates'].forEach((key) => {
+        const card = action('', () => choose(key), 'task-intent'); card.dataset.preset = key;
+        add(card, node('strong', '', intents[key][0]), node('span', '', intents[key][1])); add(grid, card);
+      });
+      add(root, grid, detail('更多任务',
+        ...['background', 'installers', 'custom'].map((key) => action(intents[key][0], () => choose(key), 'plain-button more-task'))),
+        detail('助手会查看什么？', node('p', '', '根据目标分步检查文件名、大小、目录和软件信息，必要时在本地核对重复。不会向模型发送文件正文。个人资料的最后去留由你决定。')));
+      return;
+    }
+    add(root, context.heading(intents[intent][0], intent === 'disk_cleanup' ? '选择位置，助手会分步调查，并说明哪些地方还没检查。' : '选择要检查的文件夹。'));
     const panel = node('section', 'task-welcome panel');
     const goal = textInput('你想怎么整理', draftGoal, (value) => { draftGoal = value; }, true);
     goal.input.placeholder = '例如：整理下载文件夹，保留照片，看看旧安装包和重复文件能否清理。';
-    add(panel, goal.box);
+    if (intent === 'custom') add(panel, goal.box);
     const path = textInput('检查位置', draftPath || context.defaultPath, (value) => { draftPath = value; });
     path.input.placeholder = '例如 E:\\Downloads';
-    add(panel, path.box);
-    const start = action('开始分析', () => request('/api/tasks', {
-      goal: draftGoal.trim() || '帮我整理这里的内容，找出值得清理的文件并解释原因；个人文件由我最后选择。',
+    if (intent === 'disk_cleanup') {
+      const disk = node('select'); disk.setAttribute('aria-label', '选择要清理的磁盘');
+      add(disk, node('option', '', '选择一个磁盘'));
+      context.disks.forEach((entry) => {
+        const option = node('option', '', entry.name || entry.path); option.value = entry.path || entry.name; add(disk, option);
+      });
+      disk.firstChild.value = ''; disk.value = draftPath;
+      path.input.value = draftPath;
+      disk.addEventListener('change', () => { draftPath = disk.value; path.input.value = disk.value; });
+      add(panel, disk);
+    }
+    if (intent !== 'disk_cleanup') add(panel, path.box);
+    const start = action('开始分析', () => {
+      if (!path.input.value.trim()) { lastError = '请先选择要检查的磁盘或文件夹。'; redraw(); return; }
+      request('/api/tasks', {
+      ...(intent === 'custom' ? {goal: draftGoal.trim() || '帮我整理这里的内容，找出值得清理的文件并解释原因；个人文件由我最后选择。'} : {preset: intent}),
       path: path.input.value.trim()
-    }), 'button primary task-primary');
-    add(panel, start, detail('会查看哪些信息？', node('p', '', '先查看这个位置的文件名、大小和目录结构，必要时核对本机软件或在本地比较重复。文件正文不会发送给模型。')));
+    }); }, 'button primary task-primary');
+    add(panel, start);
     add(root, panel);
-    const more = detail('其他方式', action('只做基础检查', context.openBasic, 'plain-button'),
-      action('自己查看文件', context.openFiles, 'plain-button'));
-    add(root, more);
+    add(root, action('返回常用任务', () => { intent = ''; redraw(); }, 'plain-button task-new'));
   }
   function processDetails(root) {
     if (!current?.events?.length) return;
@@ -171,7 +210,7 @@ window.PanxuTasks = (() => {
     add(root, box);
   }
   function taskView(root) {
-    add(root, context.heading('整理助手', current.goal));
+    add(root, context.heading(intents[current.preset]?.[0] || '整理助手', current.preset && current.preset !== 'custom' ? '按需调查，先给出最值得关注的建议。' : current.goal));
     const panel = node('section', 'panel task-session');
     const summary = node('div', 'task-summary'); summary.setAttribute('role', 'status');
     if (busy()) add(summary, node('span', 'spinner'));
@@ -188,7 +227,6 @@ window.PanxuTasks = (() => {
       add(panel, context.modelConfigured
         ? action('继续调查', () => request('/api/tasks/' + current.id + '/continue', {}), 'button primary task-primary')
         : action('连接智能建议', context.openSettings, 'button primary task-primary'));
-      add(panel, detail('暂时不连接', action('只做基础检查', context.openBasic, 'plain-button')));
     } else if (current.status === 'awaiting_review' && current.plan) {
       plan(panel);
     } else {

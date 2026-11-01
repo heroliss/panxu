@@ -14,6 +14,7 @@ from urllib.parse import urlsplit, parse_qs
 
 from . import __version__
 from .duplicates import verify_duplicates
+from .catalog import FileCatalog
 from .llm import ModelAssistant
 from .lease import DataLease
 from .recommendations import build_recommendations
@@ -43,6 +44,7 @@ class Application:
             self.state.discard_development_fixtures()
         self.assistant = ModelAssistant(Path(data_dir))
         self.harness = TaskHarness(self.state, self.assistant)
+        self.catalog = FileCatalog(self.state, self.patterns)
         self.recommendation_cache = None
         self.settings_revision = 0
         self.csrf = secrets.token_urlsafe(32)
@@ -155,7 +157,8 @@ class Application:
                     with self.state.lock:
                         for group, items in pending:
                             self.state.publish(items, group)
-                        result['catalog'] = self.view()
+                        result['catalog'] = self.state.overview(self.patterns()) if payload.get('compact') else self.view()
+                        result['catalog']['catalog_revision'] = self.catalog.token()
                 with self.job_lock:
                     self.jobs[key].update(status='cancelled' if cancel.is_set() else 'completed', result=result,
                                           progress={'message': '已取消' if cancel.is_set() else '只读采集完成'})
@@ -175,7 +178,24 @@ class Application:
 
     def get(self, path, query):
         if path == '/api/bootstrap':
-            return dict(self.view(), csrf=self.csrf, version=__version__, settings=self.assistant.public_settings(), disks=disks(), default_scan_path=str(Path.home() / 'Downloads'), latest_task=self.harness.latest())
+            view = self.state.overview(self.patterns()) if query.get('compact') == ['1'] else self.view()
+            return dict(view, catalog_revision=self.catalog.token(), csrf=self.csrf, version=__version__, settings=self.assistant.public_settings(), disks=disks(), default_scan_path=str(Path.home() / 'Downloads'), latest_task=self.harness.latest())
+        if path == '/api/files':
+            try:
+                offset = int(query.get('offset', ['0'])[0])
+                limit = int(query.get('limit', ['50'])[0])
+            except (ValueError, TypeError):
+                raise AppError('请使用有效的页码。') from None
+            return self.catalog.page(offset=offset, limit=limit, query=query.get('query', [''])[0],
+                scope=query.get('scope', [''])[0], risk=query.get('risk', ['all'])[0], expected=query.get('revision', [''])[0])
+        if path == '/api/applications':
+            section = query.get('section', ['background'])[0]
+            kinds = {'background': ('startup', 'service', 'process'), 'software': ('software',)}.get(section)
+            if not kinds:
+                raise AppError('请选择后台或软件清单。')
+            with self.state.lock:
+                items = [i for i in self.state.snapshot(self.patterns())['items'] if i['kind'] in kinds]
+                return {'items': items}
         if path == '/api/health':
             return {'status': 'ok', 'mode': 'simulation', 'version': __version__, 'live_executor_available': False}
         if path == '/api/history':
@@ -190,7 +210,7 @@ class Application:
             return self.job(path.rsplit('/', 1)[-1])
         if path == '/api/item':
             key = query.get('id', [''])[0]
-            item = next((x for x in self.view()['items'] if x['id'] == key), None)
+            item = next((x for x in self.state.snapshot(self.patterns())['items'] if x['id'] == key), None)
             if not item:
                 raise AppError('项目不存在。', 'unknown_item', 404)
             return {'item': item}
@@ -198,7 +218,7 @@ class Application:
 
     def post(self, path, payload):
         if path == '/api/tasks':
-            task = self.harness.create(payload.get('goal'), payload.get('path'))
+            task = self.harness.create(payload.get('goal'), payload.get('path'), preset=payload.get('preset'))
             job = self.start_job('agent', {'task_id': task['id']})
             return dict(job, task=self.harness.public(task['id']))
         if path.startswith('/api/tasks/'):
@@ -232,6 +252,15 @@ class Application:
             return {'job': self.job(key)}
         if path == '/api/plan':
             with self.state.lock:
+                snapshots = payload.get('snapshots')
+                if snapshots is not None:
+                    ids = payload.get('ids')
+                    if not isinstance(snapshots, dict) or not isinstance(ids, list) or len(ids) > 500:
+                        raise AppError('选择信息无效，请重新选择。')
+                    current = {i['id']: i for i in self.state.snapshot(self.patterns())['items']}
+                    if any(not isinstance(key, str) or key not in current or key not in snapshots or
+                           current[key].get('signature') != snapshots[key] for key in ids):
+                        raise AppError('所选内容已更新，请重新查看后选择。', 'selection_changed', 409)
                 mode = payload.get('selection_mode', 'manual')
                 if mode not in ('manual', 'recommended'):
                     raise AppError('请选择处理推荐项或手动选择项目。')
@@ -311,7 +340,7 @@ def create_server(data_dir, port=0, *, developer_fixtures=False):
                 if parsed.path.startswith('/api/'):
                     return self.send(200, app.get(parsed.path, parse_qs(parsed.query)))
                 names = {'/': ('index.html', 'text/html; charset=utf-8'), '/index.html': ('index.html', 'text/html; charset=utf-8'),
-                         '/app.js': ('app.js', 'text/javascript; charset=utf-8'), '/tasks.js': ('tasks.js', 'text/javascript; charset=utf-8'), '/style.css': ('style.css', 'text/css; charset=utf-8')}
+                         '/app.js': ('app.js', 'text/javascript; charset=utf-8'), '/tasks.js': ('tasks.js', 'text/javascript; charset=utf-8'), '/files.js': ('files.js', 'text/javascript; charset=utf-8'), '/style.css': ('style.css', 'text/css; charset=utf-8')}
                 if parsed.path not in names:
                     raise AppError('页面不存在。', 'not_found', 404)
                 name, mime = names[parsed.path]

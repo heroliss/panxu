@@ -27,6 +27,7 @@ def response(name, args):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--data-dir', type=Path, required=True)
+    parser.add_argument('--catalog-size', type=int, default=0)
     args = parser.parse_args()
     stats = {'requests': 0, 'external_provider_used': False, 'real_credentials_used': False}
     with tempfile.TemporaryDirectory(prefix='panxu-agent-acceptance-') as temporary:
@@ -90,6 +91,16 @@ def main():
         thread = threading.Thread(target=provider.serve_forever, daemon=True)
         thread.start()
         app_server = create_server(args.data_dir)
+        if args.catalog_size:
+            from diskpilot.scanner import scan_directory
+            large = Path(temporary) / '分页测试'
+            large.mkdir()
+            for index in range(min(max(args.catalog_size, 0), 10000)):
+                group = large / f'批次-{index // 500:02d}'
+                group.mkdir(exist_ok=True)
+                (group / f'测试下载-{index:05d}.bin').write_bytes(b'fixture' * (index % 20 + 1))
+            for index, group in enumerate(large.iterdir()):
+                app_server.app.state.publish(scan_directory(str(group))['items'], f'pagination-fixture-{index}')
         app_server.app.assistant.save_settings({'base_url': f'http://127.0.0.1:{provider.server_port}/v1', 'model': 'local-acceptance-fixture'})
         def stop_when_requested():
             marker = args.data_dir / 'stop-fixture'

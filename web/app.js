@@ -3,7 +3,6 @@
 (() => {
   const $ = (id) => document.getElementById(id);
   const names = { overview: '整理助手', files: '我的文件', background: '后台与软件', software: '后台与软件', history: '处理记录', model: '设置' };
-  let basicMode = false;
   const kindNames = { file: '文件', directory: '目录汇总', startup: '启动项', service: '服务', process: '进程', software: '软件' };
   const actionNames = { delete: '清理文件', disable_startup: '关闭开机启动', stop_service: '停止后台服务', stop_process: '结束应用', uninstall: '卸载软件' };
   const state = { csrf: '', view: 'overview', items: [], summary: {}, settings: {}, history: [], disks: [], source: 'demo', warnings: [], selected: new Set(), focused: null, query: '', risk: 'all', origin: 'all', subtype: 'all', limit: 300, busy: false, job: null, plan: null, scanPath: '', inspector: false, assistant: null, recommendations: [], checked: false, analyzing: false, filesExpanded: false, backgroundExpanded: false, inventoryTarget: 'startup', checkDestination: 'overview', showAllCards: new Set() };
@@ -47,6 +46,7 @@
   function badge(label, cls = '') { return el('span', `source-badge ${cls}`, label); }
   function riskBadge(item) { const labels = { low: '可处理', review: '你来决定', protected: '保留' }; return el('span', `risk-badge risk-${item.risk || 'review'}`, labels[item.risk] || '需确认'); }
   function canSelect(item) {
+    if (item && typeof item.can_select === 'boolean') return item.can_select && !item.simulated;
     if (!item || item.risk === 'protected' || item.simulated || !Array.isArray(item.actions) || !item.actions.length) return false;
     if (item.kind === 'directory' && (!(item.details?.scan_complete === true || item.details?.complete === true) || item.details?.subtree_complete === false || item.details?.can_simulate_delete === false)) return false;
     if (item.kind === 'directory' && protectedFiles.some((other) => other.id !== item.id && inDirectory(other.path, item.path))) return false;
@@ -84,10 +84,7 @@
     return [...state.selected].map((id) => itemMap.get(id)).find((parent) => parent && parent.id !== item.id && parent.kind === 'directory' && inDirectory(item.path, parent.path));
   }
   function isSelected(item) {
-    if (state.selected.has(item.id) || selectedAncestor(item)) return true;
-    if (item.kind !== 'directory') return false;
-    const files = state.items.filter((other) => other.kind === 'file' && canSelect(other) && inDirectory(other.path, item.path));
-    return files.length > 0 && files.every((file) => state.selected.has(file.id) || selectedAncestor(file));
+    return Boolean(item && (state.selected.has(item.id) || selectedAncestor(item)));
   }
   function toggleItem(item, checked) {
     if (!canSelect(item)) return;
@@ -117,6 +114,7 @@
   }
   function accept(data, autoSelect = false) {
     if (Object.hasOwn(data, 'latest_task')) window.PanxuTasks?.accept(data.latest_task);
+    if (data.catalog_revision) { state.catalogRevision = data.catalog_revision; window.PanxuFiles?.invalidate(data.catalog_revision); }
     if (data.csrf) state.csrf = data.csrf;
     if (!defaultPathLoaded && data.default_scan_path) { state.scanPath = data.default_scan_path; defaultPathLoaded = true; }
     if (Array.isArray(data.items)) state.items = data.items;
@@ -132,7 +130,7 @@
     state.selected = new Set([...state.selected].filter((id) => canSelect(available.get(id))));
     if (autoSelect) state.selected = new Set(state.items.filter((item) => !synthetic(item) && verifiedCache(item)).map((item) => item.id));
     if (state.focused) state.focused = available.get(state.focused.id) || null;
-    $('files-count').textContent = state.items.filter((item) => ['file', 'directory'].includes(item.kind) && !item.simulated).length;
+    $('files-count').textContent = state.summary.visible_file_items ?? state.summary.file_items ?? 0;
   }
   async function task(action) {
     if (state.busy) return;
@@ -157,6 +155,7 @@
     toggleInspector(false); render();
   }
   function render() {
+    window.PanxuFiles?.unmount();
     const root = $('workspace'); root.replaceChildren();
     const renderers = { overview: renderOverview, files: renderFiles, background: renderBackground, software: renderSoftware, history: renderHistory, model: renderModel };
     renderers[state.view](root);
@@ -174,76 +173,35 @@
     }); return grid;
   }
   function renderOverview(root) {
-    if (!basicMode && window.PanxuTasks) {
-      window.PanxuTasks.render(root, {
-        api, heading, bytes, defaultPath: state.scanPath,
-        modelConfigured: Boolean(state.settings.base_url && state.settings.model),
-        redraw: render, isActive: () => state.view === 'overview' && !basicMode,
-        openBasic: () => { basicMode = true; render(); },
-        openSettings: () => setView('model'), openFiles: () => setView('files'),
-        openAssistant: () => { basicMode = false; setView('overview'); },
-        refreshCatalog: async () => { accept(await api('/api/bootstrap')); }
-      });
-      return;
-    }
-    if (!state.checked) {
-      append(root, heading('给电脑腾点空间', '检查常见缓存与后台项目，帮你分清能处理和该保留的内容。'));
-      append(root, diskCards());
-      const welcome = el('section', 'check-welcome panel'); append(welcome, el('div', 'check-illustration', '▤'), el('h2', '', '先帮你找出可清理的内容'), el('p', '', '先给出清理建议，你确认后再处理。'));
-      const start = button(state.job?.status === 'running' || state.analyzing ? '正在检查…' : '开始检查', beginCheck, 'button primary start-button'); start.disabled = state.job?.status === 'running' || state.analyzing; append(welcome, start, el('small', '', '不遍历全盘，也不读取个人文件正文')); append(root, welcome); appendJob(root);
-      return;
-    }
-    append(root, heading('清理建议', '已为你选好推荐项，个人文件仍由你决定。', [button('自己挑选', () => { state.filesExpanded = true; setView('files'); }, 'plain-button')]));
-    appendJob(root);
-
-    if (state.analyzing) append(root, append(el('div', 'analysis-loading'), el('span', 'spinner'), el('span', '', '正在整理建议…')));
-    const available = state.items.filter((item) => !item.simulated && !synthetic(item));
-    if (!available.length) {
-      append(root, empty('暂时没有需要处理的内容', '当前检查范围里没有发现可以建议的项目。你可以换个文件夹继续检查。', [button('选择其他位置', () => setView('files'))])); return;
-    }
-    if (!available.some((item) => adviceGroup(item) === 'safe')) append(root, el('p', 'quiet-note', '暂未找到可直接推荐的内容，其他项目可以查看后自行决定。'));
-    const groups = [ ['safe', '建议处理', '这些内容可以重新生成。'], ['personal', '需要你决定', '你下载或创建的文件，先确认还用不用。'], ['keep', '建议保留', '系统、个人资料或暂时不能确认用途的内容。'] ];
-    groups.forEach(([key, title, note]) => {
-      const items = available.filter((item) => adviceGroup(item) === key && !(key === 'safe' && available.some((parent) => parent.id !== item.id && parent.kind === 'directory' && adviceGroup(parent) === 'safe' && inDirectory(item.path, parent.path))));
-      if (!items.length) return;
-      const block = el(key === 'keep' ? 'details' : 'section', `recommendation-group group-${key}`); const groupHead = el(key === 'keep' ? 'summary' : 'div', 'recommendation-group-heading'); append(groupHead, el('h2', '', title), el('span', 'group-total', `${items.length} 项`)); append(block, groupHead);
-      const display = state.showAllCards.has(key) ? items : items.slice(0, 3); const cards = el('div', 'recommendation-cards'); display.forEach((item) => append(cards, recommendationCard(item))); append(block, cards);
-      if (items.length > display.length) append(block, button(`查看其余 ${items.length - display.length} 项`, () => { state.showAllCards.add(key); render(); }, 'plain-button more-cards'));
-      append(root, block);
+    window.PanxuTasks.render(root, {
+      api, heading, bytes, defaultPath: state.scanPath, disks: state.disks,
+      modelConfigured: Boolean(state.settings.base_url && state.settings.model),
+      redraw: render, isActive: () => state.view === 'overview',
+      openSettings: () => setView('model'), openFiles: () => setView('files'),
+      openAssistant: () => setView('overview'),
+      refreshCatalog: async () => { accept(await api('/api/bootstrap?compact=1')); }
     });
-    append(root, button('重新检查', () => { state.checked = false; state.selected.clear(); render(); }, 'plain-button'));
   }
-  function recommendationCard(item) {
-    const rec = advice(item); const displayTitle = ['建议处理', '你的文件，等你选择', '建议保留', '还需核实'].includes(rec.title) ? item.name : rec.title || item.name; const card = el('article', `recommendation-card${isSelected(item) ? ' is-chosen' : ''}`);
-    const check = el('input'); check.type = 'checkbox'; check.checked = isSelected(item); check.disabled = !canSelect(item) || adviceGroup(item) === 'keep'; check.setAttribute('aria-label', `选择${displayTitle}`);
-    check.addEventListener('change', () => { toggleItem(item, check.checked); render(); });
-    const body = el('div', 'recommendation-copy'); const title = el('h3', '', displayTitle); append(body, title);
-    append(body, el('p', 'recommendation-reason', cleanCopy(rec.reason || item.reason || '用途还需要确认。')));
-
-    const side = el('div', 'recommendation-side'); if (['file', 'directory', 'software'].includes(item.kind)) append(side, el('strong', '', `约 ${bytes(item.kind === 'software' ? itemSize(item) : item.size_bytes)}`));
-    append(side, button('为什么建议', () => showItem(item), 'plain-button why-button'));
-    append(card, check, body, side); return card;
-  }
-  function showItem(item) { state.focused = item; state.assistant = null; renderInspector(); toggleInspector(true); }
-  async function refreshRecommendations(analyze = false, auto = false) {
-    state.analyzing = true;
+  async function showItem(item) {
+    state.focused = item; state.assistant = null; renderInspector(); toggleInspector(true);
     try {
-      const data = await api(analyze ? '/api/recommendations/analyze' : '/api/recommendations', analyze ? {} : undefined);
-      if (Array.isArray(data.items)) {
-        if (data.items.every((item) => item.kind)) accept({ items: data.items });
-        state.recommendations = data.items; adviceMap = new Map(data.items.map((item) => [item.id, item])); state.recSummary = data.summary || {};
-      } else state.recommendations = Array.isArray(data.recommendations) ? data.recommendations : [];
-      if (auto) { state.selected.clear(); state.items.filter((item) => !synthetic(item) && verifiedCache(item)).sort((a, b) => a.path.length - b.path.length).forEach((item) => { if (state.selected.size < 500) toggleItem(item, true); }); }
-    } catch (error) { notify(`建议暂时没有整理好：${error.message} 你仍可在“我的文件”里自行挑选。`, true); }
-    finally { state.analyzing = false; }
+      const data = await api('/api/item?id=' + encodeURIComponent(item.id));
+      if (state.focused?.id !== item.id) return;
+      state.focused = { ...data.item, ...(typeof item.can_select === 'boolean' ? {can_select: item.can_select} : {}) }; renderInspector();
+    } catch (error) { notify(error.message, true); }
   }
-  async function beginCheck() {
-    basicMode = true;
-    if (state.job?.status === 'running' || state.analyzing) return;
-    await task(async () => {
-      const data = await api('/api/check', {}); state.checkDestination = 'overview'; state.checked = false;
-      state.job = { id: data.job_id, status: 'running', progress: {}, kind: 'check' }; setView('overview'); pollJob(data.job_id);
-    });
+  function ingest(items) {
+    const retained = state.items.filter((item) => state.selected.has(item.id));
+    const merged = new Map(items.map((item) => [item.id, item]));
+    retained.forEach((item) => merged.set(item.id, item));
+    state.items = [...merged.values()];
+    itemMap = new Map(state.items.map((item) => [item.id, item]));
+    protectedFiles = state.items.filter((item) => item.risk === 'protected');
+    unitCache = new Map();
+  }
+  async function loadApplications(sectionName) {
+    const data = await api('/api/applications?section=' + sectionName);
+    ingest(data.items);
   }
   function sectionItems() {
     if (state.view === 'files') return state.items.filter((item) => ['file', 'directory'].includes(item.kind));
@@ -275,18 +233,13 @@
     append(controls, disk, path, button('检查这个位置', () => { state.checkDestination = 'files'; startScan(path.value, false); }, 'button primary')); append(details, controls); append(root, details);
   }
   function renderFiles(root) {
-    append(root, heading('我的文件', '自己挑选想整理的内容，个人文件不会替你决定。'));
+    append(root, heading('我的文件', '按需载入已检查内容，个人文件由你决定。'));
     locationPicker(root); appendJob(root);
-    const items = state.items.filter((item) => ['file', 'directory'].includes(item.kind) && !item.simulated && !synthetic(item));
-    if (!items.length) { append(root, empty('还没有检查过文件', '选择一个文件夹，或从首页开始检查。', [button('开始检查', beginCheck, 'button primary')])); return; }
-    if (!state.filesExpanded) {
-      append(root, section('较大的文件', '按文件体积排列'));
-      const list = el('div', 'panel personal-files'); items.filter((item) => item.kind === 'file').sort((a, b) => (b.size_bytes || 0) - (a.size_bytes || 0)).slice(0, 6).forEach((item) => append(list, simpleItemRow(item)));
-      if (!list.childNodes.length) append(list, el('p', 'muted panel-pad', '文件夹里还没有可单独选择的文件。'));
-      append(root, list, button('查看全部文件', () => { state.filesExpanded = true; render(); }, 'button file-expand')); return;
-    }
-    const actions = el('div', 'file-list-heading'); append(actions, el('span', 'muted', '全部检查结果'), button('检查重复文件', findDuplicates, 'plain-button')); append(root, actions);
-    listToolbar(root); const results = el('div'); results.id = 'results-container'; append(root, results); renderResults();
+    window.PanxuFiles.render(root, {
+      revision: state.catalogRevision, disks: state.disks, bytes, ingest,
+      isSelected, canSelect, toggle: toggleItem, changed: renderSelection,
+      show: showItem, duplicates: findDuplicates
+    });
   }
   function simpleItemRow(item) {
     const row = el('div', 'simple-item-row'); const check = el('input'); check.type = 'checkbox'; check.checked = isSelected(item); check.disabled = !canSelect(item); check.setAttribute('aria-label', `选择${item.name}`); check.addEventListener('change', () => { toggleItem(item, check.checked); renderSelection(); });
@@ -308,6 +261,7 @@
   async function openInventory(kind) {
     state.inventoryTarget = kind; state.backgroundExpanded = true;
     const target = kind === 'software' ? 'software' : 'background';
+    await loadApplications(target);
     if (state.items.some((item) => item.kind === kind && !synthetic(item))) { setView(target); state.subtype = kind === 'software' ? 'all' : kind; render(); }
     else await startInventory(target);
   }
@@ -323,6 +277,7 @@
     return checkbox;
   }
   function renderResults() {
+    if (state.view === 'files') { window.PanxuFiles?.selectionChanged(); return; }
     const host = $('results-container'); if (!host) return;
     host.replaceChildren(); const items = visibleItems(); const all = sectionItems();
     if (!items.length) { append(host, append(el('div', 'panel'), empty(all.length ? '没有匹配的项目' : '这里暂时没有内容', all.length ? '试着调整搜索或筛选，之前的选择会保留。' : '完成检查后，就能在这里自行挑选。', all.length ? [button('重置筛选', () => { state.query = ''; state.risk = 'all'; render(); })] : []))); return; }
@@ -348,10 +303,11 @@
     append(host, panel);
   }
   function renderSelection() {
-    if (state.view === 'overview' && !basicMode) { $('selection-bar').hidden = true; return; }
+    if (state.view === 'overview') { $('selection-bar').hidden = true; return; }
     const selected = chosen(); const onHome = state.view === 'overview' && !state.checked;
     $('selection-bar').hidden = !selected.length || onHome || ['model', 'history'].includes(state.view);
     const visible = new Set((state.view === 'overview' ? state.items.filter((item) => !item.simulated && !synthetic(item)) : visibleItems()).map((item) => item.id));
+    if (state.view === 'files') { visible.clear(); window.PanxuFiles.visibleIds().forEach((id) => visible.add(id)); }
     const hidden = selected.filter((item) => !visible.has(item.id)).length;
     $('selection-count').textContent = `已选 ${selected.length} 项`;
     const size = selectedDiskBytes(selected); $('selection-size').textContent = size ? `文件体积约 ${bytes(size)}` : '';
@@ -381,7 +337,7 @@
     if (!item.path) { toast('暂时无法保存此项，请到设置查看保留位置。'); return; }
     await task(async () => {
       const patterns = [...new Set([...(state.settings.protect_patterns || []), item.path])];
-      accept(await api('/api/settings', settingsPayload({ protect_patterns: patterns }))); accept(await api('/api/bootstrap')); await refreshRecommendations(false, false); render(); toast('已加入保留清单。');
+      accept(await api('/api/settings', settingsPayload({ protect_patterns: patterns }))); accept(await api('/api/bootstrap?compact=1')); render(); toast('已加入保留清单。');
     });
   }
   function toggleInspector(force) {
@@ -395,7 +351,7 @@
     if (state.job?.status === 'running') { notify('正在检查，请稍等或先取消。'); return; }
     await task(async () => {
       state.scanPath = clean; state.checkDestination = toSuggestions ? 'overview' : 'files';
-      const data = await api('/api/scan', { path: clean, max_entries: Number($('scan-limit').value) }); state.job = { id: data.job_id, status: 'running', progress: {}, kind: 'files' };
+      const data = await api('/api/scan', { path: clean, compact: true, max_entries: Number($('scan-limit').value) }); state.job = { id: data.job_id, status: 'running', progress: {}, kind: 'files' };
       setView(toSuggestions ? 'overview' : 'files'); pollJob(data.job_id);
     });
   }
@@ -403,7 +359,7 @@
     if (state.job?.status === 'running') { notify('正在检查，请稍等或先取消。'); return; }
     await task(async () => {
       state.checkDestination = sectionName;
-      const data = await api('/api/inventory', { section: sectionName }); state.job = { id: data.job_id, status: 'running', progress: {}, kind: sectionName };
+      const data = await api('/api/inventory', { section: sectionName, compact: true }); state.job = { id: data.job_id, status: 'running', progress: {}, kind: sectionName };
       setView(sectionName); state.backgroundExpanded = true; state.subtype = sectionName === 'software' ? 'all' : state.inventoryTarget || 'startup'; render(); pollJob(data.job_id);
     });
   }
@@ -427,8 +383,8 @@
       if (data.status === 'running') { setTimeout(() => pollJob(id), 600); return; }
       if (data.status === 'completed' && data.result) {
         accept(data.result.catalog || data.result, false); state.warnings = data.result.warnings || []; state.selected.clear(); state.focused = null;
-        if (state.checkDestination === 'overview') { state.checked = true; state.analyzing = true; setView('overview'); await refreshRecommendations(true, true); render(); }
-        else { await refreshRecommendations(false, false); render(); }
+        if (['background', 'software'].includes(state.checkDestination)) await loadApplications(state.checkDestination);
+        render();
       } else if (data.status === 'failed') { state.analyzing = false; notify(cleanCopy(data.error || '检查没有完成，请重试。'), true); render(); }
       else if (data.status === 'cancelled') { state.analyzing = false; render(); toast('已取消，之前的检查结果会保留。'); }
     } catch (error) { if (state.job?.id === id) { state.job.status = 'failed'; state.job.error = error.message; state.analyzing = false; updateJobPanel(); notify(error.message, true); render(); } }
@@ -436,7 +392,7 @@
   async function previewPlan() {
     const ids = [...state.selected]; if (!ids.length) return;
     const mode = state.view === 'overview' && chosen().every(verifiedCache) ? 'recommended' : 'manual';
-    await task(async () => { const plan = await api('/api/plan', { ids, selection_mode: mode }); state.plan = plan; renderPlan(plan); $('plan-dialog').showModal(); });
+    await task(async () => { const plan = await api('/api/plan', { ids, selection_mode: mode, snapshots: Object.fromEntries(chosen().map((item) => [item.id, item.signature])) }); state.plan = plan; renderPlan(plan); $('plan-dialog').showModal(); });
   }
   function renderPlan(plan) {
     const host = $('plan-content'); host.replaceChildren(); $('plan-execute').hidden = false; $('plan-execute').disabled = false; $('plan-title').textContent = '确认处理清单';
@@ -455,7 +411,7 @@
     await task(async () => {
       try {
         const data = await api('/api/execute', { plan_id: state.plan.id }); accept(data); state.selected.clear(); state.plan = null; state.focused = null; $('plan-dialog').close();
-        await refreshRecommendations(false, false); setView('history'); toast('预演完成，未改动实际内容。');
+        setView('history'); toast('预演完成，未改动实际内容。');
       } catch (error) { const prior = $('plan-content').querySelector('.field-error'); if (prior) prior.remove(); append($('plan-content'), el('p', 'field-error', `${cleanCopy(error.message)} 请返回调整。`)); throw error; }
     }); target.disabled = false; target.textContent = '确认处理';
   }
@@ -472,13 +428,13 @@
     }); append(root, list);
   }
   async function undoBatch(id) {
-    await task(async () => { const batch = state.history.find((entry) => entry.id === id); accept(await api('/api/undo', { batch_id: id })); await refreshRecommendations(false, false); accept(await api('/api/bootstrap')); state.selected = new Set((batch?.items || []).map((item) => item.id).filter((key) => canSelect(state.items.find((item) => item.id === key)))); state.checked = state.items.length > 0; render(); toast('已恢复之前的选择，可回到我的文件调整。'); });
+    await task(async () => { const batch = state.history.find((entry) => entry.id === id); accept(await api('/api/undo', { batch_id: id })); accept(await api('/api/bootstrap?compact=1')); state.selected = new Set((batch?.items || []).map((item) => item.id).filter((key) => canSelect(state.items.find((item) => item.id === key)))); state.checked = state.items.length > 0; render(); toast('已恢复之前的选择，可回到我的文件调整。'); });
   }
   function settingsPayload(overrides = {}) { return { base_url: state.settings.base_url || '', model: state.settings.model || '', send_paths: state.settings.send_paths === true, custom_instructions: state.settings.custom_instructions || '', protect_patterns: Array.isArray(state.settings.protect_patterns) ? state.settings.protect_patterns : [], ...overrides }; }
   function renderModel(root) {
     append(root, heading('设置', '按你的习惯，调整检查和保留方式。'));
     const intelligence = el('section', 'panel simple-setting');
-    append(intelligence, el('h2', '', '智能建议'), el('p', '', '助手会按需调查、解释并提出方案，再根据你的选择继续。暂不连接时，可以使用基础检查。'));
+    append(intelligence, el('h2', '', '智能建议'), el('p', '', '助手会按需调查、解释并提出方案，再根据你的选择继续。暂不连接时，可在“我的文件”检查目录、手动选择和校验重复。'));
     const connection = el('details', 'setting-details'); append(connection, el('summary', '', '自定义服务'));
     const form = el('form', 'form-panel'); const grid = el('div', 'form-grid');
     const base = inputField('服务地址', 'model-base', 'url', state.settings.base_url); base.input.placeholder = 'https://…/v1'; base.box.classList.add('wide');
@@ -496,13 +452,13 @@
       await task(async () => {
         const payload = settingsPayload({ base_url: base.input.value.trim(), model: model.input.value.trim(), send_paths: paths.checked, custom_instructions: instructions.value });
         if (key.input.value) payload.api_key = key.input.value; if (clearKey.checked) payload.clear_key = true;
-        accept(await api('/api/settings', payload)); key.input.value = ''; accept(await api('/api/bootstrap')); await refreshRecommendations(false, false); render(); toast('设置已保存。');
+        accept(await api('/api/settings', payload)); key.input.value = ''; accept(await api('/api/bootstrap?compact=1')); render(); toast('设置已保存。');
       }); save.disabled = false;
     }); append(connection, form); append(intelligence, connection); append(root, intelligence);
     const preserve = el('section', 'panel simple-setting'); append(preserve, el('h2', '', '保留的位置'), el('p', '', '这些位置里的内容，不会被加入推荐处理。'));
     const keepDetails = el('details', 'setting-details'); append(keepDetails, el('summary', '', `管理保留清单${state.settings.protect_patterns?.length ? `（${state.settings.protect_patterns.length} 项）` : ''}`));
     const pLabel = el('label', 'field-label', '每行一个文件夹或匹配规则'); pLabel.htmlFor = 'protect-patterns'; const patterns = el('textarea'); patterns.id = 'protect-patterns'; patterns.value = (state.settings.protect_patterns || []).join('\n');
-    append(keepDetails, pLabel, patterns, button('保存保留清单', () => task(async () => { accept(await api('/api/settings', settingsPayload({ protect_patterns: patterns.value.split(/\r?\n/).map((v) => v.trim()).filter(Boolean) }))); accept(await api('/api/bootstrap')); await refreshRecommendations(false, false); render(); toast('保留清单已保存。'); })));
+    append(keepDetails, pLabel, patterns, button('保存保留清单', () => task(async () => { accept(await api('/api/settings', settingsPayload({ protect_patterns: patterns.value.split(/\r?\n/).map((v) => v.trim()).filter(Boolean) }))); accept(await api('/api/bootstrap?compact=1')); render(); toast('保留清单已保存。'); })));
     append(preserve, keepDetails); append(root, preserve);
     append(root, button('高级选项', () => $('advanced-toggle').click(), 'plain-button advanced-entry'));
   }
@@ -522,7 +478,7 @@
     await task(async () => { const result = await api('/api/duplicates', { ids }); state.plan = null; $('plan-title').textContent = '重复文件校验'; $('plan-execute').hidden = true; const host = $('plan-content'); host.replaceChildren(); append(host, el('p', 'muted', '重复结果只供检查，不会自动选择或删除文件。')); (result.warnings || []).forEach((warning) => append(host, el('div', 'plan-warning', text(warning)))); const groups = result.groups || []; if (!groups.length) append(host, empty('没有确认的重复组', '所选文件内容不同，或尚未完成校验。')); groups.forEach((group, index) => { const box = el('div', 'duplicate-group'); append(box, el('strong', '', `重复组 ${index + 1}`)); (group.items || group.files || []).forEach((entry) => { const item = typeof entry === 'string' ? state.items.find((i) => i.id === entry) || { name: entry } : entry; append(box, el('p', '', item.path || item.name || text(item))); }); append(host, box); }); $('plan-dialog').showModal(); });
   }
 
-  $('navigation').addEventListener('click', (e) => { const buttonNode = e.target.closest('[data-view]'); if (buttonNode) { if (buttonNode.dataset.view === 'overview') basicMode = false; setView(buttonNode.dataset.view); } });
+  $('navigation').addEventListener('click', (e) => { const buttonNode = e.target.closest('[data-view]'); if (buttonNode) { setView(buttonNode.dataset.view); } });
   document.querySelector('.sidebar-bottom [data-view]').addEventListener('click', () => setView('model'));
   document.querySelector('.brand').addEventListener('click', (e) => { e.preventDefault(); setView('overview'); });
   $('inspector-toggle').addEventListener('click', () => toggleInspector());
@@ -532,13 +488,13 @@
   $('clear-selection').addEventListener('click', () => { state.selected.clear(); if (state.view === 'overview') render(); else { renderResults(); renderInspector(); renderSelection(); } });
   $('preview-plan').addEventListener('click', previewPlan);
   $('plan-close').addEventListener('click', () => $('plan-dialog').close()); $('plan-cancel').addEventListener('click', () => $('plan-dialog').close()); $('plan-execute').addEventListener('click', executePlan);
-  $('reset-demo').addEventListener('click', () => task(async () => { const data = await api('/api/reset', {}); accept(data, false); await refreshRecommendations(false, false); state.selected.clear(); state.focused = null; state.assistant = null; $('advanced-drawer').hidden = true; $('advanced-toggle').setAttribute('aria-expanded', 'false'); render(); toast('预演记录已清空。'); }));
+  $('reset-demo').addEventListener('click', () => task(async () => { const data = await api('/api/reset', {}); accept(data, false); state.selected.clear(); state.focused = null; state.assistant = null; $('advanced-drawer').hidden = true; $('advanced-toggle').setAttribute('aria-expanded', 'false'); render(); toast('预演记录已清空。'); }));
   document.addEventListener('keydown', (event) => { if (event.key === 'Escape' && !$('advanced-drawer').hidden) $('advanced-close').click(); });
 
   async function boot() {
     try {
-      accept(await api('/api/bootstrap'), false); state.selected.clear(); state.checked = false;
-      await refreshRecommendations(false, false); render();
+      accept(await api('/api/bootstrap?compact=1'), false); state.selected.clear(); state.checked = false;
+      render();
       if (state.job?.status === 'running') pollJob(state.job.id);
     } catch (error) {
       $('connection-status').textContent = '连接未完成';
