@@ -214,6 +214,11 @@ def finalize(*, tests_run: int, health_url: str) -> dict:
     require(agent.get('passed') is True and agent.get('version') == app_version
             and agent.get('real_fixture_files_unchanged') is True and agent.get('actual_reclaimed_bytes') == 0,
             'Current agent task UI/loop acceptance did not pass')
+    native_path = VERIFY / 'native-agent-acceptance.json'
+    native = json.loads(native_path.read_text(encoding='utf-8-sig'))
+    require(native.get('passed') is True and native.get('version') == app_version
+            and native.get('exe_sha256') == sha(exe) and native.get('real_fixture_unchanged') is True,
+            'Native agent acceptance does not identify this executable or did not pass')
     screenshots = screenshot_evidence()
     manifest = source_snapshot(app_version)
     # Exclusive creation preserves all existing archives. No existing evidence,
@@ -242,6 +247,8 @@ def finalize(*, tests_run: int, health_url: str) -> dict:
                              "package_version_attribution_verified": False},
         "real_provider_tested": False, "mock_provider_tool_loop_passed": True,
         "agent_ui_acceptance": {"file": agent_path.name, "sha256": sha(agent_path), "reported_passed": True},
+        "native_agent_acceptance": {"file": native_path.name, "sha256": sha(native_path), "reported_passed": True,
+                                    "executable_attribution_verified": True},
         "source_manifest": {"file": manifest_path.name, "source_file_count": manifest["source_file_count"]},
         "release": {"exe_sha256": sha(exe), "zip_name": archive.name, "zip_bytes": archive.stat().st_size,
                     "zip_sha256": sha(archive), "zip_entries": archive_count},
