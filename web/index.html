@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>盘序 · 空间与后台管理</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#workspace">跳到工作区</a>
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="主导航">
+      <a class="brand" href="#overview"><span class="brand-symbol" aria-hidden="true">盘</span><span>盘序<small>空间与后台管理</small></span></a>
+      <div class="workspace-caption">工作台</div>
+      <nav id="navigation">
+        <button class="nav-item active" data-view="overview"><span class="nav-glyph" aria-hidden="true">▦</span>清理建议</button>
+        <button class="nav-item" data-view="files"><span class="nav-glyph" aria-hidden="true">▤</span>我的文件<span id="files-count" class="nav-count">0</span></button>
+        <button class="nav-item" data-view="background"><span class="nav-glyph" aria-hidden="true">☷</span>后台与软件</button>
+        <button class="nav-item" data-view="history"><span class="nav-glyph" aria-hidden="true">↶</span>处理记录</button>
+      </nav>
+      <div class="sidebar-bottom">
+        <div class="environment-label"><span class="status-dot"></span>本地运行</div>
+        <button class="nav-item" data-view="model"><span class="nav-glyph" aria-hidden="true">⚙</span>设置</button>
+      </div>
+    </aside>
+    <div class="app-body">
+      <header class="topbar">
+        <div class="breadcrumb">盘序 <span aria-hidden="true">/</span> <span id="breadcrumb-current">清理建议</span></div>
+        <div class="topbar-tools"><span class="local-status"><span class="status-dot"></span>本地运行</span><button id="advanced-toggle" hidden aria-expanded="false">高级选项</button><button id="inspector-toggle" class="icon-button" aria-expanded="false" aria-controls="inspector" hidden>收起说明</button></div>
+      </header>
+      <div class="safety-banner"><span class="banner-mark" aria-hidden="true">i</span><p><strong>测试保护已开启：</strong>本次处理只记录结果，不会改变文件或系统。</p></div>
+      <div id="global-message" class="global-message" role="status" hidden></div>
+      <div class="content-grid inspector-hidden" id="content-grid">
+        <main id="workspace" tabindex="-1" aria-label="工作区"><div class="loading-state"><span class="spinner"></span><h1>正在查看你的电脑</h1><p>马上就好。</p></div></main>
+        <aside id="inspector" class="inspector" aria-label="项目说明" hidden><div id="inspector-content"></div></aside>
+      </div>
+      <footer id="selection-bar" class="selection-bar" hidden aria-label="处理选择"><div><strong id="selection-count"></strong><span id="selection-size"></span><span id="hidden-selection" class="hidden-selection" hidden></span></div><div class="selection-actions"><button id="clear-selection" class="plain-button">取消选择</button><button id="preview-plan" class="button primary">处理推荐项</button></div></footer>
+      <footer class="app-footer"><span>盘序</span><span id="connection-status">正在连接</span></footer>
+    </div>
+  </div>
+  <aside id="advanced-drawer" class="advanced-drawer" aria-labelledby="advanced-heading" hidden><div class="drawer-heading"><h2 id="advanced-heading">高级选项</h2><button id="advanced-close" class="icon-button" aria-label="关闭高级选项">关闭</button></div><label class="field-label" for="scan-limit">每次检查的项目上限</label><select id="scan-limit"><option value="1000">1,000 项</option><option value="4000" selected>4,000 项</option><option value="10000">10,000 项</option></select><p class="field-help">超过上限的文件夹不会整组处理。</p><label class="check-line"><input id="show-evidence" type="checkbox">在详情里显示识别依据</label><hr><h3>选择范围</h3><p>“全选当前结果”只覆盖你正在查看的筛选结果。其他页面的选择会保留，并在处理前完整列出。</p><p>下载资料、个人文件和后台程序需要你自行决定。保护清单优先于所有建议。</p><button id="reset-demo" class="button">清空预演变更</button><p class="field-help">仅清空测试保护下记录的处理状态。</p></aside>
+  <dialog id="plan-dialog" aria-labelledby="plan-title"><div class="dialog-heading"><div><h2 id="plan-title">确认处理清单</h2></div><button id="plan-close" class="icon-button">关闭</button></div><div id="plan-content"></div><div class="dialog-actions"><button id="plan-cancel" class="button">返回调整</button><button id="plan-execute" class="button primary">确认处理</button></div></dialog>
+  <div id="toast" class="toast" role="status" hidden></div>
+</body>
+</html>

@@ -1,0 +1,3 @@
+# Core HTTP server, scan and simulation journal use the Python standard library.
+pywebview>=6.0,<7
+psutil>=7.0,<8

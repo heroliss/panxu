@@ -1,0 +1,72 @@
+{
+  "product": "盘序",
+  "version": "0.2.0",
+  "mode": "simulation",
+  "root": "E:\\Document\\杂项\\win11-disk-assistant",
+  "safety": "This build has NO real executor. All apply/undo/reset operations modify only SQLite simulation records. Never unlink/move/kill/control services/edit startup outside app-owned data.",
+  "item_fields": [
+    "id",
+    "kind",
+    "name",
+    "path",
+    "owner",
+    "category",
+    "size_bytes",
+    "allocated_bytes",
+    "risk",
+    "recommendation",
+    "reason",
+    "impact",
+    "actions",
+    "signature",
+    "details",
+    "evidence",
+    "simulated"
+  ],
+  "kinds": [
+    "file",
+    "directory",
+    "startup",
+    "service",
+    "process",
+    "software"
+  ],
+  "risks": [
+    "low",
+    "review",
+    "protected"
+  ],
+  "actions": [
+    "delete",
+    "disable_startup",
+    "stop_service",
+    "stop_process",
+    "uninstall"
+  ],
+  "api": {
+    "GET /api/bootstrap": "{csrf,mode,items,summary,settings,history,disks,source,job?}",
+    "POST /api/check": "{} -> {job_id}; bounded common cache locations plus background/software inventories",
+    "GET /api/recommendations": "{items:[original item + advice],groups,summary}; cached current model result or local rules",
+    "POST /api/recommendations/analyze": "{} -> {items,groups,summary}; structured model advice if configured, rule fallback otherwise",
+    "POST /api/scan": "{path,max_entries?,max_depth?} -> {job_id}",
+    "POST /api/inventory": "{section:'background'|'software'} -> {job_id}",
+    "GET /api/jobs/{id}": "{id,status:'running'|'completed'|'failed'|'cancelled',progress,result?,error?}",
+    "POST /api/jobs/{id}/cancel": "{} -> {job}",
+    "POST /api/plan": "{ids,action?,selection_mode?:'manual'|'recommended'} -> {id,items,counts,estimated_bytes,warnings,mode}; recommended mode rejects any item requiring user choice",
+    "POST /api/execute": "{plan_id} -> {batch,items,summary,history,source,mode}",
+    "POST /api/undo": "{batch_id} -> {items,summary,history,source,mode}",
+    "POST /api/reset": "{} -> {items,summary,history,source,mode}",
+    "GET /api/history": "{history}",
+    "POST /api/duplicates": "{ids} -> {groups,warnings}",
+    "POST /api/settings": "{base_url,model,api_key?,clear_key?,send_paths?,custom_instructions?,protect_patterns?} -> {settings}",
+    "POST /api/assistant": "{question,ids?} -> {answer,trace,evidence,mode}",
+    "GET /api/item?id=...": "{item}"
+  },
+  "mutations": "Require X-CSRF-Token from bootstrap. Errors are JSON {error,code}. Relative same-origin fetch only. Input limits apply.",
+  "summary": "{total_items,visible_items,simulated_items,logical_bytes,simulated_bytes,process_memory_bytes,by_kind,source,mode}. Real disks separate; no simulated_bytes shown as actual freed space.",
+  "source": "empty | local; normal startup contains no synthetic examples; fixtures require developer_fixtures=True at server creation",
+  "advice": "{group:'recommended'|'personal'|'keep'|'review',title,reason,impact,auto_select,suggested_action,origin:'rule'|'model',needs_user_choice}; personal and unknown files never auto_select",
+  "history": "list batches {id,created_at,status:'simulated'|'undone',item_count,estimated_bytes,items:[{id,name,path,kind,action,status}],mode}",
+  "plans": "Risk protected cannot queue. Default action by item kind. Incomplete dirs disallowed. Existing simulated skip. Planned catalog revision bound, stale live signatures checked before execute. No raw arbitrary path actions.",
+  "privacy": "No user file body read for LLM. Metadata only; send_paths false by default. No real provider key expected in tests. LLM cannot execute or approve plans."
+}

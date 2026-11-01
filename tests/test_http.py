@@ -1,0 +1,104 @@
+import json
+from pathlib import Path
+import tempfile
+import threading
+import unittest
+import urllib.request
+import urllib.error
+import time
+
+from diskpilot.server import create_server
+
+
+class HttpTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.server = create_server(Path(cls.tmp.name), developer_fixtures=True)
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+        cls.base = f'http://127.0.0.1:{cls.server.server_port}'
+        cls.csrf = cls.get('/api/bootstrap')['csrf']
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+        cls.server.app.close()
+        cls.tmp.cleanup()
+
+    @classmethod
+    def get(cls, path):
+        with urllib.request.urlopen(cls.base + path, timeout=10) as response:
+            return json.load(response)
+
+    def post(self, path, payload, *, csrf=None, origin=None):
+        headers = {'Content-Type': 'application/json', 'X-CSRF-Token': self.csrf if csrf is None else csrf}
+        if origin:
+            headers['Origin'] = origin
+        request = urllib.request.Request(self.base + path, data=json.dumps(payload).encode(), headers=headers)
+        with urllib.request.urlopen(request, timeout=15) as response:
+            return json.load(response)
+
+    def test_health_says_live_executor_unavailable(self):
+        value = self.get('/api/health')
+        self.assertEqual(value['mode'], 'simulation')
+        self.assertFalse(value['live_executor_available'])
+
+    def test_csrf_and_foreign_origin_rejected(self):
+        for options in ({'csrf': 'invalid'}, {'origin': 'https://evil.example'}):
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                self.post('/api/reset', {}, **options)
+            self.assertEqual(ctx.exception.code, 403)
+            ctx.exception.close()
+
+    def test_no_real_executor_or_arbitrary_file_endpoint(self):
+        for path in ('/api/real-delete', '/api/execute-live', '/api/kill', '/api/shell'):
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                self.post(path, {'path': r'C:\Windows'})
+            self.assertEqual(ctx.exception.code, 404)
+            ctx.exception.close()
+
+    def test_demo_mixed_plan_execute_undo(self):
+        self.post('/api/demo', {})
+        self.post('/api/reset', {})
+        plan = self.post('/api/plan', {'ids': ['demo-cache-file', 'demo-startup', 'demo-service', 'demo-process']})
+        value = self.post('/api/execute', {'plan_id': plan['id']})
+        self.assertEqual(value['batch']['item_count'], 4)
+        self.assertEqual(value['summary']['actual_reclaimed_bytes'], 0)
+        undone = self.post('/api/undo', {'batch_id': value['batch']['id']})
+        self.assertEqual(undone['summary']['simulated_items'], 0)
+
+    def test_default_assistant_local_no_key_required(self):
+        self.post('/api/demo', {})
+        result = self.post('/api/assistant', {'question': '这些缓存可以处理吗', 'ids': ['demo-cache-file']})
+        self.assertEqual(result['mode'], 'local')
+        self.assertTrue(result['answer'])
+
+    def test_static_page_has_csp_and_no_path_traversal(self):
+        with urllib.request.urlopen(self.base + '/') as response:
+            self.assertIn("script-src 'self'", response.headers['Content-Security-Policy'])
+            self.assertIn('盘序', response.read().decode())
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            self.get('/../run.py')
+        self.assertEqual(ctx.exception.code, 404)
+        ctx.exception.close()
+
+    def test_failed_scan_keeps_old_catalog_and_redacts_invalid_limits(self):
+        before = {x['id'] for x in self.get('/api/bootstrap')['items']}
+        for payload in ({'path': str(Path(self.tmp.name) / 'absent')},
+                        {'path': '..'},
+                        {'path': self.tmp.name, 'max_entries': 'Bearer test-private-value'}):
+            job = self.post('/api/scan', payload)
+            for _ in range(100):
+                result = self.get('/api/jobs/' + job['job_id'])
+                if result['status'] != 'running':
+                    break
+                time.sleep(.01)
+            self.assertEqual(result['status'], 'failed')
+            self.assertNotIn('test-private-value', json.dumps(result))
+            self.assertEqual(before, {x['id'] for x in self.get('/api/bootstrap')['items']})
+
+
+if __name__ == '__main__':
+    unittest.main()

@@ -1,0 +1,308 @@
+from __future__ import annotations
+
+import argparse
+from concurrent.futures import ThreadPoolExecutor
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import json
+import os
+from pathlib import Path
+import secrets
+import sys
+import threading
+import time
+from urllib.parse import urlsplit, parse_qs
+
+from . import __version__
+from .duplicates import verify_duplicates
+from .llm import ModelAssistant
+from .recommendations import build_recommendations
+from .scanner import scan_directory
+from .simulation import AppError, SimulationState
+from .windows import disks, inventory, validate_system_items
+
+
+def common_cache_paths():
+    """Only well-known current-profile locations; no broad drive traversal."""
+    local = os.environ.get('LOCALAPPDATA')
+    if not local or not os.path.isabs(local):
+        return []
+    root = Path(local)
+    candidates = [root / 'D3DSCache', root / 'NVIDIA' / 'DXCache',
+                  root / 'pip' / 'Cache', root / 'npm-cache']
+    return [str(path) for path in candidates if path.is_dir()]
+
+
+class Application:
+    def __init__(self, data_dir, *, developer_fixtures=False):
+        self.state = SimulationState(data_dir)
+        self.developer_fixtures = developer_fixtures
+        if not developer_fixtures:
+            self.state.discard_development_fixtures()
+        self.assistant = ModelAssistant(Path(data_dir))
+        self.recommendation_cache = None
+        self.settings_revision = 0
+        self.csrf = secrets.token_urlsafe(32)
+        self.jobs = {}
+        self.job_lock = threading.RLock()
+        self.pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix='read-only-scan')
+        self.web_root = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parents[1])) / 'web'
+
+    def patterns(self):
+        return self.assistant.public_settings().get('protect_patterns', [])
+
+    def view(self):
+        return self.state.view(self.patterns())
+
+    def recommendation_token(self):
+        return (self.state.revision, self.settings_revision, tuple(self.patterns()))
+
+    def recommendations(self, *, use_model=False):
+        with self.state.lock:
+            token = self.recommendation_token()
+            if not use_model and self.recommendation_cache and self.recommendation_cache[0] == token:
+                return self.recommendation_cache[1]
+            items = self.view()['items']
+        result = build_recommendations(items, self.assistant, use_model=use_model)
+        with self.state.lock:
+            if self.recommendation_token() != token:
+                raise AppError('检查结果或设置已更新，请重新查看建议。', 'stale_recommendations', 409)
+            self.recommendation_cache = (token, result)
+        return result
+
+    def start_job(self, kind, payload):
+        with self.job_lock:
+            if sum(x['status'] == 'running' for x in self.jobs.values()) >= 2:
+                raise AppError('已有两个只读采集任务，请等待或取消。', 'job_limit', 409)
+            finished = [key for key, job in self.jobs.items() if job['status'] != 'running']
+            for old in finished[:-18]:
+                self.jobs.pop(old, None)
+            key = secrets.token_hex(8)
+            cancel = threading.Event()
+            job = dict(id=key, status='running', progress={'message': '准备只读采集'}, result=None, error=None)
+            self.jobs[key] = dict(job, _cancel=cancel)
+        def progress(value):
+            with self.job_lock:
+                self.jobs[key]['progress'] = value
+        def run():
+            try:
+                pending = []
+                if kind == 'scan':
+                    path = payload.get('path')
+                    if not isinstance(path, str) or not path.strip():
+                        raise AppError('请输入要扫描的绝对目录。')
+                    path = os.path.expanduser(path.strip())
+                    if not os.path.isabs(path):
+                        raise AppError('请使用绝对目录，不能使用相对路径。')
+                    entries, depth = payload.get('max_entries', 25000), payload.get('max_depth', 12)
+                    if type(entries) is not int or type(depth) is not int:
+                        raise AppError('扫描条目和深度必须为整数。')
+                    result = scan_directory(path, max_entries=min(max(entries, 1), 100000),
+                                            max_depth=min(max(depth, 1), 32), cancel=cancel, progress=progress)
+                    if result.get('summary', {}).get('status') == 'error':
+                        raise AppError('该目录无法扫描，旧清单已保留；请确认路径、权限及链接状态。', 'scan_failed')
+                    group = 'filesystem:' + os.path.normcase(os.path.abspath(path))
+                    pending.append((group, result.get('items', [])))
+                elif kind == 'check':
+                    reports, warnings = [], []
+                    paths = common_cache_paths()
+                    for index, path in enumerate(paths):
+                        if cancel.is_set():
+                            break
+                        progress({'message': f'正在检查常见缓存（{index + 1}/{len(paths)}）'})
+                        report = scan_directory(path, max_entries=5000, max_depth=12, cancel=cancel)
+                        reports.append({'scope': 'cache', 'path': path, 'summary': report.get('summary', {})})
+                        if report.get('summary', {}).get('status') == 'error':
+                            warnings.append('有一个缓存目录暂时无法读取，已保留其原清单。')
+                            continue
+                        pending.append(('filesystem:' + os.path.normcase(os.path.abspath(path)), report.get('items', [])))
+                    for section, title in (('background', '后台项目'), ('software', '已安装软件')):
+                        if cancel.is_set():
+                            break
+                        progress({'message': f'正在了解{title}，不会修改系统设置'})
+                        report = inventory(section)
+                        pending.append((section, report.get('items', [])))
+                        reports.append({'scope': section, 'summary': report.get('summary', {})})
+                    result = {'scopes': reports, 'warnings': warnings,
+                              'summary': {'status': 'cancelled' if cancel.is_set() else 'completed',
+                                          'scope_description': '常见缓存、后台项目与已安装软件；未扫描个人文件内容或整个磁盘。',
+                                          'cache_locations_checked': len(paths)}}
+                else:
+                    result = inventory(payload.get('section', 'background'))
+                    group = payload.get('section', 'background')
+                    pending.append((group, result.get('items', [])))
+                # Cancellation keeps previous catalog; partial result remains available in task history.
+                if not cancel.is_set():
+                    with self.state.lock:
+                        for group, items in pending:
+                            self.state.publish(items, group)
+                        result['catalog'] = self.view()
+                with self.job_lock:
+                    self.jobs[key].update(status='cancelled' if cancel.is_set() else 'completed', result=result,
+                                          progress={'message': '已取消' if cancel.is_set() else '只读采集完成'})
+            except Exception as exc:
+                message = str(exc) if isinstance(exc, AppError) else '采集失败：' + type(exc).__name__
+                with self.job_lock:
+                    self.jobs[key].update(status='failed', error=message)
+        self.pool.submit(run)
+        return {'job_id': key}
+
+    def job(self, key):
+        with self.job_lock:
+            value = self.jobs.get(key)
+            if not value:
+                raise AppError('任务不存在。', 'unknown_job', 404)
+            return {k: v for k, v in value.items() if not k.startswith('_')}
+
+    def get(self, path, query):
+        if path == '/api/bootstrap':
+            return dict(self.view(), csrf=self.csrf, version=__version__, settings=self.assistant.public_settings(), disks=disks(), default_scan_path=str(Path.home() / 'Downloads'))
+        if path == '/api/health':
+            return {'status': 'ok', 'mode': 'simulation', 'version': __version__, 'live_executor_available': False}
+        if path == '/api/history':
+            return {'history': self.state.history()}
+        if path == '/api/recommendations':
+            return self.recommendations()
+        if path.startswith('/api/jobs/'):
+            return self.job(path.rsplit('/', 1)[-1])
+        if path == '/api/item':
+            key = query.get('id', [''])[0]
+            item = next((x for x in self.view()['items'] if x['id'] == key), None)
+            if not item:
+                raise AppError('项目不存在。', 'unknown_item', 404)
+            return {'item': item}
+        raise AppError('接口不存在。', 'not_found', 404)
+
+    def post(self, path, payload):
+        if path == '/api/demo' and self.developer_fixtures:
+            self.state.replace_demo()
+            return self.view()
+        if path == '/api/scan':
+            return self.start_job('scan', payload)
+        if path == '/api/check':
+            return self.start_job('check', payload)
+        if path == '/api/recommendations/analyze':
+            return self.recommendations(use_model=True)
+        if path == '/api/inventory':
+            if payload.get('section') not in ('background', 'software'):
+                raise AppError('请选择后台或软件清单。')
+            return self.start_job('inventory', payload)
+        if path.startswith('/api/jobs/') and path.endswith('/cancel'):
+            key = path.split('/')[-2]
+            with self.job_lock:
+                if key not in self.jobs:
+                    raise AppError('任务不存在。', 'unknown_job', 404)
+                self.jobs[key]['_cancel'].set()
+            return {'job': self.job(key)}
+        if path == '/api/plan':
+            with self.state.lock:
+                mode = payload.get('selection_mode', 'manual')
+                if mode not in ('manual', 'recommended'):
+                    raise AppError('请选择处理推荐项或手动选择项目。')
+                if mode == 'recommended':
+                    ids = payload.get('ids')
+                    advice = self.recommendations()
+                    allowed = {x['id'] for x in advice['items'] if x.get('advice', {}).get('auto_select') is True
+                               and x['advice'].get('group') == 'recommended' and not x['advice'].get('needs_user_choice')}
+                    if not isinstance(ids, list) or not ids or any(not isinstance(x, str) or x not in allowed for x in ids):
+                        raise AppError('个人文件和需要确认的项目不能加入一键推荐，请到“我的文件”自行选择。', 'user_choice_required')
+                return self.state.prepare(payload.get('ids'), self.patterns(), payload.get('action'))
+        if path == '/api/execute':
+            return self.state.execute(payload.get('plan_id'), self.patterns(), validate_system_items)
+        if path == '/api/undo':
+            return self.state.undo(payload.get('batch_id'), self.patterns())
+        if path == '/api/reset':
+            return self.state.reset(self.patterns())
+        if path == '/api/settings':
+            try:
+                settings = self.assistant.save_settings(payload)
+            except ValueError as exc:
+                raise AppError(str(exc), 'invalid_settings') from None
+            self.settings_revision += 1
+            self.recommendation_cache = None
+            return {'settings': settings}
+        if path in ('/api/duplicates', '/api/assistant'):
+            items = self.view()['items']
+            ids = payload.get('ids')
+            if ids is not None and (not isinstance(ids, list) or len(ids) > 500 or any(not isinstance(x, str) for x in ids)):
+                raise AppError('项目选择格式无效。')
+            if path == '/api/duplicates':
+                if not ids:
+                    raise AppError('请明确选择要校验的文件。')
+                selected = [x for x in items if x['id'] in ids]
+                return verify_duplicates(selected)
+            question = payload.get('question', '')
+            if not isinstance(question, str) or not question.strip() or len(question) > 4000:
+                raise AppError('请输入不超过 4000 字的分析要求。')
+            return self.assistant.analyze(question, items, ids)
+        raise AppError('接口不存在。', 'not_found', 404)
+
+    def close(self):
+        for job in self.jobs.values():
+            job['_cancel'].set()
+        self.pool.shutdown(wait=True, cancel_futures=True)
+        self.state.close()
+
+
+def create_server(data_dir, port=0, *, developer_fixtures=False):
+    app = Application(data_dir, developer_fixtures=developer_fixtures)
+    class Handler(BaseHTTPRequestHandler):
+        server_version = 'PanXu/0.2'
+        def log_message(self, *_):
+            pass
+
+        def valid_host(self):
+            return self.headers.get('Host') in (f'127.0.0.1:{self.server.server_port}', f'localhost:{self.server.server_port}')
+
+        def send(self, status, body, mime='application/json; charset=utf-8'):
+            encoded = body if isinstance(body, bytes) else json.dumps(body, ensure_ascii=False).encode('utf-8')
+            self.send_response(status)
+            self.send_header('Content-Type', mime)
+            self.send_header('Content-Length', str(len(encoded)))
+            self.send_header('Cache-Control', 'no-store')
+            self.send_header('X-Content-Type-Options', 'nosniff')
+            self.send_header('Referrer-Policy', 'no-referrer')
+            self.send_header('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'")
+            self.end_headers()
+            self.wfile.write(encoded)
+
+        def do_GET(self):
+            if not self.valid_host():
+                return self.send(403, {'error': '不接受该 Host。', 'code': 'bad_host'})
+            parsed = urlsplit(self.path)
+            try:
+                if parsed.path.startswith('/api/'):
+                    return self.send(200, app.get(parsed.path, parse_qs(parsed.query)))
+                names = {'/': ('index.html', 'text/html; charset=utf-8'), '/index.html': ('index.html', 'text/html; charset=utf-8'),
+                         '/app.js': ('app.js', 'text/javascript; charset=utf-8'), '/style.css': ('style.css', 'text/css; charset=utf-8')}
+                if parsed.path not in names:
+                    raise AppError('页面不存在。', 'not_found', 404)
+                name, mime = names[parsed.path]
+                return self.send(200, (app.web_root / name).read_bytes(), mime)
+            except AppError as exc:
+                return self.send(exc.status, {'error': str(exc), 'code': exc.code})
+            except Exception:
+                return self.send(500, {'error': '无法加载本地页面或数据。', 'code': 'internal_error'})
+
+        def do_POST(self):
+            origin = self.headers.get('Origin')
+            allowed = (f'http://127.0.0.1:{self.server.server_port}', f'http://localhost:{self.server.server_port}')
+            if not self.valid_host() or (origin is not None and origin not in allowed) or not secrets.compare_digest(self.headers.get('X-CSRF-Token', '').encode('utf-8'), app.csrf.encode('utf-8')):
+                return self.send(403, {'error': '请求来源或会话校验失败，请刷新页面。', 'code': 'csrf_failed'})
+            try:
+                size = int(self.headers.get('Content-Length', '0'))
+                if not 0 < size <= 1_000_000 or not self.headers.get('Content-Type', '').startswith('application/json'):
+                    raise AppError('请求必须为不超过 1 MB 的 JSON。')
+                payload = json.loads(self.rfile.read(size))
+                if not isinstance(payload, dict):
+                    raise AppError('请求必须为 JSON 对象。')
+                return self.send(200, app.post(urlsplit(self.path).path, payload))
+            except AppError as exc:
+                return self.send(exc.status, {'error': str(exc), 'code': exc.code})
+            except (ValueError, TypeError, KeyError) as exc:
+                return self.send(400, {'error': '参数或模型配置无效：' + type(exc).__name__, 'code': 'invalid_request'})
+            except Exception:
+                return self.send(500, {'error': '本地请求未完成；系统状态没有被操作。', 'code': 'internal_error'})
+    server = ThreadingHTTPServer(('127.0.0.1', port), Handler)
+    server.daemon_threads = True
+    server.app = app
+    return server
