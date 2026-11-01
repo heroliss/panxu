@@ -65,7 +65,7 @@
   "mutations": "Require X-CSRF-Token from bootstrap. Errors are JSON {error,code}. Relative same-origin fetch only. Input limits apply.",
   "summary": "{total_items,visible_items,simulated_items,logical_bytes,simulated_bytes,process_memory_bytes,by_kind,source,mode}. Real disks separate; no simulated_bytes shown as actual freed space.",
   "source": "empty | local; normal startup contains no synthetic examples; fixtures require developer_fixtures=True at server creation",
-  "advice": "{group:'recommended'|'personal'|'keep'|'review',title,reason,impact,auto_select,suggested_action,origin:'rule'|'model',needs_user_choice}; personal and unknown files never auto_select",
+  "advice": "{group:'recommended'|'personal'|'keep'|'review',title,purpose,reason,impact,auto_select,suggested_action,origin:'rule'|'model',needs_user_choice}; personal and unknown files never auto_select",
   "history": "list batches {id,created_at,status:'simulated'|'undone',item_count,estimated_bytes,items:[{id,name,path,kind,action,status}],mode}",
   "plans": "Risk protected cannot queue. Default action by item kind. Incomplete dirs disallowed. Existing simulated skip. Planned catalog revision bound, stale live signatures checked before execute. No raw arbitrary path actions.",
   "privacy": "No user file body read for LLM. Metadata only; send_paths false by default. No real provider key expected in tests. LLM cannot execute or approve plans."

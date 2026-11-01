@@ -270,12 +270,12 @@ class SimulationState:
             for entry in selected:
                 item = entry['item']
                 if item['kind'] in ('file', 'directory') and not item.get('details', {}).get('synthetic') and not validate_item_snapshot(item):
-                    raise AppError('目标已偏离扫描快照，请重新扫描：' + item['name'], 'stale_snapshot', 409)
+                    raise AppError('这项内容在检查后有了变化，请重新检查：' + item['name'], 'stale_snapshot', 409)
             observations = {x['item']['id']: fingerprint(x['item'], patterns) for x in selected}
             for entry in selected:
                 item = entry['item']
                 if item['kind'] in ('file', 'directory') and not item.get('details', {}).get('synthetic') and not validate_item_snapshot(item):
-                    raise AppError('目标在预览校验期间发生变化，请重新扫描。', 'stale_snapshot', 409)
+                    raise AppError('这项内容刚刚有了变化，请重新检查后再处理。', 'stale_snapshot', 409)
             plan_id = secrets.token_hex(12)
             public = dict(id=plan_id, mode='simulation', items=[dict(x['item'], action=x['action']) for x in selected],
                           counts={kind: sum(x['item']['kind'] == kind for x in selected) for kind in ('file', 'directory', 'startup', 'service', 'process', 'software')},

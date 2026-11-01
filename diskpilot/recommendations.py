@@ -186,6 +186,28 @@ def _purpose_title(item):
     return prefixes.get(item.get("kind"), "") + name
 
 
+def _purpose_description(item):
+    if _managed_cache(item):
+        path = str(item.get("path", "")).replace("\\", "/").casefold()
+        if "/pip/cache" in path:
+            return "安装或更新 Python 工具时保存的下载和构建副本，之后需要时可以重新获取。"
+        if "/npm-cache" in path:
+            return "JavaScript 开发工具保存的软件包下载副本，用于加快以后安装软件包的速度。"
+        if any(p in path for p in ("/nvidia/dxcache", "/nvidia/glcache", "/d3dscache")):
+            return "显卡为游戏和图形应用保存的计算结果，用来缩短后续加载和编译时间。"
+        return "应用为了加快运行而保存的临时副本，可以在需要时重新生成。"
+    kind = item.get("kind")
+    descriptions = {
+        "startup": "让相关应用在登录 Windows 后自动打开；它与应用本身是两个不同的设置。",
+        "service": "在后台为 Windows 或其他应用提供功能，是否需要取决于用途和依赖关系。",
+        "process": "当前正在运行的应用或后台任务；关闭它可能中断正在进行的工作。",
+        "software": "电脑中已安装的软件，清理前需要了解它的用途以及是否仍在使用。",
+        "directory": "包含其他文件的文件夹，整组处理会影响里面的内容。",
+        "file": "这是已检查到的文件，仅凭名称和大小还不能确定你是否需要保留。",
+    }
+    return descriptions.get(kind, "目前还不能可靠确认它的具体用途。")
+
+
 def _validated_suggestions(value, items):
     """Reject a complete malformed/out-of-scope batch, rather than half-apply it."""
     if not isinstance(value, list) or len(value) > 100:
@@ -279,6 +301,7 @@ def build_recommendations(items, assistant=None, *, use_model=False):
     _coalesce_auto_selection(result)
     for item in result:
         item["advice"]["title"] = _purpose_title(item)
+        item["advice"]["purpose"] = _purpose_description(item)
     groups = [{"id": key, "title": title, "count": sum(i["advice"]["group"] == key for i in result),
                "ids": [i.get("id") for i in result if i["advice"]["group"] == key]}
               for key, title in _GROUPS]

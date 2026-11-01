@@ -67,6 +67,12 @@
     return 'keep';
   }
   function cleanCopy(value) { return text(value).replaceAll('可模拟清理', '可以处理').replaceAll('模拟', '预演').replaceAll('只读采集', '检查').replaceAll('只读盘点', '检查'); }
+  function itemPurpose(item) {
+    const rec = advice(item); if (rec.purpose) return rec.purpose;
+    if (/cache|缓存/i.test(item.category || '')) return `${item.owner || '应用'}保存的中间结果，用来减少重复下载或处理，让下次使用更快。`;
+    const purposes = { startup: '决定相关应用是否在你登录电脑后自动打开。', service: '在后台提供功能的程序，其他应用可能依赖它。', process: '当前正在运行的应用或后台任务。', software: '安装在电脑上的应用，可能还包含插件和配置。' };
+    return purposes[item.kind] || `${item.owner || '应用或个人资料'}相关的${item.category || '文件'}；是否继续保留，需要结合具体用途判断。`;
+  }
   function selectionUnits(item) { return canSelect(item) ? [item] : []; }
   function unitsInScope(items) {
     const ids = new Set(items.map((item) => item.id));
@@ -173,7 +179,7 @@
       const start = button(state.job?.status === 'running' || state.analyzing ? '正在检查…' : '开始检查', beginCheck, 'button primary start-button'); start.disabled = state.job?.status === 'running' || state.analyzing; append(welcome, start, el('small', '', '不遍历全盘，也不读取个人文件正文')); append(root, welcome); appendJob(root);
       return;
     }
-    append(root, heading('清理建议', '可以放心处理的先选好，个人资料留给你决定。', [button('自己挑选', () => { state.filesExpanded = true; setView('files'); }, 'plain-button')]));
+    append(root, heading('清理建议', '已为你选好推荐项，个人文件仍由你决定。', [button('自己挑选', () => { state.filesExpanded = true; setView('files'); }, 'plain-button')]));
     appendJob(root);
 
     if (state.analyzing) append(root, append(el('div', 'analysis-loading'), el('span', 'spinner'), el('span', '', '正在整理建议…')));
@@ -181,11 +187,12 @@
     if (!available.length) {
       append(root, empty('暂时没有需要处理的内容', '当前检查范围里没有发现可以建议的项目。你可以换个文件夹继续检查。', [button('选择其他位置', () => setView('files'))])); return;
     }
-    const groups = [ ['safe', '可以放心处理', '这些内容可以重新生成。'], ['personal', '需要你决定', '你下载或创建的文件，先确认还用不用。'], ['keep', '建议保留', '系统、个人资料或暂时不能确认用途的内容。'] ];
+    if (!available.some((item) => adviceGroup(item) === 'safe')) append(root, el('p', 'quiet-note', '暂未找到可直接推荐的内容，其他项目可以查看后自行决定。'));
+    const groups = [ ['safe', '建议处理', '这些内容可以重新生成。'], ['personal', '需要你决定', '你下载或创建的文件，先确认还用不用。'], ['keep', '建议保留', '系统、个人资料或暂时不能确认用途的内容。'] ];
     groups.forEach(([key, title, note]) => {
       const items = available.filter((item) => adviceGroup(item) === key && !(key === 'safe' && available.some((parent) => parent.id !== item.id && parent.kind === 'directory' && adviceGroup(parent) === 'safe' && inDirectory(item.path, parent.path))));
+      if (!items.length) return;
       const block = el(key === 'keep' ? 'details' : 'section', `recommendation-group group-${key}`); const groupHead = el(key === 'keep' ? 'summary' : 'div', 'recommendation-group-heading'); append(groupHead, el('h2', '', title), el('span', 'group-total', `${items.length} 项`)); append(block, groupHead);
-      if (!items.length) append(block, el('p', 'group-empty', key === 'safe' ? '暂未找到可以直接推荐的内容。' : '这个分类暂时没有项目。'));
       const display = state.showAllCards.has(key) ? items : items.slice(0, 3); const cards = el('div', 'recommendation-cards'); display.forEach((item) => append(cards, recommendationCard(item))); append(block, cards);
       if (items.length > display.length) append(block, button(`查看其余 ${items.length - display.length} 项`, () => { state.showAllCards.add(key); render(); }, 'plain-button more-cards'));
       append(root, block);
@@ -312,7 +319,7 @@
       const group = el('tr', 'group-row'); const cell = el('td'); cell.colSpan = 5; const label = el('label', 'group-label'); append(label, selectionBox(groupItems, `选择当前结果内的${category}分组`), el('span', '', category), el('span', 'group-count', `${groupItems.length} 项`)); append(cell, label); append(group, cell); append(body, group);
       rows.forEach((item) => {
         const row = el('tr', `item-row${isSelected(item) ? ' selected-row' : ''}${state.focused?.id === item.id ? ' focused-row' : ''}`); row.tabIndex = 0; row.setAttribute('aria-label', `查看 ${item.name} 的说明`);
-        const checkCell = el('td', 'check-cell'); const checkbox = el('input'); checkbox.type = 'checkbox'; const units = selectionUnits(item); checkbox.checked = isSelected(item); checkbox.indeterminate = !checkbox.checked && (units.some((unit) => state.selected.has(unit.id)) || (item.kind === 'directory' && chosen().some((child) => inDirectory(child.path, item.path)))); checkbox.disabled = !units.length; checkbox.setAttribute('aria-label', item.kind === 'directory' ? `选择${item.name}内已扫描的可操作子项` : `选择${item.name}`); checkbox.title = item.kind === 'directory' && units.length ? '目录仅勾选已经扫描的可操作子项；包含筛选隐藏的子项，批次会完整预览。' : selectionReason(item); checkbox.addEventListener('click', (e) => e.stopPropagation()); checkbox.addEventListener('change', () => { toggleItem(item, checkbox.checked); renderResults(); renderSelection(); }); append(checkCell, checkbox);
+        const checkCell = el('td', 'check-cell'); const checkbox = el('input'); checkbox.type = 'checkbox'; const units = selectionUnits(item); checkbox.checked = isSelected(item); checkbox.indeterminate = !checkbox.checked && (units.some((unit) => state.selected.has(unit.id)) || (item.kind === 'directory' && chosen().some((child) => inDirectory(child.path, item.path)))); checkbox.disabled = !units.length; checkbox.setAttribute('aria-label', item.kind === 'directory' ? `选择完整文件夹${item.name}` : `选择${item.name}`); checkbox.title = item.kind === 'directory' && units.length ? '选择完整文件夹；处理前核对内容。' : selectionReason(item); checkbox.addEventListener('click', (e) => e.stopPropagation()); checkbox.addEventListener('change', () => { toggleItem(item, checkbox.checked); renderResults(); renderSelection(); }); append(checkCell, checkbox);
         const name = el('td', 'name-cell'); const title = el('div', 'item-name'); append(title, el('span', 'file-mark', item.kind === 'directory' ? '▥' : item.kind === 'file' ? '▤' : item.kind === 'software' ? '▣' : '▪'), el('span', '', item.name || '未命名项目')); append(name, title, el('div', 'item-path', item.owner || kindNames[item.kind])); name.title = item.name || '';
         const size = el('td', 'size-cell', item.kind === 'service' || item.kind === 'startup' ? '—' : bytes(itemSize(item))); if (item.kind === 'process') append(size, el('div', 'kind-label', '工作集估算')); if (item.kind === 'software') append(size, el('div', 'kind-label', '安装登记估算'));
         const risk = el('td'); append(risk, riskBadge(item)); const status = el('td'); append(status, el('span', 'kind-label', item.simulated ? '已记录处理' : canSelect(item) ? '可选择' : '已保留'));
@@ -342,7 +349,7 @@
     const item = state.focused;
     if (!item) { append(host, el('h3', '', '选一项，看看原因'), el('p', '', '这里会说明用途、处理理由和可能的影响。')); return; }
     const rec = advice(item); append(host, el('h3', '', rec.title || item.name));
-    append(host, el('h4', '', '它是做什么的'), el('p', '', cleanCopy(rec.title || `${item.owner || '应用'}使用的${item.category || '内容'}`)), el('h4', '', '为什么建议'), el('p', '', cleanCopy(rec.reason || item.reason)), el('h4', '', '处理后的影响'), el('p', '', cleanCopy(rec.impact || item.impact || '影响尚不明确，建议先保留。')));
+    append(host, el('h4', '', '它是做什么的'), el('p', '', cleanCopy(itemPurpose(item))), el('h4', '', '为什么建议'), el('p', '', cleanCopy(rec.reason || item.reason)), el('h4', '', '处理后的影响'), el('p', '', cleanCopy(rec.impact || item.impact || '影响尚不明确，建议先保留。')));
     if (canSelect(item)) append(host, button(isSelected(item) ? '取消选择' : '选择这项', () => { toggleItem(item, !isSelected(item)); renderInspector(); renderSelection(); if (state.view === 'overview') render(); else renderResults(); }));
     append(host, button('以后保留这项', () => protectItem(item), 'plain-button'));
     const detail = el('details', 'inspector-advanced'); append(detail, el('summary', '', '更多详情'));
