@@ -122,6 +122,7 @@ class SimulationState:
           CREATE TABLE IF NOT EXISTS batches (id TEXT PRIMARY KEY, created_at TEXT, status TEXT, payload TEXT);
           CREATE TABLE IF NOT EXISTS overlay (batch_id TEXT, item_id TEXT, signature TEXT, action TEXT,
               active INTEGER NOT NULL DEFAULT 1, PRIMARY KEY(batch_id,item_id));
+          CREATE TABLE IF NOT EXISTS operation_receipts (operation_id TEXT PRIMARY KEY, batch_id TEXT NOT NULL);
         ''')
         self.plans = {}
         self.revision = 0
@@ -285,8 +286,21 @@ class SimulationState:
                                        policy=policy_hash(patterns), expires=time.monotonic() + 900)
             return public
 
-    def execute(self, plan_id, patterns=(), system_validator=None):
+    def receipt(self, operation_id):
         with self.lock:
+            row = self.db.execute('SELECT b.* FROM operation_receipts r JOIN batches b ON b.id=r.batch_id WHERE r.operation_id=?', (operation_id,)).fetchone()
+            if not row:
+                return None
+            return dict(json.loads(row['payload']), id=row['id'], created_at=row['created_at'], status=row['status'], mode='simulation')
+
+    def execute(self, plan_id, patterns=(), system_validator=None, *, operation_id=None):
+        with self.lock:
+            if operation_id is not None:
+                if not isinstance(operation_id, str) or not 1 <= len(operation_id) <= 80:
+                    raise AppError('操作标识无效。')
+                previous = self.receipt(operation_id)
+                if previous:
+                    return dict(self.view(patterns), batch=previous)
             plan = self.plans.get(plan_id)
             if not plan:
                 raise AppError('计划不存在、已执行或已失效，请重新预览。', 'stale_plan', 409)
@@ -307,6 +321,8 @@ class SimulationState:
                 self.db.execute('INSERT INTO batches VALUES(?,?,?,?)', (batch_id, now, 'simulated', json.dumps(payload, ensure_ascii=False)))
                 for item in items:
                     self.db.execute('INSERT INTO overlay VALUES(?,?,?,?,1)', (batch_id, item['id'], item['signature'], item['action']))
+                if operation_id:
+                    self.db.execute('INSERT INTO operation_receipts VALUES(?,?)', (operation_id, batch_id))
             self.plans.pop(plan_id, None)
             self.revision += 1
             view = self.view(patterns)

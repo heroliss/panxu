@@ -133,6 +133,11 @@ class ProductFlowTests(unittest.TestCase):
                 self.app.recommendations(use_model=True)
         self.assertEqual(ctx.exception.code, 'stale_recommendations')
 
+    def test_two_windows_cannot_recover_or_mutate_the_same_data_directory(self):
+        with self.assertRaises(AppError) as ctx:
+            Application(self.root / 'state')
+        self.assertEqual(ctx.exception.code, 'instance_busy')
+
 
 if __name__ == '__main__':
     unittest.main()

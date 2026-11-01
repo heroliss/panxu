@@ -5,8 +5,10 @@ from pathlib import Path
 import sys
 import threading
 import webbrowser
+from html import escape
 
 from diskpilot.server import create_server
+from diskpilot.simulation import AppError
 
 
 def main():
@@ -17,7 +19,19 @@ def main():
     parser.add_argument('--browser', action='store_true')
     args = parser.parse_args()
     data_dir = args.data_dir or (Path(sys.executable).parent / 'userdata' if getattr(sys, 'frozen', False) else Path(__file__).resolve().parent / 'userdata')
-    server = create_server(data_dir, args.port)
+    try:
+        server = create_server(data_dir, args.port)
+    except AppError as exc:
+        print(str(exc), file=sys.stderr, flush=True)
+        if not args.headless:
+            try:
+                import webview
+                webview.create_window('盘序', html='<div style="font:16px Segoe UI,Microsoft YaHei;padding:36px;line-height:2">'
+                                      '<h2>盘序已经打开</h2>' + escape(str(exc)) + '</div>', width=520, height=230)
+                webview.start(gui='edgechromium' if os.name == 'nt' else None)
+            except ImportError:
+                pass
+        return
     url = f'http://127.0.0.1:{server.server_port}'
     print(url, flush=True)
     if args.headless:

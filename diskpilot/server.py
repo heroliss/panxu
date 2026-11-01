@@ -15,9 +15,11 @@ from urllib.parse import urlsplit, parse_qs
 from . import __version__
 from .duplicates import verify_duplicates
 from .llm import ModelAssistant
+from .lease import DataLease
 from .recommendations import build_recommendations
 from .scanner import scan_directory
 from .simulation import AppError, SimulationState
+from .tasks import TaskHarness
 from .windows import disks, inventory, validate_system_items
 
 
@@ -34,11 +36,13 @@ def common_cache_paths():
 
 class Application:
     def __init__(self, data_dir, *, developer_fixtures=False):
+        self.lease = DataLease(data_dir)
         self.state = SimulationState(data_dir)
         self.developer_fixtures = developer_fixtures
         if not developer_fixtures:
             self.state.discard_development_fixtures()
         self.assistant = ModelAssistant(Path(data_dir))
+        self.harness = TaskHarness(self.state, self.assistant)
         self.recommendation_cache = None
         self.settings_revision = 0
         self.csrf = secrets.token_urlsafe(32)
@@ -72,11 +76,20 @@ class Application:
     def start_job(self, kind, payload):
         with self.job_lock:
             if sum(x['status'] == 'running' for x in self.jobs.values()) >= 2:
-                raise AppError('已有两个只读采集任务，请等待或取消。', 'job_limit', 409)
+                raise AppError('已有两个检查或整理任务，请等待或停止其中一个。', 'job_limit', 409)
             finished = [key for key, job in self.jobs.items() if job['status'] != 'running']
             for old in finished[:-18]:
                 self.jobs.pop(old, None)
             key = secrets.token_hex(8)
+            if kind == 'agent':
+                task_id = payload.get('task_id')
+                with self.state.lock:
+                    if payload.get('execute'):
+                        self.harness.validate_approval(task_id, payload.get('version'), payload.get('ids'))
+                    elif payload.get('feedback'):
+                        self.harness.feedback(task_id, payload.get('message', ''), payload.get('keep_ids'))
+                    self.harness.claim(task_id, execute=bool(payload.get('execute')))
+                    self.harness.attach_job(task_id, key)
             cancel = threading.Event()
             job = dict(id=key, status='running', progress={'message': '准备只读采集'}, result=None, error=None)
             self.jobs[key] = dict(job, _cancel=cancel)
@@ -85,6 +98,13 @@ class Application:
                 self.jobs[key]['progress'] = value
         def run():
             try:
+                if kind == 'agent':
+                    task = self.harness.investigate(payload['task_id'], cancel=cancel, progress=progress,
+                                                    execute=bool(payload.get('execute')))
+                    with self.job_lock:
+                        self.jobs[key].update(status='cancelled' if cancel.is_set() else 'completed',
+                                              result={'task': task}, progress={'message': task['summary']})
+                    return
                 pending = []
                 if kind == 'scan':
                     path = payload.get('path')
@@ -155,13 +175,17 @@ class Application:
 
     def get(self, path, query):
         if path == '/api/bootstrap':
-            return dict(self.view(), csrf=self.csrf, version=__version__, settings=self.assistant.public_settings(), disks=disks(), default_scan_path=str(Path.home() / 'Downloads'))
+            return dict(self.view(), csrf=self.csrf, version=__version__, settings=self.assistant.public_settings(), disks=disks(), default_scan_path=str(Path.home() / 'Downloads'), latest_task=self.harness.latest())
         if path == '/api/health':
             return {'status': 'ok', 'mode': 'simulation', 'version': __version__, 'live_executor_available': False}
         if path == '/api/history':
             return {'history': self.state.history()}
         if path == '/api/recommendations':
             return self.recommendations()
+        if path == '/api/tasks':
+            return {'tasks': [self.harness.public(t['id']) for t in self.harness._all()[:15]]}
+        if path.startswith('/api/tasks/'):
+            return {'task': self.harness.public(path.rsplit('/', 1)[-1])}
         if path.startswith('/api/jobs/'):
             return self.job(path.rsplit('/', 1)[-1])
         if path == '/api/item':
@@ -173,6 +197,19 @@ class Application:
         raise AppError('接口不存在。', 'not_found', 404)
 
     def post(self, path, payload):
+        if path == '/api/tasks':
+            task = self.harness.create(payload.get('goal'), payload.get('path'))
+            job = self.start_job('agent', {'task_id': task['id']})
+            return dict(job, task=self.harness.public(task['id']))
+        if path.startswith('/api/tasks/'):
+            parts = path.split('/')
+            if len(parts) == 5 and parts[4] in ('continue', 'approve', 'feedback'):
+                data = dict(task_id=parts[3], execute=parts[4] == 'approve', feedback=parts[4] == 'feedback',
+                            message=payload.get('message', ''), keep_ids=payload.get('keep_ids'),
+                            version=payload.get('version'), ids=payload.get('ids'))
+                job = self.start_job('agent', data)
+                return dict(job, task=self.harness.public(parts[3]))
+            raise AppError('任务操作不存在。', 'not_found', 404)
         if path == '/api/demo' and self.developer_fixtures:
             self.state.replace_demo()
             return self.view()
@@ -241,12 +278,13 @@ class Application:
             job['_cancel'].set()
         self.pool.shutdown(wait=True, cancel_futures=True)
         self.state.close()
+        self.lease.close()
 
 
 def create_server(data_dir, port=0, *, developer_fixtures=False):
     app = Application(data_dir, developer_fixtures=developer_fixtures)
     class Handler(BaseHTTPRequestHandler):
-        server_version = 'PanXu/0.2'
+        server_version = 'PanXu/0.3'
         def log_message(self, *_):
             pass
 
@@ -273,7 +311,7 @@ def create_server(data_dir, port=0, *, developer_fixtures=False):
                 if parsed.path.startswith('/api/'):
                     return self.send(200, app.get(parsed.path, parse_qs(parsed.query)))
                 names = {'/': ('index.html', 'text/html; charset=utf-8'), '/index.html': ('index.html', 'text/html; charset=utf-8'),
-                         '/app.js': ('app.js', 'text/javascript; charset=utf-8'), '/style.css': ('style.css', 'text/css; charset=utf-8')}
+                         '/app.js': ('app.js', 'text/javascript; charset=utf-8'), '/tasks.js': ('tasks.js', 'text/javascript; charset=utf-8'), '/style.css': ('style.css', 'text/css; charset=utf-8')}
                 if parsed.path not in names:
                     raise AppError('页面不存在。', 'not_found', 404)
                 name, mime = names[parsed.path]
@@ -302,7 +340,11 @@ def create_server(data_dir, port=0, *, developer_fixtures=False):
                 return self.send(400, {'error': '参数或模型配置无效：' + type(exc).__name__, 'code': 'invalid_request'})
             except Exception:
                 return self.send(500, {'error': '本地请求未完成；系统状态没有被操作。', 'code': 'internal_error'})
-    server = ThreadingHTTPServer(('127.0.0.1', port), Handler)
+    try:
+        server = ThreadingHTTPServer(('127.0.0.1', port), Handler)
+    except Exception:
+        app.close()
+        raise
     server.daemon_threads = True
     server.app = app
     return server

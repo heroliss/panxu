@@ -21,3 +21,4 @@ model_settings.json
 .coverage
 htmlcov/
 *.log
+.instance.lock

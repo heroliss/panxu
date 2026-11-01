@@ -1,6 +1,6 @@
 {
   "product": "盘序",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "mode": "simulation",
   "root": "E:\\GPT-Projects\\win11-disk-assistant",
   "safety": "This build has NO real executor. All apply/undo/reset operations modify only SQLite simulation records. Never unlink/move/kill/control services/edit startup outside app-owned data.",
@@ -45,6 +45,12 @@
   ],
   "api": {
     "GET /api/bootstrap": "{csrf,mode,items,summary,settings,history,disks,source,job?}",
+    "POST /api/tasks": "{goal,path} -> {task,job_id}; explicit absolute folder scope, starts model-led investigation",
+    "GET /api/tasks": "{tasks}; latest 15 durable tasks, current plan and event summaries",
+    "GET /api/tasks/{id}": "{task}; status, goal, scopes, versioned plan, latest result, feedback and events",
+    "POST /api/tasks/{id}/continue": "{} -> {task,job_id}; continue a stopped or completed investigation",
+    "POST /api/tasks/{id}/feedback": "{message?,keep_ids?} -> {task,job_id}; save user intent, invalidate plan, investigate again",
+    "POST /api/tasks/{id}/approve": "{version,ids} -> {task,job_id}; explicit selection of exact plan, simulation apply/verify, continue model loop",
     "POST /api/check": "{} -> {job_id}; bounded common cache locations plus background/software inventories",
     "GET /api/recommendations": "{items:[original item + advice],groups,summary}; cached current model result or local rules",
     "POST /api/recommendations/analyze": "{} -> {items,groups,summary}; structured model advice if configured, rule fallback otherwise",
@@ -68,5 +74,7 @@
   "advice": "{group:'recommended'|'personal'|'keep'|'review',title,purpose,reason,impact,auto_select,suggested_action,origin:'rule'|'model',needs_user_choice}; personal and unknown files never auto_select",
   "history": "list batches {id,created_at,status:'simulated'|'undone',item_count,estimated_bytes,items:[{id,name,path,kind,action,status}],mode}",
   "plans": "Risk protected cannot queue. Default action by item kind. Incomplete dirs disallowed. Existing simulated skip. Planned catalog revision bound, stale live signatures checked before execute. No raw arbitrary path actions.",
-  "privacy": "No user file body read for LLM. Metadata only; send_paths false by default. No real provider key expected in tests. LLM cannot execute or approve plans."
+  "privacy": "No user file body read for LLM. Metadata only; send_paths false by default. No real provider key expected in tests. LLM cannot execute or approve plans.",
+  "agent_task": "statuses ready/investigating/awaiting_review/executing/needs_input/needs_model/paused/budget_exhausted/error/completed. Up to 6 model responses and 12 tools per turn. Personal files default unchecked; unknown/protected/out-of-scope and stale plans cannot bypass factual checks. Tool text is untrusted.",
+  "action_runtime": "simulation backend only. Per-item durable intent plus atomic overlay/receipt, status succeeded/failed/partial/cancelled/unverified. Recovery verifies receipts without blind replay. User undo is separately visible as current_state=undone. Actual reclaimed bytes always zero."
 }

@@ -99,6 +99,27 @@ class HttpTests(unittest.TestCase):
             self.assertNotIn('test-private-value', json.dumps(result))
             self.assertEqual(before, {x['id'] for x in self.get('/api/bootstrap')['items']})
 
+    def test_task_creation_and_resume_require_valid_local_scope(self):
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            self.post('/api/tasks', {'goal': '整理', 'path': '..'})
+        self.assertEqual(ctx.exception.code, 400)
+        ctx.exception.close()
+        directory = Path(self.tmp.name) / 'task-scope'
+        directory.mkdir(exist_ok=True)
+        result = self.post('/api/tasks', {'goal': '整理这个位置。', 'path': str(directory)})
+        for _ in range(100):
+            task = self.get('/api/tasks/' + result['task']['id'])['task']
+            if task['status'] != 'investigating':
+                break
+            time.sleep(.01)
+        self.assertEqual(task['status'], 'needs_model')
+        self.assertEqual(task['backend'], 'simulation')
+        self.assertIn(task['id'], [t['id'] for t in self.get('/api/tasks')['tasks']])
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            self.post('/api/tasks/' + task['id'] + '/approve', {'version': 1, 'ids': ['not-a-proposal']})
+        self.assertEqual(ctx.exception.code, 409)
+        ctx.exception.close()
+
 
 if __name__ == '__main__':
     unittest.main()

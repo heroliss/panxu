@@ -216,6 +216,99 @@ class ModelAssistant:
             self._api_key = ""
             self._key_blob = ""
 
+    def clean_text(self, value, *, outbound=False, limit=2000):
+        """One privacy boundary for task text; never expose the configured key."""
+        with self._lock:
+            settings, key = copy.deepcopy(self._settings), self._api_key
+        if outbound:
+            return self._privacy_text(value, settings, key, limit)
+        return self._redact(str(value), key)[:limit]
+
+    def task_metadata(self, item):
+        with self._lock:
+            settings, key = copy.deepcopy(self._settings), self._api_key
+        result = self._metadata(item, settings, key, detailed=True)
+        context = item.get('details', {}).get('decision_context', {})
+        result['ownership'] = context.get('ownership', 'unknown')
+        result['personal_choice_required'] = context.get('personal_choice_required', item.get('kind') in ('file', 'directory'))
+        result['allowed_actions'] = item.get('actions', [])
+        result['parent_id'] = item.get('details', {}).get('parent_id')
+        result['complete'] = item.get('details', {}).get('subtree_complete')
+        return result
+
+    def agent_turn(self, messages, tools):
+        """Provider-neutral tool turn. The task runtime owns tools and continuation."""
+        with self._lock:
+            settings, key = copy.deepcopy(self._settings), self._api_key
+        if not settings['base_url'] or not settings['model']:
+            raise ValueError('model_not_configured')
+        safe_messages = []
+        def scrub(value):
+            if isinstance(value, str):
+                return self._privacy_text(value, settings, key, 2000)
+            if isinstance(value, list):
+                return [scrub(x) for x in value]
+            if isinstance(value, dict):
+                return {k: scrub(v) for k, v in value.items()}
+            return value
+        for message in messages:
+            safe = {k: copy.deepcopy(v) for k, v in message.items()
+                    if k in ('role', 'content', 'tool_call_id', 'tool_calls')}
+            if isinstance(safe.get('content'), str):
+                # Redact fields inside JSON before encoding; keep tool JSON valid.
+                try:
+                    parsed = json.loads(safe['content'])
+                except ValueError:
+                    safe['content'] = self._privacy_text(safe['content'], settings, key, 18000)
+                else:
+                    safe['content'] = json.dumps(scrub(parsed), ensure_ascii=False)
+            # Validated tool arguments contain opaque IDs and short explanations.
+            if safe.get('tool_calls'):
+                safe['tool_calls'] = self._redact_value(safe['tool_calls'], key)
+                for call in safe['tool_calls']:
+                    try:
+                        arguments = json.loads(call['function']['arguments'])
+                    except (ValueError, KeyError, TypeError):
+                        raise ValueError('invalid_tool') from None
+                    call['function']['arguments'] = json.dumps(scrub(arguments), ensure_ascii=False)
+            safe_messages.append(safe)
+        payload = dict(model=settings['model'], messages=safe_messages, tools=tools,
+                       tool_choice='auto', stream=False, max_tokens=3500)
+        if len(json.dumps(payload, ensure_ascii=False).encode()) > MAX_REQUEST_BYTES:
+            raise ValueError('request_budget')
+        headers = {'Content-Type': 'application/json', 'Accept': 'application/json'}
+        if key:
+            headers['Authorization'] = 'Bearer ' + key
+        response = self._transport(_endpoint(settings['base_url']), payload, headers, REQUEST_TIMEOUT)
+        if not isinstance(response, dict) or len(json.dumps(response).encode()) > MAX_RESPONSE_BYTES:
+            raise ValueError('invalid_response')
+        try:
+            message = response['choices'][0]['message']
+        except (KeyError, IndexError, TypeError):
+            raise ValueError('invalid_response') from None
+        if not isinstance(message, dict):
+            raise ValueError('invalid_response')
+        content = self._privacy_text(message.get('content') or '', settings, key, 2000)
+        calls = message.get('tool_calls', [])
+        if not isinstance(calls, list) or len(calls) > 8:
+            raise ValueError('invalid_response')
+        cleaned, seen = [], set()
+        for call in calls:
+            if (not isinstance(call, dict) or call.get('type') != 'function'
+                    or not isinstance(call.get('id'), str) or not 1 <= len(call['id']) <= 100
+                    or call['id'] in seen or not isinstance(call.get('function'), dict)):
+                raise ValueError('invalid_tool')
+            function = call['function']
+            if (not isinstance(function.get('name'), str) or len(function['name']) > 80
+                    or not isinstance(function.get('arguments'), str) or len(function['arguments']) > 16000):
+                raise ValueError('invalid_tool')
+            seen.add(call['id'])
+            cleaned.append({'id': call['id'], 'type': 'function', 'function': {
+                'name': function['name'], 'arguments': self._redact(function['arguments'], key)}})
+        if not content and not cleaned:
+            raise ValueError('empty_response')
+        return {'role': 'assistant', 'content': content or None, 'tool_calls': cleaned}
+
     @staticmethod
     def _validated_settings(payload: dict, previous: dict | None = None) -> dict:
         values = copy.deepcopy(previous if previous is not None else _DEFAULTS)
