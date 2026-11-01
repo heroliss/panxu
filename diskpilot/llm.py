@@ -2,7 +2,8 @@
 
 No tools in this module read files, execute commands, or mutate the inventory.
 Only non-secret settings and (on Windows) a user-bound DPAPI ciphertext persist.
-Transport signature: (url, payload_dict, headers_dict, timeout_seconds) -> dict.
+Transport signature: (url, payload_dict, headers_dict, timeout_seconds) -> dict
+or a closeable iterable of SSE byte chunks.
 """
 from __future__ import annotations
 
@@ -15,14 +16,17 @@ import os
 from pathlib import Path
 import re
 import secrets
+import socket
 import tempfile
 import threading
+import time
 from typing import Callable
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit, urlunsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 from . import providers
+from . import streaming
 
 
 MAX_ROUNDS = 4
@@ -31,11 +35,13 @@ MAX_ITEMS = 5000
 MAX_REQUEST_BYTES = 192 * 1024
 MAX_RESPONSE_BYTES = 256 * 1024
 REQUEST_TIMEOUT = 20
+MAX_STREAM_SECONDS = 180
 _TOOLS = ("list_items", "inspect_items", "summarize_inventory")
 _SAFE_ERRORS = {"request_budget", "response_budget", "tool_budget", "round_budget",
                 "unknown_tool", "invalid_tool", "invalid_tool_arguments",
                 "invalid_response", "empty_response", "provider_unavailable", "http_status"}
 _DEFAULTS = {"base_url": "", "model": "", "send_paths": False,
+             "stream": True,
              "provider": "custom", "protocol": "chat_completions", "reasoning_effort": "default",
              "custom_instructions": "", "protect_patterns": []}
 _SYSTEM = """你是盘序的只读磁盘整理顾问，本版本仅模拟操作。
@@ -104,10 +110,78 @@ def _origin(base: str) -> tuple | None:
             parts.port or (443 if parts.scheme == "https" else 80))
 
 
-def _http_transport(url: str, payload: dict, headers: dict, timeout: int) -> dict:
+def _request_url(url):
+    parts = urlsplit(url)
+    if parts.query == 'alt=sse' and parts.path.endswith(':streamGenerateContent') and not parts.fragment:
+        return _validate_url(urlunsplit(parts._replace(query=''))) + '?alt=sse'
+    return _validate_url(url)
+
+
+class _HTTPStream:
+    def __init__(self, response):
+        self.response, self.cancel = response, None
+        self.closed, self._done = False, threading.Event()
+        self.deadline, self.timed_out = time.monotonic() + MAX_STREAM_SECONDS, False
+
+    def __iter__(self):
+        def watch():
+            while not self._done.wait(.05):
+                self.timed_out = time.monotonic() >= self.deadline
+                if (self.cancel is not None and self.cancel.is_set()) or self.timed_out:
+                    # Interrupt a blocked socket read without waiting on the
+                    # BufferedReader lock. Never touch a caller-selected handle.
+                    sock = getattr(getattr(getattr(self.response, 'fp', None), 'raw', None), '_sock', None)
+                    if sock is not None:
+                        try:
+                            sock.shutdown(socket.SHUT_RDWR)
+                        except OSError:
+                            pass
+                        try:
+                            # urllib's SocketIO retains a reference after the
+                            # socket object's close flag is set. On Windows,
+                            # shutdown alone may not wake the blocked read.
+                            # Detach before closing so cleanup cannot close a
+                            # subsequently reused descriptor a second time.
+                            descriptor = sock.detach()
+                            if descriptor >= 0:
+                                socket.close(descriptor)
+                        except (OSError, ValueError):
+                            pass
+                    return
+        worker = threading.Thread(target=watch, daemon=True, name='model-stream-cancel')
+        worker.start()
+        try:
+            while True:
+                if self.cancel is not None and self.cancel.is_set():
+                    raise ValueError('stream_cancelled')
+                if self.timed_out or time.monotonic() >= self.deadline:
+                    raise ValueError('stream_timeout')
+                try:
+                    value = self.response.read1(4096)
+                except (TimeoutError, OSError, ValueError):
+                    raise ValueError('stream_cancelled' if self.cancel is not None and self.cancel.is_set() else
+                                     'stream_timeout' if self.timed_out else 'stream_disconnected') from None
+                if not value:
+                    if self.timed_out:
+                        raise ValueError('stream_timeout')
+                    break
+                yield value
+        finally:
+            self._done.set()
+            worker.join(timeout=.2)
+            self.close()
+
+    def close(self):
+        self._done.set()
+        if not self.closed:
+            self.closed = True
+            self.response.close()
+
+
+def _http_transport(url: str, payload: dict, headers: dict, timeout: int):
     # Revalidate even when called outside ModelAssistant. Never forward credentials
     # to a redirect destination. Bypass external proxies for loopback servers.
-    url = _validate_url(url)
+    url = _request_url(url)
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     if len(data) > MAX_REQUEST_BYTES:
         raise ValueError("request_budget")
@@ -116,9 +190,13 @@ def _http_transport(url: str, payload: dict, headers: dict, timeout: int) -> dic
         handlers.append(ProxyHandler({}))
     request = Request(url, data=data, headers=headers, method="POST")
     try:
-        with build_opener(*handlers).open(request, timeout=timeout) as response:
-            if response.status != 200:
-                raise ValueError("http_status")
+        response = build_opener(*handlers).open(request, timeout=timeout)
+        if response.status != 200:
+            response.close()
+            raise ValueError("http_status")
+        if 'text/event-stream' in response.headers.get('Content-Type', '').lower():
+            return _HTTPStream(response)
+        with response:
             raw = response.read(MAX_RESPONSE_BYTES + 1)
     except HTTPError as exc:
         code = exc.code
@@ -204,6 +282,7 @@ class ModelAssistant:
         self._api_key = ""
         self._key_blob = ""
         self.trace_hook = None
+        self.stream_hook = None
         self._load()
 
     def _load(self) -> None:
@@ -249,6 +328,7 @@ class ModelAssistant:
         if not callable(hook):
             return
         omitted = {'reasoning_content', 'thinking', 'redacted_thinking', 'encrypted_content',
+                   'reasoning', 'reasoning_details', 'reasoning_text',
                    'thoughtSignature', 'thought_signature', 'signature', '_continuation', 'authorization', 'x-api-key', 'x-goog-api-key'}
         def clean(value):
             if isinstance(value, dict):
@@ -257,6 +337,8 @@ class ModelAssistant:
                 result = {}
                 for k, v in value.items():
                     if k == 'thinking' and isinstance(v, dict) and set(v) <= {'type', 'clear_thinking', 'budget_tokens'}:
+                        result[k] = clean(v)
+                    elif k == 'reasoning' and isinstance(v, dict) and set(v) <= {'effort', 'summary'}:
                         result[k] = clean(v)
                     else:
                         result[k] = '[OMITTED: protocol continuation]' if k in omitted or k.lower() in omitted else clean(v)
@@ -273,20 +355,32 @@ class ModelAssistant:
             # Diagnostics must never turn a successful request into an apply retry.
             pass
 
-    def _completion(self, payload, settings, key):
+    def _completion(self, payload, settings, key, *, on_preview=None, cancel=None):
         endpoint, outgoing, headers = providers.prepare(settings, payload, key)
-        endpoint = _validate_url(endpoint)
+        endpoint = _request_url(endpoint)
         if len(json.dumps(outgoing, ensure_ascii=False).encode()) > MAX_REQUEST_BYTES:
             raise ValueError('request_budget')
         self._emit_trace('request', settings, endpoint, outgoing, key)
         try:
             timeout = REQUEST_TIMEOUT if settings.get('provider', 'custom') in ('custom', 'ollama') else 90
             response = self._transport(endpoint, outgoing, headers, timeout)
+            if not isinstance(response, dict):
+                if isinstance(response, _HTTPStream):
+                    response.cancel = cancel
+                if isinstance(response, (bytes, bytearray)):
+                    response = [bytes(response)]
+                response = streaming.assemble(settings.get('protocol', 'chat_completions'), response,
+                    on_preview=on_preview, cancel=cancel)
+            elif on_preview:
+                # A compatibility peer may ignore stream=true. This is a whole
+                # JSON result, not invented incremental network delivery.
+                on_preview(None, False, 'json_fallback')
             if not isinstance(response, dict) or len(json.dumps(response, ensure_ascii=False).encode()) > MAX_RESPONSE_BYTES:
                 raise ValueError('response_budget')
         except Exception as exc:
             known = {'provider_auth', 'provider_model', 'provider_parameters', 'provider_rate_limit',
                      'provider_unavailable', 'request_budget', 'response_budget', 'invalid_response'}
+            known |= {'stream_cancelled', 'stream_disconnected', 'stream_incomplete', 'stream_timeout', 'invalid_stream', 'invalid_tool_arguments'}
             code = str(exc) if isinstance(exc, ValueError) and str(exc) in known else 'provider_unavailable'
             self._emit_trace('error', settings, endpoint, {'code': code}, key)
             raise ValueError(code) from None
@@ -314,13 +408,13 @@ class ModelAssistant:
         messages = [{'role': 'system', 'content': '这是连接测试。先调用 connection_probe，收到结果后只回复结果里的 nonce。'},
                     {'role': 'user', 'content': '请调用 connection_probe，nonce 为 ' + nonce + '；不要只回答文字。'}]
         try:
-            first = self.agent_turn(messages, tools, tool_choice=probe_choice)
+            first = self.agent_turn(messages, tools, tool_choice=probe_choice, stream=False)
             calls = first.get('tool_calls', [])
             if len(calls) != 1 or calls[0]['function']['name'] != 'connection_probe' or json.loads(calls[0]['function']['arguments']) != {'nonce': nonce}:
                 raise ValueError('connection_tool_failed')
             messages += [first, {'role': 'tool', 'tool_call_id': calls[0]['id'],
                          'content': json.dumps({'nonce': nonce, 'status': 'ok', 'simulation_only': True})}]
-            final = self.agent_turn(messages, tools, tool_choice='none')
+            final = self.agent_turn(messages, tools, tool_choice='none', stream=False)
             if final.get('tool_calls') or nonce not in (final.get('content') or ''):
                 raise ValueError('connection_return_failed')
         except Exception as exc:
@@ -342,22 +436,89 @@ class ModelAssistant:
         return dict(passed=True, message='工具调用与结果回传测试通过。', requests=2,
                     provider=settings['provider'], protocol=settings['protocol'], model=settings['model'])
 
-    def agent_turn(self, messages, tools, *, tool_choice='auto'):
+    def agent_turn(self, messages, tools, *, tool_choice='auto', stream=None, cancel=None):
+        with self._lock:
+            snapshot = copy.deepcopy(self._settings), self._api_key
+        enabled = snapshot[0].get('stream', True) if stream is None else stream
+        if type(enabled) is not bool:
+            raise ValueError('invalid_stream_setting')
+        turn_id, last, delivery = secrets.token_hex(12), 0.0, 'sse' if enabled else 'disabled'
+        latest, pending = '', False
+
+        def safe_preview(text, final=False):
+            # Hold a trailing ASCII token and any literal credential prefix.
+            # Redacting each fragment separately can expose a split credential.
+            text = self._redact(self._redact(text, snapshot[1]), self._api_key)
+            end = len(text)
+            if not final:
+                match = re.search(r'[A-Za-z0-9_~+/=.\-]+$', text)
+                end = match.start() if match else len(text)
+            for secret in (snapshot[1], self._api_key):
+                if secret:
+                    for size in range(min(len(secret) - 1, len(text)), 0, -1):
+                        if text.endswith(secret[:size]):
+                            end = min(end, len(text) - size)
+                            break
+            text = text[:end]
+            # Redact using both the in-flight and current configured keys.
+            return self._privacy_text(self._redact(text, self._api_key), snapshot[0], snapshot[1], 8000)
+
+        def emit(kind, **extra):
+            event = dict(kind=kind, turn_id=turn_id, protocol=snapshot[0].get('protocol', 'chat_completions'), delivery=delivery, **extra)
+            if callable(self.stream_hook):
+                try:
+                    self.stream_hook(event)
+                except Exception:
+                    pass
+
+        def preview(text, tool, mode=None):
+            nonlocal latest, pending, last, delivery
+            if mode:
+                delivery = mode
+            if text is not None:
+                latest = text
+            pending |= tool
+            current = time.monotonic()
+            if current - last >= .05:
+                last = current
+                emit('stream_delta', text=safe_preview(latest), tool_pending=pending)
+
+        emit('turn_start', text='', tool_pending=False)
+        try:
+            result = self._agent_turn(messages, tools, tool_choice=tool_choice, stream=enabled, cancel=cancel,
+                                      on_preview=preview if enabled else None, snapshot=snapshot)
+            emit('turn_end', text=safe_preview(result.get('content') or '', final=True),
+                 tool_pending=bool(result.get('tool_calls')), status='completed')
+            if enabled:
+                self._emit_trace('turn_end', snapshot[0], snapshot[0]['base_url'],
+                    dict(turn_id=turn_id, delivery=delivery, status='completed', tool_count=len(result.get('tool_calls', []))), snapshot[1])
+            return result
+        except Exception as exc:
+            code = str(exc) if isinstance(exc, ValueError) and str(exc) in ('stream_cancelled', 'stream_disconnected', 'stream_incomplete', 'stream_timeout',
+                'invalid_stream', 'invalid_tool_arguments', 'response_budget', 'provider_unavailable', 'provider_auth', 'provider_parameters',
+                'provider_model', 'provider_rate_limit', 'request_budget', 'empty_response', 'invalid_response', 'invalid_tool') else 'provider_unavailable'
+            emit('turn_end', text=safe_preview(latest), tool_pending=pending,
+                 status='cancelled' if code == 'stream_cancelled' else 'error', code=code)
+            raise
+
+    def _agent_turn(self, messages, tools, *, tool_choice='auto', stream=True, cancel=None, on_preview=None, snapshot=None):
         """Provider-neutral tool turn. The task runtime owns tools and continuation."""
         if tool_choice not in ('auto', 'required', 'none'):
             raise ValueError('invalid_tool')
-        with self._lock:
-            settings, key = copy.deepcopy(self._settings), self._api_key
+        settings, key = snapshot
         if not settings['base_url'] or not settings['model']:
             raise ValueError('model_not_configured')
         safe_messages = []
-        def scrub(value):
+        def scrub(value, *, saved_root_preferences=False):
             if isinstance(value, str):
                 return self._privacy_text(value, settings, key, 2000)
             if isinstance(value, list):
                 return [scrub(x) for x in value]
             if isinstance(value, dict):
-                return {k: scrub(v) for k, v in value.items()}
+                return {k: self._privacy_text(v, settings, key, 4000)
+                        if (saved_root_preferences and k == 'preferences' and isinstance(v, str)
+                            and v == settings.get('custom_instructions')) else scrub(v)
+                        for k, v in value.items()}
             return value
         for message in messages:
             safe = {k: copy.deepcopy(v) for k, v in message.items()
@@ -369,7 +530,9 @@ class ModelAssistant:
                 except ValueError:
                     safe['content'] = self._privacy_text(safe['content'], settings, key, 18000)
                 else:
-                    safe['content'] = json.dumps(scrub(parsed), ensure_ascii=False)
+                    # Only the exact saved preference in a user context's root
+                    # receives its full setting budget; nested/tool data does not.
+                    safe['content'] = json.dumps(scrub(parsed, saved_root_preferences=safe.get('role') == 'user'), ensure_ascii=False)
             # Validated tool arguments contain opaque IDs and short explanations.
             if safe.get('tool_calls'):
                 safe['tool_calls'] = self._redact_value(safe['tool_calls'], key)
@@ -383,14 +546,18 @@ class ModelAssistant:
             if '_continuation' in message:
                 safe['_continuation'] = copy.deepcopy(message['_continuation'])
         payload = dict(model=settings['model'], messages=safe_messages, tools=tools,
-                       tool_choice=tool_choice, stream=False,
+                       tool_choice=tool_choice, stream=stream,
                        max_tokens=3500 if settings.get('provider', 'custom') in ('custom', 'ollama') else 8192)
         if len(json.dumps(payload, ensure_ascii=False).encode()) > MAX_REQUEST_BYTES:
             raise ValueError('request_budget')
         headers = {'Content-Type': 'application/json', 'Accept': 'application/json'}
         if key:
             headers['Authorization'] = 'Bearer ' + key
-        response = self._completion(payload, settings, key)
+        if cancel is not None and cancel.is_set():
+            raise ValueError('stream_cancelled')
+        response = self._completion(payload, settings, key, on_preview=on_preview, cancel=cancel)
+        if cancel is not None and cancel.is_set():
+            raise ValueError('stream_cancelled')
         if not isinstance(response, dict) or len(json.dumps(response).encode()) > MAX_RESPONSE_BYTES:
             raise ValueError('invalid_response')
         try:
@@ -401,7 +568,7 @@ class ModelAssistant:
             raise ValueError('invalid_response')
         if message.get('content') is not None and not isinstance(message['content'], str):
             raise ValueError('invalid_response')
-        content = self._privacy_text(message.get('content') or '', settings, key, 2000)
+        content = self._privacy_text(message.get('content') or '', settings, key, 8000)
         calls = message.get('tool_calls', [])
         if not isinstance(calls, list) or len(calls) > 8:
             raise ValueError('invalid_response')
@@ -416,6 +583,12 @@ class ModelAssistant:
                     or not isinstance(function.get('arguments'), str) or len(function['arguments']) > 16000):
                 raise ValueError('invalid_tool')
             seen.add(call['id'])
+            try:
+                arguments = json.loads(function['arguments'])
+            except ValueError:
+                raise ValueError('invalid_tool_arguments') from None
+            if not isinstance(arguments, dict):
+                raise ValueError('invalid_tool_arguments')
             cleaned.append({'id': call['id'], 'type': 'function', 'function': {
                 'name': function['name'], 'arguments': self._redact(function['arguments'], key)}})
         if not content and not cleaned:
@@ -431,6 +604,7 @@ class ModelAssistant:
     @staticmethod
     def _validated_settings(payload: dict, previous: dict | None = None) -> dict:
         values = copy.deepcopy(previous if previous is not None else _DEFAULTS)
+        values.setdefault('stream', True)
         if 'provider' in payload:
             preset = providers.get_preset(payload['provider'])
             if not preset:
@@ -466,6 +640,10 @@ class ModelAssistant:
             if not isinstance(payload["send_paths"], bool):
                 raise ValueError("路径发送选项必须是布尔值。")
             values["send_paths"] = payload["send_paths"]
+        if 'stream' in payload:
+            if type(payload['stream']) is not bool:
+                raise ValueError('流式输出选项必须是布尔值。')
+            values['stream'] = payload['stream']
         if "protect_patterns" in payload:
             patterns = payload["protect_patterns"]
             if (not isinstance(patterns, list) or len(patterns) > 100

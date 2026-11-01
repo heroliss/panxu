@@ -1,6 +1,6 @@
 {
   "product": "盘序",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "mode": "simulation",
   "root": "E:\\GPT-Projects\\win11-disk-assistant",
   "safety": "This build has NO real executor. All apply/undo/reset operations modify only SQLite simulation records. Never unlink/move/kill/control services/edit startup outside app-owned data.",
@@ -83,7 +83,10 @@
     "POST /api/tasks/{id}/direct-plan": "{ids:1..30,action,snapshots?} -> {task,plan}; user-origin versioned plan, approval via existing approve route",
     "GET /api/ui-preferences": "{preferences:{theme:dark|light|system,developer_live,developer_conversation,developer_skills,developer_tools}}",
     "POST /api/ui-preferences": "allowlisted preference subset -> {preferences}; persisted separately from model settings/capture",
-    "GET /api/icon": "{id,v?} -> local image bytes, X-Panxu-Icon-Status:ready|pending|fallback; existing catalog IDs only; no arbitrary path; bounded private memory cache and async extraction"
+    "GET /api/icon": "{id,v?} -> local image bytes, X-Panxu-Icon-Status:ready|pending|fallback; existing catalog IDs only; no arbitrary path; bounded private memory cache and async extraction",
+    "POST /api/preferences": "{custom_instructions:string} -> {preferences,settings}; merges only shared model-independent preference, preserves connection and key",
+    "GET /api/tasks/{id}/stream": "{stream,volatile:true}; bounded sanitized public cumulative reply, never tool arguments or approval",
+    "GET /api/tasks/{id}/stream/events": "SSE default data:{stream}; 4 concurrent connections,25s lifetime, snapshots/keepalive; resume by epoch+sequence"
   },
   "mutations": "Require X-CSRF-Token from bootstrap. Errors are JSON {error,code}. Relative same-origin fetch only. Input limits apply.",
   "summary": "{total_items,visible_items,simulated_items,logical_bytes,simulated_bytes,process_memory_bytes,by_kind,source,mode}. Real disks separate; no simulated_bytes shown as actual freed space.",
@@ -105,5 +108,6 @@
   "appearance": "Default follows system; explicit saved light/dark preserved; live media changes apply without restart.",
   "read_only_evidence": "collect_system_configuration(section=memory_power) observes memory/active vs configured pagefiles/power via fixed APIs and7 registry values; inspect_volume(scope_id) observes only existing task-scope volume capacity/recycle statistics. No root or action targets added; unknown/partial explicit.",
   "icons": "Private known-ID local icon extraction from existing executable resources, desktop registration or stock/type fallback; visible lazy requests, bounded queues/cache, no shell extensions/shortcut resolution or LLM transmission. Icons do not certify publisher or ownership.",
-  "developer_readability": "Visible-role text and public communication by default, one closed auxiliary section per event for system/context/facts/skills/tools/metadata/raw sanitized JSON. Protocol-private content stays excluded."
+  "developer_readability": "Visible-role text and public communication by default, one closed auxiliary section per event for system/context/facts/skills/tools/metadata/raw sanitized JSON. Protocol-private content stays excluded.",
+  "model_streaming": "Four native protocols with real SSE aggregation; public cumulative previews independent of developer capture; partial tools never executable; cancel/disconnect/budget fail closed. Defaults on, JSON fallback labelled; spring grapheme UI respects reduced motion. Save precedes fixed-data connection test and failed test never rolls back saved settings."
 }

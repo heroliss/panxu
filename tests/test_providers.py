@@ -277,9 +277,147 @@ class ProviderTests(unittest.TestCase):
         for protocol in providers.PROTOCOLS:
             for provider in ('custom', 'openai', 'glm', 'anthropic', 'gemini', 'deepseek'):
                 with self.subTest(protocol=protocol, provider=provider):
-                    expected = 'auto' if protocol == 'chat_completions' and provider == 'deepseek' else 'required'
+                    expected = 'auto' if protocol == 'chat_completions' and provider in ('deepseek', 'glm') else 'required'
                     self.assertEqual(providers.connection_probe_tool_choice({'provider': provider, 'protocol': protocol}), expected)
         self.assertEqual(providers.connection_probe_tool_choice({'provider':'deepseek','model':'deepseek-chat'}), 'auto')
+
+    def test_all_presets_keep_local_provider_metadata_out_of_wire_roles_and_fields(self):
+        for row in providers.presets()['presets']:
+            for stream in (False, True):
+                with self.subTest(provider=row['id'], stream=stream):
+                    settings = dict(provider=row['id'], protocol=row['protocol'],
+                                    base_url=row['base_url'] or 'http://127.0.0.1:1234/v1',
+                                    model=row['default_model'] or 'fixture-model')
+                    payload = dict(model='untrusted-other-model', provider=row['id'], protocol=row['protocol'],
+                                   base_url='private-connection-metadata', api_key='must-not-forward',
+                                   messages=[dict(role='system', content='System instructions', provider='internal-only'),
+                                             dict(role='user', content='User question')],
+                                   tools=TOOLS, max_tokens=8192, stream=stream, tool_choice='auto')
+                    url, wire, headers = providers.prepare(settings, payload, 'fixture-key')
+                    for key in ('provider', 'protocol', 'base_url', 'api_key'):
+                        self.assertNotIn(key, wire)
+                    self.assertNotIn('internal-only', json.dumps(wire))
+                    self.assertEqual(headers['Accept'], 'text/event-stream' if stream else 'application/json')
+                    if row['protocol'] == 'gemini':
+                        self.assertNotIn('stream', wire)
+                        self.assertTrue(url.endswith(':streamGenerateContent?alt=sse' if stream else ':generateContent'))
+                        self.assertEqual(wire['contents'][0]['role'], 'user')
+                        self.assertEqual(wire['systemInstruction']['parts'], [{'text': 'System instructions'}])
+                    else:
+                        self.assertIs(wire['stream'], stream)
+                        self.assertEqual(wire['model'], settings['model'])
+                    if row['protocol'] == 'chat_completions':
+                        self.assertEqual([m['role'] for m in wire['messages']], ['system', 'user'])
+                    elif row['protocol'] == 'responses':
+                        self.assertEqual([m['role'] for m in wire['input']], ['system', 'user'])
+                    elif row['protocol'] == 'anthropic':
+                        self.assertEqual(wire['system'], 'System instructions')
+                        self.assertEqual(wire['messages'][0]['role'], 'user')
+
+    def test_all_eighteen_presets_complete_local_native_tool_loop_without_real_credentials(self):
+        rows = providers.presets()['presets']
+        self.assertEqual(len(rows), 18)
+        for row in rows:
+            with self.subTest(provider=row['id']):
+                peer = ProtocolFixture(row['protocol'])
+                assistant = self.assistant(row['protocol'], peer, row['id'])
+                assistant.save_settings({'model': row['default_model'] or 'fixture-model'})
+                result = assistant.test_connection()
+                self.assertTrue(result['passed'], result)
+                self.assertEqual(len(peer.requests), 2)
+                self.assertTrue(all(r['url'].startswith('http://127.0.0.1:12345/') for r in peer.requests))
+                self.assertTrue(all(r['payload'].get('stream', False) is False for r in peer.requests))
+
+    def test_responses_strict_opt_out_is_not_assumed_for_other_vendors(self):
+        for provider in ('custom', 'openai', 'doubao', 'grok'):
+            settings = dict(provider=provider, protocol='responses', base_url='https://example.com/v1', model='fixture')
+            _, wire, _ = providers.prepare(settings, dict(messages=[{'role':'user','content':'x'}], tools=TOOLS), '')
+            if provider in ('custom', 'openai'):
+                self.assertIs(wire['tools'][0]['strict'], False)
+            else:
+                self.assertNotIn('strict', wire['tools'][0])
+
+    def test_siliconflow_only_sends_documented_auto_and_omits_tools_to_disable(self):
+        settings = dict(provider='siliconflow', protocol='chat_completions', base_url='https://example.com/v1', model='fixture')
+        _, wire, _ = providers.prepare(settings, dict(messages=[{'role':'user','content':'x'}], tools=TOOLS, tool_choice='none'), '')
+        self.assertNotIn('tools', wire)
+        self.assertNotIn('tool_choice', wire)
+
+    def test_provider_is_not_a_valid_message_role_for_any_protocol(self):
+        for protocol in providers.PROTOCOLS:
+            settings = dict(provider='custom', protocol=protocol, base_url='https://example.com/v1', model='fixture-model')
+            with self.subTest(protocol=protocol), self.assertRaisesRegex(ValueError, 'invalid_message_role'):
+                providers.prepare(settings, {'messages': [{'role': 'deepseek', 'content': 'x'}]}, '')
+
+    def test_glm_auto_only_peer_gets_no_unsupported_final_choice_and_keeps_continuation(self):
+        for provider in ('glm', 'zai'):
+            native = ProtocolFixture('chat_completions')
+            def peer(url, payload, headers, timeout):
+                if 'tool_choice' in payload and payload['tool_choice'] != 'auto':
+                    raise ValueError('provider_parameters')
+                return native(url, payload, headers, timeout)
+            assistant = self.assistant('chat_completions', peer, provider)
+            assistant.save_settings({'model': 'glm-5.3'})
+            result = assistant.test_connection()
+            self.assertTrue(result['passed'], result)
+            first, final = [request['payload'] for request in native.requests]
+            self.assertEqual(first['tool_choice'], 'auto')
+            self.assertNotIn('tool_choice', final)
+            self.assertNotIn('tools', final)
+            self.assertEqual(final['messages'][-1]['role'], 'tool')
+            self.assertEqual(final['messages'][-2]['reasoning_content'], 'private protocol reasoning sentinel')
+
+    def test_thinking_presets_probe_auto_but_kimi_keeps_documented_required(self):
+        cases = [('deepseek', 'deepseek-flash'), ('qwen_cn', 'qwen3.8-max'),
+                 ('qwen_global', 'qwen3.8-max'), ('hunyuan', 'hunyuan-turbos-latest'),
+                 ('qianfan', 'fixture-model'), ('siliconflow', 'fixture-model'), ('ollama', 'fixture-model')]
+        for provider, model in cases:
+            settings = dict(provider=provider, protocol='chat_completions', base_url='https://example.com/v1', model=model)
+            with self.subTest(provider=provider):
+                self.assertEqual(providers.connection_probe_tool_choice(settings), 'auto')
+                with self.assertRaisesRegex(ValueError, 'provider_parameters'):
+                    providers.prepare(settings, dict(messages=[{'role':'user','content':'x'}], tools=TOOLS, tool_choice='required'), '')
+        for provider in ('kimi_cn', 'kimi_global'):
+            settings = dict(provider=provider, protocol='chat_completions', base_url='https://example.com/v1', model='kimi-k3.1-pro')
+            self.assertEqual(providers.connection_probe_tool_choice(settings), 'required')
+            _, wire, _ = providers.prepare(settings, dict(messages=[{'role':'user','content':'x'}], tools=TOOLS, tool_choice='required', max_tokens=8192), '')
+            self.assertEqual(wire['tool_choice'], 'required')
+            self.assertEqual(wire['max_completion_tokens'], 8192)
+
+    def test_anthropic_sonnet_opus_55_probe_does_not_force_tool_or_disable_thinking(self):
+        for model in ('claude-sonnet-5-5', 'claude-opus-5-5'):
+            native = ProtocolFixture('anthropic')
+            def peer(url, payload, headers, timeout):
+                if payload.get('tool_choice', {}).get('type') not in ('auto', 'none'):
+                    raise ValueError('provider_parameters')
+                self.assertNotIn('thinking', payload)
+                return native(url, payload, headers, timeout)
+            assistant = self.assistant('anthropic', peer, 'anthropic')
+            assistant.save_settings({'model': model})
+            result = assistant.test_connection()
+            self.assertTrue(result['passed'], result)
+            self.assertEqual(native.requests[0]['payload']['tool_choice'], {'type': 'auto'})
+            self.assertEqual(native.requests[1]['payload']['tool_choice'], {'type': 'none'})
+        settings = dict(provider='anthropic', protocol='anthropic', model='claude-haiku-5-5')
+        self.assertEqual(providers.connection_probe_tool_choice(settings), 'required')
+
+    def test_native_finish_reasons_are_preserved_for_stream_assembly(self):
+        responses = {
+            'chat_completions': {'choices':[{'message':{'role':'assistant','content':'x'}, 'finish_reason':'length'}]},
+            'responses': {'output':[], 'status':'incomplete'},
+            'anthropic': {'content':[], 'stop_reason':'max_tokens'},
+            'gemini': {'candidates':[{'content':{'role':'model','parts':[]}, 'finishReason':'MAX_TOKENS'}]},
+        }
+        expected = ['length', 'incomplete', 'max_tokens', 'MAX_TOKENS']
+        for (protocol, raw), reason in zip(responses.items(), expected):
+            with self.subTest(protocol=protocol):
+                self.assertEqual(providers.normalize({'protocol':protocol}, raw)['finish_reason'], reason)
+
+    def test_stream_flag_must_be_boolean_before_any_transport(self):
+        for protocol in providers.PROTOCOLS:
+            settings = dict(protocol=protocol, base_url='https://example.com/v1', model='fixture')
+            with self.subTest(protocol=protocol), self.assertRaisesRegex(ValueError, 'provider_parameters'):
+                providers.prepare(settings, dict(messages=[], stream='true'), '')
 
     def test_connection_errors_are_safe_and_actionable(self):
         for code in ('provider_auth', 'provider_model', 'provider_rate_limit', 'provider_parameters', 'provider_unavailable'):

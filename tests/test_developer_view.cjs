@@ -106,6 +106,40 @@ test('unknown and capture-truncated records state their limits without inventing
   assert.ok(truncated.notes.some((note) => note.includes('采集体积上限截断')));
 });
 
+test('turn_end is readable model-receive status with safe layered fields, never task completion', () => {
+  const record=entry('turn_end','chat_completions',{turn_id:'turn-fixture',delivery:'sse',status:'completed',
+    text_chars:42,tool_count:2,usage:{prompt_tokens:15,completion_tokens:8,total_tokens:23,
+      reasoning_content:'usage-private-canary',untrusted_description:'not-a-token-count'},
+    thinking:'private-canary',signature:'signature-canary',text:'do-not-invent-a-second-reply'});
+  const view=viewer.describe(record);
+  assert.equal(view.messages.length,1);
+  assert.equal(view.messages[0].role,'system');
+  assert.equal(view.messages[0].text,'本轮接收完成');
+  assert.ok(view.notes.some(note=>note.includes('一轮模型回复')&&note.includes('任务记录和核验结果')));
+  assert.ok(!view.notes.some(note=>note.includes('尚未识别')));
+  const detail=view.sections.find(section=>section.title==='本轮接收详情').data;
+  assert.equal(detail['接收方式'],'流式接收（SSE）');
+  assert.equal(detail['正文字符数'],42);assert.equal(detail['工具调用数'],2);
+  assert.equal(view.sections.find(section=>section.title==='服务商报告的用量').data.total_tokens,23);
+  const serialized=JSON.stringify(view);
+  for(const canary of ['private-canary','signature-canary','usage-private-canary','not-a-token-count','do-not-invent-a-second-reply'])assert.ok(!serialized.includes(canary));
+});
+
+test('turn_end explains JSON fallback and omits absent or invalid counters instead of guessing zero', () => {
+  for(const delivery of ['json_fallback','disabled']){
+    const view=viewer.describe(entry('turn_end','responses',{turn_id:'turn-2',delivery,status:'completed',tool_count:0}));
+    assert.ok(!view.notes.some(note=>note.includes('尚未识别')));
+    const detail=view.sections.find(section=>section.title==='本轮接收详情').data;
+    assert.equal(detail['工具调用数'],0);assert.equal(Object.hasOwn(detail,'正文字符数'),false);
+    assert.ok(!view.sections.some(section=>section.title==='服务商报告的用量'));
+    assert.ok(detail['接收方式'].includes(delivery==='json_fallback'?'完整 JSON':'未启用'));
+  }
+  const invalid=viewer.describe(entry('turn_end','gemini',{delivery:'private-unknown-delivery',status:'error',text_chars:-1,tool_count:'4',usage:{input_tokens:'secret'}}));
+  assert.equal(invalid.messages[0].text,'本轮接收未完成');
+  assert.ok(!invalid.sections.some(section=>section.title==='本轮接收详情'||section.title==='服务商报告的用量'));
+  assert.ok(!JSON.stringify(invalid).includes('private-unknown-delivery'));
+});
+
 test('raw JSON stays optional, sanitized and bounded, including JSON inside tool argument strings', () => {
   const record = entry('response', 'chat_completions', { choices: [{ message: { tool_calls: [{ function: {
     name: 'present_findings', arguments: JSON.stringify({ summary: '公开结论', reasoning_content: 'nested-private-canary' }),

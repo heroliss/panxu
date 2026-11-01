@@ -20,3 +20,11 @@
 前端行为回归：`node --test tests/*.cjs`。技能资源也有固定白名单与散列校验；不得通过收集整个工程目录打包指南。
 
 新系统工具的最终运行检查使用 `verification/check_system_tools.py`；只接受指定回环模型夹具与临时范围，报告存入忽略的verification目录。不可对用户真实模型配置运行。
+
+## v0.9 流式检查
+
+`python verification/serve_v090_fixture.py --data-dir verification/<新的测试目录> --catalog-size 100` 提供真正的本地SSE与分片工具参数。可选 `--hold-marker verification/<测试目录>/hold-stream` 在自有标记存在时短暂停流，移除标记后继续，最多20秒。临时范围和两个随机端口由启动输出给出。
+
+`python verification/check_streaming.py --base-url <应用回环地址> --scope <启动输出的临时范围> --report verification/<私有报告>.json` 验证先有公开增量、后有成功终态，完整参数但终态前不执行，以及取消/EOF断流无工具事实。它只接受明确的custom/local-acceptance-fixture且无密钥的回环配置，禁止对用户真实模型运行。四种协议的真实HTTP成功与逐字节分块另由 `tests/test_streaming.py` 覆盖；不能把共用传输或Chat失败验收写成四协议分别完成了全部失败场景。
+
+若锁屏等条件阻挡原生点击，可记录已通过的源码/最终EXE页面与HTTP范围，并保留候选产物；不得生成原生UI通过判定、冒用浏览器截图为原生截图，或跳过正式finalize的要求。

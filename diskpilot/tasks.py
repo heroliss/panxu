@@ -1201,7 +1201,7 @@ class TaskHarness:
                 task = self._get(key)
                 task['usage']['model_requests'] += 1
                 self._save(task)
-                message = self.assistant.agent_turn(messages, tool_specs())
+                message = self.assistant.agent_turn(messages, tool_specs(), cancel=cancel)
                 task = self._get(key)
                 self._account_usage(task, message.get('_usage'))
                 self._save(task)

@@ -121,7 +121,23 @@ window.PanxuDeveloperView = (() => {
     if(object(envelope))for(const key of ['provider','protocol','endpoint'])if(typeof envelope[key]==='string')view.meta[key]=envelope[key];
     if(object(value))for(const key of ['model','status','stop_reason','finish_reason'])if(typeof value[key]==='string')view.meta[key]=value[key];
     if(object(value)&&value.truncated){view.notes.push('这条记录已被采集体积上限截断，无法完整解释。');recognized=true;}
-    if(/^tool_/.test(entry?.kind || '')||category(entry)==='skills'){
+    if(entry?.kind==='turn_end'&&object(value)){
+      const status=value.status,delivery={sse:'流式接收（SSE）',json_fallback:'完整 JSON 回复（服务端未流式返回）',disabled:'未启用流式接收'};
+      message('system',status==='completed'?'本轮接收完成':status==='cancelled'?'本轮接收已停止':'本轮接收未完成',{title:'模型通信'});
+      view.notes.push('这里只表示一轮模型回复的接收状态；任务是否完成、是否产生处理结果，仍以任务记录和核验结果为准。');
+      const details={};
+      if(Object.hasOwn(delivery,value.delivery))details['接收方式']=delivery[value.delivery];
+      if(typeof value.turn_id==='string')details['本轮标识']=clip(value.turn_id,100);
+      for(const [key,label] of [['text_chars','正文字符数'],['tool_count','工具调用数']])if(Number.isSafeInteger(value[key])&&value[key]>=0)details[label]=value[key];
+      if(Object.keys(details).length)section('本轮接收详情',details,'metadata');
+      const usage=value.usage || value.usageMetadata;
+      if(object(usage)){
+        const counts={};
+        for(const key of ['input_tokens','output_tokens','total_tokens','prompt_tokens','completion_tokens','cache_creation_input_tokens','cache_read_input_tokens','promptTokenCount','candidatesTokenCount','totalTokenCount','cachedContentTokenCount'])if(Number.isSafeInteger(usage[key])&&usage[key]>=0)counts[key]=usage[key];
+        if(Object.keys(counts).length)section('服务商报告的用量',counts,'metadata');
+      }
+      recognized=true;
+    }else if(/^tool_/.test(entry?.kind || '')||category(entry)==='skills'){
       const name=value?.name || value?.tool || '';
       if(entry.kind==='tool_call')callRecord({name,arguments:value?.arguments});
       else toolResult(name,value?.result ?? value,category(entry)==='skills');
@@ -143,7 +159,7 @@ window.PanxuDeveloperView = (() => {
       if(entry.kind==='context_event'){section('任务事件',value);recognized=true;}
     }else if(typeof value==='string'){message(entry.kind==='response'?'assistant':'user',value);recognized=true;}
     if(!recognized)view.notes.push('尚未识别这条记录的格式，可展开已脱敏的原始 JSON 查看；没有补造对话内容。');
-    if(Object.keys(view.meta).length)section('请求与响应信息',view.meta,'metadata');
+    if(Object.keys(view.meta).length)section('连接信息（程序内部）',{...view.meta,说明:'provider 是程序内部的服务商标签，不是消息角色。实际消息角色由协议中的 role 或独立 system 字段定义。'},'metadata');
     if(view.messages.some(item=>item.publicCall))view.notes.push('以上为模型公开建议，不代表操作或审批结果。');
     return view;
   }
@@ -352,6 +368,7 @@ function initializePanxu() {
   }
   function render() {
     window.PanxuFiles?.unmount();
+    window.PanxuTasks?.unmountLive?.();
     const root = $('workspace'); root.replaceChildren();
     const renderers = { overview: renderOverview, files: renderFiles, background: renderBackground, software: renderSoftware, history: renderHistory, model: renderModel };
     renderers[state.view](root);
@@ -637,7 +654,7 @@ function initializePanxu() {
   async function undoBatch(id) {
     await task(async () => { const batch = state.history.find((entry) => entry.id === id); accept(await api('/api/undo', { batch_id: id })); accept(await api('/api/bootstrap?compact=1')); state.selected = new Set((batch?.items || []).map((item) => item.id).filter((key) => canSelect(state.items.find((item) => item.id === key)))); state.checked = state.items.length > 0; render(); toast('已恢复之前的选择，可回到我的文件调整。'); });
   }
-  function settingsPayload(overrides = {}) { return { provider: state.settings.provider || 'custom', protocol: state.settings.protocol || 'chat_completions', reasoning_effort: state.settings.reasoning_effort || 'default', base_url: state.settings.base_url || '', model: state.settings.model || '', send_paths: state.settings.send_paths === true, custom_instructions: state.settings.custom_instructions || '', protect_patterns: Array.isArray(state.settings.protect_patterns) ? state.settings.protect_patterns : [], ...overrides }; }
+  function settingsPayload(overrides = {}) { return { provider: state.settings.provider || 'custom', protocol: state.settings.protocol || 'chat_completions', reasoning_effort: state.settings.reasoning_effort || 'default', base_url: state.settings.base_url || '', model: state.settings.model || '', stream: state.settings.stream !== false, send_paths: state.settings.send_paths === true, protect_patterns: Array.isArray(state.settings.protect_patterns) ? state.settings.protect_patterns : [], ...overrides }; }
   function renderModel(root) {
     append(root, heading('设置', '连接模型，按你的习惯整理。'));
     const panel = el('section', 'panel simple-setting'); append(panel, el('h2', '', '连接智能助手'));
@@ -650,18 +667,17 @@ function initializePanxu() {
     const key = inputField('API 密钥', 'model-key', 'password'); key.input.autocomplete = 'new-password'; key.input.placeholder = state.settings.has_key ? '已保存，留空保留当前连接的密钥' : '填写服务商提供的 API 密钥'; key.box.classList.add('wide');
     append(grid, providerBox, modelBox, key.box);
     const note = el('p', 'field-help provider-note');
-    const advanced = el('details', 'setting-details provider-advanced'); append(advanced, el('summary', '', '高级连接与偏好'));
+    const advanced = el('details', 'setting-details provider-advanced'); append(advanced, el('summary', '', '高级连接'));
     const base = inputField('服务地址', 'model-base', 'url', state.settings.base_url); base.input.placeholder = 'https://…/v1';
     const model = inputField('模型 ID（可手动输入）', 'model-name', 'text', state.settings.model);
     const protocolBox = el('div','form-field'); const protocolLabel = el('label','field-label','协议'); protocolLabel.htmlFor='model-protocol';
     const protocol = makeSelect([['chat_completions','Chat Completions'],['responses','Responses'],['anthropic','Anthropic Messages'],['gemini','Gemini']], state.settings.protocol || 'chat_completions', () => {}, '协议'); protocol.id='model-protocol'; append(protocolBox,protocolLabel,protocol);
     const effortBox = el('div','form-field'); const effortLabel = el('label','field-label','思考强度'); effortLabel.htmlFor='model-effort';
     const effort=makeSelect([['default','按模型默认'],['low','低'],['medium','中'],['high','高'],['max','最高']], state.settings.reasoning_effort || 'default',()=>{},'思考强度'); effort.id='model-effort'; append(effortBox,effortLabel,effort);
-    const instructions = el('textarea'); instructions.id = 'model-instructions'; instructions.value = state.settings.custom_instructions || ''; instructions.maxLength=4000;
-    const instructionLabel=el('label','field-label','你的整理偏好'); instructionLabel.htmlFor=instructions.id;
+    const streaming=el('label','check-line'); const stream=el('input'); stream.id='model-stream'; stream.type='checkbox'; stream.checked=state.settings.stream !== false; append(streaming,stream,el('span','','流式回复'));
     const privacy=el('label','check-line'); const paths=el('input'); paths.type='checkbox'; paths.checked=state.settings.send_paths === true; append(privacy,paths,el('span','','允许发送文件位置'));
     const clear=el('label','check-line'); const clearKey=el('input'); clearKey.type='checkbox'; append(clear,clearKey,el('span','','清除已保存的密钥'));
-    append(advanced,base.box,model.box,protocolBox,effortBox,instructionLabel,instructions,privacy,clear);
+    append(advanced,base.box,model.box,protocolBox,effortBox,streaming,el('p','field-help','流式回复会边接收边显示文字，不改变所选协议。不兼容的自定义服务可关闭。'),privacy,clear);
     const status=el('p','connection-test-status'); status.setAttribute('role','status');
     const save=el('button','button primary','保存并测试'); save.type='submit';
     const onlySave=button('仅保存',()=>saveConnection(false),'plain-button');
@@ -692,21 +708,28 @@ function initializePanxu() {
       if(!provider.value) {status.textContent='请先选择模型服务商。';status.classList.add('field-error');provider.focus();return;}
       save.disabled=true;onlySave.disabled=true;form.setAttribute('aria-busy','true');status.className='connection-test-status';
       status.textContent=test?'正在保存并验证工具调用，请稍等…':'正在保存…';
+      let saved=false;const submittedKey=key.input.value,submittedClear=clearKey.checked;
+      function clearSubmittedKey(){if(key.input.value===submittedKey)key.input.value='';if(clearKey.checked===submittedClear)clearKey.checked=false;}
       try {
-        const payload=settingsPayload({provider:provider.value,protocol:protocol.value,reasoning_effort:effort.value,base_url:base.input.value.trim(),model:model.input.value.trim(),send_paths:paths.checked,custom_instructions:instructions.value});
+        const payload=settingsPayload({provider:provider.value,protocol:protocol.value,reasoning_effort:effort.value,base_url:base.input.value.trim(),model:model.input.value.trim(),stream:stream.checked,send_paths:paths.checked});
         if(key.input.value) payload.api_key=key.input.value;
         else if(clearKey.checked || ((provider.value!==(state.settings.provider || 'custom') || base.input.value.trim()!==state.settings.base_url) && state.settings.has_key)) payload.clear_key=true;
-        accept(await api('/api/settings',payload)); key.input.value=''; clearKey.checked=false;
+        const data=await api('/api/settings',payload);
+        if(data.settings)data.settings={...data.settings,custom_instructions:state.settings.custom_instructions ?? data.settings.custom_instructions};
+        accept(data); saved=true;
+        key.input.placeholder=state.settings.has_key?'已保存，留空保留当前连接的密钥':'填写服务商提供的 API 密钥';
         if(test) {
           const result=await api('/api/settings/test',{},120000);
-          status.textContent=result.message || (result.passed?'连接成功，工具往返测试通过。':'连接测试未通过，请检查配置。');
+          status.textContent=result.passed?(result.message || '连接成功，工具往返测试通过。'):`设置已保存，但测试未通过。${result.message || '请检查配置后重试。'} 当前填写内容已保留。`;
           status.classList.toggle('field-error',!result.passed);
-        } else status.textContent='设置已保存。';
-      }catch(error){status.textContent=error.message;status.classList.add('field-error');}
+          if(result.passed)clearSubmittedKey();
+        } else {status.textContent='设置已保存。';clearSubmittedKey();}
+      }catch(error){status.textContent=saved?`设置已保存，但测试未完成。${error.message} 当前填写内容已保留。`:`设置未保存。${error.message} 当前填写内容已保留。`;status.classList.add('field-error');}
       finally{save.disabled=false;onlySave.disabled=false;form.setAttribute('aria-busy','false');}
     }
     form.addEventListener('submit',(event)=>{event.preventDefault();saveConnection(true);});
     append(form,grid,note,advanced,el('p','field-help','连接测试只发送固定测试数据，不发送文件清单。官方文档支持不代表当前账号已通过实测。'),append(el('div','form-actions'),save,onlySave),status); append(panel,form); append(root,panel);
+    renderOrganizingPreferences(root);
     renderAppearance(root);
     const preserve=el('section','panel simple-setting');append(preserve,el('h2','','保留的位置'),el('p','','这些位置不会加入推荐处理。'));
     const keep=el('details','setting-details');append(keep,el('summary','','管理保留清单'));
@@ -715,6 +738,26 @@ function initializePanxu() {
     append(keep,lab,patterns,button('保存保留清单',()=>task(async()=>{accept(await api('/api/settings',settingsPayload({protect_patterns:patterns.value.split(/\r?\n/).map(v=>v.trim()).filter(Boolean)})));accept(await api('/api/bootstrap?compact=1'));render();toast('保留清单已保存。');})));append(preserve,keep);append(root,preserve);
     append(root,button('高级选项',()=>$('advanced-toggle').click(),'plain-button advanced-entry'));
     renderDeveloperEntry(root);
+  }
+  function renderOrganizingPreferences(root) {
+    const panel=el('section','panel simple-setting organizing-preferences');
+    append(panel,el('h2','','整理偏好'),el('p','field-help','所有模型共用，用于后续分析。已有方案可继续调查后更新。'));
+    const form=el('form','form-panel'),label=el('label','field-label','你的整理习惯与要求');
+    const instructions=el('textarea');instructions.id='organizing-instructions';instructions.value=state.settings.custom_instructions || '';instructions.maxLength=4000;
+    instructions.placeholder='例如：保留项目源码和个人照片；旧安装包优先建议清理。';label.htmlFor=instructions.id;
+    const status=el('p','connection-test-status');status.setAttribute('role','status');
+    const save=el('button','button','保存偏好');save.type='submit';
+    form.addEventListener('submit',async event=>{
+      event.preventDefault();if(save.disabled)return;
+      const submitted=instructions.value;save.disabled=true;form.setAttribute('aria-busy','true');status.className='connection-test-status';status.textContent='正在保存偏好…';
+      try{
+        const data=await api('/api/preferences',{custom_instructions:submitted});
+        state.settings.custom_instructions=data.preferences?.custom_instructions ?? data.settings?.custom_instructions ?? submitted;
+        status.textContent=instructions.value===submitted?'整理偏好已保存，切换模型也会沿用。':'刚才的偏好已保存；还有新修改尚未保存。';
+      }catch(error){status.textContent=`偏好未保存。${error.message} 当前填写内容已保留。`;status.classList.add('field-error');}
+      finally{save.disabled=false;form.setAttribute('aria-busy','false');}
+    });
+    append(form,label,instructions,append(el('div','form-actions'),save),status);append(panel,form);append(root,panel);
   }
   let preferenceSave=Promise.resolve(),preferenceRevision=0;
   function saveUiPreferences(patch) {
@@ -774,7 +817,7 @@ function initializePanxu() {
     const status=el('p','developer-state');status.setAttribute('role','status');
     const error=el('p','field-error');error.setAttribute('role','status');error.hidden=true;
     const controls=el('div','developer-controls');
-    const refresh=button('刷新记录',()=>load(true));
+    const refresh=button('刷新记录',()=>{stopStream();syncStream();load(true);});
     const clear=button('清空记录',async()=>{
       if(fetching||recordBusy)return;clear.disabled=true;readSequence++;stopPolling();
       try{const data=await api('/api/developer',{clear:true});offset=0;lastData=null;pendingData=null;renderedData=null;entries.clear();list.replaceChildren();renderData(data,true);}
@@ -786,14 +829,46 @@ function initializePanxu() {
     const previous=button('上一页',()=>{if(offset){offset=Math.max(0,offset-10);load(true);}});
     const next=button('下一页',()=>{offset+=10;load(true);});const pageLabel=el('span','field-help');append(paging,previous,pageLabel,next);
     const viewer=el('div','developer-viewer');append(viewer,controls,updated,list,paging);
+    const streaming=el('section','developer-stream');streaming.hidden=true;
+    const streamHeading=el('h3','','正在接收的公开回复'),streamHost=el('div','developer-stream-body'),streamConnection=el('p','developer-note');streamConnection.setAttribute('role','status');
+    append(streaming,streamHeading,streamHost,streamConnection);
     const displayNote=el('p','field-help','显示已关闭。打开“实时显示通信”后可查看记录；只有此面板可见时才会自动刷新。');
-    append(body,intro,switches,filters,status,error,displayNote,viewer);
+    append(body,intro,switches,filters,status,error,displayNote,streaming,viewer);
     let offset=0,fetching=false,recordBusy=false,loaded=false,active=true,dockVisible=false,refreshAfterRead=false,timer=null,readSequence=0,lastData=null,pendingData=null,renderedData=null;
     const entries=new Map();
     const names={request:'发给模型',response:'模型回复',tool_call:'工具调用',tool_result:'工具结果',skill:'技能参考',skill_read:'读取技能',context_event:'任务反馈'};
     function visible(){return active&&dockVisible&&panel.isConnected&&!document.hidden;}
     function stopPolling(){clearTimeout(timer);timer=null;}
     function schedule(){stopPolling();if(visible()&&live.input.checked&&offset===0&&lastData?.enabled)timer=setTimeout(()=>load(false),2500);}
+    let streamTimer=null,streamUnsubscribe=null,streamTaskId='',streamView=null,streamGeneration=0,streamEpoch='',streamTurn='';
+    function stopStream(clear=false){
+      clearTimeout(streamTimer);streamTimer=null;streamGeneration++;streamUnsubscribe?.();streamUnsubscribe=null;
+      if(clear){streamView?.reset();streaming.hidden=true;streamEpoch='';streamTurn='';}
+    }
+    function syncStream(){
+      clearTimeout(streamTimer);streamTimer=null;
+      if(!visible()||!live.input.checked||!conversation.input.checked||!window.PanxuStreamChannel||!window.PanxuStreamView){stopStream();streaming.hidden=true;return;}
+      let id='';try{id=window.PanxuTasks?.streamTaskId?.() || '';}catch(_){}
+      if(id!==streamTaskId){stopStream(true);streamTaskId=id;}
+      if(id&&!streamUnsubscribe){
+        if(!streamView)streamView=window.PanxuStreamView.create(streamHost);
+        const run=++streamGeneration;
+        streamUnsubscribe=window.PanxuStreamChannel.subscribe(id,snapshot=>{
+          if(run!==streamGeneration||!visible()||!live.input.checked||!conversation.input.checked)return;
+          const value=snapshot.stream;
+          if(!value){streamView.reset();streaming.hidden=!['reconnecting','stopped','unavailable'].includes(snapshot.connection);}
+          else if(value.status==='cancelled'){streamView.reset();streaming.hidden=true;return;}
+          else{
+            if(value.epoch!==streamEpoch||value.turn_id!==streamTurn){streamView.reset();streamEpoch=value.epoch;streamTurn=value.turn_id;}
+            streaming.hidden=false;streamHeading.textContent=value.status==='streaming'?'正在接收的公开回复':value.status==='completed'?'本轮公开回复':'未完成的公开回复';
+            streamView.update({text:value.text,status:snapshot.incomplete?'incomplete':value.status,phase:value.tool_pending?'tool_pending':''});
+          }
+          const connection={reconnecting:'连接暂时中断，正在重连；已收到的内容会保留。',stopped:'实时连接未恢复，已收到的内容会保留。可点“刷新记录”重试。',unavailable:'暂时无法实时接收回复，可点“刷新记录”重试。'}[snapshot.connection] || '';
+          streamConnection.textContent=[connection,value?.truncated?'公开回复已达到显示上限，内容已截断。':''].filter(Boolean).join(' ');streamConnection.hidden=!streamConnection.textContent;
+        });
+      }
+      streamTimer=setTimeout(syncStream,200);
+    }
     function showError(message){error.textContent=message;error.hidden=false;}
     const viewModel=window.PanxuDeveloperView;
     function included(entry){return ({skills:skills.input.checked,tools:tools.input.checked,conversation:conversation.input.checked})[viewModel.category(entry)];}
@@ -845,7 +920,10 @@ function initializePanxu() {
         append(auxiliary,detail);
       });
       const raw=el('details','developer-raw');append(raw,el('summary','','原始 JSON（已脱敏）'));
-      raw.addEventListener('toggle',()=>{if(raw.open&&!raw.querySelector('pre'))append(raw,el('pre','developer-json',viewModel.raw(entry)));});
+      raw.addEventListener('toggle',()=>{if(raw.open&&!raw.querySelector('pre')){
+        if(entry.payload&&typeof entry.payload==='object'&&Object.hasOwn(entry.payload,'payload'))append(raw,el('p','developer-note','这是完整诊断记录，含程序内部元数据。外层 provider 是服务商标签，不是 API 消息角色；实际请求或回复位于 payload 内。'));
+        append(raw,el('pre','developer-json',viewModel.raw(entry)));
+      }});
       append(auxiliary,raw);append(copy,auxiliary);append(article,copy);
     }
     function applyDisplay(entry){
@@ -909,19 +987,21 @@ function initializePanxu() {
     });
     live.input.addEventListener('change',()=>{
       viewer.hidden=!live.input.checked;displayNote.hidden=live.input.checked;stopPolling();
+      syncStream();
       saveUiPreferences({developer_live:live.input.checked}).catch(()=>showError('显示已切换；暂时无法保存此偏好。'));
       if(live.input.checked)load(true);
     });
     for(const [control,key] of [[conversation,'developer_conversation'],[skills,'developer_skills'],[tools,'developer_tools']])control.input.addEventListener('change',()=>{
       saveUiPreferences({[key]:control.input.checked}).catch(()=>showError('显示已切换；暂时无法保存此偏好。'));
+      if(control===conversation)syncStream();
       if(lastData&&live.input.checked)renderEntries(renderedData || lastData);
     });
-    const visibility=()=>{stopPolling();if(visible()&&live.input.checked)load(false);};
+    const visibility=()=>{stopPolling();syncStream();if(visible()&&live.input.checked)load(false);};
     document.addEventListener('visibilitychange',visibility);
-    developerCleanup=()=>{active=false;dockVisible=false;refreshAfterRead=false;readSequence++;stopPolling();document.removeEventListener('visibilitychange',visibility);};
+    developerCleanup=()=>{active=false;dockVisible=false;refreshAfterRead=false;readSequence++;stopPolling();stopStream(true);streamView?.dispose();document.removeEventListener('visibilitychange',visibility);};
     viewer.hidden=!live.input.checked;displayNote.hidden=live.input.checked;
     return {setVisible(value){
-      dockVisible=Boolean(value);stopPolling();
+      dockVisible=Boolean(value);stopPolling();syncStream();
       if(!dockVisible){readSequence++;refreshAfterRead=false;return;}
       if(fetching)refreshAfterRead=true;else load(false);
     },destroy:developerCleanup};

@@ -14,7 +14,7 @@ from .simulation import AppError
 MAX_ENTRIES, MAX_BYTES, MAX_EVENT_BYTES = 200, 32 * 1024 * 1024, 1024 * 1024
 OMIT = {'api_key', 'authorization', 'proxy-authorization', 'password', 'secret', 'access_token',
         'refresh_token', 'reasoning_content', 'thinking', 'redacted_thinking', 'encrypted_content',
-        '_continuation', 'thought', 'thought_signature'}
+        '_continuation', 'thought', 'thought_signature', 'reasoning', 'reasoning_details', 'reasoning_text'}
 
 
 def timestamp():
@@ -35,7 +35,8 @@ class DeveloperTrace:
     def sanitize(self, value):
         if isinstance(value, dict):
             return {str(k): '[未记录：密钥或协议内部推理]' if str(k).casefold() in OMIT and not (
-                        str(k).casefold() == 'thinking' and isinstance(v, dict) and set(v) <= {'type', 'budget_tokens', 'clear_thinking'}) else self.sanitize(v)
+                        isinstance(v, dict) and ((str(k).casefold() == 'thinking' and set(v) <= {'type', 'budget_tokens', 'clear_thinking'})
+                        or (str(k).casefold() == 'reasoning' and set(v) <= {'effort', 'summary'}))) else self.sanitize(v)
                     for k, v in value.items()}
         if isinstance(value, list):
             return [self.sanitize(v) for v in value]
@@ -53,6 +54,10 @@ class DeveloperTrace:
             yield
         finally:
             self.local.task_id = previous
+
+    def current_task_id(self):
+        """Task association for transient public stream hooks, per worker thread."""
+        return getattr(self.local, 'task_id', None)
 
     def record(self, event):
         # Mode is checked at insertion time, including responses after disabling.

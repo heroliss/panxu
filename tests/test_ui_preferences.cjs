@@ -120,7 +120,7 @@ class Element {
   fire(name) { return Promise.all((this.handlers.get(name) || []).map((handler) => handler({ preventDefault() {} }))); }
 }
 
-function developer({ payload, kind = 'request' } = {}) {
+function developer({ payload, kind = 'request', streaming = false } = {}) {
   const root = new Element('section'); root.root = true;
   const timers = new Map(), calls = [], listeners = new Map();
   let timerId = 0, seq = 1, capture = false;
@@ -132,6 +132,7 @@ function developer({ payload, kind = 'request' } = {}) {
   ] });
   const document = { hidden: false, addEventListener: (name, handler) => listeners.set(name, handler),
     removeEventListener: (name) => listeners.delete(name) };
+  const streamState={taskId:'stream-fixture',subscriptions:[],listeners:new Map(),unsubscribes:0,resets:0,disposes:0,updates:[]};
   const context = {
     window: { PanxuAppearance: { get: () => preferences } }, document, state: { view: 'model' }, developerCleanup: null,
     el: (tag, className, text) => new Element(tag, className, text),
@@ -146,6 +147,18 @@ function developer({ payload, kind = 'request' } = {}) {
     setTimeout: (handler) => { timers.set(++timerId, handler); return timerId; }, clearTimeout: (id) => timers.delete(id),
     Date, Map, JSON, RegExp,
   };
+  if(streaming){
+    context.window.PanxuTasks={streamTaskId:()=>streamState.taskId};
+    context.window.PanxuStreamChannel={subscribe:(id,listener)=>{
+      streamState.subscriptions.push(id);streamState.listeners.set(id,listener);listener({stream:null,connection:'connecting',incomplete:false});
+      return ()=>{streamState.unsubscribes++;if(streamState.listeners.get(id)===listener)streamState.listeners.delete(id);};
+    }};
+    context.window.PanxuStreamView={create:host=>({
+      update:value=>{streamState.updates.push(value);host.textContent=value.text;},
+      reset:()=>{streamState.resets++;host.textContent='';},
+      dispose:()=>{streamState.disposes++;host.textContent='';},
+    })};
+  }
   const viewStart = source.indexOf('window.PanxuDeveloperView = (() => {');
   const viewEnd = source.indexOf('function initializePanxu()', viewStart);
   const start = source.indexOf('  function renderDeveloper(root) {');
@@ -157,7 +170,8 @@ function developer({ payload, kind = 'request' } = {}) {
   const controller = context.renderDeveloper(root);
   const panel = root.children[0];
   const get = (id) => root.all().find((node) => node.id === id);
-  return { root, panel, get, timers, calls, context, document, listeners, controller,
+  return { root, panel, get, timers, calls, context, document, listeners, controller, streamState,
+    emitStream(value){streamState.listeners.get(streamState.taskId)?.(value);},
     setSequence: (value) => { seq = value; }, captured: () => capture,
     async open() { controller.setVisible(true); await flush(); },
     close() { controller.setVisible(false); },
@@ -236,6 +250,13 @@ test('auxiliary request fields and raw JSON share one closed disclosure while pr
   await fixture.check('developer-tools', true);
   assert.equal(group.open, false); assert.ok(toolSections.every((node) => !node.hidden));
   assert.notEqual(group.querySelector('summary').textContent, originalTitle, 'category count follows independent filters');
+  const connection=group.querySelectorAll('details').find(node=>node.querySelector('summary')?.textContent==='连接信息（程序内部）');
+  assert.ok(connection,'connection metadata is clearly separate from API message roles');
+  connection.open=true;await connection.fire('toggle');
+  assert.ok(connection.all().some(node=>String(node.textContent).includes('不是消息角色')));
+  const raw=entry.querySelector('.developer-raw');raw.open=true;await raw.fire('toggle');
+  assert.ok(raw.all().some(node=>String(node.textContent).includes('完整诊断记录')));
+  assert.equal(JSON.parse(raw.querySelector('pre').textContent).provider,'fixture','only the display changes; actual stored metadata stays intact');
   fixture.context.developerCleanup();
 });
 
@@ -257,6 +278,40 @@ test('dock remains live across navigation; hidden or closed dock pauses polling'
   await fixture.open(); assert.equal(fixture.timers.size, 1);
   fixture.context.developerCleanup();
   assert.equal(fixture.timers.size, 0); assert.equal(fixture.listeners.has('visibilitychange'), false);
+});
+
+test('developer subscribes to public streaming only while dock/live/conversation are visible, independently of capture',async()=>{
+  const f=developer({streaming:true});assert.equal(f.streamState.subscriptions.length,0);await f.open();assert.equal(f.streamState.subscriptions.length,0);
+  await f.check('developer-live',true);assert.equal(f.captured(),false);assert.deepEqual(f.streamState.subscriptions,['stream-fixture']);
+  f.emitStream({stream:{epoch:'one',turn_id:'one',text:'边接收边显示',status:'streaming',tool_pending:false},connection:'open',incomplete:false});
+  const panel=f.root.all().find(node=>node.className==='developer-stream');assert.equal(panel.hidden,false);assert.equal(panel.querySelector('.developer-stream-body').textContent,'边接收边显示');
+  assert.equal(f.streamState.updates.at(-1).status,'streaming');
+  f.context.state.view='files';await f.tick();assert.equal(f.streamState.subscriptions.length,1,'navigation does not reconnect or duplicate the subscription');
+  await f.check('developer-conversation',false);assert.equal(f.streamState.unsubscribes,1);assert.equal(panel.hidden,true);assert.equal(f.timers.size,0);
+  await f.check('developer-conversation',true);assert.equal(f.streamState.subscriptions.length,2);
+  f.document.hidden=true;f.listeners.get('visibilitychange')();assert.equal(f.streamState.unsubscribes,2);assert.equal(f.timers.size,0);
+  f.document.hidden=false;f.listeners.get('visibilitychange')();await flush();assert.equal(f.streamState.subscriptions.length,3);
+  f.close();assert.equal(f.streamState.unsubscribes,3);assert.equal(f.timers.size,0);f.context.developerCleanup();assert.equal(f.streamState.disposes,1);
+});
+
+test('developer stream updates preserve historical DOM and mark a broken connection incomplete without losing received text',async()=>{
+  const f=developer({streaming:true});await f.open();await f.check('developer-live',true);
+  const article=f.root.all().find(node=>node.className==='developer-entry'),raw=article.querySelector('.developer-raw');raw.open=true;await raw.fire('toggle');raw.scrollTop=77;
+  const value={epoch:'one',turn_id:'turn-one',text:'已经收到的公开内容',status:'streaming',tool_pending:true};
+  f.emitStream({stream:value,connection:'open',incomplete:false});f.emitStream({stream:value,connection:'reconnecting',incomplete:true});
+  assert.equal(f.streamState.updates.at(-1).text,value.text);assert.equal(f.streamState.updates.at(-1).status,'incomplete');assert.equal(f.streamState.updates.at(-1).phase,'tool_pending');
+  assert.ok(f.root.all().includes(article));assert.equal(raw.open,true);assert.equal(raw.scrollTop,77);
+  assert.ok(f.root.all().some(node=>node.textContent.includes('正在重连')));
+  const resets=f.streamState.resets;f.emitStream({stream:{...value,turn_id:'turn-two',text:'新一轮'},connection:'open',incomplete:false});assert.equal(f.streamState.resets,resets+1);
+  f.emitStream({stream:{...value,status:'cancelled'},connection:'open',incomplete:false});assert.equal(f.root.all().find(node=>node.className==='developer-stream').hidden,true);
+  f.context.developerCleanup();assert.equal(f.timers.size,0);
+});
+
+test('developer switches streaming task IDs without accepting a stale prior-task callback',async()=>{
+  const f=developer({streaming:true});await f.open();await f.check('developer-live',true);const old=f.streamState.listeners.get('stream-fixture');
+  f.streamState.taskId='new-task';await f.tick();assert.deepEqual(f.streamState.subscriptions,['stream-fixture','new-task']);assert.equal(f.streamState.unsubscribes,1);
+  const before=f.streamState.updates.length;old({stream:{epoch:'one',turn_id:'one',text:'旧任务晚包',status:'streaming'},connection:'open',incomplete:false});assert.equal(f.streamState.updates.length,before);
+  f.emitStream({stream:{epoch:'one',turn_id:'two',text:'新任务文字',status:'streaming'},connection:'open',incomplete:false});assert.equal(f.streamState.updates.at(-1).text,'新任务文字');f.context.developerCleanup();
 });
 
 test('a late polling response after dock closes cannot replace records or schedule another read', async () => {
@@ -370,4 +425,120 @@ test('unparseable public calls explain how to view raw data instead of inventing
   assert.ok(text.includes('原始 JSON'));
   assert.equal(entry.querySelector('pre'), null);
   fixture.context.developerCleanup();
+});
+
+function modelSettings({saved={},testResult={passed:true,message:'测试成功'},saveError,testError}={}) {
+  const root=new Element('main');root.root=true;
+  const state={settings:{provider:'custom',base_url:'https://fixture.invalid/v1',model:'fixture',protocol:'chat_completions',has_key:false,custom_instructions:'保留个人资料',...saved},providers:[
+    {id:'fixture_vendor',name:'测试服务',base_url:'https://other.invalid/v1',protocol:'responses',models:['fixture-other'],default_model:'fixture-other'},
+  ]};
+  const calls=[];
+  const el=(tag,className='',text='')=>{
+    const node=new Element(tag,className,text);node.value='';node.checked=false;node.disabled=false;node.focus=()=>{};
+    node.classList={add:token=>{if(!node.className.split(' ').includes(token))node.className+=' '+token;},toggle:(token,force)=>{
+      const set=new Set(node.className.split(' ').filter(Boolean));if(force===undefined?!set.has(token):force)set.add(token);else set.delete(token);node.className=[...set].join(' ');
+    }};return node;
+  };
+  const append=(node,...children)=>{node.append(...children);return node;};
+  const button=(label,handler,className='button')=>{const node=el('button',className,label);node.addEventListener('click',handler);return node;};
+  const context={state,el,append,button,
+    heading:()=>el('h1'),renderAppearance:()=>{},renderDeveloperEntry:()=>{},
+    inputField:(label,id,type='text',value='')=>{const box=el('div'),input=el('input');input.id=id;input.type=type;input.value=value;box.append(input);return {box,input};},
+    makeSelect:(options,value,callback)=>{const node=el('select');node.value=value;node.addEventListener('change',()=>callback(node.value));return node;},
+    accept:data=>{if(data.settings)state.settings=data.settings;},
+    api:async(path,payload)=>{
+      calls.push({path,payload});
+      if(path==='/api/settings'){if(saveError)throw new Error(saveError);const {api_key,clear_key,...fields}=payload;return {settings:{...state.settings,...fields,has_key:api_key?true:clear_key?false:state.settings.has_key}};}
+      if(path==='/api/settings/test'){if(testError)throw new Error(testError);return testResult;}
+      if(path==='/api/preferences')return {preferences:{custom_instructions:payload.custom_instructions}};
+      throw new Error('Unexpected path '+path);
+    },
+  };
+  const start=source.indexOf('  function settingsPayload('),end=source.indexOf('  let preferenceSave=',start);
+  assert.ok(start>=0&&end>start);createContext(context);
+  runInContext(source.slice(start,end)+';this.renderModel=renderModel;',context);context.renderModel(root);
+  const get=id=>root.all().find(node=>node.id===id);
+  const connection=root.all().find(node=>node.tag==='form'&&node.className.includes('provider-form'));
+  return {root,state,calls,get,context,
+    async submit(){await connection.fire('submit');await flush();},
+    async saveOnly(){await root.all().find(node=>node.tag==='button'&&node.textContent==='仅保存').fire('click');await flush();},
+    status:()=>root.all().find(node=>node.className.includes('connection-test-status')),
+  };
+}
+
+test('save-and-test persists first and keeps every connection input when the test request fails',async()=>{
+  const f=modelSettings({testError:'服务暂时不可用'});f.get('model-key').value='fixture-secret';
+  f.get('model-base').value='https://fixture.invalid/v2';f.get('model-name').value='fixture-new';
+  await f.submit();assert.deepEqual(f.calls.map(call=>call.path),['/api/settings','/api/settings/test']);
+  assert.equal(f.state.settings.has_key,true);assert.equal(f.state.settings.model,'fixture-new');
+  assert.equal(f.get('model-key').value,'fixture-secret');assert.equal(f.get('model-name').value,'fixture-new');assert.equal(f.get('model-base').value,'https://fixture.invalid/v2');
+  assert.match(f.status().textContent,/设置已保存.*测试未完成/);assert.match(f.status().textContent,/已保留/);
+  assert.equal('custom_instructions' in f.calls[0].payload,false,'connection saves must not overwrite shared preferences');
+});
+
+test('negative test results preserve drafts while success clears only the submitted key input',async()=>{
+  const failed=modelSettings({testResult:{passed:false,message:'工具调用不兼容'}});failed.get('model-key').value='fixture-secret';await failed.submit();
+  assert.equal(failed.state.settings.has_key,true);assert.equal(failed.get('model-key').value,'fixture-secret');assert.match(failed.status().textContent,/设置已保存.*测试未通过/);
+  const success=modelSettings();success.get('model-key').value='fixture-secret';await success.submit();
+  assert.equal(success.state.settings.has_key,true);assert.equal(success.get('model-key').value,'');assert.equal(success.get('model-name').value,'fixture');
+  const saveOnly=modelSettings();saveOnly.get('model-key').value='fixture-secret';await saveOnly.saveOnly();
+  assert.deepEqual(saveOnly.calls.map(call=>call.path),['/api/settings']);assert.equal(saveOnly.state.settings.has_key,true);
+});
+
+test('save failure keeps inputs and clearly distinguishes unsaved settings from a failed test',async()=>{
+  const f=modelSettings({saveError:'地址无效'});f.get('model-key').value='fixture-secret';await f.submit();
+  assert.equal(f.calls.length,1);assert.equal(f.get('model-key').value,'fixture-secret');assert.match(f.status().textContent,/设置未保存/);assert.ok(!f.status().textContent.includes('测试未完成'));
+});
+
+test('shared organizing preferences save independently without touching unsaved connection or sending a key',async()=>{
+  const f=modelSettings();f.get('model-key').value='connection-draft';f.get('model-name').value='unsaved-model';
+  const preferences=f.get('organizing-instructions');preferences.value='保留源码；清理旧安装包';
+  const panel=preferences.parent.parent;assert.equal(panel.className.includes('organizing-preferences'),true);
+  await preferences.parent.fire('submit');await flush();
+  assert.equal(f.calls.length,1);assert.equal(f.calls[0].path,'/api/preferences');assert.deepEqual(Object.keys(f.calls[0].payload),['custom_instructions']);
+  assert.equal(f.state.settings.custom_instructions,preferences.value);assert.equal(f.get('model-key').value,'connection-draft');assert.equal(f.get('model-name').value,'unsaved-model');
+  const provider=f.get('model-provider');provider.value='fixture_vendor';await provider.fire('change');
+  assert.equal(preferences.value,'保留源码；清理旧安装包');assert.equal(f.get('model-key').value,'','a new vendor never receives the previous draft key');
+  const advanced=f.root.all().find(node=>node.className.includes('provider-advanced'));assert.equal(advanced.querySelector('textarea'),null);
+});
+
+test('stream is an independent transport checkbox, enabled for old settings and preserving an explicit off value',async()=>{
+  const defaults=modelSettings();assert.equal(defaults.get('model-stream').checked,true);await defaults.saveOnly();assert.equal(defaults.calls[0].payload.stream,true);
+  const off=modelSettings({saved:{stream:false}});assert.equal(off.get('model-stream').checked,false);await off.saveOnly();assert.equal(off.calls[0].payload.stream,false);assert.equal(off.calls[0].payload.protocol,'chat_completions');
+});
+
+test('a successful test never clears a newer key draft entered while the old test was in flight',async()=>{
+  const f=modelSettings();const originalApi=f.context.api;let complete;
+  f.context.api=async(path,payload)=>path==='/api/settings/test'?new Promise(resolve=>{complete=resolve;}):originalApi(path,payload);
+  f.get('model-key').value='submitted-key';await f.submit();assert.equal(typeof complete,'function');
+  f.get('model-key').value='new-unsaved-key';complete({passed:true,message:'测试成功'});await flush();
+  assert.equal(f.get('model-key').value,'new-unsaved-key');assert.equal(f.calls[0].payload.api_key,'submitted-key');
+});
+
+test('failed shared preference save retains its draft and does not submit any connection field',async()=>{
+  const f=modelSettings();const originalApi=f.context.api;
+  f.context.api=async(path,payload)=>{if(path==='/api/preferences'){f.calls.push({path,payload});throw new Error('暂时无法写入');}return originalApi(path,payload);};
+  const input=f.get('organizing-instructions');input.value='尚未保存的习惯';await input.parent.fire('submit');await flush();
+  assert.equal(input.value,'尚未保存的习惯');assert.equal(f.state.settings.custom_instructions,'保留个人资料');
+  assert.equal(f.calls.length,1);assert.deepEqual(Object.keys(f.calls[0].payload),['custom_instructions']);
+  assert.ok(input.parent.all().some(node=>node.textContent.includes('偏好未保存')));
+});
+
+test('late preference responses cannot overwrite a concurrently updated connection',async()=>{
+  const f=modelSettings();let complete;
+  f.context.api=()=>new Promise(resolve=>{complete=resolve;});
+  const input=f.get('organizing-instructions');input.value='新的通用偏好';const request=input.parent.fire('submit');
+  f.state.settings={...f.state.settings,model:'newer-connection',has_key:true};
+  complete({settings:{model:'stale-connection',has_key:false,custom_instructions:'新的通用偏好'}});await request;
+  assert.equal(f.state.settings.model,'newer-connection');assert.equal(f.state.settings.has_key,true);assert.equal(f.state.settings.custom_instructions,'新的通用偏好');
+});
+
+test('a late connection response cannot revert a separately saved shared preference',async()=>{
+  const f=modelSettings();const originalApi=f.context.api;let release;
+  f.context.api=async(path,payload)=>{
+    const result=await originalApi(path,payload);
+    return path==='/api/settings'?new Promise(resolve=>{release=()=>resolve(result);}):result;
+  };
+  await f.submit();assert.equal(typeof release,'function');f.state.settings.custom_instructions='另行保存的通用偏好';release();await flush();
+  assert.equal(f.state.settings.custom_instructions,'另行保存的通用偏好');
 });

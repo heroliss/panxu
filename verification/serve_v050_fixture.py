@@ -71,6 +71,16 @@ def answer(payload):
     return tool('present_findings', {'summary': '已查看当前结果，本轮建议保留。尚未调查的内容可继续分析。', 'needs_input': False})
 
 
+def write_response(handler, value, payload, status=200):
+    """Default JSON peer; newer fixtures may replace only this wire writer."""
+    raw = json.dumps(value, ensure_ascii=False).encode()
+    handler.send_response(status)
+    handler.send_header('Content-Type', 'application/json')
+    handler.send_header('Content-Length', str(len(raw)))
+    handler.end_headers()
+    handler.wfile.write(raw)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--data-dir', type=Path, required=True)
@@ -102,12 +112,7 @@ def main():
                     status = 200
                 except Exception as exc:
                     value, status = {'error': {'message': type(exc).__name__}}, 500
-                raw = json.dumps(value, ensure_ascii=False).encode()
-                self.send_response(status)
-                self.send_header('Content-Type', 'application/json')
-                self.send_header('Content-Length', str(len(raw)))
-                self.end_headers()
-                self.wfile.write(raw)
+                write_response(self, value, payload, status)
 
         provider = ThreadingHTTPServer(('127.0.0.1', 0), Provider)
         threading.Thread(target=provider.serve_forever, daemon=True).start()

@@ -13,6 +13,7 @@ window.PanxuTasks = (() => {
   let pending = false;
   let lastError = '';
   let intent = '';
+  let livePreview = null;
   let questionKey = '', answerOption = '', answerText = '';
   const adviceCache = new Map(), adviceRequests = new Map();
   let adviceGeneration = 0;
@@ -54,6 +55,46 @@ window.PanxuTasks = (() => {
     custom: ['其他整理要求', '用自己的话告诉助手']
   };
   const busy = () => current && ['investigating', 'executing'].includes(current.status);
+
+  function stopLivePreview() {
+    if (!livePreview) return;
+    livePreview.off?.(); livePreview.view.dispose(); livePreview = null;
+  }
+  function renderLivePreview(panel) {
+    if (!window.PanxuStreamView || !window.PanxuStreamChannel || !current?.id) return;
+    const section = node('section', 'task-live-reply'); section.hidden = true;
+    section.setAttribute('aria-label', '助手的公开回复');
+    const body = node('div', 'task-live-body');
+    const caption = node('p', 'task-live-caption', '助手正在回复');
+    add(section, caption, body); add(panel, section);
+    const token = {id: current.id, view: window.PanxuStreamView.create(body), off: null, turn: ''};
+    livePreview = token;
+    Promise.resolve().then(() => {
+      if (livePreview !== token || !section.isConnected) return;
+      token.off = window.PanxuStreamChannel.subscribe(token.id, packet => {
+        if (livePreview !== token || current?.id !== token.id || !section.isConnected) return;
+        const value = packet.stream;
+        if (!value) {
+          if (['stopped', 'unavailable'].includes(packet.connection)) {
+            section.hidden = false; caption.textContent = '暂时无法显示实时回复，调查状态仍会继续更新。';
+          }
+          return;
+        }
+        const turn = `${value.epoch}:${value.turn_id}`;
+        if (token.turn !== turn) {token.view.reset(); token.turn = turn;}
+        section.hidden = value.status === 'cancelled' || (!busy() && current.status !== 'budget_exhausted' && value.status === 'completed');
+        const interrupted = packet.incomplete || value.status === 'error';
+        let phase = value.status === 'completed' ? '本轮回复已接收' : '正在接收公开回复';
+        if (value.tool_pending) phase = value.status === 'completed' ? '工具请求已接收，程序将继续核对' : '工具请求接收中，尚未执行';
+        if (value.delivery === 'json_fallback') phase = '已收到完整回复（接口未返回流式数据）';
+        if (current.status === 'budget_exhausted' && value.status === 'completed') phase = '本轮回复已接收，调查待继续';
+        if (interrupted) phase = '回复中断，以下内容可能不完整';
+        if (value.truncated) phase += ' · 仅展示最近一轮的前 8000 字';
+        caption.textContent = phase;
+        token.view.update({text: value.text, phase: value.tool_pending ? 'tool_pending' : '', status: interrupted ? 'incomplete' : value.status});
+      });
+    });
+  }
 
   function node(tag, cls, text) {
     const element = document.createElement(tag);
@@ -128,6 +169,7 @@ window.PanxuTasks = (() => {
     if (busy()) schedule();
   }
   function newTask() {
+    stopLivePreview();
     adviceGeneration++; adviceCache.clear(); adviceRequests.clear();
     current = null; intent = ''; planKey = ''; selected.clear(); lastError = ''; feedbackDraft = ''; redraw();
   }
@@ -444,6 +486,7 @@ window.PanxuTasks = (() => {
       add(panel, node('p', 'task-result-notice', `还有 ${current.last_result.total-current.last_result.succeeded} 项未完成或待核实，可展开本轮结果查看原因。`));
     }
     if (busy()) {
+      renderLivePreview(panel);
       add(panel, action('停止', async () => {
         if (!current.job_id) return;
         await request('/api/jobs/' + current.job_id + '/cancel', {});
@@ -460,11 +503,13 @@ window.PanxuTasks = (() => {
       add(panel, action('继续调查', () => request('/api/tasks/' + current.id + '/continue', {}), 'button primary task-primary'));
       feedbackForm(panel, '补充或改变整理要求');
     }
+    if (!busy() && ['error', 'paused', 'budget_exhausted'].includes(current.status)) renderLivePreview(panel);
     results(panel); renderAdvice(panel); processDetails(panel);
     add(root, panel);
     if (!busy()) add(root, action('开始新的整理', newTask, 'plain-button task-new'));
   }
   function render(root, helpers) {
+    stopLivePreview();
     context = helpers;
     if (lastError) add(root, node('p', 'global-message error task-error', lastError));
     if (current) taskView(root); else welcome(root);
@@ -490,5 +535,5 @@ window.PanxuTasks = (() => {
     });
     add(root, panel);
   }
-  return {render, accept, renderHistory, adviceFor, adviceKnown, lookupAdvice, currentTask: () => current};
+  return {render, accept, renderHistory, adviceFor, adviceKnown, lookupAdvice, currentTask: () => current, streamTaskId: () => current?.id || null, unmountLive: stopLivePreview};
 })();

@@ -360,6 +360,79 @@ class ModelAssistantTests(unittest.TestCase):
                 assistant.analyze(question, ITEMS, ids)
 
 
+class TaskPreferenceBudgetTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+
+    def configured(self, preferences):
+        fake = FakeTransport(answer('公开回复。'))
+        assistant = ModelAssistant(Path(self.temp.name), transport=fake)
+        assistant._windows = False
+        assistant.save_settings({'base_url': 'http://127.0.0.1:11434/v1', 'model': 'fixture',
+                                 'custom_instructions': preferences})
+        return assistant, fake
+
+    def test_exact_saved_user_root_preference_preserves_the_entire_4000_character_budget(self):
+        preferences = '甲' * 3996 + '保留照片'
+        assistant, fake = self.configured(preferences)
+        assistant.agent_turn([{'role': 'user', 'content': json.dumps({
+            'goal': 'fixture', 'preferences': preferences}, ensure_ascii=False)}], [], stream=False)
+        sent = json.loads(fake.requests[0]['payload']['messages'][0]['content'])
+        self.assertEqual(sent['preferences'], preferences)
+        self.assertEqual(len(sent['preferences']), 4000)
+        self.assertTrue(sent['preferences'].endswith('保留照片'))
+
+    def test_nested_mismatched_non_user_and_tool_argument_preferences_keep_2000_limit(self):
+        preferences = '乙' * 3996 + '保留源码'
+        cases = [
+            ('user', {'preferences': preferences, 'nested': {'preferences': preferences},
+                      'description': preferences}),
+            ('user', {'preferences': preferences + '不匹配'}),
+            ('user', [{'preferences': preferences}]),
+            ('tool', {'preferences': preferences}),
+            ('assistant', {'preferences': preferences}),
+        ]
+        for index, (role, content) in enumerate(cases):
+            with self.subTest(role=role, case=index):
+                assistant, fake = self.configured(preferences)
+                message = {'role': role, 'content': json.dumps(content, ensure_ascii=False)}
+                if role == 'tool':
+                    message['tool_call_id'] = 'fixture-call'
+                assistant.agent_turn([message], [], stream=False)
+                sent = json.loads(fake.requests[0]['payload']['messages'][0]['content'])
+                if index == 0:
+                    self.assertEqual(sent['preferences'], preferences)
+                    self.assertEqual(len(sent['nested']['preferences']), 2000)
+                    self.assertEqual(len(sent['description']), 2000)
+                else:
+                    self.assertEqual(len((sent[0] if isinstance(sent, list) else sent)['preferences']), 2000)
+
+        assistant, fake = self.configured(preferences)
+        assistant.agent_turn([{'role': 'assistant', 'content': None, 'tool_calls': [{
+            'id': 'fixture-call', 'type': 'function', 'function': {
+                'name': 'inspect_items', 'arguments': json.dumps({'preferences': preferences})}}]}], [], stream=False)
+        arguments = json.loads(fake.requests[0]['payload']['messages'][0]['tool_calls'][0]['function']['arguments'])
+        self.assertEqual(len(arguments['preferences']), 2000)
+
+    def test_full_budget_saved_preference_still_redacts_paths_and_current_key(self):
+        assistant, fake = self.configured('fixture')
+        assistant.save_settings({'api_key': 'fixture-preference-secret'})
+        preferences = '丙' * 2100 + ' C:\\Private\\hidden.txt, fixture-preference-secret, 保留末尾要求。'
+        # Exercise per-request sanitization independently of save-time redaction.
+        assistant._settings['custom_instructions'] = preferences
+        assistant.agent_turn([{'role': 'user', 'content': json.dumps({
+            'preferences': preferences}, ensure_ascii=False)}], [], stream=False)
+        sent = json.loads(fake.requests[0]['payload']['messages'][0]['content'])['preferences']
+        self.assertIn('保留末尾要求', sent)
+        self.assertIn('[路径隐藏]', sent)
+        self.assertIn('[REDACTED]', sent)
+        self.assertNotIn('Private', sent)
+        self.assertNotIn('hidden.txt', sent)
+        self.assertNotIn('fixture-preference-secret', sent)
+        self.assertLessEqual(len(sent), 4000)
+
+
 class StructuredRecommendationTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

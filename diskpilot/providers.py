@@ -69,11 +69,33 @@ PRESETS = [
             'https://docs.ollama.com/api/openai-compatibility', '填写本机已经安装且支持工具调用的模型；程序不会自动下载模型。'),
 ]
 
+# Additional, task-specific protocol references. The model catalogue alone
+# does not establish stream/tool/thinking parameter compatibility.
+_API_SOURCES = {
+    'openai': ['https://developers.openai.com/api/docs/guides/function-calling', 'https://developers.openai.com/api/docs/guides/streaming-responses'],
+    'glm': ['https://docs.bigmodel.cn/api-reference/模型-api/对话补全'],
+    'zai': ['https://docs.z.ai/api-reference/llm/chat-completion'],
+    'deepseek': ['https://api-docs.deepseek.com/api/create-chat-completion/', 'https://api-docs.deepseek.com/guides/thinking_mode/'],
+    'kimi_cn': ['https://platform.kimi.com/docs/guide/kimi-k3-1-pro-quickstart', 'https://platform.kimi.com/docs/guide/use-tool-choice', 'https://platform.kimi.com/docs/api/chat'],
+    'kimi_global': ['https://platform.kimi.ai/docs/guide/use-tool-choice', 'https://platform.kimi.ai/docs/guide/utilize-the-streaming-output-feature-of-kimi-api'],
+    'qwen_cn': ['https://help.aliyun.com/en/model-studio/qwen-function-calling', 'https://help.aliyun.com/en/model-studio/qwen-api-via-openai-chat-completions'],
+    'qwen_global': ['https://help.aliyun.com/en/model-studio/qwen-function-calling', 'https://help.aliyun.com/en/model-studio/deep-thinking'],
+    'doubao': ['https://console.volcengine.com/ark/region:cn-beijing/docs/create-model-responses-api', 'https://console.volcengine.com/ark/region:cn-beijing/docs/streaming-output'],
+    'anthropic': ['https://platform.claude.com/docs/en/api/messages/create', 'https://platform.claude.com/docs/en/api/migration-2026-10-21', 'https://platform.claude.com/docs/en/models/sonnet-5-5/whats-new-sonnet-5-5', 'https://platform.claude.com/docs/en/models/opus-5-5/whats-new-opus-5-5'],
+    'gemini': ['https://ai.google.dev/gemini-api/docs/generate-content/function-calling', 'https://ai.google.dev/gemini-api/docs/generate-content/thinking', 'https://ai.google.dev/gemini-api/docs/generate-content/thought-signatures'],
+    'grok': ['https://docs.x.ai/developers/model-capabilities/text/streaming', 'https://docs.x.ai/developers/model-capabilities/text/reasoning', 'https://docs.x.ai/developers/tools/function-calling'],
+    'qianfan': ['https://cloud.baidu.com/doc/qianfan-docs/s/xm95lyys5'],
+    'siliconflow': ['https://docs.siliconflow.cn/docs/api/chat-completions-post'],
+}
+for _row in PRESETS:
+    _row['sources'].extend(_API_SOURCES.get(_row['id'], []))
+
 
 def presets():
     rows = copy.deepcopy(PRESETS)
     for row in rows:
         row['reasoning_efforts'] = supported_efforts(dict(provider=row['id'], protocol=row['protocol'], model=row['default_model']))
+        row['capabilities'] = capabilities(dict(provider=row['id'], protocol=row['protocol'], model=row['default_model']))
     return dict(presets=rows, protocols=list(PROTOCOLS), checked_at=CHECKED_AT)
 
 
@@ -84,15 +106,43 @@ def get_preset(ident):
 def connection_probe_tool_choice(settings):
     """Use the same reasoning mode as normal work, with supported selection.
 
-    DeepSeek Chat explicitly rejects required/named choice in thinking mode
-    with HTTP 400. The probe still requires an actual, locally checked tool
-    call; auto is not permission to count a text-only response as success.
-    Source checked 2026-11-02:
-    https://api-docs.deepseek.com/api/create-chat-completion/#request
+    Consult the documented per-preset capabilities: several current thinking
+    models reject forced choice. An auto probe must still return an actual,
+    locally checked tool call; text-only replies never count as success.
     """
-    if settings.get('provider') == 'deepseek' and settings.get('protocol', 'chat_completions') == 'chat_completions':
+    if 'required' not in capabilities(settings)['tool_choices']:
         return 'auto'
     return 'required'
+
+
+def capabilities(settings):
+    """Documented request choices, not an account/model availability promise.
+
+    The registry describes the selected preset protocol only. A custom model
+    on an aggregator must still pass the actual, nonce-checked tool round trip.
+    """
+    provider = settings.get('provider', 'custom')
+    protocol = settings.get('protocol', 'chat_completions')
+    model = settings.get('model', '').lower()
+    choices = ['auto', 'none', 'required']
+    note = '工具能力仍取决于所选模型和账户；本机夹具测试不代表云端实测。'
+    if protocol == 'chat_completions':
+        if provider in ('glm', 'zai'):
+            choices = ['auto', 'none']
+            note = '官方 Chat API 仅列 auto；禁用本轮工具时省略 tools/tool_choice，保留历史工具结果。'
+        elif provider in ('deepseek', 'qwen_cn', 'qwen_global'):
+            choices = ['auto', 'none']
+            note = '思考模式不支持强制 required；工具测试使用 auto，仍必须返回正确工具和随机校验值。'
+        elif provider in ('hunyuan', 'qianfan', 'siliconflow', 'ollama'):
+            choices = ['auto', 'none']
+            note = '跨模型的强制工具能力不统一；探测使用 auto，不能将文本回复当作工具兼容成功。'
+    elif protocol == 'anthropic' and provider == 'anthropic' and model in ('claude-sonnet-5-5', 'claude-opus-5-5'):
+        choices = ['auto', 'none']
+        note = 'Sonnet/Opus 5.5 不支持强制 any/tool；保留默认思考和完整签名续接。'
+    return dict(streaming=True, stream_transport='sse', tool_choices=choices,
+                tool_choice_none='omit_definitions' if protocol == 'chat_completions' and provider in ('glm', 'zai', 'siliconflow') else 'native',
+                documented_for_preset=provider != 'custom', live_provider_tested=False,
+                checked_at=CHECKED_AT, note=note)
 
 
 def connection_identity(settings):
@@ -161,13 +211,31 @@ def prepare(settings, payload, key):
     protocol, base = settings.get('protocol', 'chat_completions'), settings['base_url'].rstrip('/')
     messages, tools = payload['messages'], payload.get('tools', [])
     choice, budget = payload.get('tool_choice', 'auto'), payload.get('max_tokens', 8192)
+    stream = payload.get('stream', False)
+    if not isinstance(stream, bool):
+        raise ValueError('provider_parameters')
+    if choice not in ('auto', 'none', 'required'):
+        raise ValueError('provider_parameters')
+    if any(not isinstance(m, dict) or m.get('role') not in ('system', 'user', 'assistant', 'tool') for m in messages):
+        raise ValueError('invalid_message_role')
+    if tools and choice not in capabilities(settings)['tool_choices']:
+        raise ValueError('provider_parameters')
     effort = settings.get('reasoning_effort', 'default')
-    headers = {'Content-Type': 'application/json', 'Accept': 'application/json'}
+    headers = {'Content-Type': 'application/json', 'Accept': 'text/event-stream' if stream else 'application/json'}
     if key:
         headers['Authorization'] = 'Bearer ' + key
     if protocol == 'chat_completions':
-        outgoing = copy.deepcopy(payload)
-        outgoing['messages'] = [_native(m, settings) or {k: v for k, v in m.items() if not k.startswith('_')} for m in messages]
+        # provider/protocol/base_url and other connection metadata are local
+        # settings, never Chat roles or request fields. Build a bounded wire
+        # schema rather than forwarding arbitrary internal payload fields.
+        outgoing = {k: copy.deepcopy(payload[k]) for k in
+                    ('messages', 'tools', 'tool_choice', 'max_tokens', 'response_format') if k in payload}
+        outgoing.update(model=settings['model'], stream=stream)
+        message_fields = ('role', 'content', 'name', 'tool_calls', 'tool_call_id', 'function_call')
+        outgoing['messages'] = [_native(m, settings) or {k: copy.deepcopy(m[k]) for k in message_fields if k in m} for m in messages]
+        if capabilities(settings)['tool_choice_none'] == 'omit_definitions' and choice == 'none':
+            outgoing.pop('tools', None)
+            outgoing.pop('tool_choice', None)
         model = settings['model'].lower()
         if settings.get('provider') in ('glm', 'zai') and model.startswith('glm-5.3'):
             outgoing.update(thinking={'type': 'enabled', 'clear_thinking': False}, reasoning_effort='high' if effort == 'default' else ('high' if effort == 'medium' else effort))
@@ -195,10 +263,16 @@ def prepare(settings, payload, key):
                     inputs.append({'role': m['role'], 'content': m['content']})
                 for c in m.get('tool_calls') or []:
                     inputs.append({'type': 'function_call', 'call_id': c['id'], 'name': c['function']['name'], 'arguments': c['function']['arguments']})
-        outgoing = dict(model=settings['model'], input=inputs, max_output_tokens=budget, stream=False, store=False)
+        outgoing = dict(model=settings['model'], input=inputs, max_output_tokens=budget, stream=stream, store=False)
         if tools:
             outgoing['tools'] = [dict(type='function', name=t['function']['name'], description=t['function'].get('description', ''),
                                       parameters=t['function']['parameters'], strict=False) for t in tools]
+            if settings.get('provider') in ('doubao', 'grok'):
+                # Ark Responses lists name/description/parameters; xAI's
+                # tools are implicitly strict. Do not send an OpenAI-specific
+                # opt-out flag as an unverified cross-vendor parameter.
+                for tool in outgoing['tools']:
+                    tool.pop('strict', None)
             outgoing['tool_choice'] = choice
         if effort != 'default':
             outgoing['reasoning'] = {'effort': effort}
@@ -229,7 +303,7 @@ def prepare(settings, payload, key):
             for c in m.get('tool_calls') or []:
                 blocks.append(dict(type='tool_use', id=c['id'], name=c['function']['name'], input=json.loads(c['function']['arguments'])))
             converted.append({'role': m['role'], 'content': blocks})
-        outgoing = dict(model=settings['model'], system='\n\n'.join(system), messages=converted, max_tokens=budget, stream=False)
+        outgoing = dict(model=settings['model'], system='\n\n'.join(system), messages=converted, max_tokens=budget, stream=stream)
         if tools:
             outgoing['tools'] = [dict(name=t['function']['name'], description=t['function'].get('description', ''), input_schema=t['function']['parameters']) for t in tools]
             outgoing['tool_choice'] = {'type': {'auto': 'auto', 'required': 'any', 'none': 'none'}[choice]}
@@ -291,13 +365,17 @@ def prepare(settings, payload, key):
             if settings['model'] != 'gemini-3.8-flash' or effort not in ('low', 'medium', 'high'):
                 raise ValueError('unsupported_reasoning_effort')
             outgoing['generationConfig']['thinkingConfig'] = {'thinkingLevel': effort}
-        return base + '/models/' + quote(settings['model'], safe='') + ':generateContent', outgoing, headers
+        action = ':streamGenerateContent?alt=sse' if stream else ':generateContent'
+        return base + '/models/' + quote(settings['model'], safe='') + action, outgoing, headers
     raise ValueError('unsupported_protocol')
 
 
 def normalize(settings, response):
     """One canonical assistant message, plus opaque native continuation."""
     protocol = settings.get('protocol', 'chat_completions')
+    if not isinstance(response, dict):
+        raise ValueError('invalid_response')
+    finish_reason = response.get('stop_reason') or response.get('status')
     if protocol == 'chat_completions':
         try:
             raw = response['choices'][0]['message']
@@ -307,6 +385,7 @@ def normalize(settings, response):
             raise ValueError('invalid_response')
         result = {k: copy.deepcopy(raw[k]) for k in ('role', 'content', 'tool_calls', 'function_call') if k in raw}
         native = copy.deepcopy(raw)
+        finish_reason = response['choices'][0].get('finish_reason')
     elif protocol == 'responses':
         output = response.get('output')
         if not isinstance(output, list):
@@ -316,7 +395,10 @@ def normalize(settings, response):
             if not isinstance(item, dict):
                 raise ValueError('invalid_response')
             if item.get('type') == 'message':
-                content.extend(p.get('text', '') for p in item.get('content', []) if p.get('type') == 'output_text')
+                blocks = item.get('content', [])
+                if not isinstance(blocks, list) or any(not isinstance(p, dict) for p in blocks):
+                    raise ValueError('invalid_response')
+                content.extend(p.get('text', '') for p in blocks if p.get('type') == 'output_text')
             elif item.get('type') == 'function_call':
                 calls.append(_call(item.get('call_id'), item.get('name'), item.get('arguments')))
             elif item.get('type') != 'reasoning':
@@ -329,6 +411,8 @@ def normalize(settings, response):
             raise ValueError('invalid_response')
         text, calls = [], []
         for block in blocks:
+            if not isinstance(block, dict):
+                raise ValueError('invalid_response')
             if block.get('type') == 'text':
                 text.append(block.get('text', ''))
             elif block.get('type') == 'tool_use':
@@ -343,16 +427,21 @@ def normalize(settings, response):
             parts = native['parts']
         except (TypeError, KeyError, IndexError):
             raise ValueError('invalid_response') from None
+        if not isinstance(parts, list) or any(not isinstance(p, dict) for p in parts):
+            raise ValueError('invalid_response')
+        finish_reason = response['candidates'][0].get('finishReason')
         text, calls = [], []
         for index, part in enumerate(parts):
             if part.get('text') and part.get('thought') is not True:
                 text.append(part['text'])
             if 'functionCall' in part:
                 c = part['functionCall']
+                if not isinstance(c, dict):
+                    raise ValueError('invalid_response')
                 calls.append(_call(c.get('id') or f'gemini-{secrets.token_hex(8)}-{index}', c.get('name'), c.get('args', {})))
         result = dict(role='assistant', content='\n'.join(text) or None, tool_calls=calls)
     else:
         raise ValueError('unsupported_protocol')
     result['_continuation'] = dict(connection=connection_identity(settings), value=native)
     return {'choices': [{'message': result}], 'usage': copy.deepcopy(response.get('usage') or response.get('usageMetadata') or {}),
-            'finish_reason': response.get('stop_reason') or response.get('status')}
+            'finish_reason': finish_reason}

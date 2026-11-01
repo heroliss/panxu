@@ -17,6 +17,7 @@ from .duplicates import verify_duplicates
 from .catalog import FileCatalog
 from .llm import ModelAssistant
 from .lease import DataLease
+from .live_streams import LiveStreams
 from .knowledge import SkillRegistry
 from .icons import IconService, IconNotFound
 from .recommendations import build_recommendations
@@ -53,6 +54,9 @@ class Application:
         self.assistant = ModelAssistant(Path(data_dir))
         self.trace = DeveloperTrace(data_dir, lambda value: self.assistant.clean_text(value, limit=1024 * 1024))
         self.assistant.trace_hook = self.trace.record
+        self.live_streams = LiveStreams()
+        self.stream_connections = threading.BoundedSemaphore(4)
+        self.assistant.stream_hook = lambda event: self.live_streams.record(self.trace.current_task_id(), event)
         self.scan_index = ScanIndex(Path(data_dir) / 'scan_index.sqlite3')
         self.skills = SkillRegistry()
         self.harness = TaskHarness(self.state, self.assistant, trace=self.trace, scan_index=self.scan_index, skill_registry=self.skills)
@@ -235,6 +239,12 @@ class Application:
             raise AppError('图标对应的内容不存在。', 'not_found', 404) from None
 
     def get(self, path, query):
+        if path.startswith('/api/tasks/') and path.endswith('/stream'):
+            parts = path.split('/')
+            if len(parts) != 5:
+                raise AppError('任务不存在。', 'not_found', 404)
+            self.harness.public(parts[3])
+            return {'stream': self.live_streams.snapshot(parts[3]), 'volatile': True}
         if path == '/api/ui-preferences':
             return self.ui_preferences()
         if path == '/api/skills' or path.startswith('/api/skills/'):
@@ -315,6 +325,16 @@ class Application:
         raise AppError('接口不存在。', 'not_found', 404)
 
     def post(self, path, payload):
+        if path == '/api/preferences':
+            if set(payload) != {'custom_instructions'} or not isinstance(payload['custom_instructions'], str):
+                raise AppError('请填写整理偏好。', 'invalid_preferences')
+            try:
+                settings = self.assistant.save_settings({'custom_instructions': payload['custom_instructions']})
+            except ValueError as exc:
+                raise AppError(str(exc), 'invalid_preferences') from None
+            self.settings_revision += 1
+            self.recommendation_cache = None
+            return {'preferences': {'custom_instructions': settings['custom_instructions']}, 'settings': settings}
         if path == '/api/ui-preferences':
             return self.ui_preferences(payload)
         if path == '/api/developer':
@@ -420,6 +440,7 @@ class Application:
         raise AppError('接口不存在。', 'not_found', 404)
 
     def close(self):
+        self.live_streams.close()
         for job in self.jobs.values():
             job['_cancel'].set()
         self.pool.shutdown(wait=True, cancel_futures=True)
@@ -459,6 +480,41 @@ def create_server(data_dir, port=0, *, developer_fixtures=False):
                 return self.send(403, {'error': '不接受该 Host。', 'code': 'bad_host'})
             parsed = urlsplit(self.path)
             try:
+                if parsed.path.startswith('/api/tasks/') and parsed.path.endswith('/stream/events'):
+                    parts = parsed.path.split('/')
+                    if len(parts) != 6:
+                        raise AppError('任务不存在。', 'not_found', 404)
+                    app.harness.public(parts[3])
+                    if not app.stream_connections.acquire(blocking=False):
+                        return self.send(429, {'error': '实时连接已达上限。', 'code': 'stream_limit'})
+                    try:
+                        self.connection.settimeout(5)
+                        self.send_response(200)
+                        self.send_header('Content-Type', 'text/event-stream; charset=utf-8')
+                        self.send_header('Cache-Control', 'no-store')
+                        self.send_header('X-Content-Type-Options', 'nosniff')
+                        self.send_header('Connection', 'close')
+                        self.end_headers()
+                        self.wfile.write(b'retry: 700\n\n')
+                        self.wfile.flush()
+                        deadline, sequence, initial = time.monotonic() + 25, -1, True
+                        while not app.live_streams.closed and time.monotonic() < deadline:
+                            value = app.live_streams.snapshot(parts[3]) if initial else app.live_streams.wait(parts[3], sequence, timeout=1)
+                            next_sequence = value['sequence'] if value else -1
+                            if initial or next_sequence != sequence:
+                                body = json.dumps({'stream': value}, ensure_ascii=False).encode('utf-8')
+                                self.wfile.write(b'data: ' + body + b'\n\n')
+                                sequence = next_sequence
+                            else:
+                                self.wfile.write(b': keep-alive\n\n')
+                            self.wfile.flush()
+                            initial = False
+                    except (OSError, TimeoutError):
+                        pass  # window closed or a slow reader; no model request is replayed
+                    finally:
+                        self.close_connection = True
+                        app.stream_connections.release()
+                    return
                 if parsed.path == '/api/icon':
                     icon = app.icon(parse_qs(parsed.query))
                     extra = {'X-Panxu-Icon-Status': icon['status'], 'ETag': icon['etag']}
@@ -469,7 +525,7 @@ def create_server(data_dir, port=0, *, developer_fixtures=False):
                     return self.send(200, app.get(parsed.path, parse_qs(parsed.query)))
                 names = {'/': ('index.html', 'text/html; charset=utf-8'), '/index.html': ('index.html', 'text/html; charset=utf-8'),
                          '/app.js': ('app.js', 'text/javascript; charset=utf-8'), '/tasks.js': ('tasks.js', 'text/javascript; charset=utf-8'), '/files.js': ('files.js', 'text/javascript; charset=utf-8'), '/style.css': ('style.css', 'text/css; charset=utf-8'),
-                         '/icons.js': ('icons.js', 'text/javascript; charset=utf-8'), '/icons.css': ('icons.css', 'text/css; charset=utf-8')}
+                         '/stream-view.js': ('stream-view.js', 'text/javascript; charset=utf-8'), '/stream-channel.js': ('stream-channel.js', 'text/javascript; charset=utf-8'), '/icons.js': ('icons.js', 'text/javascript; charset=utf-8'), '/icons.css': ('icons.css', 'text/css; charset=utf-8')}
                 if parsed.path not in names:
                     raise AppError('页面不存在。', 'not_found', 404)
                 name, mime = names[parsed.path]

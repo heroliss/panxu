@@ -1,4 +1,4 @@
-盘序 PanXu 0.8.0 · Windows 11 空间与后台助手
+盘序 PanXu 0.9.0 · Windows 11 空间与后台助手
 
 本机试用版；测试保护保持开启，所有处理均为模拟。
 任务驱动方案与功能边界见源码 docs/TASK_FIRST_HARNESS.md。

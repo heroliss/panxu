@@ -881,3 +881,15 @@ dialog::backdrop{background:var(--overlay);backdrop-filter:none}
 .developer-dock article.developer-entry{padding:17px 0}
 .developer-dock article.developer-entry:first-child{border-top:0;padding-top:8px}
 .developer-raw .developer-json{margin-top:10px}
+
+/* Received text stays readable while the cursor catches up to the transport. */
+.stream-view-text{font-family:var(--font);font-size:13px;line-height:1.9;color:var(--ink);white-space:pre-wrap;overflow-wrap:anywhere;max-width:75ch}
+.stream-view-status{font-size:12px;line-height:1.8;color:var(--muted);margin:8px 0 0}
+.task-live-reply{margin:16px 0;padding:16px 18px;background:var(--surface-soft);border:1px solid var(--line);border-radius:12px}
+.task-live-caption{font-size:12px;color:var(--muted);margin:0 0 8px}
+[data-stream-status="incomplete"] .stream-view-status,[data-stream-status="error"] .stream-view-status{color:var(--red)}
+.organizing-preferences .field-help{margin-top:4px;max-width:65ch}
+.organizing-preferences textarea{min-height:100px;max-height:320px;resize:vertical;line-height:1.8}
+.developer-stream{padding:14px 0 17px;margin:5px 0 12px;border-bottom:1px solid var(--line);min-width:0}
+.developer-stream h3{font-size:12px;line-height:1.8;color:var(--blue);font-weight:600;margin:0 0 7px}
+.developer-stream .developer-note{margin:8px 0 0}
