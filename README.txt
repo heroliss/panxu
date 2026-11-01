@@ -1,10 +1,10 @@
-盘序 PanXu 0.9.2 · Windows 11 空间与后台助手
+盘序 PanXu 0.9.3 · AI 磁盘清理助手
 
 本机试用版；测试保护保持开启，所有处理均为模拟。
 任务驱动方案与功能边界见源码 docs/TASK_FIRST_HARNESS.md。
 
 版权与许可
-Required Notice: Copyright (c) 2026 heroliss (https://github.com/heroliss)
+Required Notice: Copyright (c) 2026 Liss (https://github.com/heroliss)
 项目原创部分采用随附LICENSE中的PolyForm Noncommercial 1.0.0。
 超出该许可允许用途的商业使用需另行取得书面授权；第三方组件保留其各自条款。
 详见NOTICE与THIRD_PARTY_NOTICES.md；商业授权联系 https://github.com/heroliss。

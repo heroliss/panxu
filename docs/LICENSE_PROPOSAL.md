@@ -1,6 +1,6 @@
 # 已采纳的非商业许可方案
 
-核对日期：2026-11-02。用户已明确选择PolyForm Noncommercial 1.0.0并以heroliss署名。本文件保留选择依据；正式条文以根目录LICENSE为准，通知以NOTICE为准。仓库私有可见性不变。
+核对日期：2026-11-02。用户已明确选择PolyForm Noncommercial 1.0.0；后续授权将当前作者署名更新为Liss，真实GitHub账号heroliss及仓库地址保持不变。本文件保留选择依据；正式条文以根目录LICENSE为准，当前通知以NOTICE为准。此前发布与决策中的署名按当时记录保留，仓库私有可见性不变。
 
 ## 建议采用的标准许可
 
@@ -18,17 +18,17 @@ PolyForm Noncommercial License 1.0.0，SPDX标识`PolyForm-Noncommercial-1.0.0`�
 
 根目录LICENSE采用官方标准条文，不改写条款；版权及项目归属放NOTICE/README，便携包附带相关文件。
 
-拟用公开署名（可由用户替换为真实权利人姓名或机构）：
+当前公开署名（按用户后续授权更新，不改变GitHub账号）：
 
-> Copyright (c) 2026 heroliss
+> Copyright (c) 2026 Liss
 
 拟用PolyForm通知：
 
-> Required Notice: Copyright (c) 2026 heroliss (https://github.com/heroliss)
+> Required Notice: Copyright (c) 2026 Liss (https://github.com/heroliss)
 
 拟用README中文说明：
 
-> 盘序由heroliss维护。项目原创代码与原创指导资料采用PolyForm Noncommercial License 1.0.0，许可范围内的非商业使用、修改和再分发应保留许可证及必要通知；其他商业用途需另行取得权利人的书面授权。第三方依赖及随附材料继续遵循各自许可证。
+> 盘序由Liss维护。项目原创代码与原创指导资料采用PolyForm Noncommercial License 1.0.0，许可范围内的非商业使用、修改和再分发应保留许可证及必要通知；其他商业用途需另行取得权利人的书面授权。第三方依赖及随附材料继续遵循各自许可证。
 
 只声明用户实际有权许可的原创部分，不把第三方依赖、微软资料或所有AI生成内容自动归为用户独占版权，也不宣称此声明能替代权利归属证明。商业合作入口暂使用GitHub维护者资料页，不虚构邮件或授权价格。
 

@@ -1,6 +1,6 @@
 {
   "product": "盘序",
-  "version": "0.9.2",
+  "version": "0.9.3",
   "mode": "simulation",
   "root": "E:\\GPT-Projects\\win11-disk-assistant",
   "safety": "This build has NO real executor. All apply/undo/reset operations modify only SQLite simulation records. Never unlink/move/kill/control services/edit startup outside app-owned data.",
@@ -44,7 +44,7 @@
     "uninstall"
   ],
   "api": {
-    "GET /api/bootstrap": "{csrf,mode,items,summary,settings,history,disks,source,job?}",
+    "GET /api/bootstrap": "{csrf,version,mode,items,summary,settings,history,disks,source,job?}",
     "POST /api/tasks": "{preset?:c_cleanup|disk_cleanup|directory_cleanup|downloads|duplicates|background|installers,goal?,path?}; or custom {goal,path}",
     "GET /api/tasks": "{tasks}; latest 15 durable tasks, current plan and event summaries",
     "GET /api/tasks/{id}": "{task}; status, goal, scopes, versioned plan, latest result, feedback and events",
@@ -86,7 +86,9 @@
     "GET /api/icon": "{id,v?} -> local image bytes, X-Panxu-Icon-Status:ready|pending|fallback; existing catalog IDs only; no arbitrary path; bounded private memory cache and async extraction",
     "POST /api/preferences": "{custom_instructions:string} -> {preferences,settings}; merges only shared model-independent preference, preserves connection and key",
     "GET /api/tasks/{id}/stream": "{stream,volatile:true}; bounded sanitized public cumulative reply, never tool arguments or approval",
-    "GET /api/tasks/{id}/stream/events": "SSE default data:{stream}; 4 concurrent connections,25s lifetime, snapshots/keepalive; resume by epoch+sequence"
+    "GET /api/tasks/{id}/stream/events": "SSE default data:{stream}; 4 concurrent connections,25s lifetime, snapshots/keepalive; resume by epoch+sequence",
+    "GET /api/about": "{name,subtitle,version,author,description,repository_url,license_name,license_url,simulation,updates}; fixed local metadata, no network",
+    "POST /api/updates/check": "{} -> {status,current_version,latest_version,release_url,message,checked_at,source,code,cached}; explicit manual read-only release discovery; current private source not_configured, no network; never downloads or installs"
   },
   "mutations": "Require X-CSRF-Token from bootstrap. Errors are JSON {error,code}. Relative same-origin fetch only. Input limits apply.",
   "summary": "{total_items,visible_items,simulated_items,logical_bytes,simulated_bytes,process_memory_bytes,by_kind,source,mode}. Real disks separate; no simulated_bytes shown as actual freed space.",
@@ -103,12 +105,14 @@
   "task_scan": "ScanIndex durable name/metadata spool, stable keyset cursor; steps1..512, rows<=100000/scan. Interrupted unfinished enumeration replays with explicit work accounting; acquired rows retained. Whole-directory actions require separate current subtree validation. All22 tool schemas still sent each model turn; discover_tools is help, not lazy loading.",
   "guidance": "17 fixed bundled markdown resources, version1.1.0, each max32KiB; list_skills/read_skill provide bounded guidance with versions/fingerprints/official sources. Guidance is not current evidence or extra execution permission.",
   "user_actions": "Model questions have independent monotonic versions; answers/skip durable but not approval. Host direct-plan preflights current identity in task scope, then same approve/runtime; source, chosen IDs, results flow back. Legacy manual history only intersects task-known IDs for model awareness.",
-  "license": "PolyForm-Noncommercial-1.0.0; Required Notice copyright 2026 heroliss. Scope original PanXu material; third-party components retain their licenses. Explicit user choice 2026-11-02.",
+  "license": "PolyForm-Noncommercial-1.0.0; Required Notice copyright 2026 Liss. Scope original PanXu material; third-party components retain their licenses. Explicit user choice 2026-11-02.",
   "developer_dock": "Closed by default; settings entry and F12 toggle. Same bounded capture/view filters in right-side dock; mounted independently of current task view. No auto capture when opening.",
   "appearance": "Default follows system; explicit saved light/dark preserved; live media changes apply without restart.",
   "read_only_evidence": "collect_system_configuration(section=memory_power) observes memory/active vs configured pagefiles/power via fixed APIs and7 registry values; inspect_volume(scope_id) observes only existing task-scope volume capacity/recycle statistics. No root or action targets added; unknown/partial explicit.",
   "icons": "Private known-ID local icon extraction from existing executable resources, desktop registration or stock/type fallback; visible lazy requests, bounded queues/cache, no shell extensions/shortcut resolution or LLM transmission. Icons do not certify publisher or ownership.",
   "developer_readability": "Visible-role text and public communication by default, one closed auxiliary section per event for system/context/facts/skills/tools/metadata/raw sanitized JSON. Protocol-private content stays excluded.",
   "model_streaming": "Four native protocols with real SSE aggregation; public cumulative previews independent of developer capture; partial tools never executable; cancel/disconnect/budget fail closed. Defaults on, JSON fallback labelled; spring grapheme UI respects reduced motion. Save precedes fixed-data connection test and failed test never rolls back saved settings.",
-  "visual_hierarchy": "Platform Chinese typography, six text roles, shared semantic status labels, independent light/dark surfaces; recommendation/source and simulated results do not claim actual operation success. Presentation only, no extra execution authority."
+  "visual_hierarchy": "Platform Chinese typography, six text roles, shared semantic status labels, independent light/dark surfaces; recommendation/source and simulated results do not claim actual operation success. Presentation only, no extra execution authority.",
+  "subtitle": "AI 磁盘清理助手",
+  "author": "Liss"
 }

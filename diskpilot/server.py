@@ -26,6 +26,7 @@ from .scan_index import ScanIndex
 from .simulation import AppError, SimulationState
 from .tasks import TaskHarness
 from .trace import DeveloperTrace
+from .updates import UpdateChecker, about
 from .windows import disks, inventory, validate_system_items
 
 
@@ -59,6 +60,7 @@ class Application:
         self.assistant.stream_hook = lambda event: self.live_streams.record(self.trace.current_task_id(), event)
         self.scan_index = ScanIndex(Path(data_dir) / 'scan_index.sqlite3')
         self.skills = SkillRegistry()
+        self.updates = UpdateChecker()
         self.harness = TaskHarness(self.state, self.assistant, trace=self.trace, scan_index=self.scan_index, skill_registry=self.skills)
         self.catalog = FileCatalog(self.state, self.patterns)
         self.icons = IconService(self.icon_item)
@@ -239,6 +241,8 @@ class Application:
             raise AppError('图标对应的内容不存在。', 'not_found', 404) from None
 
     def get(self, path, query):
+        if path == '/api/about':
+            return about()
         if path.startswith('/api/tasks/') and path.endswith('/stream'):
             parts = path.split('/')
             if len(parts) != 5:
@@ -325,6 +329,10 @@ class Application:
         raise AppError('接口不存在。', 'not_found', 404)
 
     def post(self, path, payload):
+        if path == '/api/updates/check':
+            if payload:
+                raise AppError('检查更新不接受网址、凭据或其他参数。', 'invalid_update_request')
+            return self.updates.check()
         if path == '/api/preferences':
             if set(payload) != {'custom_instructions'} or not isinstance(payload['custom_instructions'], str):
                 raise AppError('请填写整理偏好。', 'invalid_preferences')

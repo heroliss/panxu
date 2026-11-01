@@ -61,12 +61,12 @@ $versionResource = @"
 VSVersionInfo(
   ffi=FixedFileInfo(filevers=($versionTuple), prodvers=($versionTuple), mask=0x3f, flags=0x0, OS=0x40004, fileType=0x1, subtype=0x0, date=(0, 0)),
   kids=[StringFileInfo([StringTable('040904B0', [
-    StringStruct('FileDescription', 'PanXu disk and background assistant'),
+    StringStruct('FileDescription', 'PanXu AI disk cleanup assistant'),
     StringStruct('FileVersion', '$appVersion'),
     StringStruct('InternalName', 'PanXu'),
     StringStruct('OriginalFilename', 'PanXu.exe'),
     StringStruct('ProductName', 'PanXu'),
-    StringStruct('LegalCopyright', 'Copyright (c) 2026 heroliss'),
+    StringStruct('LegalCopyright', 'Copyright (c) 2026 Liss'),
     StringStruct('ProductVersion', '$appVersion')
   ])]), VarFileInfo([VarStruct('Translation', [1033, 1200])])]
 )

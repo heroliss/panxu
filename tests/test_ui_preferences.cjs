@@ -442,7 +442,7 @@ function modelSettings({saved={},testResult={passed:true,message:'测试成功'}
   const append=(node,...children)=>{node.append(...children);return node;};
   const button=(label,handler,className='button')=>{const node=el('button',className,label);node.addEventListener('click',handler);return node;};
   const context={state,el,append,button,
-    heading:()=>el('h1'),renderAppearance:()=>{},renderDeveloperEntry:()=>{},
+    heading:()=>el('h1'),renderAppearance:()=>{},renderDeveloperEntry:()=>{},renderAbout:()=>{},
     inputField:(label,id,type='text',value='')=>{const box=el('div'),input=el('input');input.id=id;input.type=type;input.value=value;box.append(input);return {box,input};},
     makeSelect:(options,value,callback)=>{const node=el('select');node.value=value;node.addEventListener('change',()=>callback(node.value));return node;},
     accept:data=>{if(data.settings)state.settings=data.settings;},

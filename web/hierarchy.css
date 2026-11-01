@@ -152,6 +152,22 @@ body { line-height: 1.7; }
 .developer-stream h3 { font-size: var(--type-label); line-height: 1.7; margin-bottom: 10px; }
 .developer-json, .assistant-trace, .task-facts pre { font-variant-numeric: tabular-nums; }
 
+/* Project details stay quiet; update checks remain an explicit action. */
+.about-heading{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:14px 22px}
+.about-heading h2{margin:0 0 5px}
+.about-identity{font-size:var(--type-label);color:var(--muted);line-height:1.8;margin:0;font-variant-numeric:tabular-nums}
+.about-update-status{font-size:var(--type-label);line-height:1.85;color:var(--muted);margin:13px 0 0;max-width:var(--reading-measure);overflow-wrap:anywhere}
+.about-update-status[data-tone="info"]{color:var(--blue)}
+.about-update-status[data-tone="success"]{color:var(--green)}
+.about-update-status[data-tone="danger"]{color:var(--red)}
+.about-release:empty{display:none}
+.about-release{margin-top:9px}
+.about-details{margin-top:17px}
+.about-details>summary{font-size:var(--type-label);color:var(--muted)}
+.about-resources{padding-top:10px;max-width:var(--reading-measure)}
+.about-links{display:flex;flex-wrap:wrap;gap:8px 20px;margin-bottom:10px}
+.about-link{font-size:var(--type-label);line-height:1.8;text-underline-offset:3px;overflow-wrap:anywhere}
+
 @media (max-width: 1000px) {
   .page-heading h1 { font-size: 1.5625rem; }
   .task-advice-title-line { flex-basis: 200px; }

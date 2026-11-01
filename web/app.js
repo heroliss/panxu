@@ -171,7 +171,7 @@ function initializePanxu() {
   const $ = (id) => document.getElementById(id);
   const names = { overview: '整理助手', files: '我的文件', background: '后台与软件', software: '后台与软件', history: '操作记录', model: '设置' };
   const kindNames = { file: '文件', directory: '目录汇总', startup: '启动项', service: '服务', process: '进程', software: '软件' };
-  const state = { csrf: '', view: 'overview', items: [], summary: {}, settings: {}, history: [], disks: [], source: 'demo', warnings: [], selected: new Set(), focused: null, query: '', risk: 'all', origin: 'all', subtype: 'all', limit: 300, busy: false, job: null, plan: null, scanPath: '', inspector: false, assistant: null, recommendations: [], checked: false, analyzing: false, filesExpanded: false, backgroundExpanded: false, inventoryTarget: 'startup', checkDestination: 'overview', showAllCards: new Set() };
+  const state = { csrf: '', version: '', view: 'overview', items: [], summary: {}, settings: {}, history: [], disks: [], source: 'demo', warnings: [], selected: new Set(), focused: null, query: '', risk: 'all', origin: 'all', subtype: 'all', limit: 300, busy: false, job: null, plan: null, scanPath: '', inspector: false, assistant: null, recommendations: [], checked: false, analyzing: false, filesExpanded: false, backgroundExpanded: false, inventoryTarget: 'startup', checkDestination: 'overview', showAllCards: new Set() };
   let toastTimer;
   let developerCleanup=null;
   let developerController=null,developerDockOpen=false,developerReturnFocus=null;
@@ -327,6 +327,7 @@ function initializePanxu() {
     }
     if (data.catalog_revision) { state.catalogRevision = data.catalog_revision; window.PanxuFiles?.invalidate(data.catalog_revision); }
     if (data.csrf) state.csrf = data.csrf;
+    if (typeof data.version === 'string') state.version = data.version;
     if (!defaultPathLoaded && data.default_scan_path) { state.scanPath = data.default_scan_path; defaultPathLoaded = true; }
     if (Array.isArray(data.items)) state.items = data.items;
     if (data.summary) state.summary = data.summary;
@@ -742,6 +743,7 @@ function initializePanxu() {
     append(keep,lab,patterns,button('保存保留清单',()=>task(async()=>{accept(await api('/api/settings',settingsPayload({protect_patterns:patterns.value.split(/\r?\n/).map(v=>v.trim()).filter(Boolean)})));accept(await api('/api/bootstrap?compact=1'));render();toast('保留清单已保存。');})));append(preserve,keep);append(root,preserve);
     append(root,button('高级选项',()=>$('advanced-toggle').click(),'plain-button advanced-entry'));
     renderDeveloperEntry(root);
+    renderAbout(root);
   }
   function renderOrganizingPreferences(root) {
     const panel=el('section','panel simple-setting organizing-preferences');
@@ -791,6 +793,75 @@ function initializePanxu() {
     const open=button('打开开发面板',()=>toggleDeveloperDock(true));open.dataset.openDeveloper='1';
     open.setAttribute('aria-controls','developer-dock');open.setAttribute('aria-expanded',String(developerDockOpen));
     append(panel,copy,append(el('div','developer-entry-actions'),open,el('kbd','','F12')));append(root,panel);
+  }
+  let aboutInfo=null,aboutInfoRequest=null,updateCheckRequest=null,updateCheckResult=null;
+  function readAbout() {
+    if(aboutInfo)return Promise.resolve(aboutInfo);
+    if(!aboutInfoRequest)aboutInfoRequest=api('/api/about').then(data=>{aboutInfo=data;return data;}).finally(()=>{aboutInfoRequest=null;});
+    return aboutInfoRequest;
+  }
+  function renderAbout(root) {
+    const panel=el('section','panel simple-setting about-setting');
+    const heading=el('div','about-heading'),copy=el('div');
+    const title=el('h2','','关于盘序'),identity=el('p','about-identity');
+    append(copy,title,identity);
+    const status=el('p','about-update-status');status.setAttribute('role','status');status.setAttribute('aria-live','polite');
+    const release=el('div','about-release');
+    const check=button('检查更新',checkUpdates);check.id='about-check-updates';
+    check.setAttribute('aria-describedby','about-update-status');status.id='about-update-status';
+    append(heading,copy,check);
+    const details=el('details','setting-details about-details');append(details,el('summary','','项目与许可'));
+    const resources=el('div','about-resources');append(details,resources);
+    append(panel,heading,status,release,details);append(root,panel);
+    function safeLink(label,value,releaseOnly=false) {
+      try{
+        if(typeof value!=='string')return null;
+        const url=new URL(value);
+        if(url.protocol!=='https:'||url.username||url.password||url.hostname!=='github.com'||!/^\/heroliss\/panxu(?:\/|$)/.test(url.pathname)||url.search)return null;
+        if(releaseOnly&&!/^\/heroliss\/panxu\/releases(?:\/tag\/[^/]+)?\/?$/.test(url.pathname))return null;
+        const link=el('a','about-link',label);link.href=url.href;link.target='_blank';link.rel='noopener noreferrer';return link;
+      }catch(_){return null;}
+    }
+    function identityText(){identity.textContent=`版本 ${state.version || aboutInfo?.version || '暂未读取'} · 作者 ${aboutInfo?.author || 'Liss'}`;}
+    function renderResources(info) {
+      resources.replaceChildren();
+      const links=el('div','about-links');
+      const repository=safeLink('GitHub 代码仓库',info.repository_url);
+      const license=safeLink(info.license_name || '查看许可证',info.license_url);
+      if(repository)append(links,repository);append(links,license || el('span','field-help',info.license_name || '许可资料暂不可用'));
+      append(resources,links,el('p','field-help',info.description || '面向磁盘整理的 LLM Harness，为模型提供信息、工具和用户协作界面。'),
+        el('p','field-help','仓库访问权限与公开更新源分别管理。第三方材料保留各自许可。'));
+      if(info.simulation===true)append(resources,el('p','field-help','当前仅模拟操作，不会实际删除文件或改动系统。'));
+    }
+    function renderUpdate() {
+      check.disabled=Boolean(updateCheckRequest);check.setAttribute('aria-busy',String(Boolean(updateCheckRequest)));release.replaceChildren();
+      let tone='neutral',message='暂未提供公开更新源。';
+      if(updateCheckRequest){tone='info';message='正在检查更新…';}
+      else if(updateCheckResult){
+        const result=updateCheckResult;
+        const messages={not_configured:'尚未提供公开更新源，目前不能比较版本。',no_public_source:'未找到可用的公开版本，目前不能比较版本。',
+          update_available:`发现新版本${result.latest_version?' '+result.latest_version:''}，可手动查看发布页。`,up_to_date:'当前已是公开发布的最新版本。',
+          current_ahead:'本机版本比公开发布版本更新，无需降级。',failed:'检查更新未完成，请稍后重试。'};
+        message=result.message || messages[result.status] || '暂时无法判断是否有更新。';
+        tone=result.status==='failed'?'danger':result.status==='up_to_date'?'success':result.status==='update_available'?'info':'neutral';
+        if(['update_available','current_ahead'].includes(result.status)){
+          const link=safeLink('查看发布页',result.release_url,true);if(link)append(release,link);
+        }
+      }else if(aboutInfo?.updates?.source_state==='configured')message='点击“检查更新”比较公开版本，不会自动下载或替换。';
+      status.dataset.tone=tone;status.textContent=message;
+      check.textContent=updateCheckResult?.status==='failed'?'重新检查':'检查更新';
+    }
+    async function checkUpdates() {
+      if(updateCheckRequest)return;
+      updateCheckRequest=api('/api/updates/check',{},20000).then(result=>{updateCheckResult=result;})
+        .catch(error=>{updateCheckResult={status:'failed',message:`检查更新未完成。${error.message || '请稍后重试。'}`};})
+        .finally(()=>{updateCheckRequest=null;});
+      renderUpdate();await updateCheckRequest;if(panel.isConnected)renderUpdate();
+    }
+    identityText();renderUpdate();
+    if(updateCheckRequest)updateCheckRequest.then(()=>{if(panel.isConnected)renderUpdate();});
+    readAbout().then(info=>{if(panel.isConnected){identityText();renderResources(info);renderUpdate();}})
+      .catch(()=>{if(panel.isConnected)resources.replaceChildren(el('p','field-help','暂时无法读取项目资料，重新打开设置后可重试。'));});
   }
   function toggleDeveloperDock(force) {
     const dock=$('developer-dock');if(!dock)return;
