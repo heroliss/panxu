@@ -169,9 +169,8 @@ window.PanxuDeveloperView = (() => {
 
 function initializePanxu() {
   const $ = (id) => document.getElementById(id);
-  const names = { overview: '整理助手', files: '我的文件', background: '后台与软件', software: '后台与软件', history: '处理记录', model: '设置' };
+  const names = { overview: '整理助手', files: '我的文件', background: '后台与软件', software: '后台与软件', history: '操作记录', model: '设置' };
   const kindNames = { file: '文件', directory: '目录汇总', startup: '启动项', service: '服务', process: '进程', software: '软件' };
-  const actionNames = { delete: '清理文件', disable_startup: '关闭开机启动', stop_service: '停止后台服务', stop_process: '结束应用', uninstall: '卸载软件' };
   const state = { csrf: '', view: 'overview', items: [], summary: {}, settings: {}, history: [], disks: [], source: 'demo', warnings: [], selected: new Set(), focused: null, query: '', risk: 'all', origin: 'all', subtype: 'all', limit: 300, busy: false, job: null, plan: null, scanPath: '', inspector: false, assistant: null, recommendations: [], checked: false, analyzing: false, filesExpanded: false, backgroundExpanded: false, inventoryTarget: 'startup', checkDestination: 'overview', showAllCards: new Set() };
   let toastTimer;
   let developerCleanup=null;
@@ -262,10 +261,10 @@ function initializePanxu() {
   }
   function selectionReason(item) {
     if (item.risk === 'protected') return '已保护，保持原样。';
-    if (item.simulated) return '已经记录处理结果，可在处理记录中恢复选择。';
+    if (item.simulated) return '已经记录模拟操作，可在操作记录中撤销模拟。';
     if (item.kind === 'directory' && !canSelect(item)) return '这个文件夹还没有完整检查，请选择里面的具体文件。';
-    if (!item.actions?.length) return '暂不提供处理选项。';
-    return '可以加入处理清单。';
+    if (!item.actions?.length) return '暂不提供可模拟的操作。';
+    return `可以查看${window.PanxuActionCopy.label(item.actions[0],item.kind)}的模拟清单。`;
   }
   function verifiedCache(item) { const rec = advice(item); return canSelect(item) && rec.auto_select === true && rec.group === 'recommended' && rec.needs_user_choice !== true; }
   function advice(item) { return adviceMap.get(item.id)?.advice || item.advice || {}; }
@@ -275,7 +274,7 @@ function initializePanxu() {
     if (rec.group === 'personal' && item.risk !== 'protected') return 'personal';
     return 'keep';
   }
-  function cleanCopy(value) { return text(value).replaceAll('可模拟清理', '可以处理').replaceAll('模拟', '预演').replaceAll('只读采集', '检查').replaceAll('只读盘点', '检查'); }
+  function cleanCopy(value) { return text(value).replaceAll('可模拟清理', '可模拟删除').replaceAll('只读采集', '检查').replaceAll('只读盘点', '检查'); }
   function itemPurpose(item) {
     const rec = advice(item); if (rec.purpose) return rec.purpose;
     if (/cache|缓存/i.test(item.category || '')) return `${item.owner || '应用'}保存的中间结果，用来减少重复下载或处理，让下次使用更快。`;
@@ -530,7 +529,7 @@ function initializePanxu() {
     const ids = active ? analysisIds() : new Set();
     $('selection-bar').hidden = !active || !ids.size;
     $('selection-count').textContent = `已选 ${ids.size} 项用于分析`;
-    $('selection-size').textContent = '分析选择不会自动加入处理清单';
+    $('selection-size').textContent = '选择分析不等于确认删除或其他操作';
     const visible = new Set(state.view === 'files' ? window.PanxuFiles.visibleIds() : visibleItems().map((i) => i.id));
     const hidden = [...ids].filter((id) => !visible.has(id)).length;
     $('hidden-selection').hidden = !hidden; $('hidden-selection').textContent = `其中 ${hidden} 项在其他页面`;
@@ -540,11 +539,11 @@ function initializePanxu() {
     const host = $('inspector-content'); host.replaceChildren();
     const head = el('div', 'inspector-heading'); append(head, el('h2', '', '项目说明'), button('关闭', () => toggleInspector(false), 'icon-button')); append(host, head);
     const item = state.focused;
-    if (!item) { append(host, el('h3', '', '选一项，看看原因'), el('p', '', '这里会说明用途、处理理由和可能的影响。')); return; }
+    if (!item) { append(host, el('h3', '', '选一项，看看原因'), el('p', '', '这里会说明用途、操作建议和可能的影响。')); return; }
     const modelAdvice = window.PanxuTasks.adviceFor(item.id, item.signature);
     const rec = modelAdvice || advice(item); append(host, itemTitle(item, el('h3', '', rec.title || item.name)));
-    append(host, el('h4', '', '它是做什么的'), el('p', '', cleanCopy(rec.purpose || itemPurpose(item))), el('h4', '', '为什么建议'), el('p', '', cleanCopy(rec.reason || item.reason || '尚未取得 AI 建议，可以先分析用途。')), el('h4', '', '处理后的影响'), el('p', '', cleanCopy(rec.impact || item.impact || '影响尚不明确，建议先保留。')));
-    if (modelAdvice) append(host,button(window.PanxuTasks.currentTask()?.plan?.items.some(entry=>entry.id===item.id)?'查看处理方案':'返回整理任务',()=>setView('overview'),'button primary'));
+    append(host, el('h4', '', '它是做什么的'), el('p', '', cleanCopy(rec.purpose || itemPurpose(item))), el('h4', '', '为什么建议'), el('p', '', cleanCopy(rec.reason || item.reason || '尚未取得 AI 建议，可以先分析用途。')), el('h4', '', '建议操作的影响'), el('p', '', cleanCopy(rec.impact || item.impact || '影响尚不明确，建议先保留。')));
+    if (modelAdvice) append(host,button(window.PanxuTasks.currentTask()?.plan?.items.some(entry=>entry.id===item.id)?'查看操作方案':'返回整理任务',()=>setView('overview'),'button primary'));
     else if (canAnalyze(item)) append(host, button('分析这项', () => analyzeList(item), 'button primary'));
     append(host, button('以后保留这项', () => protectItem(item), 'plain-button'));
     const detail = el('details', 'inspector-advanced'); append(detail, el('summary', '', '更多详情'));
@@ -552,7 +551,7 @@ function initializePanxu() {
     const data = el('dl', 'inspector-definition'); [['所属软件', item.owner || '未知'], ['类型', kindNames[item.kind]], ['文件逻辑量', bytes(item.size_bytes)], ['分配空间', item.allocated_bytes == null ? '未核实' : bytes(item.allocated_bytes)], ['建议来源', modelAdvice || rec.origin === 'model' ? '智能分析' : '本机信息']].forEach(([key, value]) => append(data, el('dt', '', key), el('dd', '', value)));
     if (item.kind === 'directory') { append(data, el('dt', '', '路径累计'), el('dd', '', bytes(item.details?.logical_bytes_all_paths ?? item.size_bytes)), el('dt', '', '唯一实体量'), el('dd', '', bytes(item.details?.unique_logical_bytes ?? item.size_bytes))); append(detail, el('p', '', '同一个文件可能有多个硬链接。这里的体积估计不等于实际可释放空间。')); }
     append(detail, data);
-    if (canSelect(item)) { const manual = el('details', 'manual-actions'); append(manual, el('summary', '', '高级手动处理'), el('p', 'field-help', '这项操作不依赖 AI 建议。确认前会列出具体内容，保护规则继续生效。'), button('手动指定处理这项', () => manualSelected(item))); append(detail, manual); }
+    if (canSelect(item)) { const manual = el('details', 'manual-actions'); append(manual, el('summary', '', '手动选择操作'), el('p', 'field-help', '这项操作不依赖 AI 建议。确认前会列出具体内容与影响，保护规则继续生效；当前只记录模拟，不改动文件或系统。'), button(`查看${window.PanxuActionCopy.label(item.actions[0],item.kind)}清单`, () => manualSelected(item))); append(detail, manual); }
     if ($('show-evidence').checked) { const evidence = el('ul', 'evidence-list'); (Array.isArray(item.evidence) ? item.evidence : []).forEach((entry) => append(evidence, el('li', '', text(entry)))); append(detail, evidence, el('pre', 'assistant-trace', text(item.details || {}))); }
     const more = el('details', 'additional-analysis'); append(more, el('summary', '', '进一步分析这项'));
     const form = el('form', 'assistant-mini'); const input = el('textarea'); input.setAttribute('aria-label', '想了解什么'); input.placeholder = '例如：保留它还有什么用途？'; const submit = el('button', 'button', '分析'); submit.type = 'submit'; append(form, input, submit); form.addEventListener('submit', (event) => { event.preventDefault(); askAssistant(input.value || input.placeholder, more, submit); }); append(more, form); if (state.assistant) append(more, analysisOutput(state.assistant)); append(detail, more); append(host, detail);
@@ -618,41 +617,45 @@ function initializePanxu() {
     const mode = state.view === 'overview' && chosen().every(verifiedCache) ? 'recommended' : 'manual';
     await task(async () => { const plan = await api('/api/plan', { ids, selection_mode: mode, snapshots: Object.fromEntries(chosen().map((item) => [item.id, item.signature])) }); state.plan = plan; renderPlan(plan); $('plan-dialog').showModal(); });
   }
+  function planActionCopy(plan) {
+    const entries=Array.isArray(plan?.items)?plan.items:[];
+    return window.PanxuActionCopy.summary(entries.map(entry=>{const item=entry.item || state.items.find(i=>i.id===(entry.id || entry.item_id)) || entry;return {action:entry.action || item.actions?.[0],kind:item.kind};}));
+  }
   function renderPlan(plan) {
-    const host = $('plan-content'); host.replaceChildren(); $('plan-execute').hidden = false; $('plan-execute').disabled = false; $('plan-title').textContent = '确认处理清单';
+    const copy=planActionCopy(plan),host = $('plan-content'); host.replaceChildren(); $('plan-execute').hidden = false; $('plan-execute').disabled = false; $('plan-execute').textContent=copy.button;$('plan-title').textContent = !copy.count?'没有可模拟的操作':copy.groups.length===1?`模拟${copy.groups[0].label}前确认`:'确认模拟操作';
     const entries = Array.isArray(plan.items) ? plan.items : [];
-    append(host, append(el('div', 'plan-summary'), el('strong', '', `准备处理 ${entries.length} 项`), el('span', '', '当前为预演，确认后只记录结果，不会改动实际内容。')));
+    append(host, append(el('div', 'plan-summary'), el('strong', '', copy.breakdown || '尚未选择操作'), el('span', '', copy.effect)));
     const list = el('div', 'plan-list'); entries.forEach((entry) => {
       const item = entry.item || state.items.find((i) => i.id === (entry.id || entry.item_id)) || entry; const rec = advice(item); const row = el('div', 'plan-item');
-      append(row, itemTitle(item, el('strong', '', `${actionNames[entry.action || item.actions?.[0]] || '处理'} · ${item.name || entry.name}`)), el('p', '', cleanCopy(rec.impact || item.impact || '请确认不再需要。')));
+      append(row, itemTitle(item, el('strong', '', `${window.PanxuActionCopy.label(entry.action || item.actions?.[0],item.kind)} · ${item.name || entry.name}`)), el('p', '', cleanCopy(rec.impact || item.impact || '请确认了解这项操作的影响。')));
       const detail = el('details'); append(detail, el('summary', '', '查看位置'), el('p', '', item.path || entry.path || '无文件位置')); append(row, detail); append(list, row);
     }); append(host, list);
-    const warnings = plan.warnings || []; if (warnings.length) { const detail = el('details', 'plan-additional'); append(detail, el('summary', '', '更多处理说明'), el('pre', '', warnings.map(cleanCopy).join('\n'))); append(host, detail); }
-    if (!entries.length) { append(host, el('p', 'field-error', '没有可以处理的项目，请返回重新选择。')); $('plan-execute').disabled = true; }
+    const warnings = plan.warnings || []; if (warnings.length) { const detail = el('details', 'plan-additional'); append(detail, el('summary', '', '更多操作说明'), el('pre', '', warnings.map(cleanCopy).join('\n'))); append(host, detail); }
+    if (!entries.length) { append(host, el('p', 'field-error', '没有可模拟的操作，请返回重新选择。')); $('plan-execute').textContent='没有可模拟的操作';$('plan-execute').disabled = true; }
   }
   async function executePlan() {
-    if (!state.plan) return; const target = $('plan-execute'); target.disabled = true; target.textContent = '正在处理…';
+    if (!state.plan) return; const copy=planActionCopy(state.plan),target = $('plan-execute'); target.disabled = true; target.textContent = copy.groups.length===1?`正在模拟${copy.groups[0].label}…`:'正在记录模拟操作…';
     await task(async () => {
       try {
         const data = await api('/api/execute', { plan_id: state.plan.id }); accept(data); state.selected.clear(); state.plan = null; state.focused = null; $('plan-dialog').close();
-        setView('history'); toast('预演完成，未改动实际内容。');
+        setView('history'); toast('模拟操作已记录，文件和系统均未改动。');
       } catch (error) { const prior = $('plan-content').querySelector('.field-error'); if (prior) prior.remove(); append($('plan-content'), el('p', 'field-error', `${cleanCopy(error.message)} 请返回调整。`)); throw error; }
-    }); target.disabled = false; target.textContent = '确认处理';
+    }); target.disabled = false; target.textContent = copy.button;
   }
   function renderHistory(root) {
-    append(root, heading('处理记录', '每次处理都留有记录，也可以恢复之前的选择。'));
+    append(root, heading('操作记录', '查看模拟删除、关闭启动项等操作的记录，也可以撤销模拟状态。'));
     window.PanxuTasks?.renderHistory(root);
-    if (!state.history.length) { append(root, empty('还没有处理记录', '选择想处理的内容，确认之后就会显示在这里。')); return; }
-    append(root, el('div', 'result-protection-note', '预演完成，未改动实际内容。实际释放空间为 0 B。'));
+    if (!state.history.length) { append(root, empty('还没有模拟操作记录', '确认模拟操作后，记录会显示在这里。')); return; }
+    append(root, el('div', 'result-protection-note', '这里只记录了模拟操作，文件和系统均未改动。实际释放空间为 0 B。'));
     const list = el('div', 'history-list'); state.history.forEach((batch) => {
       const card = el('article', 'history-card'); const top = el('div', 'history-top'); const date = new Date(batch.created_at); const when = Number.isNaN(date.getTime()) ? text(batch.created_at) : date.toLocaleString('zh-CN', { hour12: false });
-      append(top, el('h3', '', `处理了 ${batch.item_count ?? batch.items?.length ?? 0} 项`), badge(batch.status === 'undone' ? '已恢复选择' : '预演完成')); append(card, top, el('p', '', when));
-      const detail = el('details', 'history-details'); append(detail, el('summary', '', '查看内容')); const entries = el('ul'); (batch.items || []).forEach((item) => append(entries, append(el('li'), itemTitle(item, el('span', '', `${actionNames[item.action] || '处理'} · ${item.name || item.id}`))))); append(detail, entries); append(card, detail);
-      const footer = el('div', 'history-footer'); append(footer, el('span', '', '未改动实际内容')); const restore = button('恢复选择', () => undoBatch(batch.id), 'button small'); restore.disabled = batch.status === 'undone'; append(footer, restore); append(card, footer); append(list, card);
+      append(top, el('h3', '', `已记录 ${batch.item_count ?? batch.items?.length ?? 0} 项模拟操作`), badge(batch.status === 'undone' ? '模拟已撤销' : '模拟已记录')); append(card, top, el('p', '', when));
+      const detail = el('details', 'history-details'); append(detail, el('summary', '', '查看具体操作')); const entries = el('ul'); (batch.items || []).forEach((item) => append(entries, append(el('li'), itemTitle(item, el('span', '', `${window.PanxuActionCopy.label(item.action,item.kind)} · ${item.name || item.id}`))))); append(detail, entries); append(card, detail);
+      const footer = el('div', 'history-footer'); append(footer, el('span', '', '撤销后可重新选择相关项目；不会恢复文件或系统设置。')); const restore = button('撤销模拟', () => undoBatch(batch.id), 'button small'); restore.disabled = batch.status === 'undone'; append(footer, restore); append(card, footer); append(list, card);
     }); append(root, list);
   }
   async function undoBatch(id) {
-    await task(async () => { const batch = state.history.find((entry) => entry.id === id); accept(await api('/api/undo', { batch_id: id })); accept(await api('/api/bootstrap?compact=1')); state.selected = new Set((batch?.items || []).map((item) => item.id).filter((key) => canSelect(state.items.find((item) => item.id === key)))); state.checked = state.items.length > 0; render(); toast('已恢复之前的选择，可回到我的文件调整。'); });
+    await task(async () => { const batch = state.history.find((entry) => entry.id === id); accept(await api('/api/undo', { batch_id: id })); accept(await api('/api/bootstrap?compact=1')); state.selected = new Set((batch?.items || []).map((item) => item.id).filter((key) => canSelect(state.items.find((item) => item.id === key)))); state.checked = state.items.length > 0; render(); toast('模拟已撤销，相关项目可重新选择。实际文件和系统未发生变化。'); });
   }
   function settingsPayload(overrides = {}) { return { provider: state.settings.provider || 'custom', protocol: state.settings.protocol || 'chat_completions', reasoning_effort: state.settings.reasoning_effort || 'default', base_url: state.settings.base_url || '', model: state.settings.model || '', stream: state.settings.stream !== false, send_paths: state.settings.send_paths === true, protect_patterns: Array.isArray(state.settings.protect_patterns) ? state.settings.protect_patterns : [], ...overrides }; }
   function renderModel(root) {
@@ -1045,7 +1048,7 @@ function initializePanxu() {
   $('clear-selection').addEventListener('click', () => { analysisIds().clear(); if (state.view === 'overview') render(); else { renderResults(); renderInspector(); renderSelection(); } });
   $('preview-plan').addEventListener('click', () => analyzeList());
   $('plan-close').addEventListener('click', () => $('plan-dialog').close()); $('plan-cancel').addEventListener('click', () => $('plan-dialog').close()); $('plan-execute').addEventListener('click', executePlan);
-  $('reset-demo').addEventListener('click', () => task(async () => { const data = await api('/api/reset', {}); accept(data, false); state.selected.clear(); state.focused = null; state.assistant = null; $('advanced-drawer').hidden = true; $('advanced-toggle').setAttribute('aria-expanded', 'false'); render(); toast('预演记录已清空。'); }));
+  $('reset-demo').addEventListener('click', () => task(async () => { const data = await api('/api/reset', {}); accept(data, false); state.selected.clear(); state.focused = null; state.assistant = null; $('advanced-drawer').hidden = true; $('advanced-toggle').setAttribute('aria-expanded', 'false'); render(); toast('模拟状态已撤销，历史记录仍保留。'); }));
   $('developer-dock-close')?.addEventListener('click',()=>toggleDeveloperDock(false));
   document.addEventListener('keydown',event=>{
     if(event.key!=='F12'&&event.code!=='F12')return;

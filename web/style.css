@@ -192,7 +192,7 @@ textarea{resize:vertical;width:100%;min-height:75px}
 .settings-note{margin-top:15px;max-width:750px}
 .settings-note h3{font-size:13px;margin:0 0 7px}
 .history-list{display:grid;gap:13px}
-.history-card{padding:18px;background:white;border:1px solid var(--line);border-radius:8px}
+.history-card{padding:18px;background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:8px}
 .history-top{display:flex;justify-content:space-between;gap:14px;align-items:center}
 .history-top h3{font-size:13px;margin:0}
 .history-card p{font-size:12px;color:var(--muted);margin:7px 0}

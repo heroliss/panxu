@@ -1,6 +1,6 @@
 {
   "product": "盘序",
-  "version": "0.9.1",
+  "version": "0.9.2",
   "mode": "simulation",
   "root": "E:\\GPT-Projects\\win11-disk-assistant",
   "safety": "This build has NO real executor. All apply/undo/reset operations modify only SQLite simulation records. Never unlink/move/kill/control services/edit startup outside app-owned data.",

@@ -1,5 +1,46 @@
 'use strict';
 
+// Shared, pure action wording. It describes intent without granting permission.
+window.PanxuActionCopy = (() => {
+  const names = {disable_startup:'关闭开机启动', stop_service:'停止服务', stop_process:'结束应用', uninstall:'卸载软件'};
+  function label(action, kind) {
+    if(action === 'delete')return kind === 'directory' ? '删除文件夹' : kind === 'file' ? '删除文件' : '删除文件或文件夹';
+    return Object.hasOwn(names, action) ? names[action] : '未知操作';
+  }
+  function counted(action, kind, count) {
+    if(action === 'delete')return `删除 ${count} ${kind === 'directory' ? '个文件夹' : kind === 'file' ? '个文件' : '项'}`;
+    return ({disable_startup:`关闭 ${count} 个开机启动项`, stop_service:`停止 ${count} 个服务`,
+      stop_process:`结束 ${count} 个应用`, uninstall:`卸载 ${count} 个软件`})[action] || `未知操作 ${count} 项`;
+  }
+  function summary(items, {simulation = true} = {}) {
+    const groups = new Map();
+    for(const item of Array.isArray(items) ? items : []){
+      if(!item || typeof item !== 'object')continue;
+      const action = item.action === 'delete' || Object.hasOwn(names, item.action) ? item.action : '';
+      const kind = action === 'delete' ? (['file','directory'].includes(item.kind) ? item.kind : 'unknown') : '';
+      const key = `${action}:${kind}`;
+      if(!groups.has(key))groups.set(key, {action,kind,count:0,label:label(action,kind)});
+      groups.get(key).count++;
+    }
+    const rows = [...groups.values()].map(group => ({...group,text:counted(group.action,group.kind,group.count)}));
+    const count = rows.reduce((total,group) => total + group.count, 0);
+    const actions = new Set(rows.map(group => group.action));
+    const deletion = actions.size === 1 && actions.has('delete');
+    const kinds = new Set(rows.map(group => group.kind));
+    const emptyButton = deletion ? `选择要删除的${kinds.size === 1 && kinds.has('directory') ? '文件夹' : kinds.size === 1 && kinds.has('file') ? '文件' : '文件或文件夹'}` : simulation ? '选择要模拟的操作' : '选择要执行的操作';
+    let button = emptyButton;
+    if(count){
+      if(rows.length === 1 && rows[0].action)button = `${simulation ? '模拟' : ''}${rows[0].text}`;
+      else if(deletion)button = `${simulation ? '模拟' : ''}删除 ${count} 项`;
+      else button = `确认${simulation ? '模拟' : '执行'} ${count} 项`;
+    }
+    const folderNote = rows.some(group=>group.action === 'delete' && group.kind === 'directory') ? '删除文件夹的范围包含内部文件。' : '';
+    return {count,groups:rows,breakdown:rows.map(group=>group.text).join('、'),button,emptyButton,
+      effect:(simulation ? '仅记录模拟，不会实际删除文件或改动系统。' : '确认后将执行所列操作。') + folderNote};
+  }
+  return {label,summary};
+})();
+
 // Task UI owns presentation and user choices; the server owns durable task state.
 window.PanxuTasks = (() => {
   let current = null;
@@ -191,7 +232,7 @@ window.PanxuTasks = (() => {
   }
   function welcome(root) {
     if (!intent) {
-      add(root, context.heading('今天想整理什么？', '助手先调查并解释，再由你确认处理。'));
+      add(root, context.heading('今天想整理什么？', '助手先调查并解释，再由你确认具体操作。'));
       const grid = node('div', 'task-intents');
       ['c_cleanup', 'disk_cleanup', 'directory_cleanup', 'duplicates'].forEach((key) => {
         const card = action('', () => choose(key), 'task-intent'); card.dataset.preset = key;
@@ -374,7 +415,7 @@ window.PanxuTasks = (() => {
   }
   function directControls(card,entry,taskId) {
     if(entry.stale || entry.user_kept)return;
-    const box=detail('自行处理'), body=node('div','task-direct-options');box.classList.add('task-direct');let loaded=false;
+    const box=detail('选择要模拟的操作'), body=node('div','task-direct-options');box.classList.add('task-direct');let loaded=false;
     box.addEventListener('toggle',async()=>{
       if(!box.open || loaded)return;loaded=true;body.replaceChildren(node('p','field-help','正在核对可用操作…'));
       try {
@@ -382,12 +423,11 @@ window.PanxuTasks = (() => {
         if(!box.isConnected || current?.id!==taskId)return;
         body.replaceChildren();
         if(!item || item.signature!==entry.signature || item.simulated || item.risk==='protected') {add(body,node('p','field-help','当前内容已变化或受保护，请重新核对。'));return;}
-        const names={delete:item.kind==='directory'?'确认清理这个文件夹':'确认清理这份文件',disable_startup:'确认关闭此开机启动项',stop_service:'确认停止此服务',stop_process:'确认结束此应用',uninstall:'确认卸载此软件'};
+        const available=(item.actions || []).filter(name=>['delete','disable_startup','stop_service','stop_process','uninstall'].includes(name));
         add(body,add(node('div','item-title-line'),window.PanxuIcons?.create(item),node('strong','',item.name)),node('p','task-path',item.path),node('p','field-help',entry.impact),
-          node('p','field-help','由程序直接处理并核对，再把结果告知助手。测试保护下仍只记录预演。'));
-        const available=(item.actions || []).filter(name=>Object.hasOwn(names,name));
-        available.forEach(operation=>add(body,action(names[operation],()=>directAction(taskId,item,operation),'button')));
-        if(!available.length)add(body,node('p','field-help','这项内容暂时没有可用的处理操作。'));
+          node('p','field-help',window.PanxuActionCopy.summary(available.map(operation=>({action:operation,kind:item.kind}))).effect));
+        available.forEach(operation=>add(body,action(`模拟${window.PanxuActionCopy.label(operation,item.kind)}`,()=>directAction(taskId,item,operation),'button')));
+        if(!available.length)add(body,node('p','field-help','这项内容暂时没有可用的模拟操作。'));
       } catch(error) {body.replaceChildren(node('p','field-error',error.message));loaded=false;}
     });add(box,body);add(card,box);
   }
@@ -404,12 +444,10 @@ window.PanxuTasks = (() => {
       const copy = node('div', 'task-plan-copy');
       const title = node('label', 'task-item-title', item.name);
       const id = 'pick-' + item.id; check.id = id; title.htmlFor = id;
-      const actionNames = {delete: item.kind === 'directory' ? '清理整个文件夹' : '清理这份文件',
-        disable_startup: '关闭开机启动', stop_service: '停止后台服务', stop_process: '结束应用', uninstall: '卸载软件'};
       const titleLine=node('div','item-title-line');
       add(titleLine,window.PanxuIcons?.create(item),title);
       add(copy, titleLine, add(node('div', 'task-plan-meta'),
-        semanticTag(actionNames[item.action] || item.action, 'info', 'task-action-label'),
+        semanticTag(window.PanxuActionCopy.label(item.action,item.kind), 'info', 'task-action-label'),
         item.personal_choice_required ? semanticTag('由你选择', 'warning', 'task-choice-note') : null),
         explanation('建议原因', item.reason));
       const info = detail('了解影响', explanation('影响', item.impact), node('p', 'task-path', item.path),
@@ -419,29 +457,36 @@ window.PanxuTasks = (() => {
       add(cards, card);
     });
     add(root, cards);
-    const confirm = action('确认处理', () => {
+    const confirm = action(window.PanxuActionCopy.summary(current.plan.items).emptyButton, () => {
       if (!selected.size) return;
       request('/api/tasks/' + current.id + '/approve', {version: current.plan.version, ids: [...selected]});
     }, 'button primary task-primary');
     confirm.id = 'task-approve';
-    add(root, add(node('div', 'task-approval'), node('span', 'task-selection-count'), confirm));
+    const copy = node('div', 'task-approval-copy');
+    const breakdown = node('p', 'task-selection-count');breakdown.id='task-selection-summary';
+    const effect = node('p', 'field-help', window.PanxuActionCopy.summary([]).effect);effect.id='task-simulation-effect';
+    confirm.setAttribute('aria-describedby', 'task-selection-summary task-simulation-effect');
+    add(copy,breakdown,effect);add(root, add(node('div', 'task-approval'), copy, confirm));
     updateApproval(); feedbackForm(root);
   }
   function updateApproval() {
     const button = document.getElementById('task-approve');
     if (!button) return;
     button.disabled = !selected.size || pending;
-    button.textContent = selected.size ? `确认处理 ${selected.size} 项` : '先选择要处理的内容';
+    const copy=window.PanxuActionCopy.summary(current.plan.items.filter(item=>selected.has(item.id)));
+    button.textContent = selected.size ? copy.button : window.PanxuActionCopy.summary(current.plan.items).emptyButton;
     const count = document.querySelector('.task-selection-count');
-    if (count) count.textContent = selected.size ? `已选择 ${selected.size} 项` : '个人文件不会默认选中';
+    if (count) count.textContent = selected.size ? copy.breakdown : '个人文件不会默认选中';
+    const effect = document.getElementById('task-simulation-effect');
+    if (effect) effect.textContent = (selected.size ? copy : window.PanxuActionCopy.summary(current.plan.items)).effect;
   }
   function results(root) {
     if (!current.last_result) return;
     const result = current.last_result;
-    const labels = {succeeded: '已核对', failed: '未完成', unverified: '待核实', cancelled: '已停止', running: '待核实'};
+    const labels = {succeeded: '模拟完成', failed: '未完成', unverified: '待核实', cancelled: '已停止', running: '待核实'};
     const pendingCount=Math.max(0,result.total-result.succeeded);
-    const box = detail(`本轮结果：${result.succeeded} 项预演完成${pendingCount?`，${pendingCount} 项未完成或待核实`:''}`,
-      node('p', 'result-protection-note', '测试保护下完成预演，实际文件和系统未改动。'));
+    const box = detail(`本轮结果：${result.succeeded} 项模拟完成${pendingCount?`，${pendingCount} 项未完成或待核实`:''}`,
+      node('p', 'result-protection-note', '仅完成模拟，实际文件和系统未改动。'));
     box.className += ' task-results';
     const tones = {succeeded:'info', failed:'danger', unverified:'warning', cancelled:'neutral', running:'warning'};
     result.items.forEach((item) => {
@@ -449,8 +494,8 @@ window.PanxuTasks = (() => {
       const row = node('article', 'task-result-item');
       const heading = add(node('div', 'task-result-heading'),
         add(node('div', 'item-title-line'), window.PanxuIcons?.create(item), node('strong', 'task-result-name', item.name)),
-        semanticTag(undone ? '已撤销预演' : labels[item.status] || '待核实', undone ? 'neutral' : tones[item.status] || 'warning', 'task-result-state'));
-      add(row, heading, node('p', 'task-result-message', undone ? '已撤销这次预演。' : item.message));
+        semanticTag(undone ? '已撤销模拟' : labels[item.status] || '待核实', undone ? 'neutral' : tones[item.status] || 'warning', 'task-result-state'));
+      add(row, heading, node('p', 'task-result-message', undone ? '已撤销这次模拟，实际文件和系统没有被改动。' : item.message));
       add(box, row);
     });
     add(root, box);
