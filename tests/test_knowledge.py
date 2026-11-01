@@ -43,8 +43,8 @@ class KnowledgeTests(unittest.TestCase):
             first = self.catalog()
             second = self.catalog()
         self.assertEqual(first, second)
-        self.assertEqual(len(first), 9)
-        self.assertEqual(len({item['id'] for item in first}), 9)
+        self.assertEqual(len(first), 17)
+        self.assertEqual(len({item['id'] for item in first}), 17)
         self.assertEqual({item['id'] + '.md' for item in first}, set(knowledge.BUNDLED_SKILL_FILES))
         for item in first:
             self.assertTrue({'id', 'name', 'summary', 'applies_when', 'version', 'sources',
@@ -55,7 +55,9 @@ class KnowledgeTests(unittest.TestCase):
             self.assertFalse(item['capabilities']['automatic_recommendation'])
 
     def test_all_guides_have_complete_content_hash_and_primary_source_snapshot(self):
-        allowed = {'learn.microsoft.com', 'support.microsoft.com', 'docs.astral.sh', 'pip.pypa.io', 'docs.npmjs.com'}
+        allowed = {'learn.microsoft.com', 'support.microsoft.com', 'docs.astral.sh', 'pip.pypa.io', 'docs.npmjs.com',
+                   'helpx.adobe.com', 'www.asus.com', 'docs.docker.com', 'docs.unity.com', 'help.steampowered.com',
+                   'support-en.sandisk.com', 'www.dell.com', 'support.google.com', 'chromeenterprise.google'}
         for item in self.catalog():
             with self.subTest(item=item['id']):
                 read = self.registry.load(item['id'])
@@ -67,6 +69,12 @@ class KnowledgeTests(unittest.TestCase):
                 self.assertEqual(read['sha256'], hashlib.sha256(raw).hexdigest())
                 self.assertEqual(read['content_fingerprint'], read['sha256'])
                 self.assertEqual(read['version'], item['version'])
+                content = read['content']
+                while read['has_more']:
+                    read = self.registry.load(item['id'], cursor=read['next_cursor'])
+                    self.assert_budget(read, 4000)
+                    content += read['content']
+                self.assertEqual(content, raw.decode('utf-8'))
                 self.assertTrue(read['sources'])
                 for source in read['sources']:
                     url = urlsplit(source['url'])

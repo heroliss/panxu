@@ -1,0 +1,6 @@
+.item-title-line{display:flex;align-items:center;gap:10px;min-width:0}
+.item-title-line>button,.item-title-line>label,.item-title-line>strong{min-width:0;overflow-wrap:anywhere}
+.item-icon{display:inline-grid;place-items:center;position:relative;width:32px;height:32px;min-width:32px;flex:0 0 32px;vertical-align:middle;align-self:center;overflow:hidden;pointer-events:none}
+.item-icon>svg,.item-icon>img{grid-area:1/1;width:32px;height:32px;display:block;object-fit:contain}
+.item-icon>img[hidden],.item-icon>svg[hidden]{display:none}
+@media(max-width:640px){.item-title-line{gap:8px}.item-icon,.item-icon>svg,.item-icon>img{width:28px;height:28px}.item-icon{min-width:28px;flex-basis:28px}}

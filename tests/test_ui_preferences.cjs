@@ -106,7 +106,17 @@ class Element {
   addEventListener(name, handler) { this.handlers.set(name, [...(this.handlers.get(name) || []), handler]); }
   setAttribute(name, value) { this[name] = value; }
   all() { return this.children.flatMap((node) => [node, ...node.all()]); }
-  querySelector(selector) { return this.all().find((node) => selector === 'pre' && node.tag === 'pre') || null; }
+  matches(selector) {
+    if (selector === '[data-category]') return Boolean(this.dataset.category);
+    if (selector === 'details[open]') return this.tag === 'details' && this.open;
+    if (selector.startsWith('.')) return this.className.split(' ').includes(selector.slice(1));
+    return this.tag === selector;
+  }
+  querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
+  querySelectorAll(selector) { return this.all().filter((node) => node.matches(selector)); }
+  closest(selector) { return this.matches(selector) ? this : this.parent?.closest(selector) || null; }
+  contains(node) { return node === this || this.all().includes(node); }
+  set innerHTML(_) { throw new Error('HTML insertion is forbidden in the developer viewer'); }
   fire(name) { return Promise.all((this.handlers.get(name) || []).map((handler) => handler({ preventDefault() {} }))); }
 }
 
@@ -136,10 +146,13 @@ function developer({ payload, kind = 'request' } = {}) {
     setTimeout: (handler) => { timers.set(++timerId, handler); return timerId; }, clearTimeout: (id) => timers.delete(id),
     Date, Map, JSON, RegExp,
   };
+  const viewStart = source.indexOf('window.PanxuDeveloperView = (() => {');
+  const viewEnd = source.indexOf('function initializePanxu()', viewStart);
   const start = source.indexOf('  function renderDeveloper(root) {');
   const end = source.indexOf('  function analysisOutput(data)', start);
   assert.ok(start !== -1 && end > start, 'developer module remains available to its lifecycle test');
   createContext(context);
+  runInContext(source.slice(viewStart, viewEnd), context);
   runInContext(source.slice(start, end) + ';this.renderDeveloper=renderDeveloper;', context);
   const controller = context.renderDeveloper(root);
   const panel = root.children[0];
@@ -176,21 +189,53 @@ test('live records preserve expanded content and do not rebuild the dock contain
   await fixture.check('developer-live', true); await fixture.check('developer-record', true);
   const body = fixture.panel.children[0];
   const entry = fixture.root.all().find((node) => node.className === 'developer-entry');
-  entry.open = true; await entry.fire('toggle');
-  const pre = entry.querySelector('pre'); pre.scrollTop = 72;
-  assert.ok(pre.textContent.includes('fixture dialogue'));
-  assert.ok(!pre.textContent.includes('fixture tool definition'), 'large tool details are locally hidden by default');
+  const text = () => fixture.root.all().map((node) => node.textContent || '').join('\n');
+  assert.ok(text().includes('fixture dialogue'), 'message text is readable without opening JSON');
+  assert.equal(entry.querySelector('pre'), null, 'raw JSON is not rendered by default');
+  assert.ok(!text().includes('fixture tool definition'), 'large tool details are locally hidden by default');
+  const raw = entry.querySelector('.developer-raw'); raw.open = true; await raw.fire('toggle');
+  const pre = raw.querySelector('pre'); pre.scrollTop = 72;
   fixture.setSequence(2); await fixture.tick();
   assert.equal(fixture.panel.children[0], body);
-  assert.equal(entry.open, true); assert.equal(pre.scrollTop, 72);
+  assert.equal(raw.open, true); assert.equal(pre.scrollTop, 72);
   assert.ok(fixture.root.all().includes(entry), 'new output does not displace the record being read');
   assert.equal(fixture.root.all().find((node) => node.className === 'button developer-update').hidden, false);
   const callsBeforeFilter = fixture.calls.length;
   await fixture.check('developer-tools', true);
   assert.equal(fixture.calls.length, callsBeforeFilter, 'local filters do not fetch, clear or change capture');
   const current = fixture.root.all().find((node) => node.className === 'developer-entry');
-  current.open = true; await current.fire('toggle');
-  assert.ok(current.querySelector('pre').textContent.includes('fixture tool definition'));
+  assert.equal(current, entry, 'display filters preserve an existing record and its reading position');
+  assert.ok(pre.textContent.includes('fixture tool definition'));
+  fixture.context.developerCleanup();
+});
+
+test('auxiliary request fields and raw JSON share one closed disclosure while prose stays readable', async () => {
+  const payload = { protocol: 'chat_completions', provider: 'fixture', payload: {
+    messages: [
+      { role: 'system', content: '系统提示' },
+      { role: 'user', content: JSON.stringify({ goal: '简短目标', facts: { total: 1 }, observations: [{ summary: '历史观察' }] }) },
+      { role: 'assistant', tool_calls: [{ id: 'read-1', function: { name: 'read_skill', arguments: '{"skill_id":"fixture"}' } }] },
+      { role: 'tool', tool_call_id: 'read-1', content: '{"content":"技能正文","version":"1.1.0"}' },
+    ], tools: [{ name: 'read_skill' }],
+  } };
+  const fixture = developer({ payload }); await fixture.open(); await fixture.check('developer-live', true);
+  const entry = fixture.root.all().find((node) => node.className === 'developer-entry');
+  const readable = entry.querySelector('.developer-readable');
+  const topLevelDetails = readable.children.filter((node) => node.tag === 'details');
+  assert.equal(topLevelDetails.length, 1, 'technical headings must not occupy the default message surface');
+  const group = topLevelDetails[0];
+  assert.equal(group.open, false);
+  assert.ok(group.querySelector('summary').textContent.includes('随本次发送的说明与资料'));
+  assert.ok(entry.all().some((node) => node.textContent === '简短目标'));
+  assert.ok(group.contains(entry.querySelector('.developer-raw')));
+  assert.equal(entry.querySelector('pre'), null);
+  assert.equal(group.all().some((node) => node.className === 'developer-section-body'), false, 'inner payloads remain lazy');
+  const toolSections = group.querySelectorAll('[data-category]').filter((node) => node.dataset.category === 'tools');
+  assert.ok(toolSections.every((node) => node.hidden));
+  const originalTitle = group.querySelector('summary').textContent;
+  await fixture.check('developer-tools', true);
+  assert.equal(group.open, false); assert.ok(toolSections.every((node) => !node.hidden));
+  assert.notEqual(group.querySelector('summary').textContent, originalTitle, 'category count follows independent filters');
   fixture.context.developerCleanup();
 });
 
@@ -227,6 +272,20 @@ test('a late polling response after dock closes cannot replace records or schedu
   assert.ok(fixture.root.all().includes(record));
   assert.equal(fixture.root.all().some((node) => node.dataset.seq === 99), false);
   assert.equal(fixture.timers.size, 0);
+  fixture.context.developerCleanup();
+});
+
+test('clearing records removes cached readable and raw views even while live display is off', async () => {
+  const fixture = developer(); await fixture.open();
+  await fixture.check('developer-live', true);
+  const entry = fixture.root.all().find((node) => node.className === 'developer-entry');
+  const raw = entry.querySelector('.developer-raw'); raw.open = true; await raw.fire('toggle');
+  await fixture.check('developer-live', false);
+  fixture.context.api = async () => ({ enabled: false, total: 0, entries: [] });
+  const clear = fixture.root.all().find((node) => node.tag === 'button' && node.textContent === '清空记录');
+  await clear.fire('click');
+  assert.equal(fixture.root.all().some((node) => node.className === 'developer-entry'), false);
+  assert.equal(fixture.root.all().some((node) => node.tag === 'pre'), false);
   fixture.context.developerCleanup();
 });
 
@@ -287,13 +346,15 @@ for (const protocol of ['chat_completions', 'responses', 'anthropic', 'gemini'])
     const fixture = developer({ kind: 'response', payload: protocolReply(protocol, calls) });
     await fixture.open(); await fixture.check('developer-live', true);
     const entry = fixture.root.all().find((node) => node.className === 'developer-entry');
-    entry.open = true; await entry.fire('toggle');
-    const text = entry.querySelector('pre').textContent;
+    const text = entry.all().map((node) => node.textContent || '').join('\n');
     for (const value of ['公开结论', '公开方案', '公开原因', '公开影响', '公开问题', '公开选项说明', '公开用途', '公开保留依据', '公开交接', '公开下一步', '公开未决事项']) assert.ok(text.includes(value), value);
     assert.ok(text.includes('不代表操作或审批结果'));
     for (const value of ['private-opaque-canary', 'auto_approve', 'hidden-investigation-arguments', '"action"']) assert.ok(!text.includes(value), value);
+    assert.equal(entry.querySelector('pre'), null);
     await fixture.check('developer-tools', true);
-    assert.ok(entry.querySelector('pre').textContent.includes('hidden-investigation-arguments'), 'explicit tools view still exposes the original record');
+    const raw = entry.querySelector('.developer-raw'); raw.open = true; await raw.fire('toggle');
+    assert.ok(raw.querySelector('pre').textContent.includes('hidden-investigation-arguments'), 'raw JSON remains explicitly available');
+    assert.ok(!raw.querySelector('pre').textContent.includes('private-opaque-canary'), 'private protocol fields stay hidden even in raw JSON');
     fixture.context.developerCleanup();
   });
 }
@@ -304,9 +365,9 @@ test('unparseable public calls explain how to view raw data instead of inventing
   ] } }] } });
   await fixture.open(); await fixture.check('developer-live', true);
   const entry = fixture.root.all().find((node) => node.className === 'developer-entry');
-  entry.open = true; await entry.fire('toggle');
-  assert.ok(entry.querySelector('pre').textContent.includes('无法提取公开文本'));
-  assert.ok(entry.querySelector('pre').textContent.includes('开启工具详情'));
-  assert.ok(!entry.querySelector('pre').textContent.includes('public_message'));
+  const text = entry.all().map((node) => node.textContent || '').join('\n');
+  assert.ok(text.includes('无法提取'));
+  assert.ok(text.includes('原始 JSON'));
+  assert.equal(entry.querySelector('pre'), null);
   fixture.context.developerCleanup();
 });

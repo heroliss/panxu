@@ -242,6 +242,45 @@ class ProviderTests(unittest.TestCase):
         self.assertFalse(result['passed'])
         self.assertEqual(result['code'], 'connection_tool_failed')
 
+    def test_deepseek_thinking_probe_does_not_send_unsupported_required_choice(self):
+        """Independent peer rejects the combination documented as HTTP 400."""
+        native = ProtocolFixture('chat_completions')
+        def deepseek_peer(url, payload, headers, timeout):
+            if payload.get('thinking', {}).get('type') == 'enabled' and payload.get('tool_choice') not in ('auto', 'none'):
+                raise ValueError('provider_parameters')
+            return native(url, payload, headers, timeout)
+        assistant = self.assistant('chat_completions', deepseek_peer, 'deepseek')
+        assistant.save_settings({'model': 'deepseek-flash'})
+        result = assistant.test_connection()
+        self.assertTrue(result['passed'], result)
+        self.assertEqual(len(native.requests), 2)
+        first, final = [request['payload'] for request in native.requests]
+        self.assertEqual(first['tool_choice'], 'auto')
+        self.assertEqual(final['tool_choice'], 'none')
+        for payload in (first, final):
+            self.assertEqual(payload['thinking'], {'type': 'enabled'})
+            self.assertEqual(payload['reasoning_effort'], 'high')
+            self.assertEqual(payload['model'], 'deepseek-flash')
+        self.assertEqual(final['messages'][-2]['reasoning_content'], 'private protocol reasoning sentinel')
+
+    def test_deepseek_auto_probe_still_requires_correct_tool_and_nonce(self):
+        for response in ({'role': 'assistant', 'content': 'connected'},
+                         {'role': 'assistant', 'content': None, 'tool_calls': [dict(id='wrong', type='function',
+                           function=dict(name='connection_probe', arguments='{"nonce":"wrong"}'))]}):
+            with self.subTest(response=response):
+                assistant = self.assistant('chat_completions', lambda *args: {'choices': [{'message': response}]}, 'deepseek')
+                result = assistant.test_connection()
+                self.assertFalse(result['passed'])
+                self.assertEqual(result['code'], 'connection_tool_failed')
+
+    def test_probe_choice_policy_does_not_change_other_protocols_or_force_disable_thinking(self):
+        for protocol in providers.PROTOCOLS:
+            for provider in ('custom', 'openai', 'glm', 'anthropic', 'gemini', 'deepseek'):
+                with self.subTest(protocol=protocol, provider=provider):
+                    expected = 'auto' if protocol == 'chat_completions' and provider == 'deepseek' else 'required'
+                    self.assertEqual(providers.connection_probe_tool_choice({'provider': provider, 'protocol': protocol}), expected)
+        self.assertEqual(providers.connection_probe_tool_choice({'provider':'deepseek','model':'deepseek-chat'}), 'auto')
+
     def test_connection_errors_are_safe_and_actionable(self):
         for code in ('provider_auth', 'provider_model', 'provider_rate_limit', 'provider_parameters', 'provider_unavailable'):
             with self.subTest(code=code):

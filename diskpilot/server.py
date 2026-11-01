@@ -18,6 +18,7 @@ from .catalog import FileCatalog
 from .llm import ModelAssistant
 from .lease import DataLease
 from .knowledge import SkillRegistry
+from .icons import IconService, IconNotFound
 from .recommendations import build_recommendations
 from .scanner import scan_directory
 from .scan_index import ScanIndex
@@ -56,6 +57,7 @@ class Application:
         self.skills = SkillRegistry()
         self.harness = TaskHarness(self.state, self.assistant, trace=self.trace, scan_index=self.scan_index, skill_registry=self.skills)
         self.catalog = FileCatalog(self.state, self.patterns)
+        self.icons = IconService(self.icon_item)
         self.recommendation_cache = None
         self.settings_revision = 0
         self.csrf = secrets.token_urlsafe(32)
@@ -212,6 +214,25 @@ class Application:
             if not value:
                 raise AppError('任务不存在。', 'unknown_job', 404)
             return {k: v for k, v in value.items() if not k.startswith('_')}
+
+    def icon_item(self, key):
+        """Resolve only an existing catalog ID; icon paths stay local and private."""
+        if not isinstance(key, str) or not 0 < len(key) <= 128:
+            return None
+        with self.state.lock:
+            row = self.state.db.execute('SELECT payload FROM catalog WHERE id=?', (key,)).fetchone()
+            return json.loads(row[0]) if row else None
+
+    def icon(self, query):
+        if set(query) - {'id', 'v'} or len(query.get('id', [])) != 1:
+            raise AppError('请选择清单中的内容。', 'invalid_icon', 400)
+        key = query['id'][0]
+        if not isinstance(key, str) or not 0 < len(key) <= 128:
+            raise AppError('图标对应的内容不存在。', 'not_found', 404)
+        try:
+            return self.icons.get(key)
+        except IconNotFound:
+            raise AppError('图标对应的内容不存在。', 'not_found', 404) from None
 
     def get(self, path, query):
         if path == '/api/ui-preferences':
@@ -402,6 +423,7 @@ class Application:
         for job in self.jobs.values():
             job['_cancel'].set()
         self.pool.shutdown(wait=True, cancel_futures=True)
+        self.icons.close()
         self.scan_index.close()
         self.trace.close()
         self.state.close()
@@ -418,7 +440,7 @@ def create_server(data_dir, port=0, *, developer_fixtures=False):
         def valid_host(self):
             return self.headers.get('Host') in (f'127.0.0.1:{self.server.server_port}', f'localhost:{self.server.server_port}')
 
-        def send(self, status, body, mime='application/json; charset=utf-8'):
+        def send(self, status, body, mime='application/json; charset=utf-8', headers=None):
             encoded = body if isinstance(body, bytes) else json.dumps(body, ensure_ascii=False).encode('utf-8')
             self.send_response(status)
             self.send_header('Content-Type', mime)
@@ -427,6 +449,8 @@ def create_server(data_dir, port=0, *, developer_fixtures=False):
             self.send_header('X-Content-Type-Options', 'nosniff')
             self.send_header('Referrer-Policy', 'no-referrer')
             self.send_header('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'")
+            for key, value in (headers or {}).items():
+                self.send_header(key, value)
             self.end_headers()
             self.wfile.write(encoded)
 
@@ -435,10 +459,17 @@ def create_server(data_dir, port=0, *, developer_fixtures=False):
                 return self.send(403, {'error': '不接受该 Host。', 'code': 'bad_host'})
             parsed = urlsplit(self.path)
             try:
+                if parsed.path == '/api/icon':
+                    icon = app.icon(parse_qs(parsed.query))
+                    extra = {'X-Panxu-Icon-Status': icon['status'], 'ETag': icon['etag']}
+                    if icon.get('retry_after'):
+                        extra['Retry-After'] = str(icon['retry_after'])
+                    return self.send(200, icon['body'], icon['mime'], extra)
                 if parsed.path.startswith('/api/'):
                     return self.send(200, app.get(parsed.path, parse_qs(parsed.query)))
                 names = {'/': ('index.html', 'text/html; charset=utf-8'), '/index.html': ('index.html', 'text/html; charset=utf-8'),
-                         '/app.js': ('app.js', 'text/javascript; charset=utf-8'), '/tasks.js': ('tasks.js', 'text/javascript; charset=utf-8'), '/files.js': ('files.js', 'text/javascript; charset=utf-8'), '/style.css': ('style.css', 'text/css; charset=utf-8')}
+                         '/app.js': ('app.js', 'text/javascript; charset=utf-8'), '/tasks.js': ('tasks.js', 'text/javascript; charset=utf-8'), '/files.js': ('files.js', 'text/javascript; charset=utf-8'), '/style.css': ('style.css', 'text/css; charset=utf-8'),
+                         '/icons.js': ('icons.js', 'text/javascript; charset=utf-8'), '/icons.css': ('icons.css', 'text/css; charset=utf-8')}
                 if parsed.path not in names:
                     raise AppError('页面不存在。', 'not_found', 404)
                 name, mime = names[parsed.path]

@@ -1,6 +1,6 @@
 {
   "product": "盘序",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "mode": "simulation",
   "root": "E:\\GPT-Projects\\win11-disk-assistant",
   "safety": "This build has NO real executor. All apply/undo/reset operations modify only SQLite simulation records. Never unlink/move/kill/control services/edit startup outside app-owned data.",
@@ -82,7 +82,8 @@
     "POST /api/tasks/{id}/answer": "{version,question_id?,option_id?,text?,skip?:bool} -> {task,job_id}; structured preference, no operation approval",
     "POST /api/tasks/{id}/direct-plan": "{ids:1..30,action,snapshots?} -> {task,plan}; user-origin versioned plan, approval via existing approve route",
     "GET /api/ui-preferences": "{preferences:{theme:dark|light|system,developer_live,developer_conversation,developer_skills,developer_tools}}",
-    "POST /api/ui-preferences": "allowlisted preference subset -> {preferences}; persisted separately from model settings/capture"
+    "POST /api/ui-preferences": "allowlisted preference subset -> {preferences}; persisted separately from model settings/capture",
+    "GET /api/icon": "{id,v?} -> local image bytes, X-Panxu-Icon-Status:ready|pending|fallback; existing catalog IDs only; no arbitrary path; bounded private memory cache and async extraction"
   },
   "mutations": "Require X-CSRF-Token from bootstrap. Errors are JSON {error,code}. Relative same-origin fetch only. Input limits apply.",
   "summary": "{total_items,visible_items,simulated_items,logical_bytes,simulated_bytes,process_memory_bytes,by_kind,source,mode}. Real disks separate; no simulated_bytes shown as actual freed space.",
@@ -94,12 +95,15 @@
   "agent_task": "statuses ready/investigating/awaiting_review/executing/needs_input/needs_model/paused/budget_exhausted/error/completed. Up to 6 model responses and 12 tools per turn. Personal files default unchecked; unknown/protected/out-of-scope and stale plans cannot bypass factual checks. Tool text is untrusted.",
   "action_runtime": "simulation backend only. Per-item durable intent plus atomic overlay/receipt, status succeeded/failed/partial/cancelled/unverified. Recovery verifies receipts without blind replay. User undo is separately visible as current_state=undone. Actual reclaimed bytes always zero.",
   "release_status": "passed_local_portable",
-  "installed_release": "0.7.0_profile_restored",
+  "installed_release": "0.8.0_profile_restored",
   "task_memory": "Durable goal, choices, versioned plan, simulation receipts, up to300 historical facts/task with32MiB global fact-payload retention. Model connection change reconstructs fresh context, not private provider continuation. Request attempts/tools/work counted; missing provider token usage is unknown.",
-  "task_scan": "ScanIndex durable name/metadata spool, stable keyset cursor; steps1..512, rows<=100000/scan. Interrupted unfinished enumeration replays with explicit work accounting; acquired rows retained. Whole-directory actions require separate current subtree validation. All20 tool schemas still sent each model turn; discover_tools is help, not lazy loading.",
-  "guidance": "Fixed9 bundled markdown resources, max32KiB each. list_skills/read_skill expose bounded public guidance with versions/fingerprints/sources; no dynamic path/URL access or system capability granted.",
+  "task_scan": "ScanIndex durable name/metadata spool, stable keyset cursor; steps1..512, rows<=100000/scan. Interrupted unfinished enumeration replays with explicit work accounting; acquired rows retained. Whole-directory actions require separate current subtree validation. All22 tool schemas still sent each model turn; discover_tools is help, not lazy loading.",
+  "guidance": "17 fixed bundled markdown resources, version1.1.0, each max32KiB; list_skills/read_skill provide bounded guidance with versions/fingerprints/official sources. Guidance is not current evidence or extra execution permission.",
   "user_actions": "Model questions have independent monotonic versions; answers/skip durable but not approval. Host direct-plan preflights current identity in task scope, then same approve/runtime; source, chosen IDs, results flow back. Legacy manual history only intersects task-known IDs for model awareness.",
   "license": "PolyForm-Noncommercial-1.0.0; Required Notice copyright 2026 heroliss. Scope original PanXu material; third-party components retain their licenses. Explicit user choice 2026-11-02.",
   "developer_dock": "Closed by default; settings entry and F12 toggle. Same bounded capture/view filters in right-side dock; mounted independently of current task view. No auto capture when opening.",
-  "appearance": "Default follows system; explicit saved light/dark preserved; live media changes apply without restart."
+  "appearance": "Default follows system; explicit saved light/dark preserved; live media changes apply without restart.",
+  "read_only_evidence": "collect_system_configuration(section=memory_power) observes memory/active vs configured pagefiles/power via fixed APIs and7 registry values; inspect_volume(scope_id) observes only existing task-scope volume capacity/recycle statistics. No root or action targets added; unknown/partial explicit.",
+  "icons": "Private known-ID local icon extraction from existing executable resources, desktop registration or stock/type fallback; visible lazy requests, bounded queues/cache, no shell extensions/shortcut resolution or LLM transmission. Icons do not certify publisher or ownership.",
+  "developer_readability": "Visible-role text and public communication by default, one closed auxiliary section per event for system/context/facts/skills/tools/metadata/raw sanitized JSON. Protocol-private content stays excluded."
 }

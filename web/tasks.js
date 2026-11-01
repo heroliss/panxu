@@ -331,7 +331,7 @@ window.PanxuTasks = (() => {
         body.replaceChildren();
         if(!item || item.signature!==entry.signature || item.simulated || item.risk==='protected') {add(body,node('p','field-help','当前内容已变化或受保护，请重新核对。'));return;}
         const names={delete:item.kind==='directory'?'确认清理这个文件夹':'确认清理这份文件',disable_startup:'确认关闭此开机启动项',stop_service:'确认停止此服务',stop_process:'确认结束此应用',uninstall:'确认卸载此软件'};
-        add(body,node('p','',item.name),node('p','task-path',item.path),node('p','field-help',entry.impact),
+        add(body,add(node('div','item-title-line'),window.PanxuIcons?.create(item),node('strong','',item.name)),node('p','task-path',item.path),node('p','field-help',entry.impact),
           node('p','field-help','由程序直接处理并核对，再把结果告知助手。测试保护下仍只记录预演。'));
         const available=(item.actions || []).filter(name=>Object.hasOwn(names,name));
         available.forEach(operation=>add(body,action(names[operation],()=>directAction(taskId,item,operation),'button')));
@@ -354,7 +354,9 @@ window.PanxuTasks = (() => {
       const id = 'pick-' + item.id; check.id = id; title.htmlFor = id;
       const actionNames = {delete: item.kind === 'directory' ? '清理整个文件夹' : '清理这份文件',
         disable_startup: '关闭开机启动', stop_service: '停止后台服务', stop_process: '结束应用', uninstall: '卸载软件'};
-      add(copy, title, node('span', 'task-action-label', actionNames[item.action] || item.action),
+      const titleLine=node('div','item-title-line');
+      add(titleLine,window.PanxuIcons?.create(item),title);
+      add(copy, titleLine, node('span', 'task-action-label', actionNames[item.action] || item.action),
         item.personal_choice_required ? node('span', 'task-choice-note', '由你选择') : null,
         node('p', '', item.reason));
       const info = detail('了解影响', node('p', '', item.impact), node('p', 'task-path', item.path),
@@ -387,8 +389,8 @@ window.PanxuTasks = (() => {
     const pendingCount=Math.max(0,result.total-result.succeeded);
     const box = detail(`本轮结果：${result.succeeded} 项预演完成${pendingCount?`，${pendingCount} 项未完成或待核实`:''}`,
       node('p', 'result-protection-note', '测试保护下完成预演，实际文件和系统未改动。'));
-    result.items.forEach((item) => add(box, node('p', '', item.current_state === 'undone'
-      ? `${item.name}：已撤销这次预演。` : `${item.name}：${labels[item.status] || '待核实'}。${item.message}`)));
+    result.items.forEach((item) => add(box, add(node('div', 'item-title-line'), window.PanxuIcons?.create(item), node('p', '', item.current_state === 'undone'
+      ? `${item.name}：已撤销这次预演。` : `${item.name}：${labels[item.status] || '待核实'}。${item.message}`))));
     add(root, box);
   }
   function renderAdvice(root) {
@@ -411,7 +413,7 @@ window.PanxuTasks = (() => {
         (data.items || []).forEach((entry) => {
           const labels = {keep:'建议保留',review:'需要确认',recommend:'建议处理'};
           const card = node('article', 'task-advice-item');
-          add(card, node('strong', '', entry.name), node('span', 'advice-label', entry.stale ? '内容已变化，需重新核对' : entry.user_kept ? '你已选择保留' : labels[entry.conclusion] || '待确认'),
+          add(card, add(node('div','item-title-line'),window.PanxuIcons?.create(entry),node('strong', '', entry.name)), node('span', 'advice-label', entry.stale ? '内容已变化，需重新核对' : entry.user_kept ? '你已选择保留' : labels[entry.conclusion] || '待确认'),
             node('p', '', entry.purpose), node('p', '', entry.reason), detail('了解影响', node('p', '', entry.impact)));
           if(!busy())directControls(card,entry,taskId);
           add(list, card);

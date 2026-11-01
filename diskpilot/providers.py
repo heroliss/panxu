@@ -35,7 +35,7 @@ PRESETS = [
             ['glm-5.3-flash', 'glm-5.3'], 'https://docs.z.ai/guides/develop/openai/python', 'Z.AI 与智谱的账户和密钥分别配置。'),
     _preset('deepseek', 'DeepSeek', 'https://api.deepseek.com', 'chat_completions',
             ['deepseek-flash', 'deepseek-v4-pro'], 'https://api-docs.deepseek.com/quick_start/agent_integrations/',
-            'Flash 是官方当前别名；思考上下文仅在本轮内存中传回。'),
+            'Flash 是官方当前别名；思考上下文仅在本轮内存中传回。思考模式的工具测试使用 auto，不发送不支持的 required。'),
     _preset('kimi_cn', 'Kimi · 国内', 'https://api.moonshot.cn/v1', 'chat_completions',
             ['kimi-k3.1-pro', 'kimi-k3.1-pro-highspeed'], 'https://platform.kimi.com/docs/get-api-key',
             'K3.1 Pro 使用 max_completion_tokens，不能关闭思考；需账户有对应模型权限。'),
@@ -79,6 +79,20 @@ def presets():
 
 def get_preset(ident):
     return next((copy.deepcopy(p) for p in PRESETS if p['id'] == ident), None)
+
+
+def connection_probe_tool_choice(settings):
+    """Use the same reasoning mode as normal work, with supported selection.
+
+    DeepSeek Chat explicitly rejects required/named choice in thinking mode
+    with HTTP 400. The probe still requires an actual, locally checked tool
+    call; auto is not permission to count a text-only response as success.
+    Source checked 2026-11-02:
+    https://api-docs.deepseek.com/api/create-chat-completion/#request
+    """
+    if settings.get('provider') == 'deepseek' and settings.get('protocol', 'chat_completions') == 'chat_completions':
+        return 'auto'
+    return 'required'
 
 
 def connection_identity(settings):

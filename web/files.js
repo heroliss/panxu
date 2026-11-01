@@ -168,7 +168,10 @@ window.PanxuFiles = (() => {
       title.title = item.path;
       const location = node('small', '', locations.get(item.id)); location.title = item.path;
       location.setAttribute('aria-label','完整位置：'+item.path);
-      copy.append(title, location);
+      const titleLine = node('div', 'item-title-line');
+      const itemIcon = window.PanxuIcons?.create(item);
+      if (itemIcon) titleLine.append(itemIcon);
+      titleLine.append(title); copy.append(titleLine, location);
       const result = context.advice(item);
       const labels = {keep:'建议保留',review:'需要确认',recommend:'已有处理建议'};
       const meta = node('div', 'paged-file-meta'); meta.append(node('span', '', context.bytes(item.size_bytes)),

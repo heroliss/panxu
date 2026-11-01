@@ -24,6 +24,7 @@ from .simulation import AppError, within
 from .windows import inventory
 from .presets import resolve_preset
 from .knowledge import SkillRegistry
+from .system_evidence import system_configuration, volume_snapshot, validate_volume_path
 
 
 MAX_ROUNDS, MAX_CALLS = 6, 12
@@ -51,6 +52,8 @@ propose_plan 提交待用户审阅的方案，用户点保留和跳过的内容�
 目录 depth=auto 时先整体分析再按需展开；overview 只作概览；detailed 分批逐项分析并报告未覆盖部分。
 可用checkpoint_task保存交接与待办，read_facts按事实ID核对历史来源。
 list_skills可按需发现经验指南，read_skill取得正文与来源；指南不是当前电脑的事实，也不授予执行权限。
+涉及系统占用时可用collect_system_configuration核对分页/休眠，用inspect_volume核对已选范围所在卷；
+它们只返回配置和统计，不证明回收能力、磁盘健康，也不扩大文件调查或处理范围。
 有会影响调查方向的用户偏好时用ask_user提出一个易懂问题与选项，允许自由补充；回答不是处理授权。
 大目录扫描返回scan_id后，用continue_scan续采集、read_scan分页查看；索引完成不等于整目录可删除。
 最多6轮模型响应、12次工具调用；按需查询，最终只呈现最重要结论。'''
@@ -67,6 +70,10 @@ def tool_specs():
           'limit': {'type': 'integer', 'minimum': 1, 'maximum': 10}}, []),
         ('read_skill', '读取指定指南的一页正文、版本与来源；需要更多时使用返回的cursor。',
          {'skill_id': ident, 'cursor': {'type': 'string', 'maxLength': 512}}, ['skill_id']),
+        ('collect_system_configuration', '只读取得内存提交、活动分页与配置、休眠能力等固定系统事实；不读取用户文件或修改设置。',
+         {'section': {'type': 'string', 'enum': ['memory_power']}}, []),
+        ('inspect_volume', '只读取得任务中已有位置所在卷的容量及当前用户回收站统计；不是可恢复性或磁盘健康证明。',
+         {'scope_id': ident}, ['scope_id']),
         ('ask_user', '就影响调查方向的偏好提出一个问题与2到5个选项，可自由补充；不构成处理授权。',
          {'question': {'type': 'string', 'minLength': 1, 'maxLength': 600},
           'options': {'type': 'array', 'minItems': 2, 'maxItems': 5, 'items': {'type': 'object',
@@ -74,8 +81,9 @@ def tool_specs():
                              'description': {'type': 'string', 'maxLength': 240}},
               'required': ['id', 'label'], 'additionalProperties': False}},
           'allow_text': {'type': 'boolean', 'enum': [True]}}, ['question', 'options']),
-        ('list_scopes', '分页查看本任务可展开目录的位置ID；文件父目录不自动成为可展开范围。',
-         {'offset': {'type': 'integer', 'minimum': 0}, 'limit': {'type': 'integer', 'minimum': 1, 'maximum': 40}}, []),
+        ('list_scopes', '分页查看位置ID；默认仅可展开目录，purpose=volume可取只用于所在卷统计的引用，不授权遍历。',
+         {'offset': {'type': 'integer', 'minimum': 0}, 'limit': {'type': 'integer', 'minimum': 1, 'maximum': 40},
+          'purpose': {'type': 'string', 'enum': ['traverse', 'volume']}}, []),
         ('read_facts', '查询本任务持久事实及来源。上下文只给摘要，可按事实ID或分页取得具体工具观察。',
          {'ids': {'type': 'array', 'items': ident, 'minItems': 1, 'maxItems': 12},
           'offset': {'type': 'integer', 'minimum': 0}, 'limit': {'type': 'integer', 'minimum': 1, 'maximum': 20}}, []),
@@ -631,6 +639,27 @@ class TaskHarness:
 
     def tool(self, key, name, args, *, cancel):
         task = self._get(key)
+        if name == 'collect_system_configuration':
+            self._args(args, ['section'])
+            try:
+                return system_configuration(args.get('section', 'memory_power'))
+            except ValueError as exc:
+                raise AppError(str(exc)) from None
+        if name == 'inspect_volume':
+            self._args(args, ['scope_id'], ['scope_id'])
+            root = next((r for r in task['roots'] if r['id'] == args['scope_id']), None)
+            if root is None:
+                raise AppError('只能查询当前任务已有位置所在的卷。', 'outside_scope')
+            try:
+                # Reject UNC/device paths before even an identity check can
+                # initiate network I/O. Metadata never adds action/traversal IDs.
+                validate_volume_path(root['path'])
+                self._validate_root(task, root['path'])
+                result = volume_snapshot(root['path'])
+            except ValueError as exc:
+                raise AppError(str(exc), 'unsupported_volume') from None
+            result['scope_id'] = root['id']
+            return result
         if name in ('list_skills', 'read_skill'):
             self._args(args, ['query', 'cursor', 'limit'] if name == 'list_skills' else ['skill_id', 'cursor'],
                        [] if name == 'list_skills' else ['skill_id'])
@@ -686,15 +715,19 @@ class TaskHarness:
             return {'tools': matches, 'available_information': {'files': '已授权范围内的名称、大小、目录结构、软件线索和保护信息；不读取正文',
                 'applications': '有限的软件注册、启动项、服务与进程快照；不证明使用频率或完整依赖',
                 'skills': 'list_skills按需查找经验，read_skill分页读取有版本与来源的指南；不是当前机器事实',
+                'system_configuration': 'collect_system_configuration查看固定分页/休眠/内存快照；inspect_volume仅查询已有位置所在卷',
                 'duplicates': '本地有预算哈希校验；不上传字节', 'actions': '只提交用户审阅方案；无执行和批准工具'},
                 'model_connection': self.assistant.describe_capabilities() if hasattr(self.assistant, 'describe_capabilities') else {'tool_calling': True}}
         if name == 'list_scopes':
-            self._args(args, ['offset', 'limit'])
+            self._args(args, ['offset', 'limit', 'purpose'])
             offset, limit = args.get('offset', 0), args.get('limit', 20)
-            if type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 40:
+            purpose = args.get('purpose', 'traverse')
+            if type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 40 or purpose not in ('traverse', 'volume'):
                 raise AppError('位置分页参数无效。')
-            rows = [r for r in task['roots'] if not task.get('analysis') or r.get('inspectable')]
-            return {'total': len(rows), 'offset': offset, 'scopes': [dict(id=r['id'], name=Path(r['path']).name) for r in rows[offset:offset + limit]]}
+            rows = [r for r in task['roots'] if purpose == 'volume' or not task.get('analysis') or r.get('inspectable')]
+            return {'total': len(rows), 'offset': offset, 'purpose': purpose,
+                    'scopes': [dict(id=r['id'], name=Path(r['path']).name,
+                                   can_traverse=bool(not task.get('analysis') or r.get('inspectable'))) for r in rows[offset:offset + limit]]}
         if name == 'read_facts':
             self._args(args, ['ids', 'offset', 'limit'])
             return self.facts_page(key, args.get('offset', 0), args.get('limit', 10), args.get('ids'))
@@ -1036,6 +1069,8 @@ class TaskHarness:
         scopes = [r for r in task['roots'] if not task.get('analysis') or r.get('inspectable')]
         return dict(goal=task['goal'], scopes=[dict(id=r['id'], name=r.get('label') or Path(r['path']).name) for r in scopes[:40]],
                     scope_count=len(scopes), more_scopes_tool='list_scopes',
+                    volume_scopes=[dict(scope_id=r['id'], name=r.get('label') or Path(r['path']).name) for r in task['roots'][:8]],
+                    volume_scope_count=len(task['roots']),
                     preset=task.get('preset', 'custom'), scope_kind=task.get('scope_kind', 'filesystem'),
                     priority_scopes=[r['id'] for r in task['roots'] if r['id'].startswith('priority-')],
                     user_feedback=task['feedback'][-12:], user_choices=choices[-100:],
@@ -1058,6 +1093,7 @@ class TaskHarness:
                         'related_apps': 'collect_apps，再list_items按名称核对；背景对象不扩大处理范围',
                         'tool_help': 'discover_tools(name)，返回参数格式与工具能力',
                         'experience': 'list_skills(query)发现相关指南，read_skill(skill_id,cursor)按需读取经验与官方来源；不代表本机事实',
+                        'system_storage': 'collect_system_configuration(section=memory_power)区分活动分页与配置；inspect_volume(scope_id)取得容量/回收站统计；更多引用用list_scopes(purpose=volume)，不授权展开卷或文件父目录',
                         'user_preferences': 'ask_user(question,options)询问一个影响调查方向的问题；回答不是执行授权',
                         'saved_facts': 'read_facts(ids)，查看持久观察；事实是历史记录，执行前仍需重新核对',
                         'handoff': 'checkpoint_task保存下一步与未解决问题；换模型从事实重建，不复用内部续接状态',
@@ -1144,6 +1180,7 @@ class TaskHarness:
                       'record_advice': '正在保存用途与建议', 'discover_tools': '正在了解可用调查工具',
                       'read_facts': '正在核对已保存的事实', 'checkpoint_task': '正在保存调查进展',
                       'list_skills': '正在查找相关经验', 'read_skill': '正在按需读取经验指南', 'ask_user': '需要了解你的偏好',
+                      'collect_system_configuration': '正在只读核对分页与休眠配置', 'inspect_volume': '正在核对所选位置所在卷的容量与回收站统计',
                       'continue_scan': '正在继续采集目录元数据', 'read_scan': '正在分页核对已采集内容', 'validate_directory': '正在核对目录当前完整子树'}
             for _ in range(MAX_ROUNDS):
                 if cancel.is_set():
@@ -1199,7 +1236,7 @@ class TaskHarness:
                     task = self._get(key)
                     if 'error' in result:
                         task['usage']['tool_failures'] += 1
-                    elif name in ('survey_scope', 'inspect_directory', 'validate_directory', 'list_items', 'inspect_items', 'collect_apps', 'compare_files', 'cache_experience', 'continue_scan', 'read_scan', 'read_skill'):
+                    elif name in ('survey_scope', 'inspect_directory', 'validate_directory', 'list_items', 'inspect_items', 'collect_apps', 'compare_files', 'cache_experience', 'continue_scan', 'read_scan', 'read_skill', 'collect_system_configuration', 'inspect_volume'):
                         result['fact_id'] = self._record_fact(key, name, result)
                         if name in ('survey_scope', 'inspect_directory', 'validate_directory', 'continue_scan'):
                             task['usage']['scan_pages'] += 1

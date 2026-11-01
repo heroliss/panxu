@@ -21,7 +21,7 @@ from .scanner import _checked_root, _identity, _is_reparse
 
 
 CHECKED_AT = '2026-11-02'
-SKILL_VERSION = '1.0.0'
+SKILL_VERSION = '1.1.0'
 MAX_RESOURCE_BYTES = 32768
 MAX_OUTPUT_TOKENS = 8000
 _ASSET_DIR = Path(__file__).absolute().parent.parent / 'skills'
@@ -46,6 +46,26 @@ _SOURCES = {
     'uv': _source('Astral · uv 缓存', 'https://docs.astral.sh/uv/concepts/cache/'),
     'pip': _source('PyPA · pip 缓存', 'https://pip.pypa.io/en/stable/topics/caching/', '26.2.2'),
     'npm': _source('npm · 缓存管理', 'https://docs.npmjs.com/cli/v11/commands/npm-cache/', '11.21.1'),
+    'sense': _source('Microsoft · 存储感知', 'https://support.microsoft.com/en-us/windows/experience/storage-filemanagement/manage-drive-space-with-storage-sense'),
+    'recycle': _source('Microsoft · 回收站统计 API', 'https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-shqueryrecyclebinw'),
+    'cloud': _source('Microsoft · OneDrive 文件按需', 'https://support.microsoft.com/en-us/onedrive/save-disk-space-with-onedrive-files-on-demand-for-windows'),
+    'delivery': _source('Microsoft · 传递优化与隐私', 'https://support.microsoft.com/en-us/windows/privacy/windows-update-delivery-optimization-and-privacy'),
+    'restore': _source('Microsoft · 系统保护与还原点', 'https://support.microsoft.com/en-us/windows/experience/backup-recovery/system-protection'),
+    'wsl': _source('Microsoft · WSL 磁盘空间', 'https://learn.microsoft.com/en-us/windows/wsl/disk-space'),
+    'wsl_commands': _source('Microsoft · WSL 基本命令', 'https://learn.microsoft.com/en-us/windows/wsl/basic-commands'),
+    'docker': _source('Docker · 对象清理边界', 'https://docs.docker.com/engine/manage-resources/pruning/'),
+    'unity': _source('Unity · 项目目录', 'https://docs.unity.com/en-us/engine/6000.3/manual/get-started/project-configuration/default-directories', 'Unity_6000.3'),
+    'steam': _source('Valve · Steam 下载缓存', 'https://help.steampowered.com/en/faqs/view/6AD7-820D-8BE5-E51F'),
+    'health': _source('Microsoft · 存储设备健康警告', 'https://support.microsoft.com/en-us/windows/experience/storage-filemanagement/what-to-do-about-a-critical-warning-for-a-storage-device'),
+    'firmware': _source('Sandisk · 特定 SSD 的 Windows 11 24H2 固件问题', 'https://support-en.sandisk.com/app/answers/detailweb/a_id/51469/~/internal-ssd-critical-firmware-update-available-for-solving-bsod-on-windows-11'),
+    'retention': _source('Dell · SSD 长期断电与数据保持', 'https://www.dell.com/support/kbdoc/en-us/000198930/ssd-data-retention-considerations-when-powering-off-systems-for-a-prolonged-duration'),
+    'startup': _source('Microsoft · 启动应用配置', 'https://support.microsoft.com/en-us/windows/experience/startup-boot/configure-startup-applications-in-windows'),
+    'performance': _source('Microsoft · 性能排查', 'https://support.microsoft.com/en-us/windows/experience/performance-optimization/tips-to-improve-pc-performance-in-windows'),
+    'chrome_data': _source('Google · Chrome 浏览数据类别', 'https://support.google.com/chrome/answer/2392709?co=GENIE.Platform%3DDesktop&hl=en'),
+    'chrome_model': _source('Google · 本地基础模型策略', 'https://chromeenterprise.google/policies/#GenAILocalFoundationalModelSettings'),
+    'chrome_safe': _source('Google · 安全浏览保护等级', 'https://support.google.com/chrome/answer/9890866?hl=en'),
+    'adobe': _source('Adobe · Photoshop 神经滤镜 FAQ', 'https://helpx.adobe.com/photoshop/desktop/effects-filters/neural-filters/neural-filters-faq.html'),
+    'oem': _source('ASUS · 官方驱动与工具来源', 'https://www.asus.com/support/download-center/'),
 }
 
 
@@ -61,7 +81,7 @@ def _skill(ident, name, purpose, when, risk, readonly, sources, tags):
 
 _SKILLS = [
     _skill('application-caches', '应用与开发工具缓存', '区分可重建缓存、安装环境和个人数据，解释重新下载或生成的代价。',
-           ['发现较大缓存目录', '考虑清理 uv、pip、npm 或图形缓存'], 'review', 'partial_metadata', ['uv', 'pip', 'npm'],
+           ['发现较大缓存目录', '考虑清理 uv、pip、npm 或图形缓存'], 'review', 'partial_metadata', ['uv', 'pip', 'npm', 'adobe'],
            ['缓存', 'cache', 'uv', 'pip', 'npm', 'NVIDIA', 'DXCache', 'D3DSCache']),
     _skill('temporary-files', '临时文件与占用', '核实临时目录的实际归属和任务状态，按证据处理未使用内容。',
            ['看到 Temp、tmp 或临时前缀', '清理后空间很快重新增长'], 'review', 'partial_metadata', ['storage'],
@@ -70,16 +90,16 @@ _SKILLS = [
            ['整理下载或指定目录', '发现 EXE、MSI、分卷压缩包'], 'personal_choice', 'partial_metadata', ['uninstall', 'installer'],
            ['下载', 'download', '安装包', 'exe', 'msi', '压缩包', '便携']),
     _skill('backups-upgrades', '旧备份与系统升级文件', '区分个人归档、临时清理备份、导出驱动和系统回退材料。',
-           ['发现旧镜像或备份目录', '考虑 Windows.old 或旧驱动备份'], 'recovery_loss', 'partial_metadata', ['upgrade', 'drivers'],
+           ['发现旧镜像或备份目录', '考虑 Windows.old 或旧驱动备份'], 'recovery_loss', 'partial_metadata', ['upgrade', 'drivers', 'oem'],
            ['备份', 'backup', '镜像', 'GHO', '驱动', 'windows.old', '回退', '升级']),
     _skill('windows-components', 'Windows 组件与系统清理', '解释组件仓库与受管系统文件，应使用 Windows 支持的维护入口。',
-           ['WinSxS 或 Windows 目录占用较大', '考虑系统更新与组件清理'], 'system_managed', 'explanation_only', ['components', 'installer'],
+           ['WinSxS 或 Windows 目录占用较大', '考虑系统更新与组件清理'], 'system_managed', 'explanation_only', ['components', 'installer', 'delivery'],
            ['系统', 'windows', 'winsxs', '组件', 'dism', '更新']),
     _skill('hibernation-startup', '休眠与快速启动', '结合断电恢复、低电量策略和启动体验评估取舍，不能视作普通垃圾。',
-           ['发现 hiberfil.sys', '讨论休眠空间、合盖或快速启动'], 'system_setting', 'explanation_only', ['hibernate', 'power'],
+           ['发现 hiberfil.sys', '讨论休眠空间、合盖或快速启动'], 'system_setting', 'partial_configuration', ['hibernate', 'power'],
            ['休眠', 'hibernate', 'hiberfil', '快速启动', '电源', '低电量']),
     _skill('pagefile-memory', '分页文件与虚拟内存', '根据提交峰值、转储需求和磁盘状态评估配置，避免通用固定大小。',
-           ['发现 pagefile.sys', '出现临时页面文件或虚拟内存不足提示'], 'system_setting', 'explanation_only', ['paging'],
+           ['发现 pagefile.sys', '出现临时页面文件或虚拟内存不足提示'], 'system_setting', 'partial_configuration', ['paging'],
            ['分页', '页面文件', 'pagefile', '虚拟内存', '内存', '转储']),
     _skill('uninstall-residue', '正规卸载与残留核对', '先识别软件与正规卸载途径，重新观察后再判断是否存在可清残留。',
            ['程序目录或软件已不再使用', '卸载后仍看到目录、服务或启动项'], 'application_change', 'partial_metadata', ['uninstall', 'installer'],
@@ -87,10 +107,34 @@ _SKILLS = [
     _skill('data-folder-migration', '资料与已知文件夹迁移', '空间不足但资料仍有用时，区分普通复制、已知文件夹改址和云同步迁移。',
            ['资料需要保留但系统盘空间紧张', '考虑移动文档、下载、桌面或同步目录'], 'personal_data', 'partial_metadata', ['known_folders', 'onedrive', 'storage'],
            ['迁移', '移动', '资料', '已知文件夹', '文档', '桌面', 'onedrive', '下载', '其他盘']),
+    _skill('storage-sense-recycle', '存储感知与回收站', '区分自动保留期限、普通删除、永久删除与模拟撤销，不把回收站统计当恢复保证。',
+           ['考虑一键或定期清理', '需要判断能否恢复已删内容'], 'recovery_loss', 'partial_volume_metadata', ['sense', 'recycle'],
+           ['存储感知', '回收站', 'recycle', '恢复', '永久删除', '定期清理']),
+    _skill('cloud-placeholders', '云文件与同步占位', '区分仅释放本地副本与同步删除，避免读取占位文件触发下载。',
+           ['OneDrive 等同步目录很大', '看到在线文件或希望释放本地空间'], 'personal_data', 'explanation_only', ['cloud'],
+           ['云', '占位', 'onedrive', '同步', '在线', '释放空间', 'placeholder']),
+    _skill('virtual-disks-containers', 'WSL、Docker 与虚拟磁盘', '虚拟磁盘可能包含完整环境和数据库，先在所属系统中区分缓存与持久数据。',
+           ['发现 VHDX 或开发环境占用', 'WSL/Docker 内部删除后宿主空间未回落'], 'data_loss', 'metadata_only', ['wsl', 'wsl_commands', 'docker'],
+           ['wsl', 'docker', 'vhd', 'vhdx', '容器', '虚拟盘', '镜像', 'volume']),
+    _skill('games-development', '游戏与开发项目', '区分可重建缓存、源码与素材、游戏存档和便携运行环境。',
+           ['Unity、Git 项目或游戏目录较大', '考虑清理构建产物、游戏缓存'], 'personal_data', 'partial_metadata', ['unity', 'steam'],
+           ['游戏', 'steam', 'unity', 'library', 'node_modules', 'venv', 'git', '源码', '开发', '存档']),
+    _skill('restore-recovery', '系统保护与恢复材料', '还原点、系统升级回退、OEM 恢复和个人备份用途不同，先核实恢复需求。',
+           ['系统还原或恢复目录占用', '最近升级、换驱动或遇到崩溃'], 'recovery_loss', 'explanation_only', ['restore', 'upgrade'],
+           ['还原点', '系统保护', '恢复分区', 'vss', 'system volume information', 'recovery', 'winre']),
+    _skill('disk-health', '磁盘健康与低速排查', '把历史异常、当前健康和性能分开，先保留证据与备份，避免把刷新写入当常规清理。',
+           ['磁盘降速、蓝屏或历史存储异常', '考虑固件、冷数据或刷新文件'], 'device_reliability', 'explanation_only', ['health', 'firmware', 'retention'],
+           ['硬盘', 'ssd', 'nvme', '固件', '蓝屏', '健康', '降速', '冷数据', 'smart', '温度']),
+    _skill('startup-background', '开机与后台应用', '按用途、状态和实际影响判断按需运行的收益，不把常驻和高内存直接视作无用。',
+           ['想减少开机与后台占用', '有重复工具或不再使用的服务'], 'application_change', 'partial_inventory', ['startup', 'performance'],
+           ['启动', '后台', '常驻', '进程', '服务', '开机', '内存', '安全软件']),
+    _skill('browser-privacy', '浏览器缓存、隐私与本地模型', '分别解释可重建缓存、登录与站点资料、同步记录和模型功能，先取得用户偏好。',
+           ['浏览器占用较大', '考虑清隐私记录、离线数据或本地AI模型'], 'privacy_and_session', 'metadata_only', ['chrome_data', 'chrome_model', 'chrome_safe'],
+           ['浏览器', 'chrome', 'edge', 'cookie', '隐私', '历史', '密码', '安全浏览', '模型', '会话']),
 ]
 _BY_ID = {item['id']: item for item in _SKILLS}
 BUNDLED_SKILL_FILES = tuple(item['id'] + '.md' for item in _SKILLS)
-REGISTRY_VERSION = 'knowledge-v1-' + hashlib.sha256(json.dumps(_SKILLS, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:16]
+REGISTRY_VERSION = 'knowledge-v2-' + hashlib.sha256(json.dumps(_SKILLS, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:16]
 
 
 def _integer(value, low, high, label):
@@ -184,7 +228,7 @@ class SkillRegistry:
                       guidance_only=True, next_cursor=None, has_more=False)
         for record in records[after:after + limit]:
             # Discovery does not open content resources; full provenance remains
-            # visible without eagerly loading nine separate guides.
+            # visible without eagerly loading all separate guides.
             item = copy.deepcopy({key: value for key, value in record.items() if key not in ('tags', 'provenance', 'purpose')})
             result['items'].append(item)
             position = after + len(result['items'])

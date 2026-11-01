@@ -306,6 +306,7 @@ class ModelAssistant:
 
     def test_connection(self):
         nonce = secrets.token_hex(8)
+        probe_choice = providers.connection_probe_tool_choice(self.public_settings())
         tools = [{'type': 'function', 'function': {'name': 'connection_probe',
                   'description': '只返回固定测试数据，不查看任何文件或系统。',
                   'parameters': {'type': 'object', 'properties': {'nonce': {'type': 'string', 'enum': [nonce]}},
@@ -313,7 +314,7 @@ class ModelAssistant:
         messages = [{'role': 'system', 'content': '这是连接测试。先调用 connection_probe，收到结果后只回复结果里的 nonce。'},
                     {'role': 'user', 'content': '请调用 connection_probe，nonce 为 ' + nonce + '；不要只回答文字。'}]
         try:
-            first = self.agent_turn(messages, tools, tool_choice='required')
+            first = self.agent_turn(messages, tools, tool_choice=probe_choice)
             calls = first.get('tool_calls', [])
             if len(calls) != 1 or calls[0]['function']['name'] != 'connection_probe' or json.loads(calls[0]['function']['arguments']) != {'nonce': nonce}:
                 raise ValueError('connection_tool_failed')

@@ -6,6 +6,7 @@ import unittest
 import urllib.request
 import urllib.error
 import time
+from unittest.mock import patch
 
 from diskpilot.server import create_server
 
@@ -44,6 +45,28 @@ class HttpTests(unittest.TestCase):
         value = self.get('/api/health')
         self.assertEqual(value['mode'], 'simulation')
         self.assertFalse(value['live_executor_available'])
+
+    def test_icon_endpoint_streams_an_image_with_pending_metadata(self):
+        value = dict(body=b'\x89PNG\r\n\x1a\nfixture', mime='image/png',
+                     etag='"fixture-hash"', status='pending', retry_after=1)
+        with patch.object(self.server.app.icons, 'get', return_value=value) as lookup:
+            with urllib.request.urlopen(self.base + '/api/icon?id=known-item') as response:
+                self.assertEqual(response.read(), value['body'])
+                self.assertEqual(response.headers['Content-Type'], 'image/png')
+                self.assertEqual(response.headers['X-Panxu-Icon-Status'], 'pending')
+                self.assertEqual(response.headers['Retry-After'], '1')
+                self.assertEqual(response.headers['Cache-Control'], 'no-store')
+                self.assertEqual(response.headers['X-Content-Type-Options'], 'nosniff')
+            lookup.assert_called_once_with('known-item')
+
+    def test_icon_endpoint_does_not_offer_an_arbitrary_path_reader(self):
+        for path, expected in (('/api/icon?id=missing-item', 404),
+                               ('/api/icon?path=C%3A%5CWindows%5Cexplorer.exe', 400),
+                               ('/api/icon?id=a&id=b', 400)):
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                urllib.request.urlopen(self.base + path, timeout=10)
+            self.assertEqual(caught.exception.code, expected)
+            caught.exception.close()
 
     def test_csrf_and_foreign_origin_rejected(self):
         for options in ({'csrf': 'invalid'}, {'origin': 'https://evil.example'}):

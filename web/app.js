@@ -34,6 +34,123 @@ window.PanxuAppearance = (() => {
   apply();return {get:()=>({...values}),update};
 })();
 
+// A bounded presentation model for already-sanitized protocol records.
+window.PanxuDeveloperView = (() => {
+  const privateKeys=new Set(['api_key','authorization','proxy-authorization','x-api-key','x-goog-api-key','password','secret','access_token','refresh_token','reasoning_content','thinking','redacted_thinking','encrypted_content','thoughtsignature','thought_signature','signature','_continuation']);
+  const privateTypes=new Set(['reasoning','thinking','redacted_thinking']);
+  const publicTools=new Set(['present_findings','propose_plan','ask_user','record_advice','checkpoint_task']);
+  const object=value=>value&&typeof value==='object'&&!Array.isArray(value);
+  const clip=(text,max=8000)=>typeof text==='string'?(text.length>max?text.slice(0,max)+'\n…（此处显示已截断，更多内容见原始 JSON）':text):'';
+  function parsed(value){if(typeof value!=='string')return value;try{return JSON.parse(value);}catch(_){return value;}}
+  function clean(value,depth=0){
+    if(depth>12)return '[内容层级过深，已省略]';
+    if(typeof value==='string'){const decoded=parsed(value);return decoded!==value&&typeof decoded==='object'?JSON.stringify(clean(decoded,depth+1)):value.length>24000?value.slice(0,24000)+'\n…（字段显示已截断）':value;}
+    if(Array.isArray(value))return value.slice(0,80).map(item=>clean(item,depth+1)).concat(value.length>80?['[其余条目未在此处展开]']:[]);
+    if(!object(value))return value;
+    if(privateTypes.has(value.type)||value.thought===true)return {omitted:'协议内部内容未展示'};
+    const result={};
+    for(const [key,child] of Object.entries(value)){
+      const configuration=key==='thinking'&&object(child)&&Object.keys(child).every(name=>['type','budget_tokens','clear_thinking'].includes(name));
+      result[key]=privateKeys.has(key.toLowerCase())&&!configuration?'[密钥或协议内部内容未展示]':clean(child,depth+1);
+    }
+    return result;
+  }
+  function unwrap(entry){const envelope=entry?.payload;return object(envelope)&&Object.hasOwn(envelope,'payload')?envelope.payload:envelope;}
+  function category(entry){const value=unwrap(entry),name=value?.name || value?.tool || value?.function?.name || '';return /skill|guidance/i.test(entry?.kind || '')||/^(read_skill|list_skills)$/.test(name)?'skills':/^tool_/.test(entry?.kind || '')?'tools':'conversation';}
+  function describe(entry){
+    const value=unwrap(entry),envelope=entry?.payload,view={messages:[],sections:[],notes:[],meta:{}};
+    const calls=new Map();let recognized=false;
+    function section(title,data,kind='context'){if(view.sections.length<18)view.sections.push({title,data,kind});else if(!view.notes.includes('部分分层信息未展开，请查看原始 JSON。'))view.notes.push('部分分层信息未展开，请查看原始 JSON。');}
+    function message(role,text,extra={}){if(view.messages.length<12)view.messages.push({role,text:clip(text),...extra});else if(!view.notes.includes('对话较长，此处仅展示前 12 条。'))view.notes.push('对话较长，此处仅展示前 12 条。');}
+    function callRecord(call){
+      const f=call?.function || call,name=typeof f?.name==='string'?f.name:'未知调用';
+      const args=parsed(f?.arguments ?? f?.input ?? f?.args);
+      if(call?.id)calls.set(call.id,name);if(call?.call_id)calls.set(call.call_id,name);
+      const skill=/^(read_skill|list_skills)$/.test(name);
+      section((skill?'技能调用：':'工具调用：')+name,args,skill?'skills':'tools');
+      if(!publicTools.has(name))return;
+      if(!object(args)){view.notes.push('无法提取这次调用的公开文本，可展开原始 JSON 核对。');return;}
+      const titles={present_findings:'调查结论',propose_plan:'方案建议',ask_user:'想请你确认',record_advice:'用途与保留建议',checkpoint_task:'调查交接'};
+      const extra={title:titles[name],publicCall:name};
+      if(Array.isArray(args.options))extra.options=args.options.slice(0,5).map(option=>({label:clip(option?.label,600),description:clip(option?.description,1200)}));
+      if(Array.isArray(args.items)){extra.items=args.items.slice(0,12).map(item=>Object.fromEntries(['id','name','conclusion','purpose','reason','impact'].filter(key=>typeof item?.[key]==='string').map(key=>[key,clip(item[key],1200)])));extra.omittedItems=Math.max(0,args.items.length-12);}
+      if(name==='checkpoint_task')extra.steps=[...(Array.isArray(args.next_steps)?args.next_steps:[]),...(Array.isArray(args.unresolved)?args.unresolved:[])].filter(item=>typeof item==='string').slice(0,12).map(item=>clip(item,1200));
+      if(typeof args.summary==='string'||typeof args.question==='string'||extra.items?.length||extra.options?.length)message('assistant',args.summary || args.question || '',extra);
+      else view.notes.push('此调用没有可识别的公开正文，可展开原始 JSON 核对。');
+    }
+    function toolResult(name,result,forceSkill=false){const skill=forceSkill||/^(read_skill|list_skills)$/.test(name);section((skill?'技能内容':'工具结果')+(name?'：'+name:''),parsed(result),skill?'skills':'tools');}
+    function content(role,body){
+      if(body==null)return;
+      if(typeof body==='string'){
+        const data=parsed(body);
+        if(role==='system'||role==='developer'){section(role==='system'?'系统提示':'开发指引',body,'system');return;}
+        if(role==='tool'){toolResult('',data);return;}
+        if(object(data)){
+          const context=['goal','facts','observations','authorized_scope','inventory_sample_untrusted','scopes','user_choices','information_guide'].some(key=>Object.hasOwn(data,key));
+          if(context){
+            if(typeof data.goal==='string')message('user',data.goal,{title:'任务目标'});
+            const {facts,observations,...rest}=data;section('任务上下文',rest);
+            if(facts||observations)section('历史事实与观察',{...(facts?{facts}:{}),...(observations?{observations}:{})},'facts');
+          }else section((role==='assistant'?'助手':'用户')+'消息中的结构化内容',data);
+        }else message(role,body);
+        return;
+      }
+      if(Array.isArray(body))for(const part of body.slice(0,30)){
+        if(!object(part)||privateTypes.has(part.type)||part.thought===true)continue;
+        if(['tool_use','function_call'].includes(part.type))callRecord(part);
+        else if(['tool_result','function_call_output'].includes(part.type))toolResult(calls.get(part.tool_use_id || part.call_id) || '',part.content ?? part.output);
+        else if(part.functionCall)callRecord(part.functionCall);
+        else if(part.functionResponse)toolResult(part.functionResponse.name,part.functionResponse.response);
+        else if(typeof part.text==='string')content(role,part.text);
+        else section('非文本消息内容',{type:part.type || '未识别类型'},'metadata');
+      }
+    }
+    function row(row){
+      if(!object(row))return;
+      const role=row.role==='model'?'assistant':row.role || 'assistant';
+      if(row.type==='function_call')callRecord(row);
+      else if(row.type==='function_call_output')toolResult(calls.get(row.call_id) || '',row.output);
+      else if(role==='tool')toolResult(calls.get(row.tool_call_id) || row.name || '',row.content);
+      else{
+        content(role,row.content ?? row.parts);
+        if(Array.isArray(row.tool_calls))row.tool_calls.slice(0,20).forEach(callRecord);
+        else if(row.tool_calls!=null)view.notes.push('调用格式未能识别，可展开原始 JSON 核对。');
+        if(row.function_call)callRecord(row.function_call);
+      }
+    }
+    if(object(envelope))for(const key of ['provider','protocol','endpoint'])if(typeof envelope[key]==='string')view.meta[key]=envelope[key];
+    if(object(value))for(const key of ['model','status','stop_reason','finish_reason'])if(typeof value[key]==='string')view.meta[key]=value[key];
+    if(object(value)&&value.truncated){view.notes.push('这条记录已被采集体积上限截断，无法完整解释。');recognized=true;}
+    if(/^tool_/.test(entry?.kind || '')||category(entry)==='skills'){
+      const name=value?.name || value?.tool || '';
+      if(entry.kind==='tool_call')callRecord({name,arguments:value?.arguments});
+      else toolResult(name,value?.result ?? value,category(entry)==='skills');
+      recognized=true;
+    }else if(object(value)){
+      if(typeof value.system==='string'||Array.isArray(value.system)){content('system',value.system);recognized=true;}
+      const system=value.systemInstruction || value.system_instruction;if(system){content('system',system.parts || system);recognized=true;}
+      if(Array.isArray(value.messages)){value.messages.slice(0,20).forEach(row);recognized=true;if(value.messages.length>20)view.notes.push('请求包含较多历史消息，此处仅展示前 20 条。');}
+      if(typeof value.input==='string'){content('user',value.input);recognized=true;}
+      else if(Array.isArray(value.input)){value.input.slice(0,20).forEach(row);recognized=true;}
+      if(Array.isArray(value.contents)){value.contents.slice(0,20).forEach(row);recognized=true;}
+      if(Array.isArray(value.choices)){value.choices.slice(0,3).forEach(choice=>row(choice.message || choice.delta));recognized=true;}
+      if(Array.isArray(value.output)){value.output.slice(0,30).forEach(row);recognized=true;}
+      if(Array.isArray(value.candidates)){value.candidates.slice(0,3).forEach(candidate=>row(candidate.content));recognized=true;}
+      if(Array.isArray(value.content)||typeof value.content==='string'){content(value.role || 'assistant',value.content);recognized=true;}
+      if(value.tools||value.functions)section('工具定义',value.tools || value.functions,'tools');
+      if(value.usage||value.usageMetadata)section('服务商报告的用量',value.usage || value.usageMetadata,'metadata');
+      if(entry.kind==='error'){section('通信错误',value,'metadata');recognized=true;}
+      if(entry.kind==='context_event'){section('任务事件',value);recognized=true;}
+    }else if(typeof value==='string'){message(entry.kind==='response'?'assistant':'user',value);recognized=true;}
+    if(!recognized)view.notes.push('尚未识别这条记录的格式，可展开已脱敏的原始 JSON 查看；没有补造对话内容。');
+    if(Object.keys(view.meta).length)section('请求与响应信息',view.meta,'metadata');
+    if(view.messages.some(item=>item.publicCall))view.notes.push('以上为模型公开建议，不代表操作或审批结果。');
+    return view;
+  }
+  function raw(entry){const value=JSON.stringify(clean(entry?.payload),null,2) || 'null';return value.length>60000?value.slice(0,60000)+'\n…（原始记录显示已截断，最多 60,000 字符）':value;}
+  return {describe,category,clean,raw};
+})();
+
 function initializePanxu() {
   const $ = (id) => document.getElementById(id);
   const names = { overview: '整理助手', files: '我的文件', background: '后台与软件', software: '后台与软件', history: '处理记录', model: '设置' };
@@ -94,6 +211,7 @@ function initializePanxu() {
     return node;
   }
   function append(parent, ...children) { children.flat().forEach((child) => { if (child !== null && child !== undefined) parent.append(child); }); return parent; }
+  function itemTitle(item, title) { return append(el('div', 'item-title-line'), window.PanxuIcons?.create(item), title); }
   function button(label, handler, cls = 'button') { const b = el('button', cls, label); b.type = 'button'; b.addEventListener('click', handler); return b; }
   function text(value) { if (value === null || value === undefined) return ''; if (typeof value === 'object') return JSON.stringify(value, null, 2); return String(value); }
   function bytes(value) { const n = Number(value) || 0; if (!n) return '0 B'; const units = ['B', 'KB', 'MB', 'GB', 'TB']; const i = Math.min(Math.floor(Math.log(Math.abs(n)) / Math.log(1024)), 4); return `${(n / (1024 ** i)).toLocaleString('zh-CN', { maximumFractionDigits: i > 1 ? 2 : 0 })} ${units[i]}`; }
@@ -325,7 +443,7 @@ function initializePanxu() {
   }
   function simpleItemRow(item) {
     const row = el('div', 'simple-item-row'); const check = el('input'); check.type = 'checkbox'; check.checked = isSelected(item); check.disabled = !canSelect(item); check.setAttribute('aria-label', `选择${item.name}`); check.addEventListener('change', () => { toggleItem(item, check.checked); renderSelection(); });
-    append(row, check, append(el('div', 'simple-item-copy'), el('strong', '', item.name), el('small', '', item.owner || item.category || '')), el('span', 'simple-item-size', `约 ${bytes(item.size_bytes || itemSize(item))}`), button('查看详情', () => showItem(item), 'plain-button')); return row;
+    append(row, check, append(el('div', 'simple-item-copy'), itemTitle(item, el('strong', '', item.name)), el('small', '', item.owner || item.category || '')), el('span', 'simple-item-size', `约 ${bytes(item.size_bytes || itemSize(item))}`), button('查看详情', () => showItem(item), 'plain-button')); return row;
   }
   function renderBackground(root) {
     append(root, heading('后台与软件', '了解开机启动、后台应用和已经安装的软件。'));
@@ -375,7 +493,7 @@ function initializePanxu() {
     renderedItems.forEach((item) => {
       const row = el('tr', 'item-row'); row.dataset.adviceId=item.id; const checkCell = el('td', 'check-cell'); const check = el('input'); check.type = 'checkbox'; check.checked = analysisSelected(item);
       check.setAttribute('aria-label', '选择分析' + item.name); check.addEventListener('change', () => { toggleAnalysis(item, check.checked); renderResults(); renderSelection(); }); append(checkCell, check);
-      const copy = el('td', 'name-cell'); append(copy, button(item.name, () => showItem(item), 'file-name-button'), el('div', 'item-path', item.owner || kindNames[item.kind]));
+      const copy = el('td', 'name-cell'); append(copy, itemTitle(item, button(item.name, () => showItem(item), 'file-name-button')), el('div', 'item-path', item.owner || kindNames[item.kind]));
       const size = el('td', 'size-cell', ['service','startup'].includes(item.kind) ? '—' : bytes(itemSize(item)));
       const result = window.PanxuTasks.adviceFor(item.id, item.signature); const labels = {keep:'建议保留', review:'需要确认', recommend:'已有处理建议'};
       const status = el('td', 'kind-label', result ? labels[result.conclusion] || '已有建议' : window.PanxuTasks.adviceKnown(item.id,item.signature) ? '待分析' : '待核对'); status.dataset.adviceState='1';
@@ -407,7 +525,7 @@ function initializePanxu() {
     const item = state.focused;
     if (!item) { append(host, el('h3', '', '选一项，看看原因'), el('p', '', '这里会说明用途、处理理由和可能的影响。')); return; }
     const modelAdvice = window.PanxuTasks.adviceFor(item.id, item.signature);
-    const rec = modelAdvice || advice(item); append(host, el('h3', '', rec.title || item.name));
+    const rec = modelAdvice || advice(item); append(host, itemTitle(item, el('h3', '', rec.title || item.name)));
     append(host, el('h4', '', '它是做什么的'), el('p', '', cleanCopy(rec.purpose || itemPurpose(item))), el('h4', '', '为什么建议'), el('p', '', cleanCopy(rec.reason || item.reason || '尚未取得 AI 建议，可以先分析用途。')), el('h4', '', '处理后的影响'), el('p', '', cleanCopy(rec.impact || item.impact || '影响尚不明确，建议先保留。')));
     if (modelAdvice) append(host,button(window.PanxuTasks.currentTask()?.plan?.items.some(entry=>entry.id===item.id)?'查看处理方案':'返回整理任务',()=>setView('overview'),'button primary'));
     else if (canAnalyze(item)) append(host, button('分析这项', () => analyzeList(item), 'button primary'));
@@ -489,7 +607,7 @@ function initializePanxu() {
     append(host, append(el('div', 'plan-summary'), el('strong', '', `准备处理 ${entries.length} 项`), el('span', '', '当前为预演，确认后只记录结果，不会改动实际内容。')));
     const list = el('div', 'plan-list'); entries.forEach((entry) => {
       const item = entry.item || state.items.find((i) => i.id === (entry.id || entry.item_id)) || entry; const rec = advice(item); const row = el('div', 'plan-item');
-      append(row, el('strong', '', `${actionNames[entry.action || item.actions?.[0]] || '处理'} · ${item.name || entry.name}`), el('p', '', cleanCopy(rec.impact || item.impact || '请确认不再需要。')));
+      append(row, itemTitle(item, el('strong', '', `${actionNames[entry.action || item.actions?.[0]] || '处理'} · ${item.name || entry.name}`)), el('p', '', cleanCopy(rec.impact || item.impact || '请确认不再需要。')));
       const detail = el('details'); append(detail, el('summary', '', '查看位置'), el('p', '', item.path || entry.path || '无文件位置')); append(row, detail); append(list, row);
     }); append(host, list);
     const warnings = plan.warnings || []; if (warnings.length) { const detail = el('details', 'plan-additional'); append(detail, el('summary', '', '更多处理说明'), el('pre', '', warnings.map(cleanCopy).join('\n'))); append(host, detail); }
@@ -512,7 +630,7 @@ function initializePanxu() {
     const list = el('div', 'history-list'); state.history.forEach((batch) => {
       const card = el('article', 'history-card'); const top = el('div', 'history-top'); const date = new Date(batch.created_at); const when = Number.isNaN(date.getTime()) ? text(batch.created_at) : date.toLocaleString('zh-CN', { hour12: false });
       append(top, el('h3', '', `处理了 ${batch.item_count ?? batch.items?.length ?? 0} 项`), badge(batch.status === 'undone' ? '已恢复选择' : '预演完成')); append(card, top, el('p', '', when));
-      const detail = el('details', 'history-details'); append(detail, el('summary', '', '查看内容')); const entries = el('ul'); (batch.items || []).forEach((item) => append(entries, el('li', '', `${actionNames[item.action] || '处理'} · ${item.name || item.id}`))); append(detail, entries); append(card, detail);
+      const detail = el('details', 'history-details'); append(detail, el('summary', '', '查看内容')); const entries = el('ul'); (batch.items || []).forEach((item) => append(entries, append(el('li'), itemTitle(item, el('span', '', `${actionNames[item.action] || '处理'} · ${item.name || item.id}`))))); append(detail, entries); append(card, detail);
       const footer = el('div', 'history-footer'); append(footer, el('span', '', '未改动实际内容')); const restore = button('恢复选择', () => undoBatch(batch.id), 'button small'); restore.disabled = batch.status === 'undone'; append(footer, restore); append(card, footer); append(list, card);
     }); append(root, list);
   }
@@ -659,7 +777,7 @@ function initializePanxu() {
     const refresh=button('刷新记录',()=>load(true));
     const clear=button('清空记录',async()=>{
       if(fetching||recordBusy)return;clear.disabled=true;readSequence++;stopPolling();
-      try{const data=await api('/api/developer',{clear:true});offset=0;lastData=null;pendingData=null;renderData(data,true);}
+      try{const data=await api('/api/developer',{clear:true});offset=0;lastData=null;pendingData=null;renderedData=null;entries.clear();list.replaceChildren();renderData(data,true);}
       catch(failure){showError(failure.message);}finally{clear.disabled=false;schedule();}
     },'plain-button');append(controls,refresh,clear);
     const updated=button('有新记录，点击更新',()=>{if(pendingData){renderData(pendingData,true);pendingData=null;}},'button developer-update');updated.hidden=true;
@@ -670,70 +788,91 @@ function initializePanxu() {
     const viewer=el('div','developer-viewer');append(viewer,controls,updated,list,paging);
     const displayNote=el('p','field-help','显示已关闭。打开“实时显示通信”后可查看记录；只有此面板可见时才会自动刷新。');
     append(body,intro,switches,filters,status,error,displayNote,viewer);
-    let offset=0,fetching=false,recordBusy=false,loaded=false,active=true,dockVisible=false,refreshAfterRead=false,timer=null,readSequence=0,lastData=null,pendingData=null;
+    let offset=0,fetching=false,recordBusy=false,loaded=false,active=true,dockVisible=false,refreshAfterRead=false,timer=null,readSequence=0,lastData=null,pendingData=null,renderedData=null;
     const entries=new Map();
     const names={request:'发给模型',response:'模型回复',tool_call:'工具调用',tool_result:'工具结果',skill:'技能参考',skill_read:'读取技能',context_event:'任务反馈'};
     function visible(){return active&&dockVisible&&panel.isConnected&&!document.hidden;}
     function stopPolling(){clearTimeout(timer);timer=null;}
     function schedule(){stopPolling();if(visible()&&live.input.checked&&offset===0&&lastData?.enabled)timer=setTimeout(()=>load(false),2500);}
     function showError(message){error.textContent=message;error.hidden=false;}
-    function toolName(entry){return entry.payload?.name || entry.payload?.tool || entry.payload?.function?.name || '';}
-    function category(entry){return /skill|guidance/i.test(entry.kind)||/^(read_skill|list_skills)$/.test(toolName(entry))?'skills':/^tool_/.test(entry.kind)?'tools':'conversation';}
-    function included(entry){return ({skills:skills.input.checked,tools:tools.input.checked,conversation:conversation.input.checked})[category(entry)];}
-    function displayPayload(entry){
-      const communication=new Set(['present_findings','propose_plan','ask_user','record_advice','checkpoint_task']);
-      function publicCall(call){
-        const value=call?.function || call;
-        const name=typeof value?.name==='string'?value.name:'';
-        const hidden={...(name?{name}:{}),display:'工具详情已收起；可在显示内容中开启工具详情。'};
-        if(!communication.has(name))return hidden;
-        let args=value.arguments ?? value.input ?? value.args;
-        try{if(typeof args==='string')args=JSON.parse(args);}catch(_){return {...hidden,display:'无法提取公开文本；开启工具详情可查看原始参数。'};}
-        if(!args||typeof args!=='object'||Array.isArray(args))return {...hidden,display:'无法提取公开文本；开启工具详情可查看原始参数。'};
-        const message={};
-        const strings=(source,keys)=>Object.fromEntries(keys.filter(key=>typeof source?.[key]==='string').map(key=>[key,source[key]]));
-        Object.assign(message,strings(args,['summary','question']));
-        if(name==='ask_user'&&Array.isArray(args.options))message.options=args.options.map(option=>strings(option,['id','label','description']));
-        if(['record_advice','propose_plan'].includes(name)&&Array.isArray(args.items))message.items=args.items.map(item=>strings(item,['id','name','conclusion','purpose','reason','impact']));
-        if(name==='checkpoint_task')for(const key of ['next_steps','unresolved'])if(Array.isArray(args[key]))message[key]=args[key].filter(item=>typeof item==='string');
-        return Object.keys(message).length?{name,public_message:message,display:'模型回复中的公开文本，不代表操作或审批结果。'}:{...hidden,display:'未找到可展示的公开文本；开启工具详情可查看原始参数。'};
+    const viewModel=window.PanxuDeveloperView;
+    function included(entry){return ({skills:skills.input.checked,tools:tools.input.checked,conversation:conversation.input.checked})[viewModel.category(entry)];}
+    const labels={goal:'目标',scopes:'检查范围',name:'名称',id:'标识',summary:'摘要',purpose:'用途',reason:'原因',impact:'影响',conclusion:'建议',tool:'工具',at:'时间',total:'总数',items:'条目',facts:'历史事实',observations:'历史观察',user_feedback:'用户补充',user_choices:'用户选择',preferences:'整理偏好',usage:'累计工作量',handoff:'交接',version:'版本',content:'指导正文',content_fingerprint:'内容指纹',read_at:'读取时间',sources:'来源',provider:'服务商',protocol:'协议',endpoint:'地址',model:'模型',input_tokens:'输入 token',output_tokens:'输出 token',prompt_tokens:'输入 token',completion_tokens:'输出 token'};
+    function readableData(value,parent,depth=0){
+      value=viewModel.clean(value);
+      if(value===null||value===undefined){append(parent,el('p','muted','未提供'));return;}
+      if(typeof value!=='object'){append(parent,el('p','developer-text',typeof value==='boolean'?(value?'是':'否'):String(value)));return;}
+      const rows=Array.isArray(value)?value.map((item,index)=>[String(index+1),item]):Object.entries(value);
+      const fields=el('dl','developer-fields');
+      for(const [key,child] of rows.slice(0,12)){
+        if(child&&typeof child==='object'){
+          const detail=el('details','developer-subsection');append(detail,el('summary','',`${labels[key] || key}${Array.isArray(child)?`（${child.length} 项）`:''}`));
+          detail.addEventListener('toggle',()=>{if(detail.open&&!detail.dataset.loaded){detail.dataset.loaded='1';if(depth<3)readableData(child,detail,depth+1);else append(detail,el('p','muted','更多结构信息可在原始 JSON 中查看。'));}});
+          append(parent,detail);
+        }else append(fields,el('dt','',labels[key] || key),el('dd','',child==null?'未提供':typeof child==='boolean'?(child?'是':'否'):String(child)));
       }
-      function project(value){
-        if(Array.isArray(value))return value.map(project);
-        if(!value||typeof value!=='object')return value;
-        if(value.role==='tool'&&!tools.input.checked)return {...value,content:'工具结果已在显示选项中收起。'};
-        if(['tool_use','function_call'].includes(value.type)&&!tools.input.checked)return publicCall(value);
-        if(['tool_use','tool_result','function_call','function_call_output'].includes(value.type)&&!tools.input.checked)return {type:value.type,display:'工具详情已收起'};
-        const result={};
-        for(const [key,child] of Object.entries(value)){
-          if(key==='tool_calls'&&!tools.input.checked)result[key]=Array.isArray(child)?child.map(publicCall):'无法识别调用格式；开启工具详情可查看原始回复。';
-          else if(['functionCall','function_call'].includes(key)&&!tools.input.checked)result[key]=publicCall(child);
-          else if(['tools','functions','tool_choice','functionResponse'].includes(key)&&!tools.input.checked)result[key]='工具详情已在显示选项中收起。';
-          else result[key]=project(child);
-        }
-        return result;
+      if(fields.children.length)append(parent,fields);
+      if(rows.length>12)append(parent,el('p','muted',`此处展示前 12 项，其余 ${rows.length-12} 项见原始 JSON。`));
+    }
+    function renderReadable(entry,article){
+      const model=viewModel.describe(entry),copy=el('div','developer-readable');
+      const roles={user:'用户',assistant:'助手',system:'系统',tool:'程序工具',developer:'开发指引'};
+      for(const message of model.messages){
+        const row=el('div','developer-chat-message');row.dataset.role=message.role;
+        append(row,el('strong','developer-role',roles[message.role] || message.role));
+        if(message.title)append(row,el('span','developer-message-title',message.title));
+        if(message.text)append(row,el('p','developer-text',message.text));
+        if(message.options?.length){const options=el('ul','developer-options');message.options.forEach(option=>{const li=el('li');append(li,el('strong','',option.label));if(option.description)append(li,el('span','',option.description));append(options,li);});append(row,options);}
+        if(message.items?.length)message.items.forEach(item=>{const advice=el('div','developer-public-advice');if(item.name||item.id)append(advice,el('strong','',item.name || item.id));for(const key of ['purpose','conclusion','reason','impact'])if(item[key])append(advice,el('p','developer-text',`${labels[key]}：${{keep:'建议保留',review:'需要确认',recommend:'建议处理'}[item[key]] || item[key]}`));append(row,advice);});
+        if(message.omittedItems)append(row,el('p','developer-note',`另有 ${message.omittedItems} 项建议，可在原始 JSON 中查看。`));
+        if(message.steps?.length){const list=el('ul','developer-options');message.steps.forEach(text=>append(list,el('li','',text)));append(row,list);}
+        append(copy,row);
       }
-      return JSON.stringify(project(entry.payload),null,2);
+      for(const note of model.notes)append(copy,el('p','developer-note',note));
+      if(!model.messages.length&&!model.notes.length){
+        const first=model.sections[0],data=first?.data;
+        const summary=typeof data?.summary==='string'?data.summary:typeof data?.message==='string'?data.message:'';
+        const parts=[first?.title || '已记录结构化信息',typeof data?.name==='string'?data.name:'',typeof data?.version==='string'?`版本 ${data.version}`:'',summary?summary.slice(0,220):Array.isArray(data?.items)?`${data.items.length} 项`:'' ].filter(Boolean);
+        append(copy,el('p','developer-note',parts.join(' · ')));
+      }
+      const auxiliary=el('details','developer-section developer-auxiliary');
+      auxiliary.dataset.label=entry.kind==='request'?'随本次发送的说明与资料':'更多调试信息';
+      append(auxiliary,el('summary','',auxiliary.dataset.label));
+      model.sections.forEach(section=>{
+        const detail=el('details','developer-section');detail.dataset.category=section.kind;
+        append(detail,el('summary','',section.title));
+        detail.addEventListener('toggle',()=>{if(detail.open&&!detail.dataset.loaded){detail.dataset.loaded='1';const body=el('div','developer-section-body');readableData(section.data,body);append(detail,body);}});
+        append(auxiliary,detail);
+      });
+      const raw=el('details','developer-raw');append(raw,el('summary','','原始 JSON（已脱敏）'));
+      raw.addEventListener('toggle',()=>{if(raw.open&&!raw.querySelector('pre'))append(raw,el('pre','developer-json',viewModel.raw(entry)));});
+      append(auxiliary,raw);append(copy,auxiliary);append(article,copy);
+    }
+    function applyDisplay(entry){
+      const categories=new Set(['raw']);
+      entry.querySelectorAll('[data-category]').forEach(section=>{section.hidden=section.dataset.category==='tools'?!tools.input.checked:section.dataset.category==='skills'?!skills.input.checked:false;if(!section.hidden)categories.add(section.dataset.category);});
+      const auxiliary=entry.querySelector('.developer-auxiliary');if(auxiliary)auxiliary.querySelector('summary').textContent=`${auxiliary.dataset.label}（${categories.size} 类）`;
+    }
+    function reading(){
+      const scroller=panel.closest?.('.developer-dock-scroll');
+      const selection=document.getSelection?.();
+      return [...entries.values()].some(item=>item.querySelector('details[open]')) || (scroller?.scrollTop || 0)>60 || Boolean(selection?.toString()&&panel.contains?.(selection.anchorNode));
     }
     function renderEntries(data){
-      const shown=(data.entries || []).filter(included),fresh=new Map();
+      const shown=(data.entries || []).filter(included).slice().reverse(),fresh=new Map();
       for(const entry of shown){
-        let detail=entries.get(entry.seq);
-        if(!detail){
-          detail=el('details','developer-entry');detail.dataset.seq=entry.seq;
+        let article=entries.get(entry.seq);
+        if(!article){
+          article=el('article','developer-entry');article.dataset.seq=entry.seq;
           const time=entry.at?new Date(entry.at).toLocaleTimeString('zh-CN',{hour12:false}):'';
-          append(detail,el('summary','',`#${entry.seq} · ${names[entry.kind] || entry.kind}${time?' · '+time:''}`));
-          detail.addEventListener('toggle',()=>{
-            if(detail.open&&!detail.querySelector('pre'))append(detail,el('pre','developer-json',displayPayload(entry)));
-            if(!detail.open&&pendingData&&![...entries.values()].some(item=>item.open))renderData(pendingData,true);
-          });
-        }else{
-          const pre=detail.querySelector('pre');if(pre){const top=pre.scrollTop;pre.textContent=displayPayload(entry);pre.scrollTop=top;}
+          const header=el('div','developer-message-meta');append(header,el('strong','',names[entry.kind] || entry.kind),el('span','',`#${entry.seq}${time?' · '+time:''}`));append(article,header);
+          renderReadable(entry,article);
         }
-        fresh.set(entry.seq,detail);
+        applyDisplay(article);fresh.set(entry.seq,article);
       }
       entries.clear();fresh.forEach((node,key)=>entries.set(key,node));
       list.replaceChildren(...fresh.values());
+      renderedData=data;
       if(!shown.length)append(list,el('p','muted',(data.entries || []).length?'这一页没有勾选类型的记录。可调整显示内容或翻页。':'还没有开发记录。开启记录后，再发起一次调查或连接测试。'));
     }
     function renderData(data,force=false){
@@ -743,7 +882,7 @@ function initializePanxu() {
       const message=`${data.enabled?'正在记录':'采集已关闭'} · 共 ${data.total || 0} 条`;
       if(status.textContent!==message)status.textContent=message;
       const changed=JSON.stringify((lastData?.entries || []).map(item=>item.seq))!==JSON.stringify((data.entries || []).map(item=>item.seq));
-      const keepOpen=!force&&changed&&[...entries.values()].some(item=>item.open);
+      const keepOpen=!force&&changed&&reading();
       if(keepOpen){pendingData=data;updated.hidden=false;}
       else if(live.input.checked&&(force||!lastData||changed)){renderEntries(data);pendingData=null;updated.hidden=true;}
       lastData=data;
@@ -775,7 +914,7 @@ function initializePanxu() {
     });
     for(const [control,key] of [[conversation,'developer_conversation'],[skills,'developer_skills'],[tools,'developer_tools']])control.input.addEventListener('change',()=>{
       saveUiPreferences({[key]:control.input.checked}).catch(()=>showError('显示已切换；暂时无法保存此偏好。'));
-      if(lastData&&live.input.checked)renderEntries(lastData);
+      if(lastData&&live.input.checked)renderEntries(renderedData || lastData);
     });
     const visibility=()=>{stopPolling();if(visible()&&live.input.checked)load(false);};
     document.addEventListener('visibilitychange',visibility);
