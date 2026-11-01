@@ -171,7 +171,8 @@ def release_files(release: Path) -> list[Path]:
             relative = path.relative_to(release)
             require(not linked(path), "Linked file found in release")
             require(not any(part.casefold() in forbidden_parts for part in relative.parts)
-                    and name.casefold() not in forbidden_names and not name.casefold().startswith(".env."),
+                    and name.casefold() not in forbidden_names and not name.casefold().startswith(".env.")
+                    and not name.casefold().endswith(('.sqlite', '.sqlite3', '.db', '.sqlite3-wal', '.sqlite3-shm')),
                     "Private or test data found in release")
             result.append(path)
     return sorted(result)

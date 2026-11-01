@@ -125,7 +125,7 @@ exe = package / 'PanXu.exe'
 sha256 = lambda p: hashlib.file_digest(p.open('rb'), 'sha256').hexdigest()
 files = sorted(p for p in package.rglob('*') if p.is_file())
 linked = [str(p.relative_to(package)) for p in package.rglob('*') if p.is_symlink() or (hasattr(p, 'is_junction') and p.is_junction())]
-forbidden = [str(p.relative_to(package)) for p in files if any(part.casefold() in {'verification', 'tests', 'userdata', '.git', '.venv'} for part in p.relative_to(package).parts) or p.name.casefold() in {'.env', 'model_settings.json', 'simulation.sqlite3', 'simulation.sqlite3-wal', 'simulation.sqlite3-shm'}]
+forbidden = [str(p.relative_to(package)) for p in files if any(part.casefold() in {'verification', 'tests', 'userdata', '.git', '.venv'} for part in p.relative_to(package).parts) or p.name.casefold() in {'.env', 'model_settings.json'} or p.name.casefold().startswith('.env.') or p.name.casefold().endswith(('.sqlite', '.sqlite3', '.db', '.sqlite3-wal', '.sqlite3-shm'))]
 assets = []
 for name in ('index.html', 'style.css', 'app.js', 'tasks.js', 'files.js'):
     source, target = root / 'web' / name, package / '_internal' / 'web' / name

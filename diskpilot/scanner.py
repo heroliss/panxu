@@ -252,6 +252,39 @@ def _decision_context(path: str, classification: dict[str, Any]) -> dict[str, An
     }
 
 
+def metadata_item(path: str, info: os.stat_result, *, root: str, depth: int,
+                  parent_id: str | None, project: str | None, is_dir: bool) -> dict[str, Any]:
+    """Shared metadata/classification record, with no permission to act yet.
+
+    Both the bounded tree scanner and the durable observation index use this
+    constructor. Completeness and signatures must be supplied by the collector.
+    """
+    classification = _classification(path, project)
+    decision = _decision_context(path, classification)
+    item = {
+        "id": "scan-" + _digest([os.path.normcase(path)])[:24],
+        "kind": "directory" if is_dir else "file", "name": os.path.basename(path) or path,
+        "path": path, **classification, "size_bytes": 0 if is_dir else info.st_size,
+        "allocated_bytes": None if is_dir else _allocated(info), "actions": [],
+        "signature": "", "details": {
+            "depth": depth, "mtime_ns": info.st_mtime_ns, "ctime_ns": info.st_ctime_ns,
+            "file_identity": _identity(info, path), "link_count": info.st_nlink,
+            "is_hardlink": not is_dir and info.st_nlink > 1,
+            "signature_kind": "metadata_only", "root": root,
+            "scan_only": True, "parent_id": parent_id,
+            "decision_context": decision, "auto_select": decision["auto_select"],
+            "verified_cache": decision["classification_source"] == "managed_cache_path",
+        },
+        "evidence": [classification["reason"], "仅检查名称和元数据；没有读取文件内容"],
+    }
+    if decision["classification_source"] == "unverified_cache_location":
+        item["reason"] = "名称形态类似应用缓存，但不在已核实的当前用户受管缓存根内"
+        item["recommendation"] = "必须由用户核实用途并选择；不能按缓存规则自动推荐"
+        item["impact"] = "自定义或仿造缓存目录可能保存个人资料；用途尚未证明"
+        item["evidence"][0] = item["reason"]
+    return item
+
+
 @dataclass
 class _Node:
     item: dict[str, Any]
@@ -337,32 +370,11 @@ def scan_directory(root: str, *, max_entries: int = 25000, max_depth: int = 12,
 
     def make_node(path: str, info: os.stat_result, depth: int,
                   parent: _Node | None, project: str | None, is_dir: bool) -> _Node:
-        classification = _classification(path, project)
-        decision = _decision_context(path, classification)
-        item = {
-            "id": "scan-" + _digest([os.path.normcase(path)])[:24],
-            "kind": "directory" if is_dir else "file", "name": os.path.basename(path) or path,
-            "path": path, **classification, "size_bytes": 0 if is_dir else info.st_size,
-            "allocated_bytes": None if is_dir else _allocated(info), "actions": [],
-            "signature": "", "details": {
-                "depth": depth, "mtime_ns": info.st_mtime_ns, "ctime_ns": info.st_ctime_ns,
-                "file_identity": _identity(info, path), "link_count": info.st_nlink,
-                "is_hardlink": not is_dir and info.st_nlink > 1,
-                "signature_kind": "metadata_only", "root": absolute_root,
-                "scan_only": True, "parent_id": parent.item["id"] if parent else None,
-                "decision_context": decision,
-                "auto_select": decision["auto_select"],
-                "verified_cache": decision["classification_source"] == "managed_cache_path",
-            },
-            "evidence": [classification["reason"], "仅检查名称和元数据；没有读取文件内容"],
-        }
-        if decision["classification_source"] == "unverified_cache_location":
-            item["reason"] = "名称形态类似应用缓存，但不在已核实的当前用户受管缓存根内"
-            item["recommendation"] = "必须由用户核实用途并选择；不能按缓存规则自动推荐"
-            item["impact"] = "自定义或仿造缓存目录可能保存个人资料；用途尚未证明"
-            item["evidence"][0] = item["reason"]
+        item = metadata_item(path, info, root=absolute_root, depth=depth,
+                             parent_id=parent.item["id"] if parent else None,
+                             project=project, is_dir=is_dir)
         node = _Node(item, depth, parent)
-        node.protected = int(classification["risk"] == "protected")
+        node.protected = int(item["risk"] == "protected")
         if parent:
             parent.children.append(node)
         nodes.append(node)

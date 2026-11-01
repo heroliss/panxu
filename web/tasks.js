@@ -13,6 +13,35 @@ window.PanxuTasks = (() => {
   let pending = false;
   let lastError = '';
   let intent = '';
+  const adviceCache = new Map(), adviceRequests = new Map();
+  let adviceGeneration = 0;
+  const adviceKey = (id, signature) => `${id}:${signature || ''}`;
+  function cacheAdvice(key, value) { adviceCache.delete(key); adviceCache.set(key, value); if(adviceCache.size>400) adviceCache.delete(adviceCache.keys().next().value); }
+  function adviceFor(id, signature) { const value=adviceCache.get(adviceKey(id,signature)); return value && !value.stale && (!value.signature || value.signature===signature) ? value : null; }
+  function adviceKnown(id, signature) { return !current?.id || adviceCache.has(adviceKey(id,signature)); }
+  async function lookupAdvice(items, requester=context?.api) {
+    if(!current?.id || typeof requester!=='function') return true;
+    const taskId=current.id, generation=adviceGeneration;
+    const rows=[...new Map(items.map(item=>[adviceKey(item.id,item.signature),item])).entries()];
+    const waiting=rows.map(([key])=>adviceRequests.get(key)).filter(Boolean);
+    if(waiting.length) await Promise.all(waiting);
+    if(generation!==adviceGeneration || current?.id!==taskId) return false;
+    const missing=rows.filter(([key])=>!adviceCache.has(key));
+    const requests=[];
+    for(let offset=0;offset<missing.length;offset+=50) {
+      const group=missing.slice(offset,offset+50);
+      const request=Promise.resolve(requester(`/api/tasks/${taskId}/advice?ids=${encodeURIComponent(group.map(([,item])=>item.id).join(','))}&limit=50`)).then(data=>{
+        if(generation!==adviceGeneration || current?.id!==taskId) return false;
+        const found=new Map((data.items || []).map(item=>[item.id,item]));
+        group.forEach(([key,item])=>cacheAdvice(key,found.get(item.id) || null));
+        return true;
+      }).finally(()=>{group.forEach(([key])=>{if(adviceRequests.get(key)===request) adviceRequests.delete(key);});});
+      group.forEach(([key])=>adviceRequests.set(key,request));
+      requests.push(request);
+    }
+    await Promise.all(requests);
+    return generation===adviceGeneration && current?.id===taskId;
+  }
   const intents = {
     c_cleanup: ['清理 C 盘垃圾', '先找常见缓存和临时内容'],
     disk_cleanup: ['清理某个磁盘', '逐步找出值得清理的内容'],
@@ -46,7 +75,9 @@ window.PanxuTasks = (() => {
     return {input, box: add(node('div', 'task-field'), lab, input)};
   }
   function accept(task) {
+    if(current?.id!==task?.id || current?.updated_at!==task?.updated_at) {adviceGeneration++;adviceCache.clear();adviceRequests.clear();}
     current = task;
+    (task?.advice || []).forEach(entry=>cacheAdvice(adviceKey(entry.id,entry.signature),entry));
     if (task?.plan) {
       const key = task.id + ':' + task.plan.version;
       if (key !== planKey) {
@@ -87,6 +118,7 @@ window.PanxuTasks = (() => {
     if (busy()) schedule();
   }
   function newTask() {
+    adviceGeneration++; adviceCache.clear(); adviceRequests.clear();
     current = null; intent = ''; planKey = ''; selected.clear(); lastError = ''; feedbackDraft = ''; redraw();
   }
   function choose(preset) {
@@ -141,12 +173,60 @@ window.PanxuTasks = (() => {
     add(root, action('返回常用任务', () => { intent = ''; redraw(); }, 'plain-button task-new'));
   }
   function processDetails(root) {
-    if (!current?.events?.length) return;
+    if (!current?.events?.length && !current?.handoff && !current?.usage && !current?.facts?.total) return;
+    const taskId=current.id, box=detail('查看调查过程');
+    const handoff=current.handoff;
+    if(handoff?.summary) add(box,node('p','',handoff.summary));
+    const steps=Array.isArray(handoff?.next_steps)?handoff.next_steps:[];
+    if(steps.length) {const list=node('ul','task-events');steps.slice(0,5).forEach(value=>add(list,node('li','',typeof value==='string'?value:value.summary || value.description || '继续核对已有线索')));add(box,node('p','field-label','下一步会继续核对'),list);}
+    const unresolved=Array.isArray(handoff?.unresolved)?handoff.unresolved:[];
+    if(unresolved.length) {const list=node('ul','task-events');unresolved.slice(0,5).forEach(value=>add(list,node('li','',typeof value==='string'?value:value.summary || value.description || '尚待核对')));add(box,detail('尚未解决的内容',list));}
+    if(handoff?.model?.model) add(box,node('p','field-help',`上轮使用 ${handoff.model.model}。继续时会根据当前连接和已保存的目标、事实、选择重建上下文。`));
+    const usage=current.usage;
+    if(usage) {
+      const rows=node('dl','task-workload');
+      const fields=[['model_requests','模型请求',n=>`${n} 次`],['tool_calls','工具调用',n=>`${n} 次`],['tool_failures','工具未完成',n=>`${n} 次`],['metadata_items','采集条目',n=>`${n} 项`],['scan_pages','扫描批次',n=>`${n} 批`],['hash_bytes','本地哈希读取',n=>context.bytes(n)],['input_tokens','输入 token',n=>n.toLocaleString('zh-CN')],['output_tokens','输出 token',n=>n.toLocaleString('zh-CN')],['elapsed_ms','累计调查用时',n=>n<60000?`${Math.round(n/1000)} 秒`:`${(n/60000).toFixed(1)} 分钟`]];
+      fields.forEach(([key,label,format])=>{if(typeof usage[key]==='number' && Number.isFinite(usage[key]))add(rows,node('dt','',label),node('dd','',format(usage[key])));});
+      if(rows.childNodes.length)add(box,detail('累计工作量',rows,node('p','field-help',
+        `${usage.input_tokens == null && usage.output_tokens == null ? '服务商未返回 token 用量。' : ''}累计已记录的请求和本地工作；未记录的用量不推算为零，也不等于实际释放空间。`)));
+    }
+    if(Array.isArray(current.scans) && current.scans.length) {
+      const scans=node('ul','task-events');
+      current.scans.slice(0,20).forEach(scan=>{
+        const coverage=scan.coverage || {}, count=Number.isFinite(coverage.observed_entries)?coverage.observed_entries.toLocaleString('zh-CN'):'若干';
+        const state=coverage.invalidated?'已有变化，需重新核对':coverage.limit_reached?'达到本次检查上限':coverage.complete?'目录观察完成':'尚未完整检查';
+        add(scans,node('li','',`${scan.root_name || '所选目录'}：已观察 ${count} 项，${state}。`));
+      });
+      add(box,detail('目录检查范围',scans,node('p','field-help','这里是目录观察的覆盖情况，不表示每个文件都已获得建议，也不代替处理前核查。最多展示 20 处。')));
+    }
+    if(current.facts?.total) {
+      const facts=detail(`已保存的事实（${current.facts.total} 条）`),list=node('div','task-facts'),nav=node('div','file-pagination');
+      let offset=0,loading=false,loaded=false;
+      async function load() {
+        if(loading || !facts.isConnected)return;loading=true;list.setAttribute('aria-busy','true');nav.querySelectorAll('button').forEach(button=>button.disabled=true);
+        if(!loaded)list.replaceChildren(node('p','muted','正在载入已有事实…'));
+        try {
+          const data=await context.api(`/api/tasks/${taskId}/facts?offset=${offset}&limit=20`);
+          if(!facts.isConnected || current?.id!==taskId)return;loaded=true;list.replaceChildren();nav.replaceChildren();
+          (data.items || []).forEach(entry=>{
+            const labels={scan_directory:'目录观察',survey_scope:'目录概况',inspect_directory:'深入目录',continue_scan:'继续目录观察',read_scan:'目录观察分页',validate_directory:'目录完整核查',list_items:'清单查询',inspect_items:'条目信息',describe_item:'条目信息',inspect_item:'条目信息',inspect_files:'文件信息',compare_duplicates:'重复核对',compare_files:'重复核对',read_facts:'已有事实',collect_apps:'软件与后台',list_applications:'软件与后台',cache_experience:'缓存经验',lookup_knowledge:'经验查询'};
+            const stamp=entry.at?new Date(entry.at).toLocaleString('zh-CN'):'';
+            const item=detail(`${labels[entry.tool] || '调查观察'}${stamp?' · '+stamp:''}`);
+            add(item,node('p','field-help','这是当时采集的观察，执行前仍需核对当前状态。'));
+            item.addEventListener('toggle',()=>{if(item.open&&!item.querySelector('pre'))add(item,node('pre','developer-json',JSON.stringify(entry,null,2)));});
+            add(list,item);
+          });
+          if(!(data.items || []).length)add(list,node('p','muted','该页没有事实记录。'));
+          if(data.total>20 || offset){const previous=action('上一页事实',()=>{offset=Math.max(0,offset-20);load();});previous.disabled=!offset;const next=action('下一页事实',()=>{offset+=20;load();});next.disabled=!data.has_more;add(nav,previous,node('span','',`${Math.floor(offset/20)+1} / ${Math.max(1,Math.ceil((data.total || 0)/20))}`),next);}
+        } catch(error) {if(facts.isConnected){list.replaceChildren(node('p','field-error',error.message),action('重新载入事实',load));nav.replaceChildren();}}
+        finally{loading=false;list.setAttribute('aria-busy','false');}
+      }
+      facts.addEventListener('toggle',()=>{if(facts.open&&!loaded)load();});add(facts,list,nav);add(box,facts);
+    }
     const list = node('ol', 'task-events');
-    current.events.filter((event) => ['tool', 'result', 'feedback', 'summary'].includes(event.kind)).slice(-12).forEach((event) => {
-      add(list, node('li', '', event.message));
-    });
-    add(root, detail('查看调查过程', list));
+    (current.events || []).filter((event) => ['tool', 'result', 'feedback', 'summary'].includes(event.kind)).slice(-12).forEach((event) => add(list,node('li','',event.message)));
+    if(list.childNodes.length)add(box,detail('最近调查记录',list));
+    add(root,box);
   }
   function feedbackForm(root, label = '补充要求，让助手调整') {
     const form = node('form', 'task-feedback');
@@ -233,7 +313,7 @@ window.PanxuTasks = (() => {
         (data.items || []).forEach((entry) => {
           const labels = {keep:'建议保留',review:'需要确认',recommend:'建议处理'};
           const card = node('article', 'task-advice-item');
-          add(card, node('strong', '', entry.name), node('span', 'advice-label', labels[entry.conclusion] || '待确认'),
+          add(card, node('strong', '', entry.name), node('span', 'advice-label', entry.stale ? '内容已变化，需重新核对' : entry.user_kept ? '你已选择保留' : labels[entry.conclusion] || '待确认'),
             node('p', '', entry.purpose), node('p', '', entry.reason), detail('了解影响', node('p', '', entry.impact)));
           add(list, card);
         });
@@ -257,6 +337,7 @@ window.PanxuTasks = (() => {
     const summary = node('div', 'task-summary'); summary.setAttribute('role', 'status');
     if (busy()) add(summary, node('span', 'spinner'));
     add(summary, node('p', '', current.summary)); add(panel, summary);
+    if(!busy() && context.modelProfile?.model && current.handoff?.model?.model && ['provider','model','protocol'].some(key=>(context.modelProfile[key] || '')!==(current.handoff.model[key] || ''))) add(panel,node('p','field-help',`继续调查将使用当前连接的 ${context.modelProfile.model}，已有目标、事实和保留选择会继续使用。`));
     if (current.last_result && current.last_result.succeeded < current.last_result.total) {
       add(panel, node('p', 'task-result-notice', `还有 ${current.last_result.total-current.last_result.succeeded} 项未完成或待核实，可展开本轮结果查看原因。`));
     }
@@ -272,7 +353,7 @@ window.PanxuTasks = (() => {
     } else if (current.status === 'awaiting_review' && current.plan) {
       plan(panel);
     } else {
-      add(panel, action(current.status === 'completed' ? '继续看看还有什么' : '继续调查', () => request('/api/tasks/' + current.id + '/continue', {}), 'button primary task-primary'));
+      add(panel, action('继续调查', () => request('/api/tasks/' + current.id + '/continue', {}), 'button primary task-primary'));
       feedbackForm(panel, '补充或改变整理要求');
     }
     renderAdvice(panel); results(panel); processDetails(panel);
@@ -294,13 +375,16 @@ window.PanxuTasks = (() => {
       if (!panel.open || entries.childNodes.length) return;
       try {
         const data = await context.api('/api/tasks');
-        data.tasks.forEach((task) => add(entries, action(task.goal, () => {
-          accept(task); context.openAssistant();
-        }, 'plain-button task-history-item')));
+        data.tasks.forEach((task) => {
+          const button=action(task.goal, () => {accept(task); context.openAssistant();}, 'plain-button task-history-item');
+          const date=Number.isFinite(Date.parse(task.updated_at))?new Date(task.updated_at).toLocaleString('zh-CN'):'';
+          add(button,node('span','task-history-caption',[date,(task.summary || '').slice(0,140)].filter(Boolean).join(' · ')));
+          add(entries,button);
+        });
         if (!data.tasks.length) add(entries, node('p', '', '还没有整理任务。'));
       } catch (error) { add(entries, node('p', '', '暂时无法读取任务记录。')); }
     });
     add(root, panel);
   }
-  return {render, accept, renderHistory, adviceFor: (id, signature) => (current?.advice || []).find((a) => a.id === id && (!a.signature || a.signature === signature)), currentTask: () => current};
+  return {render, accept, renderHistory, adviceFor, adviceKnown, lookupAdvice, currentTask: () => current};
 })();

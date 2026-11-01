@@ -420,6 +420,9 @@ class ModelAssistant:
         if not content and not cleaned:
             raise ValueError('empty_response')
         result = {'role': 'assistant', 'content': content or None, 'tool_calls': cleaned}
+        # Accounting belongs to the harness, outside the model transcript and
+        # opaque provider continuation. Missing usage must stay unknown, not 0.
+        result['_usage'] = copy.deepcopy(response.get('usage')) if isinstance(response.get('usage'), dict) else {}
         if '_continuation' in message:
             result['_continuation'] = message['_continuation']
         return result

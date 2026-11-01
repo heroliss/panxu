@@ -68,14 +68,15 @@ class ListAnalysisTests(unittest.TestCase):
         with self.assertRaises(AppError):
             self.tool(task, 'record_advice', {'items': [self.advice(software)]})
 
-    def test_selected_directory_can_expand_but_overview_cannot(self):
+    def test_selected_directory_can_expand_and_overview_uses_shallow_metadata(self):
         directory = next(i for i in self.state.view()['items'] if i['kind'] == 'directory')
         task = self.harness.create_analysis({'section': 'files', 'ids': [directory['id']]})
         result = self.tool(task, 'inspect_directory', {'id': directory['id']})
         self.assertGreater(result['observed_children'], 0)
         overview = self.harness.create_analysis({'section': 'files', 'ids': [directory['id']], 'depth': 'overview'})
-        with self.assertRaises(AppError):
+        with patch('diskpilot.tasks.scan_directory', wraps=scan_directory) as scanner:
             self.tool(overview, 'inspect_directory', {'id': directory['id']})
+        self.assertEqual(scanner.call_args.kwargs['max_depth'], 1)
 
     def test_protected_metadata_can_be_analysed_but_not_proposed(self):
         self.assistant.save_settings({'protect_patterns': ['*file-000*']})

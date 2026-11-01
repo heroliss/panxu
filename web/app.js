@@ -32,9 +32,13 @@
       window.PanxuTasks.accept(data.task); setView('overview');
     });
   }
-  function showAdvice(item) {
-    if (window.PanxuTasks.adviceFor(item.id, item.signature)) setView('overview');
-    else analyzeList(item);
+  async function showAdvice(item) {
+    try {
+      const complete=await window.PanxuTasks.lookupAdvice([item], api);
+      if(complete===false){toast('调查记录已更新，请再点一次查看。');return;}
+      if (window.PanxuTasks.adviceFor(item.id, item.signature)) await showItem(item);
+      else await analyzeList(item);
+    } catch(error) {notify('已有建议暂时无法读取，请重试。'+error.message,true);}
   }
   function analysisOptions(root) {
     const details = el('details', 'analysis-options'); append(details, el('summary', '', '分析方式'));
@@ -147,7 +151,11 @@
     finally { clearTimeout(timer); }
   }
   function accept(data, autoSelect = false) {
-    if (Object.hasOwn(data, 'latest_task')) window.PanxuTasks?.accept(data.latest_task);
+    if (Object.hasOwn(data, 'latest_task')) {
+      window.PanxuTasks?.accept(data.latest_task);
+      if(state.view==='files') window.PanxuFiles?.refreshAdvice();
+      else if(['background','software'].includes(state.view)) renderResults();
+    }
     if (data.catalog_revision) { state.catalogRevision = data.catalog_revision; window.PanxuFiles?.invalidate(data.catalog_revision); }
     if (data.csrf) state.csrf = data.csrf;
     if (!defaultPathLoaded && data.default_scan_path) { state.scanPath = data.default_scan_path; defaultPathLoaded = true; }
@@ -208,7 +216,7 @@
   }
   function renderOverview(root) {
     window.PanxuTasks.render(root, {
-      api, heading, bytes, defaultPath: state.scanPath, disks: state.disks,
+      api, heading, bytes, defaultPath: state.scanPath, disks: state.disks, modelProfile: {provider:state.settings.provider,model:state.settings.model,protocol:state.settings.protocol},
       modelConfigured: Boolean(state.settings.base_url && state.settings.model),
       redraw: render, isActive: () => state.view === 'overview',
       openSettings: () => setView('model'), openFiles: () => setView('files'),
@@ -274,7 +282,9 @@
       revision: state.catalogRevision, disks: state.disks, bytes, ingest,
       isSelected: analysisSelected, canSelect: canAnalyze, toggle: toggleAnalysis, changed: renderSelection,
       selectionCount: () => analysisIds().size, analyze: (item, filters) => analyzeList(item, filters), show: showItem,
-      advice: (item) => window.PanxuTasks.adviceFor(item.id, item.signature), showAdvice
+      advice: (item) => window.PanxuTasks.adviceFor(item.id, item.signature),
+      adviceKnown: (item) => window.PanxuTasks.adviceKnown(item.id,item.signature),
+      lookupAdvice: (items) => window.PanxuTasks.lookupAdvice(items,api), showAdvice
     });
   }
   function simpleItemRow(item) {
@@ -325,19 +335,24 @@
     const scroll = el('div', 'table-scroll'); const table = el('table', 'result-table'); const head = el('tr');
     ['', '名称', state.view === 'background' ? '运行占用' : '大小', '分析状态', ''].forEach((name) => append(head, el('th', '', name))); append(table, append(el('thead'), head));
     const body = el('tbody');
-    items.slice(0, state.limit).forEach((item) => {
-      const row = el('tr', 'item-row'); const checkCell = el('td', 'check-cell'); const check = el('input'); check.type = 'checkbox'; check.checked = analysisSelected(item);
+    const renderedItems=items.slice(0,state.limit);
+    renderedItems.forEach((item) => {
+      const row = el('tr', 'item-row'); row.dataset.adviceId=item.id; const checkCell = el('td', 'check-cell'); const check = el('input'); check.type = 'checkbox'; check.checked = analysisSelected(item);
       check.setAttribute('aria-label', '选择分析' + item.name); check.addEventListener('change', () => { toggleAnalysis(item, check.checked); renderResults(); renderSelection(); }); append(checkCell, check);
       const copy = el('td', 'name-cell'); append(copy, button(item.name, () => showItem(item), 'file-name-button'), el('div', 'item-path', item.owner || kindNames[item.kind]));
       const size = el('td', 'size-cell', ['service','startup'].includes(item.kind) ? '—' : bytes(itemSize(item)));
       const result = window.PanxuTasks.adviceFor(item.id, item.signature); const labels = {keep:'建议保留', review:'需要确认', recommend:'已有处理建议'};
-      const status = el('td', 'kind-label', result ? labels[result.conclusion] || '已有建议' : '尚未分析');
-      const action = el('td'); append(action, button(result ? '查看建议' : '分析', () => showAdvice(item), 'button small'));
+      const status = el('td', 'kind-label', result ? labels[result.conclusion] || '已有建议' : window.PanxuTasks.adviceKnown(item.id,item.signature) ? '待分析' : '待核对'); status.dataset.adviceState='1';
+      const action = el('td'); const analyze=button(result ? '查看建议' : '分析', () => showAdvice(item), 'button small');analyze.dataset.rowAdvice='1';append(action,analyze);
       append(row, checkCell, copy, size, status, action); append(body, row);
     });
     append(table, body); append(scroll, table); append(panel, scroll, el('p', 'result-note', '勾选仅用于分析。助手提出建议后，才决定是否处理。'));
     if (items.length > state.limit) append(panel, button(`继续显示 ${Math.min(300, items.length-state.limit)} 项`, () => { state.limit += 300; renderResults(); }, 'plain-button'));
-    append(host, panel);
+    const adviceNote=el('p','result-note');adviceNote.hidden=true;append(panel,adviceNote);append(host, panel);
+    window.PanxuTasks.lookupAdvice(renderedItems,api).then(()=>{
+      if(!panel.isConnected || host.firstChild!==panel) return;
+      renderedItems.forEach(item=>{const row=[...body.children].find(r=>r.dataset.adviceId===item.id);if(!row)return;const entry=window.PanxuTasks.adviceFor(item.id,item.signature),labels={keep:'建议保留',review:'需要确认',recommend:'已有处理建议'};row.querySelector('[data-advice-state]').textContent=entry?labels[entry.conclusion] || '已有建议':window.PanxuTasks.adviceKnown(item.id,item.signature)?'待分析':'待核对';row.querySelector('[data-row-advice]').textContent=entry?'查看建议':'分析';});
+    }).catch(()=>{if(panel.isConnected){adviceNote.hidden=false;adviceNote.textContent='已有建议暂时无法读取；点击分析时会先重试读取。';}});
   }
   function renderSelection() {
     const active = ['files','background','software'].includes(state.view);
@@ -358,7 +373,8 @@
     const modelAdvice = window.PanxuTasks.adviceFor(item.id, item.signature);
     const rec = modelAdvice || advice(item); append(host, el('h3', '', rec.title || item.name));
     append(host, el('h4', '', '它是做什么的'), el('p', '', cleanCopy(rec.purpose || itemPurpose(item))), el('h4', '', '为什么建议'), el('p', '', cleanCopy(rec.reason || item.reason || '尚未取得 AI 建议，可以先分析用途。')), el('h4', '', '处理后的影响'), el('p', '', cleanCopy(rec.impact || item.impact || '影响尚不明确，建议先保留。')));
-    if (canAnalyze(item)) append(host, button('分析这项', () => analyzeList(item), 'button primary'));
+    if (modelAdvice) append(host,button(window.PanxuTasks.currentTask()?.plan?.items.some(entry=>entry.id===item.id)?'查看处理方案':'返回整理任务',()=>setView('overview'),'button primary'));
+    else if (canAnalyze(item)) append(host, button('分析这项', () => analyzeList(item), 'button primary'));
     append(host, button('以后保留这项', () => protectItem(item), 'plain-button'));
     const detail = el('details', 'inspector-advanced'); append(detail, el('summary', '', '更多详情'));
     if (item.path) append(detail, el('div', 'inspector-path', item.path));

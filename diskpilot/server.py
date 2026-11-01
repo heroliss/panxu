@@ -19,6 +19,7 @@ from .llm import ModelAssistant
 from .lease import DataLease
 from .recommendations import build_recommendations
 from .scanner import scan_directory
+from .scan_index import ScanIndex
 from .simulation import AppError, SimulationState
 from .tasks import TaskHarness
 from .trace import DeveloperTrace
@@ -46,7 +47,8 @@ class Application:
         self.assistant = ModelAssistant(Path(data_dir))
         self.trace = DeveloperTrace(data_dir, lambda value: self.assistant.clean_text(value, limit=1024 * 1024))
         self.assistant.trace_hook = self.trace.record
-        self.harness = TaskHarness(self.state, self.assistant, trace=self.trace)
+        self.scan_index = ScanIndex(Path(data_dir) / 'scan_index.sqlite3')
+        self.harness = TaskHarness(self.state, self.assistant, trace=self.trace, scan_index=self.scan_index)
         self.catalog = FileCatalog(self.state, self.patterns)
         self.recommendation_cache = None
         self.settings_revision = 0
@@ -223,7 +225,18 @@ class Application:
                 offset, limit = int(query.get('offset', ['0'])[0]), int(query.get('limit', ['20'])[0])
             except (ValueError, TypeError):
                 raise AppError('请选择有效的建议页码。') from None
-            return self.harness.advice_page(parts[3], offset, limit)
+            ids = query.get('ids', [''])[0].split(',') if query.get('ids') else None
+            return self.harness.advice_page(parts[3], offset, limit, ids)
+        if path.startswith('/api/tasks/') and path.endswith('/facts'):
+            parts = path.split('/')
+            if len(parts) != 5:
+                raise AppError('事实接口不存在。', 'not_found', 404)
+            try:
+                offset, limit = int(query.get('offset', ['0'])[0]), int(query.get('limit', ['20'])[0])
+            except (ValueError, TypeError):
+                raise AppError('请选择有效的事实页码。') from None
+            ids = query.get('ids', [''])[0].split(',') if query.get('ids') else None
+            return self.harness.facts_page(parts[3], offset, limit, ids)
         if path.startswith('/api/tasks/'):
             return {'task': self.harness.public(path.rsplit('/', 1)[-1])}
         if path.startswith('/api/jobs/'):
@@ -339,6 +352,7 @@ class Application:
         for job in self.jobs.values():
             job['_cancel'].set()
         self.pool.shutdown(wait=True, cancel_futures=True)
+        self.scan_index.close()
         self.trace.close()
         self.state.close()
         self.lease.close()

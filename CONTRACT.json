@@ -45,7 +45,7 @@
   ],
   "api": {
     "GET /api/bootstrap": "{csrf,mode,items,summary,settings,history,disks,source,job?}",
-    "POST /api/tasks": "{preset?:c_cleanup|disk_cleanup|downloads|duplicates|background|installers,goal?,path?}; or custom {goal,path}; preset captures intent and bounded authorized roots",
+    "POST /api/tasks": "{preset?:c_cleanup|disk_cleanup|directory_cleanup|downloads|duplicates|background|installers,goal?,path?}; or custom {goal,path}",
     "GET /api/tasks": "{tasks}; latest 15 durable tasks, current plan and event summaries",
     "GET /api/tasks/{id}": "{task}; status, goal, scopes, versioned plan, latest result, feedback and events",
     "POST /api/tasks/{id}/continue": "{} -> {task,job_id}; continue a stopped or completed investigation",
@@ -73,9 +73,10 @@
     "GET /api/providers": "{presets,protocols,checked_at}; documented presets, no live vendor guarantee",
     "POST /api/settings/test": "{} -> {passed,message,requests?,provider?,protocol?,model?}; fixed-data tool roundtrip, no catalog",
     "POST /api/tasks/analyze": "{section,ids? OR query?/scope?/risk?/kind?,depth?,goal?} -> {task,job_id}; frozen analysis selection, no execution approval",
-    "GET /api/tasks/{id}/advice": "{offset?,limit?:1..50} -> {items,total,offset,limit,has_more}",
+    "GET /api/tasks/{id}/advice": "{offset?,limit?:1..50,ids?:comma-separated IDs up to50} -> {items,total,offset,limit,has_more}",
     "GET /api/developer": "{offset?,limit?:1..30} -> {enabled,entries,total,retention}; local opt-in sanitized protocol trace",
-    "POST /api/developer": "{enabled?:bool,clear?:bool}; defaults off, captures subsequent requests only"
+    "POST /api/developer": "{enabled?:bool,clear?:bool}; defaults off, captures subsequent requests only",
+    "GET /api/tasks/{id}/facts": "{offset?,limit?:1..20,ids?:comma-separated fact IDs up to12} -> {items,total,offset,limit,has_more}; historical observations with scope/source/time/recheck rule"
   },
   "mutations": "Require X-CSRF-Token from bootstrap. Errors are JSON {error,code}. Relative same-origin fetch only. Input limits apply.",
   "summary": "{total_items,visible_items,simulated_items,logical_bytes,simulated_bytes,process_memory_bytes,by_kind,source,mode}. Real disks separate; no simulated_bytes shown as actual freed space.",
@@ -86,6 +87,8 @@
   "privacy": "No user file body read for LLM. Metadata only; send_paths false by default. No real provider key expected in tests. LLM cannot execute or approve plans.",
   "agent_task": "statuses ready/investigating/awaiting_review/executing/needs_input/needs_model/paused/budget_exhausted/error/completed. Up to 6 model responses and 12 tools per turn. Personal files default unchecked; unknown/protected/out-of-scope and stale plans cannot bypass factual checks. Tool text is untrusted.",
   "action_runtime": "simulation backend only. Per-item durable intent plus atomic overlay/receipt, status succeeded/failed/partial/cancelled/unverified. Recovery verifies receipts without blind replay. User undo is separately visible as current_state=undone. Actual reclaimed bytes always zero.",
-  "release_status": "development_checkpoint_not_packaged",
-  "installed_release": "0.4.0"
+  "release_status": "validated_local_portable",
+  "installed_release": "0.5.0",
+  "task_memory": "Durable goal, choices, versioned plan, simulation receipts, up to300 historical facts/task with32MiB global fact-payload retention. Model connection change reconstructs fresh context, not private provider continuation. Request attempts/tools/work counted; missing provider token usage is unknown.",
+  "task_scan": "ScanIndex durable name/metadata spool, stable keyset cursor; steps1..512, rows<=100000/scan. Interrupted unfinished enumeration replays with explicit work accounting; acquired rows retained. Whole-directory actions require separate current subtree validation. All17 tool schemas still sent each model turn; discover_tools is help, not lazy loading."
 }

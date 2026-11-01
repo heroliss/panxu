@@ -78,7 +78,7 @@ window.PanxuFiles = (() => {
       }
       if (run !== sequence || !target.isConnected) return;
       revision = data.revision; page = data; loading = false;
-      context.ingest(data.items); paint(); context.changed();
+      context.ingest(data.items); paint(); context.changed(); refreshAdvice();
     } catch (error) {
       if (run !== sequence || !target.isConnected) return;
       status.textContent = error.name === 'AbortError' ? '载入时间较长，请重试。' : error.message;
@@ -99,6 +99,30 @@ window.PanxuFiles = (() => {
     const batch = host.querySelector('[data-analyze-list]');
     if (batch) { const selected = context.selectionCount(); batch.textContent = selected ? `分析所选（${selected} 项）` : `分析当前列表（${page.total.toLocaleString('zh-CN')} 项）`; batch.disabled = loading || !page.total; batch.hidden = selected > 0; }
   }
+  function refreshAdviceLabels() {
+    if(!host?.isConnected || !page) return;
+    host.querySelectorAll('[data-file-id]').forEach(row=>{
+      const item=page.items.find(entry=>entry.id===row.dataset.fileId); if(!item) return;
+      const result=context.advice(item), labels={keep:'建议保留',review:'需要确认',recommend:'已有处理建议'};
+      const label=row.querySelector('.analysis-state');
+      if(label) label.textContent=result ? labels[result.conclusion] || '已有建议' : context.adviceKnown(item) ? item.risk==='protected' ? '已保护' : '待分析' : '待核对';
+      const action=row.querySelector('.row-analyze'); if(action)action.textContent=result?'查看建议':'分析';
+    });
+  }
+  async function refreshAdvice() {
+    if(!page || !host?.isConnected || !context.lookupAdvice) return;
+    const target=host, currentPage=page, run=sequence;
+    const note=target.querySelector('.file-advice-note');
+    try {
+      const complete=await context.lookupAdvice(currentPage.items);
+      if(run!==sequence || host!==target || page!==currentPage || !target.isConnected) return;
+      refreshAdviceLabels();
+      if(note) {note.hidden=complete!==false;note.textContent='调查记录已有更新，查看时将重新核对。';}
+    } catch(error) {
+      if(run!==sequence || host!==target || page!==currentPage || !target.isConnected) return;
+      if(note) {note.hidden=false;note.textContent='暂时无法读取已存建议。点击“分析”时会先重试读取，不会直接重复调用模型。';}
+    }
+  }
   function paint() {
     host.replaceChildren(); pager.replaceChildren();
     const start = page.total ? page.offset + 1 : 0, end = Math.min(page.offset + limit, page.total);
@@ -115,6 +139,7 @@ window.PanxuFiles = (() => {
     });
     const analyze = button('分析当前列表', () => context.analyze(null, {query,scope,risk}), 'button primary'); analyze.dataset.analyzeList = '1';
     top.append(label, analyze); panel.append(top);
+    const adviceNote=node('p','file-advice-note field-help');adviceNote.hidden=true;adviceNote.setAttribute('role','status');panel.append(adviceNote);
     page.items.forEach((item) => {
       const row = node('div', 'paged-file-row'); row.dataset.fileId = item.id;
       const check = node('input'); check.type = 'checkbox'; check.dataset.fileCheck = item.id;
@@ -127,7 +152,7 @@ window.PanxuFiles = (() => {
       const result = context.advice(item);
       const labels = {keep:'建议保留',review:'需要确认',recommend:'已有处理建议'};
       const meta = node('div', 'paged-file-meta'); meta.append(node('span', '', context.bytes(item.size_bytes)),
-        node('small', 'analysis-state', result ? labels[result.conclusion] || '已有建议' : item.risk === 'protected' ? '已保护' : '尚未分析'));
+        node('small', 'analysis-state', result ? labels[result.conclusion] || '已有建议' : context.adviceKnown(item) ? item.risk === 'protected' ? '已保护' : '待分析' : '待核对'));
       const analyze = button(result ? '查看建议' : '分析', () => context.showAdvice(item), 'button small row-analyze');
       row.append(check, copy, meta, analyze); panel.append(row);
     });
@@ -136,5 +161,5 @@ window.PanxuFiles = (() => {
     const next = button('下一页', () => { offset += limit; load(); }); next.disabled = !page.has_more;
     pager.append(prev, node('span', '', `第 ${Math.floor(page.offset / limit) + 1} / ${Math.ceil(page.total / limit)} 页`), next);
   }
-  return {render, unmount, invalidate, selectionChanged, filters: () => ({query,scope,risk}), visibleIds: () => (page?.items || []).map((i) => i.id)};
+  return {render, unmount, invalidate, selectionChanged, refreshAdvice, filters: () => ({query,scope,risk}), visibleIds: () => (page?.items || []).map((i) => i.id)};
 })();
