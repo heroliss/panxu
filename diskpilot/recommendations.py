@@ -6,6 +6,7 @@ Positive decision evidence is collector-owned, never inferred from age/memory/na
 from __future__ import annotations
 
 import copy
+from datetime import datetime, timezone
 import fnmatch
 import re
 
@@ -99,6 +100,33 @@ def _advice(group, reason, impact, action=None, *, origin="rule", auto=False):
     return {"group": group, "title": dict(_GROUPS)[group], "reason": reason,
             "impact": impact, "auto_select": bool(auto and group == "recommended"),
             "suggested_action": action, "origin": origin, "needs_user_choice": group == "personal"}
+
+
+def _provenance(value=None):
+    """Expose only generation facts supplied by the host, never current settings.
+
+    Older callers may return model advice without metadata. That stays unknown;
+    attributing it to whichever profile happens to be selected now is false.
+    """
+    unknown = dict(source='unknown', provider=None, model=None, protocol=None, generated_at=None)
+    if not isinstance(value, dict) or value.get('source') not in ('llm', 'local'):
+        return unknown
+    stamp = value.get('generated_at')
+    try:
+        parsed = datetime.fromisoformat(stamp) if isinstance(stamp, str) and len(stamp) <= 50 else None
+        if parsed is None or parsed.tzinfo is None:
+            return unknown
+        stamp = parsed.astimezone(timezone.utc).isoformat()
+    except (ValueError, OverflowError):
+        return unknown
+    fields = {}
+    for field, limit in (('provider', 80), ('model', 160), ('protocol', 80)):
+        text = value.get(field)
+        if value['source'] == 'llm' and (not isinstance(text, str) or not text.strip() or len(text) > limit
+                                        or any(ord(char) < 32 for char in text)):
+            return unknown
+        fields[field] = text if value['source'] == 'llm' else None
+    return dict(source=value['source'], generated_at=stamp, **fields)
 
 
 def _protected_by_pattern(item, patterns):
@@ -248,8 +276,11 @@ def build_recommendations(items, assistant=None, *, use_model=False):
         except Exception:
             pass
     result = copy.deepcopy(items)
+    local_provenance = dict(source='local', provider=None, model=None, protocol=None,
+                            generated_at=datetime.now(timezone.utc).isoformat())
     for item in result:
         item["advice"] = _base_advice(item, patterns)
+        item["advice"]["provenance"] = copy.deepcopy(local_provenance)
     model_mode, analyzed_count, candidate_count, incomplete = "not_requested", 0, 0, False
     warnings = []
     if use_model:
@@ -265,6 +296,9 @@ def build_recommendations(items, assistant=None, *, use_model=False):
                     raise ValueError("invalid_recommendations")
                 if response["mode"] == "llm":
                     suggestions = _validated_suggestions(response.get("recommendations"), sample)
+                    provenance = _provenance(response.get('provenance'))
+                    if provenance['source'] == 'local':
+                        provenance = _provenance()  # contradictory model metadata is not a local rule
                     model_mode = "llm"
                     analyzed_count = min(len(sample), max(0, int(response.get("analyzed_count", len(sample)))))
                     by_id = {i.get("id"): i for i in result}
@@ -290,6 +324,7 @@ def build_recommendations(items, assistant=None, *, use_model=False):
                                 reason += " 目前缺少足够的本机依据，暂不默认选择。"
                             item["advice"] = _advice("review", reason, impact,
                                                      row["suggested_action"], origin="model")
+                        item["advice"]["provenance"] = copy.deepcopy(provenance)
                 else:
                     warnings.append("模型未配置、请求失败或建议未通过校验，保留本地规则结果。")
             except Exception:

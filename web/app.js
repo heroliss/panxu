@@ -315,6 +315,8 @@ function initializePanxu() {
       const response = await fetch(path, { method: body === undefined ? 'GET' : 'POST', headers: body === undefined ? {} : { 'Content-Type': 'application/json', 'X-CSRF-Token': state.csrf }, body: body === undefined ? undefined : JSON.stringify(body), signal: control.signal, credentials: 'same-origin' });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(text(data.error || data.message || `请求失败（${response.status}）`));
+      const notice=data?.analysis_notice || data?.result?.analysis_notice;
+      if(notice?.status==='retained_previous'&&notice.new_advice_accepted===false)toast(text(notice.message || '本次未取得新建议，保留上次建议。'));
       return data;
     } catch (error) { if (error.name === 'AbortError') throw new Error('请求超时，请确认本地服务或模型接口后重试。'); throw error; }
     finally { clearTimeout(timer); }
@@ -324,6 +326,7 @@ function initializePanxu() {
       window.PanxuTasks?.accept(data.latest_task);
       if(state.view==='files') window.PanxuFiles?.refreshAdvice();
       else if(['background','software'].includes(state.view)) renderResults();
+      if(state.inspector&&state.focused)renderInspector();
     }
     if (data.catalog_revision) { state.catalogRevision = data.catalog_revision; window.PanxuFiles?.invalidate(data.catalog_revision); }
     if (data.csrf) state.csrf = data.csrf;
@@ -387,7 +390,7 @@ function initializePanxu() {
   }
   function renderOverview(root) {
     window.PanxuTasks.render(root, {
-      api, heading, bytes, defaultPath: state.scanPath, disks: state.disks, modelProfile: {provider:state.settings.provider,model:state.settings.model,protocol:state.settings.protocol},
+      api, heading, bytes, defaultPath: state.scanPath, disks: state.disks, providerPresets:state.providers, modelProfile: {provider:state.settings.provider,model:state.settings.model,protocol:state.settings.protocol},
       modelConfigured: Boolean(state.settings.base_url && state.settings.model),
       redraw: render, isActive: () => state.view === 'overview',
       openSettings: () => setView('model'), openFiles: () => setView('files'),
@@ -455,7 +458,7 @@ function initializePanxu() {
       selectionCount: () => analysisIds().size, analyze: (item, filters) => analyzeList(item, filters), show: showItem,
       advice: (item) => window.PanxuTasks.adviceFor(item.id, item.signature),
       adviceKnown: (item) => window.PanxuTasks.adviceKnown(item.id,item.signature),
-      lookupAdvice: (items) => window.PanxuTasks.lookupAdvice(items,api), showAdvice
+      lookupAdvice: (items) => window.PanxuTasks.lookupAdvice(items,api), adviceChanged:()=>{if(state.inspector&&state.focused)renderInspector();}, showAdvice
     });
   }
   function simpleItemRow(item) {
@@ -549,9 +552,9 @@ function initializePanxu() {
     append(host, button('以后保留这项', () => protectItem(item), 'plain-button'));
     const detail = el('details', 'inspector-advanced'); append(detail, el('summary', '', '更多详情'));
     if (item.path) append(detail, el('div', 'inspector-path', item.path));
-    const data = el('dl', 'inspector-definition'); [['所属软件', item.owner || '未知'], ['类型', kindNames[item.kind]], ['文件逻辑量', bytes(item.size_bytes)], ['分配空间', item.allocated_bytes == null ? '未核实' : bytes(item.allocated_bytes)], ['建议来源', modelAdvice || rec.origin === 'model' ? '智能分析' : '本机信息']].forEach(([key, value]) => append(data, el('dt', '', key), el('dd', '', value)));
+    const data = el('dl', 'inspector-definition'); [['所属软件', item.owner || '未知'], ['类型', kindNames[item.kind]], ['文件逻辑量', bytes(item.size_bytes)], ['分配空间', item.allocated_bytes == null ? '未核实' : bytes(item.allocated_bytes)]].forEach(([key, value]) => append(data, el('dt', '', key), el('dd', '', value)));
     if (item.kind === 'directory') { append(data, el('dt', '', '路径累计'), el('dd', '', bytes(item.details?.logical_bytes_all_paths ?? item.size_bytes)), el('dt', '', '唯一实体量'), el('dd', '', bytes(item.details?.unique_logical_bytes ?? item.size_bytes))); append(detail, el('p', '', '同一个文件可能有多个硬链接。这里的体积估计不等于实际可释放空间。')); }
-    append(detail, data);
+    append(detail, data,window.PanxuProvenance.details(rec,{presets:state.providers}));
     if (canSelect(item)) { const manual = el('details', 'manual-actions'); append(manual, el('summary', '', '手动选择操作'), el('p', 'field-help', '这项操作不依赖 AI 建议。确认前会列出具体内容与影响，保护规则继续生效；当前只记录模拟，不改动文件或系统。'), button(`查看${window.PanxuActionCopy.label(item.actions[0],item.kind)}清单`, () => manualSelected(item))); append(detail, manual); }
     if ($('show-evidence').checked) { const evidence = el('ul', 'evidence-list'); (Array.isArray(item.evidence) ? item.evidence : []).forEach((entry) => append(evidence, el('li', '', text(entry)))); append(detail, evidence, el('pre', 'assistant-trace', text(item.details || {}))); }
     const more = el('details', 'additional-analysis'); append(more, el('summary', '', '进一步分析这项'));
@@ -629,7 +632,8 @@ function initializePanxu() {
     const list = el('div', 'plan-list'); entries.forEach((entry) => {
       const item = entry.item || state.items.find((i) => i.id === (entry.id || entry.item_id)) || entry; const rec = advice(item); const row = el('div', 'plan-item');
       append(row, itemTitle(item, el('strong', '', `${window.PanxuActionCopy.label(entry.action || item.actions?.[0],item.kind)} · ${item.name || entry.name}`)), el('p', '', cleanCopy(rec.impact || item.impact || '请确认了解这项操作的影响。')));
-      const detail = el('details'); append(detail, el('summary', '', '查看位置'), el('p', '', item.path || entry.path || '无文件位置')); append(row, detail); append(list, row);
+      const detail = el('details'); append(detail, el('summary', '', '查看位置与建议来源'), el('p', '', item.path || entry.path || '无文件位置'),
+        window.PanxuProvenance.details({provenance:entry.provenance || entry.advice?.provenance || rec.provenance},{presets:state.providers})); append(row, detail); append(list, row);
     }); append(host, list);
     const warnings = plan.warnings || []; if (warnings.length) { const detail = el('details', 'plan-additional'); append(detail, el('summary', '', '更多操作说明'), el('pre', '', warnings.map(cleanCopy).join('\n'))); append(host, detail); }
     if (!entries.length) { append(host, el('p', 'field-error', '没有可模拟的操作，请返回重新选择。')); $('plan-execute').textContent='没有可模拟的操作';$('plan-execute').disabled = true; }
@@ -1095,7 +1099,7 @@ function initializePanxu() {
   }
   function analysisOutput(data) {
     const output = el('div', 'analysis-output'); append(output, el('div', 'assistant-answer', text(data.answer || '没有返回建议。')));
-    const details = el('details'); const trace = typeof data.trace === 'object' ? text(data.trace) : data.trace; append(details, el('summary', '', '查看分析来源与发送范围'), el('pre', 'assistant-trace', text(trace || '未提供额外来源信息。'))); if (data.evidence) append(details, el('pre', 'assistant-trace', text(data.evidence))); append(output, details); return output;
+    const details = el('details'); const trace = typeof data.trace === 'object' ? text(data.trace) : data.trace; append(details, el('summary', '', '查看分析来源与发送范围'),window.PanxuProvenance.details({provenance:data.provenance},{presets:state.providers}), el('pre', 'assistant-trace', text(trace || '未提供额外来源信息。'))); if (data.evidence) append(details, el('pre', 'assistant-trace', text(data.evidence))); append(output, details); return output;
   }
   async function askAssistant(question, host, submit) {
     if (!question.trim()) return; submit.disabled = true; const label = submit.textContent; submit.textContent = '正在分析…'; const previous = host.querySelector('.analysis-output'); if (previous) previous.remove();

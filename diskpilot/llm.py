@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import copy
+from datetime import datetime, timezone
 import fnmatch
 import ipaddress
 import json
@@ -311,6 +312,20 @@ class ModelAssistant:
             return self._privacy_text(value, settings, key, limit)
         return self._redact(str(value), key)[:limit]
 
+    @staticmethod
+    def _generation_provenance(settings=None, key=''):
+        """Host-owned attribution for accepted output, never remote response data.
+
+        Callers pass the actual request's immutable profile snapshot. Connection
+        URLs, credentials, current UI settings and opaque native state are not
+        part of this public metadata. Local rules have no model identity.
+        """
+        return dict(source='llm' if settings is not None else 'local',
+                    provider=ModelAssistant._redact(settings.get('provider', 'custom'), key) if settings is not None else None,
+                    model=ModelAssistant._redact(settings.get('model', ''), key) if settings is not None else None,
+                    protocol=ModelAssistant._redact(settings.get('protocol', 'chat_completions'), key) if settings is not None else None,
+                    generated_at=datetime.now(timezone.utc).isoformat())
+
     def task_metadata(self, item):
         with self._lock:
             settings, key = copy.deepcopy(self._settings), self._api_key
@@ -487,6 +502,7 @@ class ModelAssistant:
         try:
             result = self._agent_turn(messages, tools, tool_choice=tool_choice, stream=enabled, cancel=cancel,
                                       on_preview=preview if enabled else None, snapshot=snapshot)
+            result['_provenance'] = self._generation_provenance(snapshot[0], snapshot[1])
             emit('turn_end', text=safe_preview(result.get('content') or '', final=True),
                  tool_pending=bool(result.get('tool_calls')), status='completed')
             if enabled:
@@ -822,7 +838,8 @@ class ModelAssistant:
             label = "受保护，保留" if data["risk"] == "protected" or data["user_protected"] else "需按用途和副作用核查"
             answer += f"\n• {data['name']}：{data['size_bytes'] / (1024 ** 2):.1f} MiB，{label}。{data['reason']}"
         answer += "\n优先核查可重建缓存与旧安装包；项目资料、账号数据和系统组件不能仅因体积大而清理。"
-        return {"answer": self._redact(answer, key), "trace": trace, "evidence": evidence, "mode": "local"}
+        return {"answer": self._redact(answer, key), "trace": trace, "evidence": evidence, "mode": "local",
+                "provenance": self._generation_provenance()}
 
     def recommend(self, items: list[dict]) -> dict:
         """One bounded JSON decision request; never interpret free text as choices.
@@ -839,7 +856,8 @@ class ModelAssistant:
         sample, candidate_count = _representative_items(items, 100, settings["protect_patterns"])
         result = {"mode": "local", "recommendations": [], "analyzed_count": 0,
                   "candidate_count": candidate_count,
-                  "coverage_incomplete": candidate_count > len(sample)}
+                  "coverage_incomplete": candidate_count > len(sample),
+                  "provenance": self._generation_provenance()}
         if not settings["base_url"] or not settings["model"] or not sample:
             return result
         sample = copy.deepcopy(sample)
@@ -897,7 +915,8 @@ personal_content为true时，只能帮助解释用途与去留影响，不能替
                 for field in ("reason", "impact"):
                     row[field] = self._privacy_text(row[field], settings, key, 280)
             result.update(mode="llm", recommendations=rows, analyzed_count=len(rows),
-                          sample_count=len(sample), coverage_incomplete=candidate_count > len(rows))
+                          sample_count=len(sample), coverage_incomplete=candidate_count > len(rows),
+                          provenance=self._generation_provenance(settings, key))
             return result
         except Exception:
             # No response body, exception, preference or dialogue is persisted.
@@ -972,7 +991,7 @@ personal_content为true时，只能帮助解释用途与去留影响，不能替
                     note = f"仅覆盖前 {MAX_ITEMS} 项；可选择项目缩小范围。\n" if available > MAX_ITEMS else ""
                     return {"answer": "模型建议（未执行任何操作）：\n" + note + self._redact(content, key)[:10000],
                             "trace": trace, "evidence": evidence or [self._metadata(i, settings, key) for i in scope[:6]],
-                            "mode": "llm"}
+                            "mode": "llm", "provenance": self._generation_provenance(settings, key)}
                 if tool_count + len(calls) > MAX_TOOL_CALLS:
                     raise ValueError("tool_budget")
                 normalized = []

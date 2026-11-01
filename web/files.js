@@ -143,6 +143,7 @@ window.PanxuFiles = (() => {
       const complete=await context.lookupAdvice(currentPage.items);
       if(run!==sequence || host!==target || page!==currentPage || !target.isConnected) return;
       refreshAdviceLabels();
+      context.adviceChanged?.();
       if(note) {note.hidden=complete!==false;note.textContent='调查记录已有更新，查看时将重新核对。';}
     } catch(error) {
       if(run!==sequence || host!==target || page!==currentPage || !target.isConnected) return;

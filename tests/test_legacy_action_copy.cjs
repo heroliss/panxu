@@ -15,6 +15,7 @@ class Element {
   all(){return [this,...this.children.flatMap(node=>node.all())];}
   querySelector(selector){return this.all().find(node=>selector.startsWith('.')?node.className.split(' ').includes(selector.slice(1)):node.tag===selector);}
   remove(){if(this.parent)this.parent.children=this.parent.children.filter(node=>node!==this);}
+  addEventListener(name,handler){this.handlers=this.handlers || new Map();this.handlers.set(name,handler);}
   set innerHTML(_){throw Error('copy must remain literal text');}
 }
 
@@ -23,7 +24,7 @@ function fixture(items=[]){
   const state={plan:{id:'plan-fixture',items},items,history:[],selected:new Set(),busy:false};
   const calls=[],notices=[],toasts=[];
   const el=(tag,cls='',value='')=>new Element(tag,cls,value),append=(parent,...children)=>{parent.append(...children);return parent;};
-  const context={window:{},state,$:id=>nodes.get(id),el,append,
+  const context={window:{},document:{createElement:tag=>el(tag)},state,$:id=>nodes.get(id),el,append,
     itemTitle:(_,title)=>title,advice:()=>({}),cleanCopy:value=>String(value),
     heading:(title,description)=>append(el('div'),el('h1','',title),el('p','',description)),
     empty:(title,description)=>append(el('div'),el('h2','',title),el('p','',description)),

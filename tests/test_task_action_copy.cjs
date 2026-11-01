@@ -38,13 +38,14 @@ function fixture(value,responder=async()=>({})){
   root=new Element('main');
   const document={createElement:tag=>new Element(tag),getElementById:id=>root.all().find(node=>node.id===id),querySelector:selector=>root.querySelector(selector)};
   const window={},requests=[];
-  runInNewContext(source,{window,document,setTimeout:()=>1,clearTimeout:()=>{}});
+  const environment={window,document,setTimeout:()=>1,clearTimeout:()=>{}};
+  runInNewContext(source,environment);
   const ui=window.PanxuTasks;
   const helpers={heading:()=>new Element('header'),bytes:n=>n+' B',isActive:()=>true,openSettings(){},openAssistant(){},refreshCatalog:async()=>{},
     api:async(path,payload)=>{requests.push({path,payload:payload===undefined?undefined:plain(payload)});return responder(path,payload);},
     redraw:()=>{root.replaceChildren();ui.render(root,helpers);}};
   ui.accept(value);ui.render(root,helpers);
-  return {root,ui,copy:window.PanxuActionCopy,requests,helpers,
+  return {root,ui,copy:window.PanxuActionCopy,provenance:window.PanxuProvenance,environment,requests,helpers,
     get:id=>document.getElementById(id),checks:()=>root.all().filter(node=>node.tag==='input'&&node.type==='checkbox'),
     async choose(id,checked){const checkbox=this.get('pick-'+id);checkbox.checked=checked;await checkbox.fire('change');},
   };
@@ -121,4 +122,84 @@ test('actual result status says simulation completed and never claims files were
   const f=fixture(task([],{status:'paused',plan:null,last_result:{total:1,succeeded:1,items:[{...item('one'),status:'succeeded',message:'只修改本地模拟记录。'}]}}));
   assert.equal(f.root.querySelector('.task-result-state').textContent,'模拟完成');assert.match(f.root.querySelector('.task-results').textContent,/实际文件和系统未改动/);
   assert.equal(f.root.querySelector('.task-result-state').dataset.tone,'info');
+});
+
+const provenanceA={source:'llm',provider:'deepseek',model:'original-model-A',protocol:'chat_completions',generated_at:'2026-11-02T04:05:06.123456+00:00'};
+const provenanceB={source:'llm',provider:'kimi_cn',model:'new-model-B',protocol:'chat_completions',generated_at:'2026-11-02T05:06:07Z'};
+async function openProvenance(box){assert.equal(box.open,false);box.open=true;await box.fire('toggle');return box.textContent;}
+
+test('actual plan details keep source A after switching the active model and distinguish new plan B from original advice A',async()=>{
+  const original=fixture(task([item('one','delete','file',{provenance:provenanceA})]));
+  original.helpers.modelProfile={provider:'kimi_cn',model:'new-model-B'};original.helpers.redraw();
+  const text=await openProvenance(original.root.querySelector('.advice-provenance'));
+  assert.ok(text.includes('original-model-A'));assert.ok(!text.includes('new-model-B'));assert.match(text,/UTC[+-]\d{2}:\d{2}/);
+  const dual=fixture(task([item('one','delete','file',{provenance:provenanceB,advice_provenance:provenanceA})]));
+  const content=await openProvenance(dual.root.querySelector('.advice-provenance'));
+  assert.match(content,/本次操作建议.*new-model-B.*原用途建议.*original-model-A/);
+  const equal=fixture(task([item('one','delete','file',{provenance:provenanceA,advice_provenance:{...provenanceA}})]));
+  assert.ok(!(await openProvenance(equal.root.querySelector('.advice-provenance'))).includes('原用途建议'));
+});
+
+test('actual advice pagination replaces provenance only when genuinely regenerated advice arrives',async()=>{
+  let entry={...item('one'),provenance:provenanceA,purpose:'用途',conclusion:'keep'};
+  const value=task([],{status:'paused',plan:null,advice:[entry],advice_total:1});
+  const f=fixture(value,async()=>({items:[entry],total:1,has_more:false}));
+  async function show(){const detail=f.root.all().find(node=>node.tag==='details'&&node.querySelector('summary')?.textContent.startsWith('用途分析'));detail.open=true;await detail.fire('toggle');return f.root.querySelector('.advice-provenance');}
+  let box=await show();assert.ok((await openProvenance(box)).includes('original-model-A'));
+  assert.equal(box.querySelector('time').dateTime,provenanceA.generated_at);assert.ok(box.querySelector('time').title.includes(provenanceA.generated_at));
+  f.helpers.modelProfile={provider:'kimi_cn',model:'new-model-B'};f.helpers.redraw();box=await show();assert.ok((await openProvenance(box)).includes('original-model-A'));
+  entry={...entry,provenance:provenanceB};f.ui.accept({...value,updated_at:'actually-regenerated',advice:[entry]});f.helpers.redraw();box=await show();
+  assert.ok((await openProvenance(box)).includes('new-model-B'));assert.equal(box.querySelector('time').dateTime,provenanceB.generated_at);
+  assert.equal(f.ui.adviceFor('one','signature-one').provenance.model,'new-model-B');
+});
+
+test('missing provenance stays unknown, local rules do not become LLM, and user direct operations use record time',async()=>{
+  const f=fixture(task([item('one')],{origin:'unused'}));
+  assert.match(await openProvenance(f.root.querySelector('.advice-provenance')),/未记录模型来源和生成时间/);
+  const local=f.provenance.describe({source:'local',provider:'must-not-appear',model:'must-not-appear',generated_at:provenanceA.generated_at});
+  assert.equal(local.rows[0][1],'本机规则');assert.ok(!JSON.stringify(local.rows).includes('must-not-appear'));
+  const direct=f.provenance.details({provenance:{source:'local',generated_at:provenanceA.generated_at}},{origin:'user_direct',plan:true});
+  const content=await openProvenance(direct);assert.match(content,/由你发起.*记录时间/);assert.ok(!content.includes('生成时间'));
+});
+
+test('invalid timestamps are never formatted as Invalid Date and original model IDs remain safe literal text',async()=>{
+  const f=fixture(task([]));
+  for(const generated_at of [undefined,null,'','not-a-date','2026-02-30T04:05:06Z','2026-11-02T04:05:06',123]){
+    const value=f.provenance.describe({...provenanceA,generated_at});assert.ok(!JSON.stringify(value).includes('Invalid Date'));assert.ok(JSON.stringify(value).includes('未记录有效时间'));
+  }
+  const box=f.provenance.details({provenance:{...provenanceA,model:'<img src=x onerror=alert(1)>',extra:{secret:'must-not-render'}}});
+  const content=await openProvenance(box);assert.ok(content.includes('<img src=x onerror=alert(1)>'));assert.equal(box.querySelector('img'),null);assert.ok(!content.includes('must-not-render'));
+});
+
+test('actual Inspector shows stored provenance independently of connection settings and updates after new advice',async()=>{
+  const entry={...item('one'),purpose:'文件用途',provenance:provenanceA};
+  const value=task([],{status:'paused',plan:null,advice:[entry]});const f=fixture(value);
+  const inspector=f.environment.document.createElement('div'),evidence={checked:false};f.root.append(inspector);
+  const app=readFileSync(join(__dirname,'..','web','app.js'),'utf8');
+  Object.assign(f.environment,{state:{focused:entry,providers:[{id:'deepseek',name:'DeepSeek'}],settings:{provider:'kimi_cn',model:'new-model-B'},assistant:null},
+    $:id=>id==='inspector-content'?inspector:evidence,el:(tag,cls='',text)=>{const node=f.environment.document.createElement(tag);node.className=cls;if(text!==undefined)node.textContent=text;return node;},
+    append:(parent,...children)=>{parent.append(...children);return parent;},
+    button:(label,run,cls='button')=>{const node=f.environment.document.createElement('button');node.textContent=label;node.className=cls;node.addEventListener('click',run);return node;},
+    itemTitle:(_item,node)=>node,advice:()=>({}),cleanCopy:value=>String(value),kindNames:{file:'文件'},bytes:n=>n+' B',canSelect:()=>false,canAnalyze:()=>true});
+  const start=app.indexOf('  function renderInspector()'),end=app.indexOf('  async function protectItem(',start);
+  runInNewContext(app.slice(start,end)+';this.inspect=renderInspector;',f.environment);f.environment.inspect();
+  assert.match(await openProvenance(inspector.querySelector('.advice-provenance')),/DeepSeek（deepseek）.*original-model-A/);
+  f.ui.accept({...value,updated_at:'new-source',advice:[{...entry,provenance:provenanceB}]});f.environment.inspect();
+  assert.ok((await openProvenance(inspector.querySelector('.advice-provenance'))).includes('new-model-B'));
+});
+
+test('actual file advice refresh only signals Inspector after a current, successful lookup',async()=>{
+  const files=readFileSync(join(__dirname,'..','web','files.js'),'utf8');const start=files.indexOf('  async function refreshAdvice()'),end=files.indexOf('  function paint()',start);
+  let changed=0,finish;const target={isConnected:true,querySelector:()=>null};const env={host:target,page:{items:[item('one')]},sequence:0,
+    context:{lookupAdvice:async()=>true,adviceChanged:()=>changed++},refreshAdviceLabels:()=>{}};
+  runInNewContext(files.slice(start,end)+';this.refresh=refreshAdvice;',env);await env.refresh();assert.equal(changed,1);
+  env.context.lookupAdvice=()=>new Promise(resolve=>{finish=resolve;});const old=env.refresh();env.sequence++;finish(true);await old;assert.equal(changed,1,'late file pages cannot refresh Inspector from an old response');
+});
+
+test('actual API notifies retained previous advice without relabeling it as new or mutating its provenance',async()=>{
+  const app=readFileSync(join(__dirname,'..','web','app.js'),'utf8');const start=app.indexOf('  async function api('),end=app.indexOf('  function accept(',start);
+  const result={items:[{advice:{provenance:provenanceA}}],analysis_notice:{status:'retained_previous',new_advice_accepted:false,message:'本次未取得新建议，保留上次建议。'}},toasts=[];
+  const env={state:{csrf:'fixture'},AbortController,setTimeout:()=>1,clearTimeout:()=>{},text:value=>String(value),toast:value=>toasts.push(value),fetch:async()=>({ok:true,json:async()=>result})};
+  runInNewContext(app.slice(start,end)+';this.request=api;',env);const data=await env.request('/api/recommendations',{use_model:true});
+  assert.deepEqual(toasts,['本次未取得新建议，保留上次建议。']);assert.deepEqual(data.items[0].advice.provenance,provenanceA);
 });

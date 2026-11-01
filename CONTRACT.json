@@ -1,6 +1,6 @@
 {
   "product": "盘序",
-  "version": "0.9.3",
+  "version": "0.9.4",
   "mode": "simulation",
   "root": "E:\\GPT-Projects\\win11-disk-assistant",
   "safety": "This build has NO real executor. All apply/undo/reset operations modify only SQLite simulation records. Never unlink/move/kill/control services/edit startup outside app-owned data.",
@@ -47,12 +47,12 @@
     "GET /api/bootstrap": "{csrf,version,mode,items,summary,settings,history,disks,source,job?}",
     "POST /api/tasks": "{preset?:c_cleanup|disk_cleanup|directory_cleanup|downloads|duplicates|background|installers,goal?,path?}; or custom {goal,path}",
     "GET /api/tasks": "{tasks}; latest 15 durable tasks, current plan and event summaries",
-    "GET /api/tasks/{id}": "{task}; status, goal, scopes, versioned plan, latest result, feedback and events",
+    "GET /api/tasks/{id}": "{task}; status, goal, scopes, versioned plan, latest result, feedback and events; plan/items and advice include host-owned provenance; previous advice identity independent of new plan",
     "POST /api/tasks/{id}/continue": "{} -> {task,job_id}; continue a stopped or completed investigation",
     "POST /api/tasks/{id}/feedback": "{message?,keep_ids?} -> {task,job_id}; save user intent, invalidate plan, investigate again",
     "POST /api/tasks/{id}/approve": "{version,ids} -> {task,job_id}; explicit selection of exact plan, simulation apply/verify, continue model loop",
     "POST /api/check": "legacy compatibility only; no standalone UI entry; fixed known caches and partial inventories",
-    "GET /api/recommendations": "{items:[original item + advice],groups,summary}; cached current model result or local rules",
+    "GET /api/recommendations": "{items:[original item + advice],groups,summary}; cached current model result or local rules, per-advice provenance; failed same-token reanalysis may retain previous valid model cache with analysis_notice",
     "POST /api/recommendations/analyze": "{} -> {items,groups,summary}; structured model advice if configured, rule fallback otherwise",
     "POST /api/scan": "{path,max_entries?,max_depth?} -> {job_id}",
     "POST /api/inventory": "{section:'background'|'software'} -> {job_id}",
@@ -114,5 +114,6 @@
   "model_streaming": "Four native protocols with real SSE aggregation; public cumulative previews independent of developer capture; partial tools never executable; cancel/disconnect/budget fail closed. Defaults on, JSON fallback labelled; spring grapheme UI respects reduced motion. Save precedes fixed-data connection test and failed test never rolls back saved settings.",
   "visual_hierarchy": "Platform Chinese typography, six text roles, shared semantic status labels, independent light/dark surfaces; recommendation/source and simulated results do not claim actual operation success. Presentation only, no extra execution authority.",
   "subtitle": "AI 磁盘清理助手",
-  "author": "Liss"
+  "author": "Liss",
+  "advice_provenance": "Optional host-owned {source:llm|local|unknown,provider,model,protocol,generated_at}; generated_at is timezone-aware UTC accepted output time, actual request snapshot, no endpoint/key. Missing history normalizes to unknown with null identities/time. Task advice and plan/item persist separately; matching old advice may appear as item.advice_provenance; user_direct uses local metadata and plan.origin. Changing settings never re-labels prior records."
 }

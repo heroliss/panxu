@@ -41,6 +41,69 @@ window.PanxuActionCopy = (() => {
   return {label,summary};
 })();
 
+// Provenance is host-owned history, never inferred from the active connection.
+window.PanxuProvenance = (() => {
+  const text=value=>typeof value==='string'?value:'';
+  function time(value) {
+    if(typeof value!=='string'||!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|\+00:00)$/.test(value))return null;
+    const date=new Date(value);
+    if(!Number.isFinite(date.getTime())||date.toISOString().slice(0,19)!==value.slice(0,19))return null;
+    const offset=-date.getTimezoneOffset(),absolute=Math.abs(offset);
+    const zone=`UTC${offset<0?'-':'+'}${String(Math.floor(absolute/60)).padStart(2,'0')}:${String(absolute%60).padStart(2,'0')}`;
+    let local,region='';
+    try{
+      local=new Intl.DateTimeFormat('zh-CN',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'}).format(date);
+      region=Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+    }catch(_){local=date.toLocaleString();}
+    return {local:`${local}（本机 ${zone}${region?' · '+region:''}）`,utc:value};
+  }
+  function describe(provenance,presets=[]) {
+    const value=provenance&&typeof provenance==='object'?provenance:{};
+    const source=['llm','local','user'].includes(value.source)?value.source:'unknown';
+    if(source==='unknown')return {source,rows:[],note:'此条建议未记录模型来源和生成时间。'};
+    const stamp=time(value.generated_at),rows=source==='llm'?[]:[['来源',source==='user'?'由你发起（不是模型建议）':'本机规则']];
+    if(source==='llm'){
+      const provider=text(value.provider),preset=(Array.isArray(presets)?presets:[]).find(entry=>entry.id===provider);
+      rows.push(['服务商',preset?.name?`${preset.name}（${provider}）`:provider || '未记录'],['模型 ID',text(value.model) || '未记录']);
+    }
+    const timeLabel=source==='user'?'记录时间':'生成时间';
+    rows.push([timeLabel,stamp?.local || '未记录有效时间']);
+    return {source,rows,note:'',stamp,timeLabel};
+  }
+  function key(value){
+    const source=['llm','local','user'].includes(value?.source)?value.source:'unknown';
+    return source==='unknown'?'unknown':JSON.stringify([source,...(source==='llm'?['provider','model','protocol']:[]).map(name=>text(value?.[name])),text(value?.generated_at)]);
+  }
+  function details(record={}, {presets=[],origin='',plan=false,label='建议来源'}={}) {
+    const node=(tag,cls,value)=>{const item=document.createElement(tag);if(cls)item.className=cls;if(value!==undefined)item.textContent=String(value);return item;};
+    const box=node('details','advice-provenance');box.append(node('summary','field-help',label));
+    let loaded=false;
+    box.addEventListener('toggle',()=>{
+      if(!box.open||loaded)return;loaded=true;
+      const main=(origin || record.origin)==='user_direct'?{...(record.provenance || {}),source:'user'}:record.provenance;
+      const prior=record.advice_provenance;
+      const double=Boolean(prior)&&key(main)!==key(prior);
+      const groups=double?[['本次操作建议',main],['原用途建议',prior]]:[[plan?'本次操作建议':'',main]];
+      for(const [title,value] of groups){
+        if(title)box.append(node('p','field-label',title));
+        const description=describe(value,presets);
+        if(description.note){box.append(node('p','field-help',description.note));continue;}
+        const rows=node('dl','inspector-definition');
+        description.rows.forEach(([name,content])=>{
+          const value=node('dd');
+          if(name===description.timeLabel&&description.stamp){
+            const stamp=node('time','',content);stamp.dateTime=description.stamp.utc;stamp.title='UTC：'+description.stamp.utc;value.append(stamp);
+          }else value.textContent=content;
+          rows.append(node('dt','',name),value);
+        });
+        box.append(rows);
+      }
+    });
+    return box;
+  }
+  return {describe,details};
+})();
+
 // Task UI owns presentation and user choices; the server owns durable task state.
 window.PanxuTasks = (() => {
   let current = null;
@@ -451,6 +514,7 @@ window.PanxuTasks = (() => {
         item.personal_choice_required ? semanticTag('由你选择', 'warning', 'task-choice-note') : null),
         explanation('建议原因', item.reason));
       const info = detail('了解影响', explanation('影响', item.impact), node('p', 'task-path', item.path),
+        window.PanxuProvenance.details({...item,provenance:item.provenance || current.plan.provenance},{presets:context.providerPresets,origin:current.plan.origin,plan:true}),
         action('保留这项', () => request('/api/tasks/' + current.id + '/feedback', {keep_ids: [item.id]}), 'plain-button'));
       add(copy, info);
       add(card, check, copy, node('span', 'task-item-size', item.kind === 'file' || item.kind === 'directory' ? '约 ' + context.bytes(item.size_bytes) : ''));
@@ -525,7 +589,7 @@ window.PanxuTasks = (() => {
           add(card, add(node('div', 'task-advice-header'),
             add(node('div','item-title-line task-advice-title-line'),window.PanxuIcons?.create(entry),node('strong', 'task-advice-title', entry.name)),
             semanticTag(label, tone, 'task-advice-state')),
-            node('p', 'task-purpose', entry.purpose), explanation('建议原因', entry.reason), detail('了解影响', explanation('影响', entry.impact)));
+            node('p', 'task-purpose', entry.purpose), explanation('建议原因', entry.reason), detail('了解影响', explanation('影响', entry.impact),window.PanxuProvenance.details(entry,{presets:context.providerPresets})));
           if(!busy())directControls(card,entry,taskId);
           add(list, card);
         });

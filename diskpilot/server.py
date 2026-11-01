@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -65,6 +66,7 @@ class Application:
         self.catalog = FileCatalog(self.state, self.patterns)
         self.icons = IconService(self.icon_item)
         self.recommendation_cache = None
+        self.recommendation_generation = 0
         self.settings_revision = 0
         self.csrf = secrets.token_urlsafe(32)
         self.jobs = {}
@@ -110,11 +112,23 @@ class Application:
             token = self.recommendation_token()
             if not use_model and self.recommendation_cache and self.recommendation_cache[0] == token:
                 return self.recommendation_cache[1]
+            if use_model:
+                self.recommendation_generation += 1
+            generation = self.recommendation_generation
             items = self.view()['items']
         result = build_recommendations(items, self.assistant, use_model=use_model)
         with self.state.lock:
-            if self.recommendation_token() != token:
+            if self.recommendation_token() != token or self.recommendation_generation != generation:
                 raise AppError('检查结果或设置已更新，请重新查看建议。', 'stale_recommendations', 409)
+            previous = self.recommendation_cache[1] if self.recommendation_cache and self.recommendation_cache[0] == token else None
+            if not use_model and previous is not None:
+                return previous  # a completed analysis supersedes an in-flight local GET
+            if (use_model and result.get('summary', {}).get('model_mode') != 'llm' and previous is not None
+                    and any(item.get('advice', {}).get('origin') == 'model' for item in previous.get('items', []))):
+                retained = copy.deepcopy(previous)
+                retained['analysis_notice'] = dict(status='retained_previous',
+                    message='本次未取得新建议，保留上次建议。', new_advice_accepted=False)
+                return retained
             self.recommendation_cache = (token, result)
         return result
 

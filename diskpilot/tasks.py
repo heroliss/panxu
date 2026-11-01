@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import copy
 from contextlib import nullcontext
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -184,6 +185,44 @@ class TaskHarness:
         return dict(provider=fields['provider'] or 'custom', protocol=fields['protocol'] or 'chat_completions',
                     model=self.clean(fields['model'], 160), connection_id=fingerprint)
 
+    @staticmethod
+    def _provenance(value=None):
+        """Whitelist host response metadata; never infer from mutable settings."""
+        unknown = dict(source='unknown', provider=None, model=None, protocol=None, generated_at=None)
+        if not isinstance(value, dict) or value.get('source') not in ('llm', 'local'):
+            return unknown
+        stamp = value.get('generated_at')
+        try:
+            parsed = datetime.fromisoformat(stamp) if isinstance(stamp, str) and len(stamp) <= 50 else None
+            if parsed is None or parsed.tzinfo is None:
+                return unknown
+            stamp = parsed.astimezone(timezone.utc).isoformat()
+        except (ValueError, OverflowError):
+            return unknown
+        fields = {}
+        for field, limit in (('provider', 80), ('model', 160), ('protocol', 80)):
+            text = value.get(field)
+            if value['source'] == 'llm' and (not isinstance(text, str) or not text.strip() or len(text) > limit):
+                return unknown
+            fields[field] = text if value['source'] == 'llm' else None
+        return dict(source=value['source'], generated_at=stamp, **fields)
+
+    def _public_advice(self, advice):
+        value = copy.deepcopy(advice)
+        value['provenance'] = self._provenance(value.get('provenance'))
+        return value
+
+    def _public_plan(self, plan):
+        if not plan:
+            return plan
+        value = copy.deepcopy(plan)
+        value['provenance'] = self._provenance(value.get('provenance'))
+        for entry in value['items']:
+            entry['provenance'] = self._provenance(entry.get('provenance'))
+            if 'advice_provenance' in entry:
+                entry['advice_provenance'] = self._provenance(entry['advice_provenance'])
+        return value
+
     def _checkpoint(self, task, reason, summary=None):
         self._defaults(task)
         previous = task['handoff']
@@ -205,7 +244,7 @@ class TaskHarness:
         if isinstance(value, str):
             return self.clean(value, 200000)
         if isinstance(value, dict):
-            return {str(k): self._clean_value(v) for k, v in value.items() if k not in ('_continuation', 'reasoning_content', '_usage')}
+            return {str(k): self._clean_value(v) for k, v in value.items() if k not in ('_continuation', 'reasoning_content', '_usage', '_provenance')}
         if isinstance(value, list):
             return [self._clean_value(v) for v in value]
         return value
@@ -297,6 +336,7 @@ class TaskHarness:
         if task['last_result']:
             task['last_result'] = self.runtime.result(key, task['last_result']['plan_version'])
         value = {k: copy.deepcopy(task[k]) for k in ('id', 'goal', 'status', 'summary', 'plan', 'last_result', 'updated_at', 'turn', 'plan_version')}
+        value['plan'] = self._public_plan(task['plan'])
         value['job_id'] = task.get('job_id') if task['status'] in BUSY else None
         value['scopes'] = [{'id': r['id'], 'name': Path(r['path']).name or r['path'], 'path': r['path']} for r in task['roots'][:40]]
         value['scope_count'] = len(task['roots'])
@@ -320,7 +360,7 @@ class TaskHarness:
         value['previous_connection'] = copy.deepcopy(task.get('previous_connection'))
         value['scans'] = [self._scan_summary(s) for s in list(task.get('scans', {}).values())[:20]]
         all_advice = list(task.get('advice', {}).values())
-        value['advice'] = copy.deepcopy(all_advice[:50])
+        value['advice'] = [self._public_advice(advice) for advice in all_advice[:50]]
         value['advice_total'] = len(all_advice)
         value['advice_has_more'] = len(all_advice) > 50
         current = {i['id']: i for i in self._items(task, include_processed=True)} if all_advice or task.get('analysis') else {}
@@ -360,7 +400,7 @@ class TaskHarness:
                 raise AppError('请选择1到50个对象ID查询建议。')
             wanted = set(ids)
             rows = [i for i in rows if i['id'] in wanted]
-        items = copy.deepcopy(rows[offset:offset + limit])
+        items = [self._public_advice(advice) for advice in rows[offset:offset + limit]]
         current = {i['id']: i for i in self._items(task, include_processed=True)}
         for advice in items:
             advice['stale'] = advice['id'] not in current or current[advice['id']]['signature'] != advice['signature']
@@ -637,7 +677,7 @@ class TaskHarness:
         if not isinstance(args, dict) or set(args) - set(allowed) or any(k not in args for k in required):
             raise AppError('工具参数格式无效，请按工具说明调整。')
 
-    def tool(self, key, name, args, *, cancel):
+    def tool(self, key, name, args, *, cancel, provenance=None):
         task = self._get(key)
         if name == 'collect_system_configuration':
             self._args(args, ['section'])
@@ -843,12 +883,13 @@ class TaskHarness:
                     raise AppError('保护对象可以解释用途，但应建议保留，不能建议处理。')
                 additions[item['id']] = dict(id=item['id'], name=item['name'], conclusion=row['conclusion'],
                     signature=item['signature'], at=now(), evidence_ids=self._evidence(task, row.get('evidence_ids')),
+                    provenance=self._provenance(provenance),
                     **{f: self.clean(row[f], 400) for f in ('purpose', 'reason', 'impact')})
             task.setdefault('advice', {}).update(additions)
             self._save(task)
             return {'recorded_count': len(additions), 'total_advice_count': len(task['advice']), 'note': '建议已保存；没有批准或执行任何处理。'}
         if name == 'propose_plan':
-            return self._propose_plan(task, args)
+            return self._propose_plan(task, args, provenance=provenance)
         if name == 'present_findings':
             self._args(args, ['summary', 'needs_input'], ['summary', 'needs_input'])
             if not isinstance(args['summary'], str) or not 1 <= len(args['summary']) <= 1000 or type(args['needs_input']) is not bool:
@@ -865,7 +906,7 @@ class TaskHarness:
             return {'turn_finished': True}
         raise AppError('没有这个工具，请使用当前提供的调查或方案工具。', 'unknown_tool')
 
-    def _propose_plan(self, task, args, *, current=None, origin='model', save=True):
+    def _propose_plan(self, task, args, *, current=None, origin='model', save=True, provenance=None):
         self._args(args, ['summary', 'items'], ['summary', 'items'])
         if not isinstance(args['summary'], str) or not 1 <= len(args['summary']) <= 600:
             raise AppError('请用一句话说明这个方案。')
@@ -873,6 +914,7 @@ class TaskHarness:
         if not isinstance(rows, list) or not 1 <= len(rows) <= 30:
             raise AppError('每个方案请提出1到30项明确操作。')
         current = current if current is not None else {i['id']: i for i in self._items(task)}
+        source = self._provenance(provenance)
         entries, seen = [], set()
         for row in rows:
             self._args(row, ['id', 'action', 'reason', 'impact', 'evidence_ids'], ['id', 'action', 'reason', 'impact'])
@@ -898,16 +940,22 @@ class TaskHarness:
                     raise AppError('每项都需要简短的原因和影响说明。')
             context = item.get('details', {}).get('decision_context', {})
             personal = item['kind'] in ('file', 'directory') and context.get('personal_choice_required', True)
-            entries.append(dict(id=item['id'], name=item['name'], kind=item['kind'], path=item['path'],
+            entry = dict(id=item['id'], name=item['name'], kind=item['kind'], path=item['path'],
                                 size_bytes=item.get('size_bytes', 0), signature=item['signature'], action=row['action'],
                                 reason=self.clean(row['reason'], 400), impact=self.clean(row['impact'], 400),
                                 evidence_ids=self._evidence(task, row.get('evidence_ids')),
-                                personal_choice_required=bool(personal), default_selected=not personal))
+                                provenance=copy.deepcopy(source),
+                                personal_choice_required=bool(personal), default_selected=not personal)
+            advice = task.get('advice', {}).get(item['id'])
+            if advice and advice.get('signature') == item['signature']:
+                entry['advice_provenance'] = self._provenance(advice.get('provenance'))
+            entries.append(entry)
         entries = [i for i in entries if not any(j['id'] != i['id'] and j['kind'] == 'directory'
                    and i['kind'] in ('file', 'directory') and within(i['path'], j['path']) for j in entries)]
         task['plan_version'] += 1
         self._clear_question(task)
-        task['plan'] = dict(version=task['plan_version'], summary=self.clean(args['summary'], 600), items=entries, origin=origin)
+        task['plan'] = dict(version=task['plan_version'], summary=self.clean(args['summary'], 600),
+                            items=entries, origin=origin, provenance=copy.deepcopy(source))
         task.update(status='awaiting_review', summary=task['plan']['summary'])
         if save:
             self._save(task)
@@ -1006,7 +1054,8 @@ class TaskHarness:
             # The helper can validate without saving; runtime.prepare adds live
             # snapshot and full descendant checks before a host plan is published.
             self._propose_plan(staged, dict(summary='按你的明确选择处理这些项目。', items=rows), current=current,
-                               origin='user_direct', save=False)
+                               origin='user_direct', save=False,
+                               provenance=dict(source='local', generated_at=now()))
             prepared = self.state.prepare(ids, self.assistant.public_settings()['protect_patterns'], action)
             self.state.plans.pop(prepared['id'], None)
             staged['feedback'].append(dict(role='user', content='我在界面中明确选择了这些项目与操作，请记录结果后继续调查。',
@@ -1202,6 +1251,7 @@ class TaskHarness:
                 task['usage']['model_requests'] += 1
                 self._save(task)
                 message = self.assistant.agent_turn(messages, tool_specs(), cancel=cancel)
+                response_provenance = self._provenance(message.pop('_provenance', None))
                 task = self._get(key)
                 self._account_usage(task, message.get('_usage'))
                 self._save(task)
@@ -1230,7 +1280,7 @@ class TaskHarness:
                         args = json.loads(call['function']['arguments'])
                         if self.trace:
                             self.trace.record({'kind': 'tool_call', 'payload': {'name': name, 'arguments': args, 'call_id': call['id']}})
-                        result = self.tool(key, name, args, cancel=cancel)
+                        result = self.tool(key, name, args, cancel=cancel, provenance=response_provenance)
                     except Exception as exc:
                         result = {'error': self.clean(str(exc), 500) if isinstance(exc, AppError) else '工具参数或读取结果无效，请调整后再试。'}
                     task = self._get(key)
