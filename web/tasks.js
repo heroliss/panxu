@@ -13,6 +13,7 @@ window.PanxuTasks = (() => {
   let pending = false;
   let lastError = '';
   let intent = '';
+  let questionKey = '', answerOption = '', answerText = '';
   const adviceCache = new Map(), adviceRequests = new Map();
   let adviceGeneration = 0;
   const adviceKey = (id, signature) => `${id}:${signature || ''}`;
@@ -66,6 +67,13 @@ window.PanxuTasks = (() => {
     b.addEventListener('click', handler); return b;
   }
   function detail(label, ...children) { return add(node('details', 'task-detail'), node('summary', '', label), ...children); }
+  function icon(paths, className) {
+    const ns='http://www.w3.org/2000/svg', svg=document.createElementNS(ns,'svg');
+    Object.entries({viewBox:'0 0 24 24',fill:'none',stroke:'currentColor','stroke-width':'1.6','stroke-linecap':'round','stroke-linejoin':'round','aria-hidden':'true',focusable:'false'}).forEach(([key,value])=>svg.setAttribute(key,value));
+    svg.classList.add(className);
+    paths.forEach(value=>{const path=document.createElementNS(ns,'path');path.setAttribute('d',value);svg.appendChild(path);});
+    return svg;
+  }
   function textInput(label, value, handler, textarea = false) {
     const id = 'task-' + (textarea ? 'goal' : 'path');
     const input = node(textarea ? 'textarea' : 'input');
@@ -77,6 +85,8 @@ window.PanxuTasks = (() => {
   function accept(task) {
     if(current?.id!==task?.id || current?.updated_at!==task?.updated_at) {adviceGeneration++;adviceCache.clear();adviceRequests.clear();}
     current = task;
+    const nextQuestionKey=task?.question?`${task.id}:${task.question.id}:${task.question.version}`:'';
+    if(nextQuestionKey!==questionKey) {questionKey=nextQuestionKey;answerOption='';answerText='';}
     (task?.advice || []).forEach(entry=>cacheAdvice(adviceKey(entry.id,entry.signature),entry));
     if (task?.plan) {
       const key = task.id + ':' + task.plan.version;
@@ -133,7 +143,8 @@ window.PanxuTasks = (() => {
       const grid = node('div', 'task-intents');
       ['c_cleanup', 'disk_cleanup', 'directory_cleanup', 'duplicates'].forEach((key) => {
         const card = action('', () => choose(key), 'task-intent'); card.dataset.preset = key;
-        add(card, node('strong', '', intents[key][0]), node('span', '', intents[key][1])); add(grid, card);
+        const paths={c_cleanup:['M4 5h16v14H4z','M4 14h16','M8 17h.01M11 17h.01'],disk_cleanup:['M4 4h16v6H4z','M4 14h16v6H4z','M8 7h.01M8 17h.01'],directory_cleanup:['M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v10H3Z','M3 11h18'],duplicates:['M8 3h12v14H8z','M4 7v14h12','M12 7h4M12 11h4']};
+        add(card,icon(paths[key],'task-intent-symbol'),add(node('span','task-intent-copy'),node('strong','',intents[key][0]),node('span','',intents[key][1])),icon(['M5 12h14m-5-5 5 5-5 5'],'task-intent-arrow')); add(grid, card);
       });
       add(root, grid, detail('更多任务',
         ...['background', 'installers', 'custom'].map((key) => action(intents[key][0], () => choose(key), 'plain-button more-task'))),
@@ -182,6 +193,33 @@ window.PanxuTasks = (() => {
     const unresolved=Array.isArray(handoff?.unresolved)?handoff.unresolved:[];
     if(unresolved.length) {const list=node('ul','task-events');unresolved.slice(0,5).forEach(value=>add(list,node('li','',typeof value==='string'?value:value.summary || value.description || '尚待核对')));add(box,detail('尚未解决的内容',list));}
     if(handoff?.model?.model) add(box,node('p','field-help',`上轮使用 ${handoff.model.model}。继续时会根据当前连接和已保存的目标、事实、选择重建上下文。`));
+    if(Array.isArray(current.loaded_skills) && current.loaded_skills.length) {
+      const guides=detail('本次参考的指导');
+      current.loaded_skills.slice(0,20).forEach(read=>{
+        const section=detail(read.name || read.id), body=node('div','task-skill-content');let loaded=false,loading=false,cursor=null,content='';
+        const more=action('继续读取指导',()=>load(),'plain-button');more.hidden=true;
+        async function load() {
+          if(loading)return;loading=true;more.disabled=true;
+          try {
+            const data=await context.api(`/api/skills/${encodeURIComponent(read.id)}${cursor?`?cursor=${encodeURIComponent(cursor)}`:''}`);
+            if(!section.isConnected || current?.id!==taskId)return;
+            const skill=data.skill || data;
+            if(!content){
+              body.replaceChildren(node('p','field-help',`参考版本 ${read.version || '未提供'} · 当前版本 ${skill.version || '未提供'}`));
+              if(read.sha256 && skill.sha256!==read.sha256)add(body,node('p','field-help','这份指导已更新，下面展示当前版本。'));
+              if(skill.summary)add(body,node('p','',skill.summary));
+              const sources=(skill.sources || []).map(source=>`${source.title || '参考资料'}：${source.url || ''}`).join('\n');
+              if(sources)add(body,detail('来源与核对日期',node('p','field-help',`资料核对日期：${skill.checked_at || '未提供'}`),node('p','task-skill-sources',sources)));
+              add(body,node('pre','developer-json'));
+            }
+            content+=(skill.content || '');body.querySelector('pre').textContent=content;
+            cursor=skill.next_cursor;more.hidden=!skill.has_more;loaded=true;
+          } catch(error) {add(body,node('p','field-error',error.message));loaded=false;}
+          finally {loading=false;more.disabled=false;}
+        }
+        section.addEventListener('toggle',()=>{if(section.open&&!loaded)load();});add(section,body,more);add(guides,section);
+      });add(box,guides);
+    }
     const usage=current.usage;
     if(usage) {
       const rows=node('dl','task-workload');
@@ -242,6 +280,65 @@ window.PanxuTasks = (() => {
     });
     add(form, input, send); add(root, detail(label, form));
   }
+  function question(root) {
+    const q=current.question, taskId=current.id;
+    const form=node('form','task-question'), choices=node('fieldset','task-question-options');
+    add(choices,node('legend','field-label',q.question));
+    const submit=node('button','button primary task-primary','继续');submit.type='submit';
+    const update=()=>{submit.disabled=pending || (!answerOption && !answerText.trim());};
+    q.options.forEach(option=>{
+      const label=node('label','task-question-option'), radio=node('input');
+      radio.type='radio';radio.name='task-answer';radio.value=option.id;radio.checked=answerOption===option.id;radio.disabled=pending;
+      radio.addEventListener('change',()=>{answerOption=option.id;update();});
+      const copy=node('span','task-option-copy');add(copy,node('strong','',option.label));
+      if(option.description)add(copy,node('span','field-help',option.description));
+      add(choices,add(label,radio,copy));
+    });
+    const input=node('textarea');input.value=answerText;input.maxLength=2000;input.disabled=pending;
+    input.setAttribute('aria-label','补充或用自己的话回答');input.placeholder='也可以直接写下你的想法。';
+    input.addEventListener('input',()=>{answerText=input.value;update();});
+    form.addEventListener('submit',event=>{
+      event.preventDefault();if(submit.disabled || current?.id!==taskId || current.question?.id!==q.id || current.question?.version!==q.version)return;
+      request(`/api/tasks/${taskId}/answer`,{version:q.version,question_id:q.id,...(answerOption?{option_id:answerOption}:{}),...(answerText.trim()?{text:answerText.trim()}:{})});
+    });
+    add(form,choices,detail('补充或用自己的话回答',input),add(node('div','task-question-footer'),submit,
+      action('暂不回答',()=>request(`/api/tasks/${taskId}/answer`,{version:q.version,question_id:q.id,skip:true}),'plain-button')));
+    update();add(root,form);
+  }
+  async function directAction(taskId,item,operation) {
+    if(pending || current?.id!==taskId || busy())return;
+    pending=true;lastError='';redraw();
+    try {
+      const prepared=await context.api(`/api/tasks/${taskId}/direct-plan`,{ids:[item.id],action:operation,snapshots:{[item.id]:item.signature}});
+      if(current?.id!==taskId)return;
+      const plan=prepared.plan || prepared.task?.plan;
+      if(prepared.task?.id!==taskId || !plan || plan.items?.length!==1 || plan.items[0].id!==item.id || plan.items[0].action!==operation)throw new Error('处理对象已变化，请重新核对后选择。');
+      accept(prepared.task);
+      const result=await context.api(`/api/tasks/${taskId}/approve`,{version:plan.version,ids:[item.id]});
+      if(current?.id===taskId && result.task)accept(result.task);
+      if(!busy())await context.refreshCatalog();
+    } catch(error) {lastError=error.message || '处理暂时未完成，已有记录会保留。';}
+    finally {pending=false;redraw();}
+  }
+  function directControls(card,entry,taskId) {
+    if(entry.stale || entry.user_kept)return;
+    const box=detail('自行处理'), body=node('div','task-direct-options');box.classList.add('task-direct');let loaded=false;
+    box.addEventListener('toggle',async()=>{
+      if(!box.open || loaded)return;loaded=true;body.replaceChildren(node('p','field-help','正在核对可用操作…'));
+      try {
+        const {item}=await context.api(`/api/item?id=${encodeURIComponent(entry.id)}`);
+        if(!box.isConnected || current?.id!==taskId)return;
+        body.replaceChildren();
+        if(!item || item.signature!==entry.signature || item.simulated || item.risk==='protected') {add(body,node('p','field-help','当前内容已变化或受保护，请重新核对。'));return;}
+        const names={delete:item.kind==='directory'?'确认清理这个文件夹':'确认清理这份文件',disable_startup:'确认关闭此开机启动项',stop_service:'确认停止此服务',stop_process:'确认结束此应用',uninstall:'确认卸载此软件'};
+        add(body,node('p','',item.name),node('p','task-path',item.path),node('p','field-help',entry.impact),
+          node('p','field-help','由程序直接处理并核对，再把结果告知助手。测试保护下仍只记录预演。'));
+        const available=(item.actions || []).filter(name=>Object.hasOwn(names,name));
+        available.forEach(operation=>add(body,action(names[operation],()=>directAction(taskId,item,operation),'button')));
+        if(!available.length)add(body,node('p','field-help','这项内容暂时没有可用的处理操作。'));
+      } catch(error) {body.replaceChildren(node('p','field-error',error.message));loaded=false;}
+    });add(box,body);add(card,box);
+  }
   function plan(root) {
     const cards = node('div', 'task-plan');
     current.plan.items.forEach((item) => {
@@ -287,7 +384,8 @@ window.PanxuTasks = (() => {
     if (!current.last_result) return;
     const result = current.last_result;
     const labels = {succeeded: '已核对', failed: '未完成', unverified: '待核实', cancelled: '已停止', running: '待核实'};
-    const box = detail(`本轮处理结果 · ${result.succeeded}/${result.total} 项已核对`,
+    const pendingCount=Math.max(0,result.total-result.succeeded);
+    const box = detail(`本轮结果：${result.succeeded} 项预演完成${pendingCount?`，${pendingCount} 项未完成或待核实`:''}`,
       node('p', 'result-protection-note', '测试保护下完成预演，实际文件和系统未改动。'));
     result.items.forEach((item) => add(box, node('p', '', item.current_state === 'undone'
       ? `${item.name}：已撤销这次预演。` : `${item.name}：${labels[item.status] || '待核实'}。${item.message}`)));
@@ -315,6 +413,7 @@ window.PanxuTasks = (() => {
           const card = node('article', 'task-advice-item');
           add(card, node('strong', '', entry.name), node('span', 'advice-label', entry.stale ? '内容已变化，需重新核对' : entry.user_kept ? '你已选择保留' : labels[entry.conclusion] || '待确认'),
             node('p', '', entry.purpose), node('p', '', entry.reason), detail('了解影响', node('p', '', entry.impact)));
+          if(!busy())directControls(card,entry,taskId);
           add(list, card);
         });
         if (!(data.items || []).length) add(list, node('p', 'muted', '这次还没有形成逐项用途建议。可以继续调查。'));
@@ -336,7 +435,8 @@ window.PanxuTasks = (() => {
     const panel = node('section', 'panel task-session');
     const summary = node('div', 'task-summary'); summary.setAttribute('role', 'status');
     if (busy()) add(summary, node('span', 'spinner'));
-    add(summary, node('p', '', current.summary)); add(panel, summary);
+    if(!current.question || busy())add(summary, node('p', '', current.summary));
+    if(summary.childNodes.length)add(panel, summary);
     if(!busy() && context.modelProfile?.model && current.handoff?.model?.model && ['provider','model','protocol'].some(key=>(context.modelProfile[key] || '')!==(current.handoff.model[key] || ''))) add(panel,node('p','field-help',`继续调查将使用当前连接的 ${context.modelProfile.model}，已有目标、事实和保留选择会继续使用。`));
     if (current.last_result && current.last_result.succeeded < current.last_result.total) {
       add(panel, node('p', 'task-result-notice', `还有 ${current.last_result.total-current.last_result.succeeded} 项未完成或待核实，可展开本轮结果查看原因。`));
@@ -346,6 +446,8 @@ window.PanxuTasks = (() => {
         if (!current.job_id) return;
         await request('/api/jobs/' + current.job_id + '/cancel', {});
       }, 'plain-button task-stop'));
+    } else if (current.question) {
+      question(panel);
     } else if (current.status === 'needs_model') {
       add(panel, context.modelConfigured
         ? action('继续调查', () => request('/api/tasks/' + current.id + '/continue', {}), 'button primary task-primary')
@@ -356,7 +458,7 @@ window.PanxuTasks = (() => {
       add(panel, action('继续调查', () => request('/api/tasks/' + current.id + '/continue', {}), 'button primary task-primary'));
       feedbackForm(panel, '补充或改变整理要求');
     }
-    renderAdvice(panel); results(panel); processDetails(panel);
+    results(panel); renderAdvice(panel); processDetails(panel);
     add(root, panel);
     if (!busy()) add(root, action('开始新的整理', newTask, 'plain-button task-new'));
   }

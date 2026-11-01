@@ -15,12 +15,15 @@ import os
 from pathlib import Path
 import re
 import struct
+import sys
 import urllib.parse
 import urllib.request
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 VERIFY = ROOT / "verification"
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 
 def sha(path: Path) -> str:
@@ -145,9 +148,11 @@ def screenshot_evidence() -> list[dict]:
 
 def source_snapshot(app_version: str) -> dict:
     sources = {ROOT / name for name in ("run.py", "README.txt", "build.ps1")}
-    for folder, suffixes in (("diskpilot", {".py"}), ("tests", {".py"}), ("web", {".html", ".js", ".css"})):
+    for folder, suffixes in (("diskpilot", {".py"}), ("tests", {".py", ".cjs"}), ("web", {".html", ".js", ".css"})):
         sources.update(path for path in (ROOT / folder).rglob("*") if path.is_file() and path.suffix in suffixes)
     sources.update(VERIFY.glob("*.py"))
+    from diskpilot.knowledge import BUNDLED_SKILL_FILES
+    sources.update(ROOT / 'skills' / name for name in BUNDLED_SKILL_FILES)
     files = {}
     for path in sorted(sources):
         require(not linked(path), "Refusing a linked source file")
@@ -200,6 +205,9 @@ def finalize(*, tests_run: int, health_url: str) -> dict:
             "Release README differs from current source")
     for name in ("index.html", "style.css", "app.js", "tasks.js", "files.js"):
         require(sha(ROOT / "web" / name) == sha(release / "_internal" / "web" / name), "Packaged web asset differs from source")
+    from diskpilot.knowledge import BUNDLED_SKILL_FILES
+    for name in BUNDLED_SKILL_FILES:
+        require(sha(ROOT / 'skills' / name) == sha(release / '_internal' / 'skills' / name), 'Packaged guidance differs from source')
     files = release_files(release)
     health = read_health(health_url, app_version)
     local_path = VERIFY / "local-acceptance.json"

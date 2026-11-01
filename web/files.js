@@ -13,6 +13,24 @@ window.PanxuFiles = (() => {
   function button(label, run, cls = 'button') {
     const b = node('button', cls, label); b.type = 'button'; b.addEventListener('click', run); return b;
   }
+  function locationLabels(items) {
+    const rows=items.map(item=>{
+      const path=String(item.path || ''), separator=path.includes('\\')?'\\':'/';
+      const parts=path.split(/[\\/]/).filter(Boolean);let prefix=path.startsWith('/')?'/':'';
+      if(/^[a-z]:$/i.test(parts[0] || ''))prefix=parts.shift();
+      else if(path.startsWith('\\\\'))prefix='\\\\'+parts.splice(0,2).join('\\');
+      if(parts.at(-1)?.toLowerCase()===String(item.name || '').toLowerCase())parts.pop();
+      return {item,parts,prefix,separator,depth:2};
+    });
+    const label=row=>`${row.prefix?row.prefix.replace(/[\\/]$/,'')+row.separator:''}${row.parts.length>row.depth?'…'+row.separator:''}${row.parts.slice(-row.depth).join(row.separator)}` || '所选位置';
+    for(let round=0;round<100;round++) {
+      const groups=new Map();rows.forEach(row=>{const key=`${row.item.name}\n${label(row)}`.toLowerCase();if(!groups.has(key))groups.set(key,[]);groups.get(key).push(row);});
+      let changed=false;
+      groups.forEach(group=>{if(group.length>1)group.forEach(row=>{if(row.depth<row.parts.length){row.depth++;changed=true;}});});
+      if(!changed)break;
+    }
+    return new Map(rows.map(row=>[row.item.id,label(row)]));
+  }
   function select(label, entries, value, change) {
     const s = node('select'); s.setAttribute('aria-label', label);
     entries.forEach(([key, label]) => { const o = node('option', '', label); o.value = key; s.append(o); });
@@ -140,14 +158,16 @@ window.PanxuFiles = (() => {
     const analyze = button('分析当前列表', () => context.analyze(null, {query,scope,risk}), 'button primary'); analyze.dataset.analyzeList = '1';
     top.append(label, analyze); panel.append(top);
     const adviceNote=node('p','file-advice-note field-help');adviceNote.hidden=true;adviceNote.setAttribute('role','status');panel.append(adviceNote);
+    const locations=locationLabels(page.items);
     page.items.forEach((item) => {
       const row = node('div', 'paged-file-row'); row.dataset.fileId = item.id;
       const check = node('input'); check.type = 'checkbox'; check.dataset.fileCheck = item.id;
       check.setAttribute('aria-label', '选择分析' + item.name);
       check.addEventListener('change', () => { context.toggle(item, check.checked); selectionChanged(); context.changed(); });
       const copy = node('div', 'paged-file-copy'); const title = button(item.name, () => context.show(item), 'file-name-button');
-      title.title = item.name;
-      const location = node('small', '', item.path); location.title = item.path;
+      title.title = item.path;
+      const location = node('small', '', locations.get(item.id)); location.title = item.path;
+      location.setAttribute('aria-label','完整位置：'+item.path);
       copy.append(title, location);
       const result = context.advice(item);
       const labels = {keep:'建议保留',review:'需要确认',recommend:'已有处理建议'};

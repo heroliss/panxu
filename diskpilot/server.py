@@ -17,6 +17,7 @@ from .duplicates import verify_duplicates
 from .catalog import FileCatalog
 from .llm import ModelAssistant
 from .lease import DataLease
+from .knowledge import SkillRegistry
 from .recommendations import build_recommendations
 from .scanner import scan_directory
 from .scan_index import ScanIndex
@@ -24,6 +25,10 @@ from .simulation import AppError, SimulationState
 from .tasks import TaskHarness
 from .trace import DeveloperTrace
 from .windows import disks, inventory, validate_system_items
+
+
+UI_DEFAULTS = dict(theme='dark', developer_live=False, developer_conversation=True,
+                   developer_skills=True, developer_tools=False)
 
 
 def common_cache_paths():
@@ -48,7 +53,8 @@ class Application:
         self.trace = DeveloperTrace(data_dir, lambda value: self.assistant.clean_text(value, limit=1024 * 1024))
         self.assistant.trace_hook = self.trace.record
         self.scan_index = ScanIndex(Path(data_dir) / 'scan_index.sqlite3')
-        self.harness = TaskHarness(self.state, self.assistant, trace=self.trace, scan_index=self.scan_index)
+        self.skills = SkillRegistry()
+        self.harness = TaskHarness(self.state, self.assistant, trace=self.trace, scan_index=self.scan_index, skill_registry=self.skills)
         self.catalog = FileCatalog(self.state, self.patterns)
         self.recommendation_cache = None
         self.settings_revision = 0
@@ -60,6 +66,30 @@ class Application:
 
     def patterns(self):
         return self.assistant.public_settings().get('protect_patterns', [])
+
+    def ui_preferences(self, payload=None):
+        with self.state.lock:
+            row = self.state.db.execute("SELECT value FROM meta WHERE key='ui_preferences'").fetchone()
+            try:
+                saved = json.loads(row[0]) if row else {}
+            except (ValueError, TypeError):
+                saved = {}
+            current = dict(UI_DEFAULTS)
+            if isinstance(saved, dict):
+                for key, value in saved.items():
+                    if key in UI_DEFAULTS and ((key == 'theme' and value in ('dark', 'light', 'system'))
+                                              or (key != 'theme' and type(value) is bool)):
+                        current[key] = value
+            if payload is not None:
+                if not isinstance(payload, dict) or set(payload) - set(UI_DEFAULTS):
+                    raise AppError('界面偏好格式无效。')
+                for key, value in payload.items():
+                    if (key == 'theme' and value not in ('dark', 'light', 'system')) or (key != 'theme' and type(value) is not bool):
+                        raise AppError('请选择有效的界面偏好。')
+                current.update(payload)
+                with self.state.db:
+                    self.state.db.execute('INSERT OR REPLACE INTO meta VALUES(?,?)', ('ui_preferences', json.dumps(current)))
+            return {'preferences': current}
 
     def view(self):
         return self.state.view(self.patterns())
@@ -95,6 +125,8 @@ class Application:
                         self.harness.validate_approval(task_id, payload.get('version'), payload.get('ids'))
                     elif payload.get('feedback'):
                         self.harness.feedback(task_id, payload.get('message', ''), payload.get('keep_ids'))
+                    elif payload.get('answer') is not None:
+                        self.harness.answer(task_id, payload['answer'])
                     self.harness.claim(task_id, execute=bool(payload.get('execute')))
                     self.harness.attach_job(task_id, key)
             cancel = threading.Event()
@@ -182,6 +214,18 @@ class Application:
             return {k: v for k, v in value.items() if not k.startswith('_')}
 
     def get(self, path, query):
+        if path == '/api/ui-preferences':
+            return self.ui_preferences()
+        if path == '/api/skills' or path.startswith('/api/skills/'):
+            try:
+                if path == '/api/skills':
+                    return self.skills.discover(query=query.get('query', [''])[0], cursor=query.get('cursor', [None])[0],
+                        limit=int(query.get('limit', ['5'])[0]), token_budget=3000)
+                if len(path.split('/')) != 4:
+                    raise ValueError('技能接口不存在')
+                return self.skills.load(path.split('/')[3], cursor=query.get('cursor', [None])[0], token_budget=4000)
+            except (ValueError, OSError) as exc:
+                raise AppError(str(exc), 'invalid_skill') from None
         if path == '/api/providers':
             return self.assistant.provider_presets()
         if path == '/api/developer':
@@ -250,6 +294,8 @@ class Application:
         raise AppError('接口不存在。', 'not_found', 404)
 
     def post(self, path, payload):
+        if path == '/api/ui-preferences':
+            return self.ui_preferences(payload)
         if path == '/api/developer':
             if set(payload) - {'enabled', 'clear'}:
                 raise AppError('开发模式设置格式无效。')
@@ -269,10 +315,14 @@ class Application:
             return dict(job, task=self.harness.public(task['id']))
         if path.startswith('/api/tasks/'):
             parts = path.split('/')
-            if len(parts) == 5 and parts[4] in ('continue', 'approve', 'feedback'):
+            if len(parts) == 5 and parts[4] == 'direct-plan':
+                return self.harness.direct_plan(parts[3], payload)
+            if len(parts) == 5 and parts[4] in ('continue', 'approve', 'feedback', 'answer'):
                 data = dict(task_id=parts[3], execute=parts[4] == 'approve', feedback=parts[4] == 'feedback',
                             message=payload.get('message', ''), keep_ids=payload.get('keep_ids'),
                             version=payload.get('version'), ids=payload.get('ids'))
+                if parts[4] == 'answer':
+                    data['answer'] = payload
                 job = self.start_job('agent', data)
                 return dict(job, task=self.harness.public(parts[3]))
             raise AppError('任务操作不存在。', 'not_found', 404)
@@ -392,7 +442,11 @@ def create_server(data_dir, port=0, *, developer_fixtures=False):
                 if parsed.path not in names:
                     raise AppError('页面不存在。', 'not_found', 404)
                 name, mime = names[parsed.path]
-                return self.send(200, (app.web_root / name).read_bytes(), mime)
+                body = (app.web_root / name).read_bytes()
+                if name == 'index.html':
+                    theme = app.ui_preferences()['preferences']['theme'].encode('ascii')
+                    body = body.replace(b'data-theme-preference="dark"', b'data-theme-preference="' + theme + b'"', 1)
+                return self.send(200, body, mime)
             except AppError as exc:
                 return self.send(exc.status, {'error': str(exc), 'code': exc.code})
             except Exception:

@@ -1,6 +1,6 @@
 {
   "product": "盘序",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "mode": "simulation",
   "root": "E:\\GPT-Projects\\win11-disk-assistant",
   "safety": "This build has NO real executor. All apply/undo/reset operations modify only SQLite simulation records. Never unlink/move/kill/control services/edit startup outside app-owned data.",
@@ -76,7 +76,13 @@
     "GET /api/tasks/{id}/advice": "{offset?,limit?:1..50,ids?:comma-separated IDs up to50} -> {items,total,offset,limit,has_more}",
     "GET /api/developer": "{offset?,limit?:1..30} -> {enabled,entries,total,retention}; local opt-in sanitized protocol trace",
     "POST /api/developer": "{enabled?:bool,clear?:bool}; defaults off, captures subsequent requests only",
-    "GET /api/tasks/{id}/facts": "{offset?,limit?:1..20,ids?:comma-separated fact IDs up to12} -> {items,total,offset,limit,has_more}; historical observations with scope/source/time/recheck rule"
+    "GET /api/tasks/{id}/facts": "{offset?,limit?:1..20,ids?:comma-separated fact IDs up to12} -> {items,total,offset,limit,has_more}; historical observations with scope/source/time/recheck rule",
+    "GET /api/skills": "{query?,cursor?,limit?:1..10} -> fixed bundled catalog; guidance only",
+    "GET /api/skills/{id}": "{cursor?} -> flat versioned content, sha256, sources, budget, next_cursor; allowlisted resources only",
+    "POST /api/tasks/{id}/answer": "{version,question_id?,option_id?,text?,skip?:bool} -> {task,job_id}; structured preference, no operation approval",
+    "POST /api/tasks/{id}/direct-plan": "{ids:1..30,action,snapshots?} -> {task,plan}; user-origin versioned plan, approval via existing approve route",
+    "GET /api/ui-preferences": "{preferences:{theme:dark|light|system,developer_live,developer_conversation,developer_skills,developer_tools}}",
+    "POST /api/ui-preferences": "allowlisted preference subset -> {preferences}; persisted separately from model settings/capture"
   },
   "mutations": "Require X-CSRF-Token from bootstrap. Errors are JSON {error,code}. Relative same-origin fetch only. Input limits apply.",
   "summary": "{total_items,visible_items,simulated_items,logical_bytes,simulated_bytes,process_memory_bytes,by_kind,source,mode}. Real disks separate; no simulated_bytes shown as actual freed space.",
@@ -87,8 +93,10 @@
   "privacy": "No user file body read for LLM. Metadata only; send_paths false by default. No real provider key expected in tests. LLM cannot execute or approve plans.",
   "agent_task": "statuses ready/investigating/awaiting_review/executing/needs_input/needs_model/paused/budget_exhausted/error/completed. Up to 6 model responses and 12 tools per turn. Personal files default unchecked; unknown/protected/out-of-scope and stale plans cannot bypass factual checks. Tool text is untrusted.",
   "action_runtime": "simulation backend only. Per-item durable intent plus atomic overlay/receipt, status succeeded/failed/partial/cancelled/unverified. Recovery verifies receipts without blind replay. User undo is separately visible as current_state=undone. Actual reclaimed bytes always zero.",
-  "release_status": "validated_local_portable",
-  "installed_release": "0.5.0",
+  "release_status": "validated_portable_checkpoint",
+  "installed_release": "0.5.0_profile_preserved",
   "task_memory": "Durable goal, choices, versioned plan, simulation receipts, up to300 historical facts/task with32MiB global fact-payload retention. Model connection change reconstructs fresh context, not private provider continuation. Request attempts/tools/work counted; missing provider token usage is unknown.",
-  "task_scan": "ScanIndex durable name/metadata spool, stable keyset cursor; steps1..512, rows<=100000/scan. Interrupted unfinished enumeration replays with explicit work accounting; acquired rows retained. Whole-directory actions require separate current subtree validation. All17 tool schemas still sent each model turn; discover_tools is help, not lazy loading."
+  "task_scan": "ScanIndex durable name/metadata spool, stable keyset cursor; steps1..512, rows<=100000/scan. Interrupted unfinished enumeration replays with explicit work accounting; acquired rows retained. Whole-directory actions require separate current subtree validation. All20 tool schemas still sent each model turn; discover_tools is help, not lazy loading.",
+  "guidance": "Fixed9 bundled markdown resources, max32KiB each. list_skills/read_skill expose bounded public guidance with versions/fingerprints/sources; no dynamic path/URL access or system capability granted.",
+  "user_actions": "Model questions have independent monotonic versions; answers/skip durable but not approval. Host direct-plan preflights current identity in task scope, then same approve/runtime; source, chosen IDs, results flow back. Legacy manual history only intersects task-known IDs for model awareness."
 }
