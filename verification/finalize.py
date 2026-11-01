@@ -21,7 +21,6 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 VERIFY = ROOT / "verification"
-SCREENSHOTS = ("native-v020.png", "native-v020-files.png")
 
 
 def sha(path: Path) -> str:
@@ -57,7 +56,13 @@ def linked(path: Path) -> bool:
 
 def archive_previous(*, apply: bool = False) -> dict:
     """Preview/preserve only the explicitly named previous package/evidence."""
-    destination = inside_project(VERIFY / "previous-v010")
+    package_path = VERIFY / "package.json"
+    require(package_path.is_file(), "Previous static package report is required to select archive destination")
+    previous = json.loads(package_path.read_text(encoding="utf-8-sig"))
+    previous_version = previous.get("application", {}).get("version", "")
+    require(re.fullmatch(r"\d+\.\d+\.\d+", previous_version) is not None, "Previous version is invalid")
+    require(previous_version != version(), "Current-version package must not be archived as previous evidence")
+    destination = inside_project(VERIFY / ("previous-v" + previous_version.replace(".", "")))
     require(not destination.exists() or not linked(destination), "Archive destination cannot be a link")
     pairs = [
         (ROOT / "dist" / "PanXu", destination / "PanXu"),
@@ -123,7 +128,8 @@ def read_health(url: str, expected_version: str) -> dict:
 
 def screenshot_evidence() -> list[dict]:
     evidence = []
-    for name in SCREENSHOTS:
+    marker = "native-v" + version().replace(".", "")
+    for name in (marker + ".png", marker + "-files.png"):
         path = VERIFY / name
         require(path.is_file() and not linked(path), "Current native screenshot missing or linked: " + name)
         with path.open("rb") as stream:
@@ -141,7 +147,7 @@ def source_snapshot(app_version: str) -> dict:
     sources = {ROOT / name for name in ("run.py", "README.txt", "build.ps1")}
     for folder, suffixes in (("diskpilot", {".py"}), ("tests", {".py"}), ("web", {".html", ".js", ".css"})):
         sources.update(path for path in (ROOT / folder).rglob("*") if path.is_file() and path.suffix in suffixes)
-    sources.update(VERIFY / name for name in ("finalize.py", "run_local_acceptance.py") if (VERIFY / name).exists())
+    sources.update(VERIFY.glob("*.py"))
     files = {}
     for path in sorted(sources):
         require(not linked(path), "Refusing a linked source file")
@@ -191,18 +197,23 @@ def finalize(*, tests_run: int, health_url: str) -> dict:
     require(exe.is_file() and sha(exe) == package.get("package", {}).get("exe_sha256"), "Executable differs from static report")
     require((release / "README.txt").is_file() and sha(release / "README.txt") == sha(ROOT / "README.txt"),
             "Release README differs from current source")
-    for name in ("index.html", "style.css", "app.js"):
+    for name in ("index.html", "style.css", "app.js", "tasks.js"):
         require(sha(ROOT / "web" / name) == sha(release / "_internal" / "web" / name), "Packaged web asset differs from source")
     files = release_files(release)
     health = read_health(health_url, app_version)
     local_path = VERIFY / "local-acceptance.json"
     local = json.loads(local_path.read_text(encoding="utf-8-sig"))
     require(local.get("passed") is True and local.get("fixture_unchanged") is True
-            and local.get("observed_system_items_unchanged") is True,
+            and local.get("observed_system_items_unchanged") is True and local.get('application_version') == app_version,
             "Supplied local simulation acceptance report did not pass")
     mock = local.get("model_loopback", {})
     require(mock.get("passed") is True and mock.get("external_connection_attempt_count") == 0,
             "Loopback model acceptance or external-connection boundary did not pass")
+    agent_path = VERIFY / 'agent-ui-acceptance.json'
+    agent = json.loads(agent_path.read_text(encoding='utf-8-sig'))
+    require(agent.get('passed') is True and agent.get('version') == app_version
+            and agent.get('real_fixture_files_unchanged') is True and agent.get('actual_reclaimed_bytes') == 0,
+            'Current agent task UI/loop acceptance did not pass')
     screenshots = screenshot_evidence()
     manifest = source_snapshot(app_version)
     # Exclusive creation preserves all existing archives. No existing evidence,
@@ -230,6 +241,7 @@ def finalize(*, tests_run: int, health_url: str) -> dict:
                              "fixture_unchanged": True, "observed_system_items_unchanged": True,
                              "package_version_attribution_verified": False},
         "real_provider_tested": False, "mock_provider_tool_loop_passed": True,
+        "agent_ui_acceptance": {"file": agent_path.name, "sha256": sha(agent_path), "reported_passed": True},
         "source_manifest": {"file": manifest_path.name, "source_file_count": manifest["source_file_count"]},
         "release": {"exe_sha256": sha(exe), "zip_name": archive.name, "zip_bytes": archive.stat().st_size,
                     "zip_sha256": sha(archive), "zip_entries": archive_count},

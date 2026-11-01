@@ -26,6 +26,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from diskpilot.llm import ModelAssistant
+from diskpilot import __version__
 from diskpilot.scanner import scan_directory
 from diskpilot.simulation import AppError, SimulationState
 from diskpilot import windows
@@ -232,7 +233,7 @@ def audit_selected(selected: dict[str, dict], helper) -> dict:
 
 
 def run() -> dict:
-    report = {"schema_version": 1, "platform_windows": os.name == "nt",
+    report = {"schema_version": 1, "application_version": __version__, "platform_windows": os.name == "nt",
               "python_major": sys.version_info.major, "python_minor": sys.version_info.minor,
               "simulation_only": True, "real_credentials_used": False,
               "platform_checks_skipped": os.name != "nt",

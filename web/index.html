@@ -6,6 +6,7 @@
   <meta name="color-scheme" content="light">
   <title>盘序 · 空间与后台管理</title>
   <link rel="stylesheet" href="/style.css">
+  <script src="/tasks.js" defer></script>
   <script src="/app.js" defer></script>
 </head>
 <body>
@@ -15,7 +16,7 @@
       <a class="brand" href="#overview"><span class="brand-symbol" aria-hidden="true">盘</span><span>盘序<small>空间与后台管理</small></span></a>
       <div class="workspace-caption">工作台</div>
       <nav id="navigation">
-        <button class="nav-item active" data-view="overview"><span class="nav-glyph" aria-hidden="true">▦</span>清理建议</button>
+        <button class="nav-item active" data-view="overview"><span class="nav-glyph" aria-hidden="true">▦</span>整理助手</button>
         <button class="nav-item" data-view="files"><span class="nav-glyph" aria-hidden="true">▤</span>我的文件<span id="files-count" class="nav-count">0</span></button>
         <button class="nav-item" data-view="background"><span class="nav-glyph" aria-hidden="true">☷</span>后台与软件</button>
         <button class="nav-item" data-view="history"><span class="nav-glyph" aria-hidden="true">↶</span>处理记录</button>
@@ -27,7 +28,7 @@
     </aside>
     <div class="app-body">
       <header class="topbar">
-        <div class="breadcrumb">盘序 <span aria-hidden="true">/</span> <span id="breadcrumb-current">清理建议</span></div>
+        <div class="breadcrumb">盘序 <span aria-hidden="true">/</span> <span id="breadcrumb-current">整理助手</span></div>
         <div class="topbar-tools"><span class="local-status"><span class="status-dot"></span>本地运行</span><button id="advanced-toggle" hidden aria-expanded="false">高级选项</button><button id="inspector-toggle" class="icon-button" aria-expanded="false" aria-controls="inspector" hidden>收起说明</button></div>
       </header>
       <div class="safety-banner"><span class="banner-mark" aria-hidden="true">i</span><p><strong>测试保护已开启：</strong>本次处理只记录结果，不会改变文件或系统。</p></div>

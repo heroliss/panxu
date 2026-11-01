@@ -2,7 +2,8 @@
 
 (() => {
   const $ = (id) => document.getElementById(id);
-  const names = { overview: '清理建议', files: '我的文件', background: '后台与软件', software: '后台与软件', history: '处理记录', model: '设置' };
+  const names = { overview: '整理助手', files: '我的文件', background: '后台与软件', software: '后台与软件', history: '处理记录', model: '设置' };
+  let basicMode = false;
   const kindNames = { file: '文件', directory: '目录汇总', startup: '启动项', service: '服务', process: '进程', software: '软件' };
   const actionNames = { delete: '清理文件', disable_startup: '关闭开机启动', stop_service: '停止后台服务', stop_process: '结束应用', uninstall: '卸载软件' };
   const state = { csrf: '', view: 'overview', items: [], summary: {}, settings: {}, history: [], disks: [], source: 'demo', warnings: [], selected: new Set(), focused: null, query: '', risk: 'all', origin: 'all', subtype: 'all', limit: 300, busy: false, job: null, plan: null, scanPath: '', inspector: false, assistant: null, recommendations: [], checked: false, analyzing: false, filesExpanded: false, backgroundExpanded: false, inventoryTarget: 'startup', checkDestination: 'overview', showAllCards: new Set() };
@@ -115,6 +116,7 @@
     finally { clearTimeout(timer); }
   }
   function accept(data, autoSelect = false) {
+    if (Object.hasOwn(data, 'latest_task')) window.PanxuTasks?.accept(data.latest_task);
     if (data.csrf) state.csrf = data.csrf;
     if (!defaultPathLoaded && data.default_scan_path) { state.scanPath = data.default_scan_path; defaultPathLoaded = true; }
     if (Array.isArray(data.items)) state.items = data.items;
@@ -172,6 +174,18 @@
     }); return grid;
   }
   function renderOverview(root) {
+    if (!basicMode && window.PanxuTasks) {
+      window.PanxuTasks.render(root, {
+        api, heading, bytes, defaultPath: state.scanPath,
+        modelConfigured: Boolean(state.settings.base_url && state.settings.model),
+        redraw: render, isActive: () => state.view === 'overview' && !basicMode,
+        openBasic: () => { basicMode = true; render(); },
+        openSettings: () => setView('model'), openFiles: () => setView('files'),
+        openAssistant: () => { basicMode = false; setView('overview'); },
+        refreshCatalog: async () => { accept(await api('/api/bootstrap')); }
+      });
+      return;
+    }
     if (!state.checked) {
       append(root, heading('给电脑腾点空间', '检查常见缓存与后台项目，帮你分清能处理和该保留的内容。'));
       append(root, diskCards());
@@ -224,6 +238,7 @@
     finally { state.analyzing = false; }
   }
   async function beginCheck() {
+    basicMode = true;
     if (state.job?.status === 'running' || state.analyzing) return;
     await task(async () => {
       const data = await api('/api/check', {}); state.checkDestination = 'overview'; state.checked = false;
@@ -333,6 +348,7 @@
     append(host, panel);
   }
   function renderSelection() {
+    if (state.view === 'overview' && !basicMode) { $('selection-bar').hidden = true; return; }
     const selected = chosen(); const onHome = state.view === 'overview' && !state.checked;
     $('selection-bar').hidden = !selected.length || onHome || ['model', 'history'].includes(state.view);
     const visible = new Set((state.view === 'overview' ? state.items.filter((item) => !item.simulated && !synthetic(item)) : visibleItems()).map((item) => item.id));
@@ -445,6 +461,7 @@
   }
   function renderHistory(root) {
     append(root, heading('处理记录', '每次处理都留有记录，也可以恢复之前的选择。'));
+    window.PanxuTasks?.renderHistory(root);
     if (!state.history.length) { append(root, empty('还没有处理记录', '选择想处理的内容，确认之后就会显示在这里。')); return; }
     append(root, el('div', 'result-protection-note', '预演完成，未改动实际内容。实际释放空间为 0 B。'));
     const list = el('div', 'history-list'); state.history.forEach((batch) => {
@@ -455,13 +472,13 @@
     }); append(root, list);
   }
   async function undoBatch(id) {
-    await task(async () => { const batch = state.history.find((entry) => entry.id === id); accept(await api('/api/undo', { batch_id: id })); await refreshRecommendations(false, false); state.selected = new Set((batch?.items || []).map((item) => item.id).filter((key) => canSelect(state.items.find((item) => item.id === key)))); state.checked = state.items.length > 0; render(); toast('已恢复之前的选择，可回到清理建议调整。'); });
+    await task(async () => { const batch = state.history.find((entry) => entry.id === id); accept(await api('/api/undo', { batch_id: id })); await refreshRecommendations(false, false); accept(await api('/api/bootstrap')); state.selected = new Set((batch?.items || []).map((item) => item.id).filter((key) => canSelect(state.items.find((item) => item.id === key)))); state.checked = state.items.length > 0; render(); toast('已恢复之前的选择，可回到我的文件调整。'); });
   }
   function settingsPayload(overrides = {}) { return { base_url: state.settings.base_url || '', model: state.settings.model || '', send_paths: state.settings.send_paths === true, custom_instructions: state.settings.custom_instructions || '', protect_patterns: Array.isArray(state.settings.protect_patterns) ? state.settings.protect_patterns : [], ...overrides }; }
   function renderModel(root) {
     append(root, heading('设置', '按你的习惯，调整检查和保留方式。'));
     const intelligence = el('section', 'panel simple-setting');
-    append(intelligence, el('h2', '', '智能建议'), el('p', '', '帮助理解文件用途和处理后的影响。没有连接其他服务时，也能使用本机规则完成检查。'));
+    append(intelligence, el('h2', '', '智能建议'), el('p', '', '助手会按需调查、解释并提出方案，再根据你的选择继续。暂不连接时，可以使用基础检查。'));
     const connection = el('details', 'setting-details'); append(connection, el('summary', '', '自定义服务'));
     const form = el('form', 'form-panel'); const grid = el('div', 'form-grid');
     const base = inputField('服务地址', 'model-base', 'url', state.settings.base_url); base.input.placeholder = 'https://…/v1'; base.box.classList.add('wide');
@@ -505,7 +522,7 @@
     await task(async () => { const result = await api('/api/duplicates', { ids }); state.plan = null; $('plan-title').textContent = '重复文件校验'; $('plan-execute').hidden = true; const host = $('plan-content'); host.replaceChildren(); append(host, el('p', 'muted', '重复结果只供检查，不会自动选择或删除文件。')); (result.warnings || []).forEach((warning) => append(host, el('div', 'plan-warning', text(warning)))); const groups = result.groups || []; if (!groups.length) append(host, empty('没有确认的重复组', '所选文件内容不同，或尚未完成校验。')); groups.forEach((group, index) => { const box = el('div', 'duplicate-group'); append(box, el('strong', '', `重复组 ${index + 1}`)); (group.items || group.files || []).forEach((entry) => { const item = typeof entry === 'string' ? state.items.find((i) => i.id === entry) || { name: entry } : entry; append(box, el('p', '', item.path || item.name || text(item))); }); append(host, box); }); $('plan-dialog').showModal(); });
   }
 
-  $('navigation').addEventListener('click', (e) => { const buttonNode = e.target.closest('[data-view]'); if (buttonNode) setView(buttonNode.dataset.view); });
+  $('navigation').addEventListener('click', (e) => { const buttonNode = e.target.closest('[data-view]'); if (buttonNode) { if (buttonNode.dataset.view === 'overview') basicMode = false; setView(buttonNode.dataset.view); } });
   document.querySelector('.sidebar-bottom [data-view]').addEventListener('click', () => setView('model'));
   document.querySelector('.brand').addEventListener('click', (e) => { e.preventDefault(); setView('overview'); });
   $('inspector-toggle').addEventListener('click', () => toggleInspector());
