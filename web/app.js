@@ -12,6 +12,40 @@
   let defaultPathLoaded = false;
   let itemMap = new Map();
   let adviceMap = new Map();
+  const analysisSelections = new Map();
+  let analysisDepth = 'auto';
+  const analysisGroup = () => state.view === 'files' ? 'files' : state.view === 'software' ? 'software' : state.subtype === 'all' ? 'background' : state.subtype;
+  function analysisIds() { const key = analysisGroup(); if (!analysisSelections.has(key)) analysisSelections.set(key, new Set()); return analysisSelections.get(key); }
+  function canAnalyze(item) { return !!item && !item.simulated && !synthetic(item); }
+  function analysisSelected(item) { return analysisIds().has(item.id); }
+  function toggleAnalysis(item, checked) {
+    if (!canAnalyze(item)) return;
+    const ids = analysisIds();
+    if (checked && ids.size >= 500 && !ids.has(item.id)) { toast('每次可勾选 500 项；分析整个列表可使用“分析当前列表”。'); return; }
+    if (checked) ids.add(item.id); else ids.delete(item.id);
+  }
+  async function analyzeList(item = null, filter = null) {
+    const ids = item ? [item.id] : [...analysisIds()];
+    const query = filter || (state.view === 'files' ? window.PanxuFiles.filters() : {query: state.query, risk: state.risk, kind: state.subtype === 'all' ? undefined : state.subtype});
+    await task(async () => {
+      const data = await api('/api/tasks/analyze', {section: state.view === 'files' ? 'files' : state.view === 'software' ? 'software' : 'background', depth: analysisDepth, ...query, ...(ids.length ? {ids} : {})});
+      window.PanxuTasks.accept(data.task); setView('overview');
+    });
+  }
+  function showAdvice(item) {
+    if (window.PanxuTasks.adviceFor(item.id, item.signature)) setView('overview');
+    else analyzeList(item);
+  }
+  function analysisOptions(root) {
+    const details = el('details', 'analysis-options'); append(details, el('summary', '', '分析方式'));
+    append(details, makeSelect([['auto','智能按需（推荐）'],['overview','只看概况'],['detailed','逐项详细分析']], analysisDepth, (value) => { analysisDepth = value; }, '分析深度'), el('p', 'field-help', '智能按需先了解整体，仅深入值得查看的内容。逐项分析会使用更多时间与模型额度；不会自动上传正文。')); append(root, details);
+  }
+  async function manualSelected(item = null) {
+    state.selected = new Set(item ? [item.id].filter(() => canSelect(item)) : [...analysisIds()].filter((id) => canSelect(itemMap.get(id))));
+    if (!state.selected.size) { toast('这些内容暂不支持手动处理；仍可分析用途。'); return; }
+    await previewPlan();
+  }
+
 
   function el(tag, cls, value) {
     const node = document.createElement(tag);
@@ -191,7 +225,8 @@
     } catch (error) { notify(error.message, true); }
   }
   function ingest(items) {
-    const retained = state.items.filter((item) => state.selected.has(item.id));
+    const retainedIds = new Set([...state.selected, ...[...analysisSelections.values()].flatMap((ids) => [...ids])]);
+    const retained = state.items.filter((item) => retainedIds.has(item.id));
     const merged = new Map(items.map((item) => [item.id, item]));
     retained.forEach((item) => merged.set(item.id, item));
     state.items = [...merged.values()];
@@ -234,11 +269,12 @@
   }
   function renderFiles(root) {
     append(root, heading('我的文件', '按需载入已检查内容，个人文件由你决定。'));
-    locationPicker(root); appendJob(root);
+    locationPicker(root); analysisOptions(root); appendJob(root);
     window.PanxuFiles.render(root, {
       revision: state.catalogRevision, disks: state.disks, bytes, ingest,
-      isSelected, canSelect, toggle: toggleItem, changed: renderSelection,
-      show: showItem, duplicates: findDuplicates
+      isSelected: analysisSelected, canSelect: canAnalyze, toggle: toggleAnalysis, changed: renderSelection,
+      selectionCount: () => analysisIds().size, analyze: (item, filters) => analyzeList(item, filters), show: showItem,
+      advice: (item) => window.PanxuTasks.adviceFor(item.id, item.signature), showAdvice
     });
   }
   function simpleItemRow(item) {
@@ -250,85 +286,86 @@
     appendJob(root);
     if (!state.backgroundExpanded) {
       const panel = el('div', 'panel action-list');
-      [['startup', '开机启动', '管理开机后自动打开的应用。'], ['process', '后台应用', '看看哪些应用正在运行。'], ['software', '已装软件', '了解用途，再考虑是否保留。']].forEach(([kind, title, description]) => {
+      [['startup', '开机启动', '管理开机后自动打开的应用。'], ['service', '后台服务', '先了解依赖和用途，再判断是否调整。'], ['process', '后台应用', '看看哪些应用正在运行。'], ['software', '已装软件', '了解用途，再考虑是否保留。']].forEach(([kind, title, description]) => {
         const row = el('div', 'action-row'); const count = state.items.filter((item) => item.kind === kind && !item.simulated).length;
         append(row, append(el('div', 'action-copy'), el('h3', '', title), el('p', '', description)), count ? el('span', 'muted', `${count} 项`) : null, button('查看', () => openInventory(kind), 'button small')); append(panel, row);
       }); append(root, panel, el('p', 'quiet-note', '系统关键内容会保留。检查不会结束正在运行的应用。')); return;
     }
     const tabs = el('div', 'subtabs'); [['startup', '开机启动'], ['process', '后台应用'], ['service', '更多后台服务']].forEach(([value, label]) => append(tabs, button(label, () => { state.subtype = value; render(); }, `subtab${state.subtype === value ? ' active' : ''}`))); append(root, tabs);
+    analysisOptions(root);
     append(root, button('重新检查', () => { state.inventoryTarget = state.subtype; startInventory('background'); }, 'plain-button')); listToolbar(root); const results = el('div'); results.id = 'results-container'; append(root, results); renderResults();
   }
   async function openInventory(kind) {
     state.inventoryTarget = kind; state.backgroundExpanded = true;
     const target = kind === 'software' ? 'software' : 'background';
-    await loadApplications(target);
+    try { await loadApplications(target); } catch (error) { notify(error.message, true); return; }
     if (state.items.some((item) => item.kind === kind && !synthetic(item))) { setView(target); state.subtype = kind === 'software' ? 'all' : kind; render(); }
     else await startInventory(target);
   }
   function renderSoftware(root) {
     append(root, heading('已装软件', '使用情况不确定时，建议先保留。', [button('返回', () => { state.backgroundExpanded = false; setView('background'); }, 'plain-button')]));
-    appendJob(root); listToolbar(root); const results = el('div'); results.id = 'results-container'; append(root, results); renderResults();
+    appendJob(root); analysisOptions(root); listToolbar(root); const results = el('div'); results.id = 'results-container'; append(root, results); renderResults();
   }
   function selectionBox(items, label) {
     const checkbox = el('input'); checkbox.type = 'checkbox'; checkbox.setAttribute('aria-label', label);
-    const allowed = unitsInScope(items); const checked = allowed.filter(isSelected).length;
-    checkbox.disabled = !allowed.length; checkbox.checked = !!allowed.length && checked === allowed.length; checkbox.indeterminate = checked > 0 && checked < allowed.length;
-    checkbox.addEventListener('change', () => { allowed.slice(0, 500).forEach((item) => toggleItem(item, checkbox.checked)); if (allowed.length > 500 && checkbox.checked) toast('本次先选择前 500 项，其余可分批处理。'); renderResults(); renderSelection(); });
+    const allowed = items.filter(canAnalyze), count = allowed.filter(analysisSelected).length;
+    checkbox.disabled = !allowed.length; checkbox.checked = !!allowed.length && count === allowed.length; checkbox.indeterminate = count > 0 && count < allowed.length;
+    checkbox.addEventListener('change', () => { allowed.forEach((item) => toggleAnalysis(item, checkbox.checked)); renderResults(); renderSelection(); });
     return checkbox;
   }
   function renderResults() {
     if (state.view === 'files') { window.PanxuFiles?.selectionChanged(); return; }
     const host = $('results-container'); if (!host) return;
-    host.replaceChildren(); const items = visibleItems(); const all = sectionItems();
-    if (!items.length) { append(host, append(el('div', 'panel'), empty(all.length ? '没有匹配的项目' : '这里暂时没有内容', all.length ? '试着调整搜索或筛选，之前的选择会保留。' : '完成检查后，就能在这里自行挑选。', all.length ? [button('重置筛选', () => { state.query = ''; state.risk = 'all'; render(); })] : []))); return; }
-    const panel = el('div', 'panel'); const tools = el('div', 'result-tools'); const allLabel = el('label', 'check-line'); append(allLabel, selectionBox(items, `全选当前 ${items.length} 条结果中允许操作的项目`), el('span', '', `全选当前结果（${items.length} 项）`)); append(tools, allLabel, el('span', '', `其中 ${unitsInScope(items).length} 项可操作 · 不包含其他筛选结果`)); append(panel, tools);
-    const scroll = el('div', 'table-scroll'); const table = el('table', 'result-table'); const thead = el('thead'); const thr = el('tr'); ['', '名称', state.view === 'background' ? '运行占用' : '大小', '建议', '状态'].forEach((label, index) => append(thr, el('th', index === 0 ? 'check-cell' : index === 2 ? 'size-cell' : '', label))); append(thead, thr); append(table, thead); const body = el('tbody');
-    const groups = new Map(); items.slice(0, state.limit).forEach((item) => { const category = state.view === 'background' ? kindNames[item.kind] : item.category || '待确认'; if (!groups.has(category)) groups.set(category, []); groups.get(category).push(item); });
-    for (const [category, rows] of groups) {
-      const groupItems = items.filter((item) => (state.view === 'background' ? kindNames[item.kind] : item.category || '待确认') === category);
-      const group = el('tr', 'group-row'); const cell = el('td'); cell.colSpan = 5; const label = el('label', 'group-label'); append(label, selectionBox(groupItems, `选择当前结果内的${category}分组`), el('span', '', category), el('span', 'group-count', `${groupItems.length} 项`)); append(cell, label); append(group, cell); append(body, group);
-      rows.forEach((item) => {
-        const row = el('tr', `item-row${isSelected(item) ? ' selected-row' : ''}${state.focused?.id === item.id ? ' focused-row' : ''}`); row.tabIndex = 0; row.setAttribute('aria-label', `查看 ${item.name} 的说明`);
-        const checkCell = el('td', 'check-cell'); const checkbox = el('input'); checkbox.type = 'checkbox'; const units = selectionUnits(item); checkbox.checked = isSelected(item); checkbox.indeterminate = !checkbox.checked && (units.some((unit) => state.selected.has(unit.id)) || (item.kind === 'directory' && chosen().some((child) => inDirectory(child.path, item.path)))); checkbox.disabled = !units.length; checkbox.setAttribute('aria-label', item.kind === 'directory' ? `选择完整文件夹${item.name}` : `选择${item.name}`); checkbox.title = item.kind === 'directory' && units.length ? '选择完整文件夹；处理前核对内容。' : selectionReason(item); checkbox.addEventListener('click', (e) => e.stopPropagation()); checkbox.addEventListener('change', () => { toggleItem(item, checkbox.checked); renderResults(); renderSelection(); }); append(checkCell, checkbox);
-        const name = el('td', 'name-cell'); const title = el('div', 'item-name'); append(title, el('span', 'file-mark', item.kind === 'directory' ? '▥' : item.kind === 'file' ? '▤' : item.kind === 'software' ? '▣' : '▪'), el('span', '', item.name || '未命名项目')); append(name, title, el('div', 'item-path', item.owner || kindNames[item.kind])); name.title = item.name || '';
-        const size = el('td', 'size-cell', item.kind === 'service' || item.kind === 'startup' ? '—' : bytes(itemSize(item))); if (item.kind === 'process') append(size, el('div', 'kind-label', '工作集估算')); if (item.kind === 'software') append(size, el('div', 'kind-label', '安装登记估算'));
-        const risk = el('td'); append(risk, riskBadge(item)); const status = el('td'); append(status, el('span', 'kind-label', item.simulated ? '已记录处理' : canSelect(item) ? '可选择' : '已保留'));
-        append(row, checkCell, name, size, risk, status);
-        const show = () => { state.focused = item; state.assistant = null; renderInspector(); host.querySelectorAll('.focused-row').forEach((r) => r.classList.remove('focused-row')); row.classList.add('focused-row'); if (!state.inspector) toggleInspector(true); };
-        row.addEventListener('click', show); row.addEventListener('keydown', (e) => { if (e.target === checkbox) return; if (e.key === 'Enter') { e.preventDefault(); show(); } if (e.key === ' ' && canSelect(item)) { e.preventDefault(); toggleItem(item, !isSelected(item)); renderResults(); renderSelection(); } }); append(body, row);
-      });
-    }
-    append(table, body); append(scroll, table); append(panel, scroll, el('div', 'result-note', '全选只覆盖当前结果，已经保护和未检查完整的内容会保留。'));
-    if (items.length > state.limit) append(panel, button(`继续显示 ${Math.min(300, items.length - state.limit)} 项（当前已显示 ${state.limit} / ${items.length}）`, () => { state.limit += 300; renderResults(); }, 'plain-button'));
+    host.replaceChildren(); const items = visibleItems().filter(canAnalyze); const all = sectionItems();
+    if (!items.length) { append(host, append(el('div', 'panel'), empty(all.length ? '没有匹配的项目' : '这里暂时没有内容', all.length ? '试着调整搜索或筛选，之前的分析选择会保留。' : '完成检查后，可以了解用途并取得建议。'))); return; }
+    const panel = el('div', 'panel'); const tools = el('div', 'result-tools'); const label = el('label', 'check-line');
+    append(label, selectionBox(items, '选择当前结果用于分析'), el('span', '', `全选当前结果（${items.length} 项）`));
+    const count = analysisIds().size;
+    append(tools, label); if (!count) append(tools, button(`分析当前列表（${items.length} 项）`, () => analyzeList(), 'button primary list-analyze-button')); append(panel, tools);
+    const scroll = el('div', 'table-scroll'); const table = el('table', 'result-table'); const head = el('tr');
+    ['', '名称', state.view === 'background' ? '运行占用' : '大小', '分析状态', ''].forEach((name) => append(head, el('th', '', name))); append(table, append(el('thead'), head));
+    const body = el('tbody');
+    items.slice(0, state.limit).forEach((item) => {
+      const row = el('tr', 'item-row'); const checkCell = el('td', 'check-cell'); const check = el('input'); check.type = 'checkbox'; check.checked = analysisSelected(item);
+      check.setAttribute('aria-label', '选择分析' + item.name); check.addEventListener('change', () => { toggleAnalysis(item, check.checked); renderResults(); renderSelection(); }); append(checkCell, check);
+      const copy = el('td', 'name-cell'); append(copy, button(item.name, () => showItem(item), 'file-name-button'), el('div', 'item-path', item.owner || kindNames[item.kind]));
+      const size = el('td', 'size-cell', ['service','startup'].includes(item.kind) ? '—' : bytes(itemSize(item)));
+      const result = window.PanxuTasks.adviceFor(item.id, item.signature); const labels = {keep:'建议保留', review:'需要确认', recommend:'已有处理建议'};
+      const status = el('td', 'kind-label', result ? labels[result.conclusion] || '已有建议' : '尚未分析');
+      const action = el('td'); append(action, button(result ? '查看建议' : '分析', () => showAdvice(item), 'button small'));
+      append(row, checkCell, copy, size, status, action); append(body, row);
+    });
+    append(table, body); append(scroll, table); append(panel, scroll, el('p', 'result-note', '勾选仅用于分析。助手提出建议后，才决定是否处理。'));
+    if (items.length > state.limit) append(panel, button(`继续显示 ${Math.min(300, items.length-state.limit)} 项`, () => { state.limit += 300; renderResults(); }, 'plain-button'));
     append(host, panel);
   }
   function renderSelection() {
-    if (state.view === 'overview') { $('selection-bar').hidden = true; return; }
-    const selected = chosen(); const onHome = state.view === 'overview' && !state.checked;
-    $('selection-bar').hidden = !selected.length || onHome || ['model', 'history'].includes(state.view);
-    const visible = new Set((state.view === 'overview' ? state.items.filter((item) => !item.simulated && !synthetic(item)) : visibleItems()).map((item) => item.id));
-    if (state.view === 'files') { visible.clear(); window.PanxuFiles.visibleIds().forEach((id) => visible.add(id)); }
-    const hidden = selected.filter((item) => !visible.has(item.id)).length;
-    $('selection-count').textContent = `已选 ${selected.length} 项`;
-    const size = selectedDiskBytes(selected); $('selection-size').textContent = size ? `文件体积约 ${bytes(size)}` : '';
-    $('hidden-selection').hidden = !hidden; $('hidden-selection').textContent = `还有 ${hidden} 项在其他页面，确认时会一起列出。`;
-    const recommended = state.view === 'overview' && selected.every(verifiedCache);
-    $('preview-plan').textContent = recommended ? '处理推荐项' : '处理选中项'; $('preview-plan').disabled = state.busy || state.analyzing;
+    const active = ['files','background','software'].includes(state.view);
+    const ids = active ? analysisIds() : new Set();
+    $('selection-bar').hidden = !active || !ids.size;
+    $('selection-count').textContent = `已选 ${ids.size} 项用于分析`;
+    $('selection-size').textContent = '分析选择不会自动加入处理清单';
+    const visible = new Set(state.view === 'files' ? window.PanxuFiles.visibleIds() : visibleItems().map((i) => i.id));
+    const hidden = [...ids].filter((id) => !visible.has(id)).length;
+    $('hidden-selection').hidden = !hidden; $('hidden-selection').textContent = `其中 ${hidden} 项在其他页面`;
+    $('preview-plan').textContent = `分析所选（${ids.size} 项）`; $('preview-plan').disabled = state.busy;
   }
   function renderInspector() {
     const host = $('inspector-content'); host.replaceChildren();
-    const head = el('div', 'inspector-heading'); append(head, el('h2', '', '为什么这样建议'), button('关闭', () => toggleInspector(false), 'icon-button')); append(host, head);
+    const head = el('div', 'inspector-heading'); append(head, el('h2', '', '项目说明'), button('关闭', () => toggleInspector(false), 'icon-button')); append(host, head);
     const item = state.focused;
     if (!item) { append(host, el('h3', '', '选一项，看看原因'), el('p', '', '这里会说明用途、处理理由和可能的影响。')); return; }
-    const rec = advice(item); append(host, el('h3', '', rec.title || item.name));
-    append(host, el('h4', '', '它是做什么的'), el('p', '', cleanCopy(itemPurpose(item))), el('h4', '', '为什么建议'), el('p', '', cleanCopy(rec.reason || item.reason)), el('h4', '', '处理后的影响'), el('p', '', cleanCopy(rec.impact || item.impact || '影响尚不明确，建议先保留。')));
-    if (canSelect(item)) append(host, button(isSelected(item) ? '取消选择' : '选择这项', () => { toggleItem(item, !isSelected(item)); renderInspector(); renderSelection(); if (state.view === 'overview') render(); else renderResults(); }));
+    const modelAdvice = window.PanxuTasks.adviceFor(item.id, item.signature);
+    const rec = modelAdvice || advice(item); append(host, el('h3', '', rec.title || item.name));
+    append(host, el('h4', '', '它是做什么的'), el('p', '', cleanCopy(rec.purpose || itemPurpose(item))), el('h4', '', '为什么建议'), el('p', '', cleanCopy(rec.reason || item.reason || '尚未取得 AI 建议，可以先分析用途。')), el('h4', '', '处理后的影响'), el('p', '', cleanCopy(rec.impact || item.impact || '影响尚不明确，建议先保留。')));
+    if (canAnalyze(item)) append(host, button('分析这项', () => analyzeList(item), 'button primary'));
     append(host, button('以后保留这项', () => protectItem(item), 'plain-button'));
     const detail = el('details', 'inspector-advanced'); append(detail, el('summary', '', '更多详情'));
     if (item.path) append(detail, el('div', 'inspector-path', item.path));
-    const data = el('dl', 'inspector-definition'); [['所属软件', item.owner || '未知'], ['类型', kindNames[item.kind]], ['文件逻辑量', bytes(item.size_bytes)], ['分配空间', item.allocated_bytes == null ? '未核实' : bytes(item.allocated_bytes)], ['建议来源', rec.origin === 'model' ? '智能分析' : '本机规则']].forEach(([key, value]) => append(data, el('dt', '', key), el('dd', '', value)));
+    const data = el('dl', 'inspector-definition'); [['所属软件', item.owner || '未知'], ['类型', kindNames[item.kind]], ['文件逻辑量', bytes(item.size_bytes)], ['分配空间', item.allocated_bytes == null ? '未核实' : bytes(item.allocated_bytes)], ['建议来源', modelAdvice || rec.origin === 'model' ? '智能分析' : '本机信息']].forEach(([key, value]) => append(data, el('dt', '', key), el('dd', '', value)));
     if (item.kind === 'directory') { append(data, el('dt', '', '路径累计'), el('dd', '', bytes(item.details?.logical_bytes_all_paths ?? item.size_bytes)), el('dt', '', '唯一实体量'), el('dd', '', bytes(item.details?.unique_logical_bytes ?? item.size_bytes))); append(detail, el('p', '', '同一个文件可能有多个硬链接。这里的体积估计不等于实际可释放空间。')); }
     append(detail, data);
+    if (canSelect(item)) { const manual = el('details', 'manual-actions'); append(manual, el('summary', '', '高级手动处理'), el('p', 'field-help', '这项操作不依赖 AI 建议。确认前会列出具体内容，保护规则继续生效。'), button('手动指定处理这项', () => manualSelected(item))); append(detail, manual); }
     if ($('show-evidence').checked) { const evidence = el('ul', 'evidence-list'); (Array.isArray(item.evidence) ? item.evidence : []).forEach((entry) => append(evidence, el('li', '', text(entry)))); append(detail, evidence, el('pre', 'assistant-trace', text(item.details || {}))); }
     const more = el('details', 'additional-analysis'); append(more, el('summary', '', '进一步分析这项'));
     const form = el('form', 'assistant-mini'); const input = el('textarea'); input.setAttribute('aria-label', '想了解什么'); input.placeholder = '例如：保留它还有什么用途？'; const submit = el('button', 'button', '分析'); submit.type = 'submit'; append(form, input, submit); form.addEventListener('submit', (event) => { event.preventDefault(); askAssistant(input.value || input.placeholder, more, submit); }); append(more, form); if (state.assistant) append(more, analysisOutput(state.assistant)); append(detail, more); append(host, detail);
@@ -430,37 +467,105 @@
   async function undoBatch(id) {
     await task(async () => { const batch = state.history.find((entry) => entry.id === id); accept(await api('/api/undo', { batch_id: id })); accept(await api('/api/bootstrap?compact=1')); state.selected = new Set((batch?.items || []).map((item) => item.id).filter((key) => canSelect(state.items.find((item) => item.id === key)))); state.checked = state.items.length > 0; render(); toast('已恢复之前的选择，可回到我的文件调整。'); });
   }
-  function settingsPayload(overrides = {}) { return { base_url: state.settings.base_url || '', model: state.settings.model || '', send_paths: state.settings.send_paths === true, custom_instructions: state.settings.custom_instructions || '', protect_patterns: Array.isArray(state.settings.protect_patterns) ? state.settings.protect_patterns : [], ...overrides }; }
+  function settingsPayload(overrides = {}) { return { provider: state.settings.provider || 'custom', protocol: state.settings.protocol || 'chat_completions', reasoning_effort: state.settings.reasoning_effort || 'default', base_url: state.settings.base_url || '', model: state.settings.model || '', send_paths: state.settings.send_paths === true, custom_instructions: state.settings.custom_instructions || '', protect_patterns: Array.isArray(state.settings.protect_patterns) ? state.settings.protect_patterns : [], ...overrides }; }
   function renderModel(root) {
-    append(root, heading('设置', '按你的习惯，调整检查和保留方式。'));
-    const intelligence = el('section', 'panel simple-setting');
-    append(intelligence, el('h2', '', '智能建议'), el('p', '', '助手会按需调查、解释并提出方案，再根据你的选择继续。暂不连接时，可在“我的文件”检查目录、手动选择和校验重复。'));
-    const connection = el('details', 'setting-details'); append(connection, el('summary', '', '自定义服务'));
-    const form = el('form', 'form-panel'); const grid = el('div', 'form-grid');
-    const base = inputField('服务地址', 'model-base', 'url', state.settings.base_url); base.input.placeholder = 'https://…/v1'; base.box.classList.add('wide');
-    const model = inputField('模型名称', 'model-name', 'text', state.settings.model);
-    const key = inputField('访问密钥', 'model-key', 'password'); key.input.autocomplete = 'new-password'; key.input.placeholder = state.settings.has_key ? '已保存，留空不修改' : '输入服务提供的密钥';
-    append(key.box, el('p', 'field-help', '更换服务网站时，请提供新密钥或清除已保存的密钥。'));
-    append(grid, base.box, model.box, key.box);
-    const instruction = el('div', 'form-field wide'); const instructionLabel = el('label', 'field-label', '你的偏好'); instructionLabel.htmlFor = 'model-instructions'; const instructions = el('textarea'); instructions.id = 'model-instructions'; instructions.value = state.settings.custom_instructions || ''; instructions.placeholder = '例如：优先保留工作资料，解释缓存重新下载的影响。'; append(instruction, instructionLabel, instructions); append(grid, instruction);
-    const privacy = el('label', 'check-line'); const paths = el('input'); paths.type = 'checkbox'; paths.checked = state.settings.send_paths === true; append(privacy, paths, el('span', '', '允许发送文件位置')); append(grid, privacy);
-    const clear = el('label', 'check-line'); const clearKey = el('input'); clearKey.type = 'checkbox'; append(clear, clearKey, el('span', '', '清除已保存的密钥')); if (state.settings.has_key) append(grid, clear);
-    append(form, grid, el('p', 'field-help', '文件正文、登录信息和密码不会发送。'));
-    const save = el('button', 'button primary', '保存'); save.type = 'submit'; append(form, append(el('div', 'form-actions'), save));
-    form.addEventListener('submit', async (event) => {
-      event.preventDefault(); save.disabled = true;
-      await task(async () => {
-        const payload = settingsPayload({ base_url: base.input.value.trim(), model: model.input.value.trim(), send_paths: paths.checked, custom_instructions: instructions.value });
-        if (key.input.value) payload.api_key = key.input.value; if (clearKey.checked) payload.clear_key = true;
-        accept(await api('/api/settings', payload)); key.input.value = ''; accept(await api('/api/bootstrap?compact=1')); render(); toast('设置已保存。');
-      }); save.disabled = false;
-    }); append(connection, form); append(intelligence, connection); append(root, intelligence);
-    const preserve = el('section', 'panel simple-setting'); append(preserve, el('h2', '', '保留的位置'), el('p', '', '这些位置里的内容，不会被加入推荐处理。'));
-    const keepDetails = el('details', 'setting-details'); append(keepDetails, el('summary', '', `管理保留清单${state.settings.protect_patterns?.length ? `（${state.settings.protect_patterns.length} 项）` : ''}`));
-    const pLabel = el('label', 'field-label', '每行一个文件夹或匹配规则'); pLabel.htmlFor = 'protect-patterns'; const patterns = el('textarea'); patterns.id = 'protect-patterns'; patterns.value = (state.settings.protect_patterns || []).join('\n');
-    append(keepDetails, pLabel, patterns, button('保存保留清单', () => task(async () => { accept(await api('/api/settings', settingsPayload({ protect_patterns: patterns.value.split(/\r?\n/).map((v) => v.trim()).filter(Boolean) }))); accept(await api('/api/bootstrap?compact=1')); render(); toast('保留清单已保存。'); })));
-    append(preserve, keepDetails); append(root, preserve);
-    append(root, button('高级选项', () => $('advanced-toggle').click(), 'plain-button advanced-entry'));
+    append(root, heading('设置', '连接模型，按你的习惯整理。'));
+    const panel = el('section', 'panel simple-setting'); append(panel, el('h2', '', '连接智能助手'));
+    const form = el('form', 'form-panel provider-form'); const grid = el('div', 'form-grid');
+    const presets = state.providers || [];
+    const providerBox = el('div', 'form-field'); const providerLabel = el('label', 'field-label', '模型服务商'); providerLabel.htmlFor = 'model-provider';
+    const provider = makeSelect([['','选择模型服务商'],['custom','自定义兼容服务'], ...presets.filter((p) => p.id !== 'custom').map((p) => [p.id,p.name])], state.settings.provider || 'custom', chooseProvider, '模型服务商'); provider.id = 'model-provider'; if (!state.settings.base_url) provider.value = ''; append(providerBox, providerLabel, provider);
+    const modelBox = el('div', 'form-field'); const modelLabel = el('label', 'field-label', '模型'); modelLabel.htmlFor = 'model-choice';
+    const modelChoice = el('select'); modelChoice.id = 'model-choice'; modelChoice.setAttribute('aria-label','模型'); append(modelBox, modelLabel, modelChoice);
+    const key = inputField('API 密钥', 'model-key', 'password'); key.input.autocomplete = 'new-password'; key.input.placeholder = state.settings.has_key ? '已保存，留空保留当前连接的密钥' : '填写服务商提供的 API 密钥'; key.box.classList.add('wide');
+    append(grid, providerBox, modelBox, key.box);
+    const note = el('p', 'field-help provider-note');
+    const advanced = el('details', 'setting-details provider-advanced'); append(advanced, el('summary', '', '高级连接与偏好'));
+    const base = inputField('服务地址', 'model-base', 'url', state.settings.base_url); base.input.placeholder = 'https://…/v1';
+    const model = inputField('模型 ID（可手动输入）', 'model-name', 'text', state.settings.model);
+    const protocolBox = el('div','form-field'); const protocolLabel = el('label','field-label','协议'); protocolLabel.htmlFor='model-protocol';
+    const protocol = makeSelect([['chat_completions','Chat Completions'],['responses','Responses'],['anthropic','Anthropic Messages'],['gemini','Gemini']], state.settings.protocol || 'chat_completions', () => {}, '协议'); protocol.id='model-protocol'; append(protocolBox,protocolLabel,protocol);
+    const effortBox = el('div','form-field'); const effortLabel = el('label','field-label','思考强度'); effortLabel.htmlFor='model-effort';
+    const effort=makeSelect([['default','按模型默认'],['low','低'],['medium','中'],['high','高'],['max','最高']], state.settings.reasoning_effort || 'default',()=>{},'思考强度'); effort.id='model-effort'; append(effortBox,effortLabel,effort);
+    const instructions = el('textarea'); instructions.id = 'model-instructions'; instructions.value = state.settings.custom_instructions || ''; instructions.maxLength=4000;
+    const instructionLabel=el('label','field-label','你的整理偏好'); instructionLabel.htmlFor=instructions.id;
+    const privacy=el('label','check-line'); const paths=el('input'); paths.type='checkbox'; paths.checked=state.settings.send_paths === true; append(privacy,paths,el('span','','允许发送文件位置'));
+    const clear=el('label','check-line'); const clearKey=el('input'); clearKey.type='checkbox'; append(clear,clearKey,el('span','','清除已保存的密钥'));
+    append(advanced,base.box,model.box,protocolBox,effortBox,instructionLabel,instructions,privacy,clear);
+    const status=el('p','connection-test-status'); status.setAttribute('role','status');
+    const save=el('button','button primary','保存并测试'); save.type='submit';
+    const onlySave=button('仅保存',()=>saveConnection(false),'plain-button');
+    function populateModels(preset, current='') {
+      modelChoice.replaceChildren();
+      const values=[...new Set([...(preset?.models || []), ...(current ? [current] : [])])];
+      values.forEach((id)=>{const o=el('option','',id);o.value=id;modelChoice.append(o);});
+      const custom=el('option','','手动输入模型 ID');custom.value='';modelChoice.append(custom);
+      modelChoice.value=current || preset?.default_model || values[0] || ''; model.input.value=modelChoice.value || current;
+    }
+    function chooseProvider(value) {
+      const preset=presets.find((entry)=>entry.id===value);
+      if(preset) {base.input.value=preset.base_url;protocol.value=preset.protocol;effort.value='default';populateModels(preset,preset.default_model);}
+      else populateModels(null,model.input.value);
+      key.input.value='';
+      const switched=value!==(state.settings.provider || 'custom');
+      key.input.placeholder=switched ? '请填写这个服务商的 API 密钥' : state.settings.has_key ? '已保存，留空不修改' : '输入 API 密钥';
+      note.textContent=(preset?.note || '填写兼容服务的地址、协议和模型 ID。') + (switched && state.settings.has_key ? ' 原连接的密钥不会自动用于新的服务商。' : '');
+      advanced.open=!preset || !modelChoice.value;
+    }
+    modelChoice.addEventListener('change',()=>{model.input.value=modelChoice.value;if(!modelChoice.value){advanced.open=true;model.input.focus();}});
+    model.input.addEventListener('input',()=>{modelChoice.value=model.input.value;});
+    const initial=presets.find((p)=>p.id===provider.value); populateModels(initial,state.settings.model);
+    note.textContent=initial?.note || '选择服务商可自动填写连接参数；自定义服务可展开高级设置。';
+    if(!initial && state.settings.base_url) advanced.open=true;
+    async function saveConnection(test) {
+      if(save.disabled) return;
+      if(!provider.value) {status.textContent='请先选择模型服务商。';status.classList.add('field-error');provider.focus();return;}
+      save.disabled=true;onlySave.disabled=true;form.setAttribute('aria-busy','true');status.className='connection-test-status';
+      status.textContent=test?'正在保存并验证工具调用，请稍等…':'正在保存…';
+      try {
+        const payload=settingsPayload({provider:provider.value,protocol:protocol.value,reasoning_effort:effort.value,base_url:base.input.value.trim(),model:model.input.value.trim(),send_paths:paths.checked,custom_instructions:instructions.value});
+        if(key.input.value) payload.api_key=key.input.value;
+        else if(clearKey.checked || ((provider.value!==(state.settings.provider || 'custom') || base.input.value.trim()!==state.settings.base_url) && state.settings.has_key)) payload.clear_key=true;
+        accept(await api('/api/settings',payload)); key.input.value=''; clearKey.checked=false;
+        if(test) {
+          const result=await api('/api/settings/test',{},120000);
+          status.textContent=result.message || (result.passed?'连接成功，工具往返测试通过。':'连接测试未通过，请检查配置。');
+          status.classList.toggle('field-error',!result.passed);
+        } else status.textContent='设置已保存。';
+      }catch(error){status.textContent=error.message;status.classList.add('field-error');}
+      finally{save.disabled=false;onlySave.disabled=false;form.setAttribute('aria-busy','false');}
+    }
+    form.addEventListener('submit',(event)=>{event.preventDefault();saveConnection(true);});
+    append(form,grid,note,advanced,el('p','field-help','连接测试只发送固定测试数据，不发送文件清单。官方文档支持不代表当前账号已通过实测。'),append(el('div','form-actions'),save,onlySave),status); append(panel,form); append(root,panel);
+    const preserve=el('section','panel simple-setting');append(preserve,el('h2','','保留的位置'),el('p','','这些位置不会加入推荐处理。'));
+    const keep=el('details','setting-details');append(keep,el('summary','','管理保留清单'));
+    const lab=el('label','field-label','每行一个文件夹或匹配规则');lab.htmlFor='protect-patterns';
+    const patterns=el('textarea');patterns.id='protect-patterns';patterns.value=(state.settings.protect_patterns || []).join('\n');
+    append(keep,lab,patterns,button('保存保留清单',()=>task(async()=>{accept(await api('/api/settings',settingsPayload({protect_patterns:patterns.value.split(/\r?\n/).map(v=>v.trim()).filter(Boolean)})));accept(await api('/api/bootstrap?compact=1'));render();toast('保留清单已保存。');})));append(preserve,keep);append(root,preserve);
+    append(root,button('高级选项',()=>$('advanced-toggle').click(),'plain-button advanced-entry'));
+    renderDeveloper(root);
+  }
+  function renderDeveloper(root) {
+    const panel=el('details','panel developer-panel');append(panel,el('summary','','开发模式'));
+    const body=el('div','developer-content');append(panel,body);append(root,panel);
+    let offset=0,fetching=false,loaded=false;
+    async function load() {
+      if(fetching || !body.isConnected) return;fetching=true;body.setAttribute('aria-busy','true');
+      if(!loaded) body.replaceChildren(el('p','muted','正在读取开发记录…'));
+      try {
+        const data=await api(`/api/developer?offset=${offset}&limit=10`);loaded=true;body.replaceChildren();
+        append(body,el('p','field-help',data.note || '仅记录开启后的请求、回复和工具调用。密钥与内部推理已隐藏；不会补录历史对话。'));
+        const controls=el('div','developer-controls');const toggle=button(data.enabled?'停止记录':'开启开发记录',async()=>{toggle.disabled=true;try{await api('/api/developer',{enabled:!data.enabled});offset=0;await load();}catch(error){notify(error.message,true);}finally{toggle.disabled=false;}});
+        const refresh=button('刷新',()=>load(),'button');const clear=button('清空开发记录',async()=>{clear.disabled=true;try{await api('/api/developer',{clear:true});offset=0;await load();}catch(error){notify(error.message,true);}finally{clear.disabled=false;}},'plain-button');
+        append(controls,toggle,refresh,clear);append(body,controls,el('p','developer-state',`${data.enabled?'正在记录':'未开启记录'} · 共 ${data.total || 0} 条`));
+        const names={request:'发给模型',response:'模型回复',tool_call:'工具调用',tool_result:'工具结果'};
+        (data.entries || []).forEach(entry=>{const details=el('details','developer-entry');append(details,el('summary','',`#${entry.seq} · ${names[entry.kind] || entry.kind} · ${entry.at || ''}`));details.addEventListener('toggle',()=>{if(details.open && details.childNodes.length===1) append(details,el('pre','developer-json',JSON.stringify(entry.payload,null,2)));});append(body,details);});
+        if(!(data.entries || []).length) append(body,el('p','muted','还没有开发记录。开启后再发起一次分析或连接测试。'));
+        const paging=el('div','developer-controls');if(offset)append(paging,button('上一页',()=>{offset=Math.max(0,offset-10);load();}));if(data.has_more)append(paging,button('下一页',()=>{offset+=10;load();}));append(body,paging);
+      }catch(error){body.replaceChildren(el('p','field-error',error.message),button('重试',()=>load()));}
+      finally{fetching=false;body.setAttribute('aria-busy','false');}
+    }
+    panel.addEventListener('toggle',()=>{if(panel.open&&!loaded)load();});
   }
   function analysisOutput(data) {
     const output = el('div', 'analysis-output'); append(output, el('div', 'assistant-answer', text(data.answer || '没有返回建议。')));
@@ -485,15 +590,16 @@
   $('advanced-toggle').addEventListener('click', () => { const open = $('advanced-drawer').hidden; $('advanced-drawer').hidden = !open; $('advanced-toggle').setAttribute('aria-expanded', String(open)); if (open) $('advanced-close').focus(); });
   $('advanced-close').addEventListener('click', () => { $('advanced-drawer').hidden = true; $('advanced-toggle').setAttribute('aria-expanded', 'false'); $('workspace').focus(); });
   $('show-evidence').addEventListener('change', renderInspector);
-  $('clear-selection').addEventListener('click', () => { state.selected.clear(); if (state.view === 'overview') render(); else { renderResults(); renderInspector(); renderSelection(); } });
-  $('preview-plan').addEventListener('click', previewPlan);
+  $('clear-selection').addEventListener('click', () => { analysisIds().clear(); if (state.view === 'overview') render(); else { renderResults(); renderInspector(); renderSelection(); } });
+  $('preview-plan').addEventListener('click', () => analyzeList());
   $('plan-close').addEventListener('click', () => $('plan-dialog').close()); $('plan-cancel').addEventListener('click', () => $('plan-dialog').close()); $('plan-execute').addEventListener('click', executePlan);
   $('reset-demo').addEventListener('click', () => task(async () => { const data = await api('/api/reset', {}); accept(data, false); state.selected.clear(); state.focused = null; state.assistant = null; $('advanced-drawer').hidden = true; $('advanced-toggle').setAttribute('aria-expanded', 'false'); render(); toast('预演记录已清空。'); }));
   document.addEventListener('keydown', (event) => { if (event.key === 'Escape' && !$('advanced-drawer').hidden) $('advanced-close').click(); });
 
   async function boot() {
     try {
-      accept(await api('/api/bootstrap?compact=1'), false); state.selected.clear(); state.checked = false;
+      const [bootstrap, catalog] = await Promise.all([api('/api/bootstrap?compact=1'), api('/api/providers').catch(() => ({presets:[],protocols:[]}))]);
+      accept(bootstrap, false); state.providers = catalog.presets || []; state.protocols = catalog.protocols || []; state.selected.clear(); state.checked = false;
       render();
       if (state.job?.status === 'running') pollJob(state.job.id);
     } catch (error) {

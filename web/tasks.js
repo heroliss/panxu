@@ -17,6 +17,7 @@ window.PanxuTasks = (() => {
     c_cleanup: ['清理 C 盘垃圾', '先找常见缓存和临时内容'],
     disk_cleanup: ['清理某个磁盘', '逐步找出值得清理的内容'],
     downloads: ['整理下载文件夹', '看看旧安装包和下载资料'],
+    directory_cleanup: ['清理某个目录', '选择文件夹，先分析再决定'],
     duplicates: ['查找重复文件', '在本地核对内容是否一致'],
     background: ['优化开机与后台', '看看哪些应用可以按需运行'],
     installers: ['清理旧安装包', '区分安装包与仍在使用的程序'],
@@ -89,7 +90,7 @@ window.PanxuTasks = (() => {
     current = null; intent = ''; planKey = ''; selected.clear(); lastError = ''; feedbackDraft = ''; redraw();
   }
   function choose(preset) {
-    if (preset === 'c_cleanup' || preset === 'downloads' || preset === 'background') {
+    if (preset === 'c_cleanup' || preset === 'background') {
       request('/api/tasks', {preset}); return;
     }
     intent = preset; draftPath = ''; draftGoal = ''; redraw();
@@ -98,7 +99,7 @@ window.PanxuTasks = (() => {
     if (!intent) {
       add(root, context.heading('今天想整理什么？', '助手先调查并解释，再由你确认处理。'));
       const grid = node('div', 'task-intents');
-      ['c_cleanup', 'disk_cleanup', 'downloads', 'duplicates'].forEach((key) => {
+      ['c_cleanup', 'disk_cleanup', 'directory_cleanup', 'duplicates'].forEach((key) => {
         const card = action('', () => choose(key), 'task-intent'); card.dataset.preset = key;
         add(card, node('strong', '', intents[key][0]), node('span', '', intents[key][1])); add(grid, card);
       });
@@ -125,7 +126,10 @@ window.PanxuTasks = (() => {
       disk.addEventListener('change', () => { draftPath = disk.value; path.input.value = disk.value; });
       add(panel, disk);
     }
-    if (intent !== 'disk_cleanup') add(panel, path.box);
+    if (intent !== 'disk_cleanup') {
+      add(panel, path.box);
+      add(panel, action('使用下载文件夹', () => { draftPath = context.defaultPath; path.input.value = draftPath; }, 'plain-button folder-shortcut'));
+    }
     const start = action('开始分析', () => {
       if (!path.input.value.trim()) { lastError = '请先选择要检查的磁盘或文件夹。'; redraw(); return; }
       request('/api/tasks', {
@@ -209,6 +213,44 @@ window.PanxuTasks = (() => {
       ? `${item.name}：已撤销这次预演。` : `${item.name}：${labels[item.status] || '待核实'}。${item.message}`)));
     add(root, box);
   }
+  function renderAdvice(root) {
+    const preview = current.advice || [];
+    const adviceTotal = current.advice_total ?? preview.length;
+    if (!adviceTotal && !current.analysis) return;
+    const taskId = current.id, targetTotal = current.analysis?.target_count;
+    const note = targetTotal ? `本次范围 ${targetTotal} 项，已形成 ${adviceTotal} 项用途建议。未形成建议的内容仍待调查。` : `已形成 ${adviceTotal} 项用途建议。`;
+    const section = detail(`用途分析与保留建议（${adviceTotal} 项）`, node('p', 'muted', note));
+    const list = node('div', 'task-advice-list'), nav = node('div', 'file-pagination');
+    let offset = 0, loading = false, loaded = false;
+    async function load() {
+      if (loading || !section.isConnected) return;
+      loading = true; list.setAttribute('aria-busy', 'true'); nav.querySelectorAll('button').forEach((b) => {b.disabled=true;});
+      if (!loaded) list.replaceChildren(node('p', 'muted', '正在载入建议…'));
+      try {
+        const data = await context.api(`/api/tasks/${taskId}/advice?offset=${offset}&limit=20`);
+        if (!section.isConnected || current?.id !== taskId) return;
+        list.replaceChildren(); nav.replaceChildren(); loaded = true;
+        (data.items || []).forEach((entry) => {
+          const labels = {keep:'建议保留',review:'需要确认',recommend:'建议处理'};
+          const card = node('article', 'task-advice-item');
+          add(card, node('strong', '', entry.name), node('span', 'advice-label', labels[entry.conclusion] || '待确认'),
+            node('p', '', entry.purpose), node('p', '', entry.reason), detail('了解影响', node('p', '', entry.impact)));
+          add(list, card);
+        });
+        if (!(data.items || []).length) add(list, node('p', 'muted', '这次还没有形成逐项用途建议。可以继续调查。'));
+        const total = data.total ?? adviceTotal;
+        if (total > 20 || offset) {
+          const previous = action('上一页建议', () => {offset=Math.max(0,offset-20);load();}); previous.disabled = !offset;
+          const next = action('下一页建议', () => {offset+=20;load();}); next.disabled = !data.has_more;
+          add(nav, previous, node('span', '', `${Math.floor(offset/20)+1} / ${Math.max(1,Math.ceil(total/20))}`), next);
+        }
+      } catch (error) {
+        if (section.isConnected) {list.replaceChildren(node('p', 'field-error', error.message), action('重新载入建议', load));nav.replaceChildren();}
+      } finally {loading=false;list.setAttribute('aria-busy','false');}
+    }
+    section.addEventListener('toggle', () => {if(section.open && !loaded)load();});
+    add(section, list, nav); add(root, section);
+  }
   function taskView(root) {
     add(root, context.heading(intents[current.preset]?.[0] || '整理助手', current.preset && current.preset !== 'custom' ? '按需调查，先给出最值得关注的建议。' : current.goal));
     const panel = node('section', 'panel task-session');
@@ -233,7 +275,7 @@ window.PanxuTasks = (() => {
       add(panel, action(current.status === 'completed' ? '继续看看还有什么' : '继续调查', () => request('/api/tasks/' + current.id + '/continue', {}), 'button primary task-primary'));
       feedbackForm(panel, '补充或改变整理要求');
     }
-    results(panel); processDetails(panel);
+    renderAdvice(panel); results(panel); processDetails(panel);
     add(root, panel);
     if (!busy()) add(root, action('开始新的整理', newTask, 'plain-button task-new'));
   }
@@ -260,5 +302,5 @@ window.PanxuTasks = (() => {
     });
     add(root, panel);
   }
-  return {render, accept, renderHistory};
+  return {render, accept, renderHistory, adviceFor: (id, signature) => (current?.advice || []).find((a) => a.id === id && (!a.signature || a.signature === signature)), currentTask: () => current};
 })();

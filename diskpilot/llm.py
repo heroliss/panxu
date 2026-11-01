@@ -14,12 +14,15 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
 import tempfile
 import threading
 from typing import Callable
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit, urlunsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
+
+from . import providers
 
 
 MAX_ROUNDS = 4
@@ -33,6 +36,7 @@ _SAFE_ERRORS = {"request_budget", "response_budget", "tool_budget", "round_budge
                 "unknown_tool", "invalid_tool", "invalid_tool_arguments",
                 "invalid_response", "empty_response", "provider_unavailable", "http_status"}
 _DEFAULTS = {"base_url": "", "model": "", "send_paths": False,
+             "provider": "custom", "protocol": "chat_completions", "reasoning_effort": "default",
              "custom_instructions": "", "protect_patterns": []}
 _SYSTEM = """你是盘序的只读磁盘整理顾问，本版本仅模拟操作。
 你只能解释本次提供的库存元数据、提出建议；不能执行、批准或声称完成删除、移动、
@@ -117,8 +121,11 @@ def _http_transport(url: str, payload: dict, headers: dict, timeout: int) -> dic
                 raise ValueError("http_status")
             raw = response.read(MAX_RESPONSE_BYTES + 1)
     except HTTPError as exc:
+        code = exc.code
         exc.close()
-        raise ValueError("provider_unavailable") from None
+        classification = {400: 'provider_parameters', 401: 'provider_auth', 403: 'provider_auth',
+                          404: 'provider_model', 429: 'provider_rate_limit'}.get(code, 'provider_unavailable')
+        raise ValueError(classification) from None
     except (URLError, TimeoutError, OSError):
         # Exceptions may contain request headers, URLs or provider body text.
         raise ValueError("provider_unavailable") from None
@@ -196,6 +203,7 @@ class ModelAssistant:
         self._settings = copy.deepcopy(_DEFAULTS)
         self._api_key = ""
         self._key_blob = ""
+        self.trace_hook = None
         self._load()
 
     def _load(self) -> None:
@@ -236,8 +244,107 @@ class ModelAssistant:
         result['complete'] = item.get('details', {}).get('subtree_complete')
         return result
 
-    def agent_turn(self, messages, tools):
+    def _emit_trace(self, kind, settings, endpoint, payload, key=''):
+        hook = self.trace_hook
+        if not callable(hook):
+            return
+        omitted = {'reasoning_content', 'thinking', 'redacted_thinking', 'encrypted_content',
+                   'thoughtSignature', 'thought_signature', 'signature', '_continuation', 'authorization', 'x-api-key', 'x-goog-api-key'}
+        def clean(value):
+            if isinstance(value, dict):
+                if value.get('type') in ('reasoning', 'thinking', 'redacted_thinking') or value.get('thought') is True:
+                    return {'type': value.get('type', 'thought'), 'omitted': 'provider_internal_continuation'}
+                result = {}
+                for k, v in value.items():
+                    if k == 'thinking' and isinstance(v, dict) and set(v) <= {'type', 'clear_thinking', 'budget_tokens'}:
+                        result[k] = clean(v)
+                    else:
+                        result[k] = '[OMITTED: protocol continuation]' if k in omitted or k.lower() in omitted else clean(v)
+                return result
+            if isinstance(value, list):
+                return [clean(v) for v in value]
+            if isinstance(value, str):
+                return self._redact(self._redact(value, key), self._api_key)
+            return value
+        try:
+            hook(dict(kind=kind, protocol=settings.get('protocol', 'chat_completions'),
+                      provider=settings.get('provider', 'custom'), endpoint=endpoint, payload=clean(payload)))
+        except Exception:
+            # Diagnostics must never turn a successful request into an apply retry.
+            pass
+
+    def _completion(self, payload, settings, key):
+        endpoint, outgoing, headers = providers.prepare(settings, payload, key)
+        endpoint = _validate_url(endpoint)
+        if len(json.dumps(outgoing, ensure_ascii=False).encode()) > MAX_REQUEST_BYTES:
+            raise ValueError('request_budget')
+        self._emit_trace('request', settings, endpoint, outgoing, key)
+        try:
+            timeout = REQUEST_TIMEOUT if settings.get('provider', 'custom') in ('custom', 'ollama') else 90
+            response = self._transport(endpoint, outgoing, headers, timeout)
+            if not isinstance(response, dict) or len(json.dumps(response, ensure_ascii=False).encode()) > MAX_RESPONSE_BYTES:
+                raise ValueError('response_budget')
+        except Exception as exc:
+            known = {'provider_auth', 'provider_model', 'provider_parameters', 'provider_rate_limit',
+                     'provider_unavailable', 'request_budget', 'response_budget', 'invalid_response'}
+            code = str(exc) if isinstance(exc, ValueError) and str(exc) in known else 'provider_unavailable'
+            self._emit_trace('error', settings, endpoint, {'code': code}, key)
+            raise ValueError(code) from None
+        self._emit_trace('response', settings, endpoint, response, key)
+        return providers.normalize(settings, response)
+
+    @staticmethod
+    def provider_presets():
+        return providers.presets()
+
+    def describe_capabilities(self):
+        settings = self.public_settings()
+        return dict(provider=settings['provider'], protocol=settings['protocol'], model=settings['model'],
+                    read_only_tools=True, tool_calling='requires_connection_test',
+                    protocol_continuation='memory_only', presets_checked_at=providers.CHECKED_AT,
+                    reasoning_efforts=providers.supported_efforts(settings))
+
+    def test_connection(self):
+        nonce = secrets.token_hex(8)
+        tools = [{'type': 'function', 'function': {'name': 'connection_probe',
+                  'description': '只返回固定测试数据，不查看任何文件或系统。',
+                  'parameters': {'type': 'object', 'properties': {'nonce': {'type': 'string', 'enum': [nonce]}},
+                                 'required': ['nonce'], 'additionalProperties': False}}}]
+        messages = [{'role': 'system', 'content': '这是连接测试。先调用 connection_probe，收到结果后只回复结果里的 nonce。'},
+                    {'role': 'user', 'content': '请调用 connection_probe，nonce 为 ' + nonce + '；不要只回答文字。'}]
+        try:
+            first = self.agent_turn(messages, tools, tool_choice='required')
+            calls = first.get('tool_calls', [])
+            if len(calls) != 1 or calls[0]['function']['name'] != 'connection_probe' or json.loads(calls[0]['function']['arguments']) != {'nonce': nonce}:
+                raise ValueError('connection_tool_failed')
+            messages += [first, {'role': 'tool', 'tool_call_id': calls[0]['id'],
+                         'content': json.dumps({'nonce': nonce, 'status': 'ok', 'simulation_only': True})}]
+            final = self.agent_turn(messages, tools, tool_choice='none')
+            if final.get('tool_calls') or nonce not in (final.get('content') or ''):
+                raise ValueError('connection_return_failed')
+        except Exception as exc:
+            messages_by_code = {
+                'model_not_configured': '请先保存服务商、地址和模型。',
+                'provider_auth': '服务商拒绝了密钥或账户权限，请检查该平台的 API 凭据。',
+                'provider_model': '模型或接口路径不可用，请核对模型 ID 和账户权限。',
+                'provider_parameters': '接口拒绝了参数，请核对所选协议与模型支持。',
+                'provider_rate_limit': '服务商返回限流或额度限制，请在平台检查用量。',
+                'connection_tool_failed': '模型未按要求调用测试工具，尚未确认工具兼容。',
+                'connection_return_failed': '工具结果回传后未完成核对，尚未确认完整兼容。',
+                'request_budget': '测试请求超出本地大小上限。',
+                'response_budget': '模型输出超出本地大小上限，请调整模型设置。',
+            }
+            code = str(exc) if isinstance(exc, ValueError) else 'provider_unavailable'
+            return dict(passed=False, code=code if code in messages_by_code else 'provider_unavailable',
+                        message=messages_by_code.get(code, '连接测试未完成，请检查本机网络和服务商状态。'))
+        settings = self.public_settings()
+        return dict(passed=True, message='工具调用与结果回传测试通过。', requests=2,
+                    provider=settings['provider'], protocol=settings['protocol'], model=settings['model'])
+
+    def agent_turn(self, messages, tools, *, tool_choice='auto'):
         """Provider-neutral tool turn. The task runtime owns tools and continuation."""
+        if tool_choice not in ('auto', 'required', 'none'):
+            raise ValueError('invalid_tool')
         with self._lock:
             settings, key = copy.deepcopy(self._settings), self._api_key
         if not settings['base_url'] or not settings['model']:
@@ -272,14 +379,17 @@ class ModelAssistant:
                         raise ValueError('invalid_tool') from None
                     call['function']['arguments'] = json.dumps(scrub(arguments), ensure_ascii=False)
             safe_messages.append(safe)
+            if '_continuation' in message:
+                safe['_continuation'] = copy.deepcopy(message['_continuation'])
         payload = dict(model=settings['model'], messages=safe_messages, tools=tools,
-                       tool_choice='auto', stream=False, max_tokens=3500)
+                       tool_choice=tool_choice, stream=False,
+                       max_tokens=3500 if settings.get('provider', 'custom') in ('custom', 'ollama') else 8192)
         if len(json.dumps(payload, ensure_ascii=False).encode()) > MAX_REQUEST_BYTES:
             raise ValueError('request_budget')
         headers = {'Content-Type': 'application/json', 'Accept': 'application/json'}
         if key:
             headers['Authorization'] = 'Bearer ' + key
-        response = self._transport(_endpoint(settings['base_url']), payload, headers, REQUEST_TIMEOUT)
+        response = self._completion(payload, settings, key)
         if not isinstance(response, dict) or len(json.dumps(response).encode()) > MAX_RESPONSE_BYTES:
             raise ValueError('invalid_response')
         try:
@@ -287,6 +397,8 @@ class ModelAssistant:
         except (KeyError, IndexError, TypeError):
             raise ValueError('invalid_response') from None
         if not isinstance(message, dict):
+            raise ValueError('invalid_response')
+        if message.get('content') is not None and not isinstance(message['content'], str):
             raise ValueError('invalid_response')
         content = self._privacy_text(message.get('content') or '', settings, key, 2000)
         calls = message.get('tool_calls', [])
@@ -307,11 +419,29 @@ class ModelAssistant:
                 'name': function['name'], 'arguments': self._redact(function['arguments'], key)}})
         if not content and not cleaned:
             raise ValueError('empty_response')
-        return {'role': 'assistant', 'content': content or None, 'tool_calls': cleaned}
+        result = {'role': 'assistant', 'content': content or None, 'tool_calls': cleaned}
+        if '_continuation' in message:
+            result['_continuation'] = message['_continuation']
+        return result
 
     @staticmethod
     def _validated_settings(payload: dict, previous: dict | None = None) -> dict:
         values = copy.deepcopy(previous if previous is not None else _DEFAULTS)
+        if 'provider' in payload:
+            preset = providers.get_preset(payload['provider'])
+            if not preset:
+                raise ValueError('请选择有效的模型服务商。')
+            if values.get('provider') != preset['id']:
+                for field, default in (('base_url', preset['base_url']), ('model', preset['default_model']), ('protocol', preset['protocol'])):
+                    if field not in payload:
+                        values[field] = default
+                values['reasoning_effort'] = 'default'
+            values['provider'] = preset['id']
+        for field, allowed in (('protocol', providers.PROTOCOLS), ('reasoning_effort', ('default', 'low', 'medium', 'high', 'max'))):
+            if field in payload:
+                if not isinstance(payload[field], str) or payload[field] not in allowed:
+                    raise ValueError('模型协议或推理强度无效。')
+                values[field] = payload[field]
         for field in ("base_url", "model", "custom_instructions"):
             if field in payload:
                 if not isinstance(payload[field], str):
@@ -320,6 +450,12 @@ class ModelAssistant:
         values["base_url"] = _validate_url(values["base_url"])
         if len(values["model"]) > 160 or any(ord(c) < 32 for c in values["model"]):
             raise ValueError("模型名称过长或含控制字符。")
+        if values.get('reasoning_effort') == 'medium' and values.get('provider') in ('glm', 'zai', 'deepseek', 'kimi_cn', 'kimi_global'):
+            # These named models expose low/high/max; return the effective value
+            # in saved/public settings rather than silently keeping an invalid UI value.
+            values['reasoning_effort'] = 'high'
+        if values.get('reasoning_effort', 'default') not in providers.supported_efforts(values):
+            raise ValueError('当前服务商、模型与协议尚未支持此推理档位，请选择“自动”。')
         if len(values["custom_instructions"]) > 4000:
             raise ValueError("自定义要求最多 4000 字符。")
         if "send_paths" in payload:
@@ -558,7 +694,7 @@ personal_content为true时，只能帮助解释用途与去留影响，不能替
             encoded = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             if len(encoded) > MAX_REQUEST_BYTES:
                 return result
-            response = self._transport(_endpoint(settings["base_url"]), json.loads(encoded), headers, REQUEST_TIMEOUT)
+            response = self._completion(json.loads(encoded), settings, key)
             if not isinstance(response, dict) or len(json.dumps(response).encode("utf-8")) > MAX_RESPONSE_BYTES:
                 return result
             choices = response.get("choices")
@@ -632,8 +768,7 @@ personal_content为true时，只能帮助解释用途与去留影响，不能替
                 encoded = json.dumps(payload, ensure_ascii=False).encode("utf-8")
                 if len(encoded) > MAX_REQUEST_BYTES:
                     raise ValueError("request_budget")
-                response = self._transport(_endpoint(settings["base_url"]), json.loads(encoded),
-                                           dict(headers), REQUEST_TIMEOUT)
+                response = self._completion(json.loads(encoded), settings, key)
                 if not isinstance(response, dict) or len(json.dumps(response).encode("utf-8")) > MAX_RESPONSE_BYTES:
                     raise ValueError("response_budget")
                 trace.append({"event": "model_round", "round": round_no})
@@ -679,8 +814,10 @@ personal_content为true时，只能帮助解释用途与去留影响，不能替
                     normalized.append({"id": call_id, "type": "function", "function": {
                         "name": name, "arguments": arguments}})
                     parsed.append((call_id, name, result))
-                messages.append({"role": "assistant", "content": self._redact(content or "", key)[:1000],
-                                 "tool_calls": normalized})
+                next_message = {"role": "assistant", "content": self._redact(content or "", key)[:1000], "tool_calls": normalized}
+                if '_continuation' in message:
+                    next_message['_continuation'] = message['_continuation']
+                messages.append(next_message)
                 for call_id, name, result in parsed:
                     tool_count += 1
                     trace.append({"event": "tool", "name": name, "number": tool_count})

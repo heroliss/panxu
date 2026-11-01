@@ -96,6 +96,8 @@ window.PanxuFiles = (() => {
     const all = host.querySelector('[data-page-check]');
     const allowed = page.items.filter(context.canSelect), count = allowed.filter(context.isSelected).length;
     if (all) { all.disabled = loading || !allowed.length; all.checked = !!allowed.length && count === allowed.length; all.indeterminate = count > 0 && count < allowed.length; }
+    const batch = host.querySelector('[data-analyze-list]');
+    if (batch) { const selected = context.selectionCount(); batch.textContent = selected ? `分析所选（${selected} 项）` : `分析当前列表（${page.total.toLocaleString('zh-CN')} 项）`; batch.disabled = loading || !page.total; batch.hidden = selected > 0; }
   }
   function paint() {
     host.replaceChildren(); pager.replaceChildren();
@@ -106,29 +108,33 @@ window.PanxuFiles = (() => {
     const panel = node('div', 'panel file-page-panel');
     const top = node('div', 'file-page-actions'); const label = node('label', 'check-line');
     const all = node('input'); all.type = 'checkbox'; all.dataset.pageCheck = '1';
-    label.append(all, document.createTextNode('全选本页'));
+    label.append(all, document.createTextNode('全选本页用于分析'));
     all.addEventListener('change', () => {
       page.items.filter(context.canSelect).forEach((i) => context.toggle(i, all.checked));
       selectionChanged(); context.changed();
     });
-    top.append(label, button('校验所选文件是否重复', context.duplicates, 'plain-button')); panel.append(top);
+    const analyze = button('分析当前列表', () => context.analyze(null, {query,scope,risk}), 'button primary'); analyze.dataset.analyzeList = '1';
+    top.append(label, analyze); panel.append(top);
     page.items.forEach((item) => {
       const row = node('div', 'paged-file-row'); row.dataset.fileId = item.id;
       const check = node('input'); check.type = 'checkbox'; check.dataset.fileCheck = item.id;
-      check.setAttribute('aria-label', '选择' + item.name);
+      check.setAttribute('aria-label', '选择分析' + item.name);
       check.addEventListener('change', () => { context.toggle(item, check.checked); selectionChanged(); context.changed(); });
       const copy = node('div', 'paged-file-copy'); const title = button(item.name, () => context.show(item), 'file-name-button');
       title.title = item.name;
       const location = node('small', '', item.path); location.title = item.path;
       copy.append(title, location);
+      const result = context.advice(item);
+      const labels = {keep:'建议保留',review:'需要确认',recommend:'已有处理建议'};
       const meta = node('div', 'paged-file-meta'); meta.append(node('span', '', context.bytes(item.size_bytes)),
-        node('small', 'risk-' + item.risk, item.risk === 'protected' ? '已保留' : item.risk === 'low' ? '可处理' : '由你决定'));
-      row.append(check, copy, meta); panel.append(row);
+        node('small', 'analysis-state', result ? labels[result.conclusion] || '已有建议' : item.risk === 'protected' ? '已保护' : '尚未分析'));
+      const analyze = button(result ? '查看建议' : '分析', () => context.showAdvice(item), 'button small row-analyze');
+      row.append(check, copy, meta, analyze); panel.append(row);
     });
     host.append(panel); selectionChanged();
     const prev = button('上一页', () => { offset = Math.max(0, offset - limit); load(); }); prev.disabled = !page.offset;
     const next = button('下一页', () => { offset += limit; load(); }); next.disabled = !page.has_more;
     pager.append(prev, node('span', '', `第 ${Math.floor(page.offset / limit) + 1} / ${Math.ceil(page.total / limit)} 页`), next);
   }
-  return {render, unmount, invalidate, selectionChanged, visibleIds: () => (page?.items || []).map((i) => i.id)};
+  return {render, unmount, invalidate, selectionChanged, filters: () => ({query,scope,risk}), visibleIds: () => (page?.items || []).map((i) => i.id)};
 })();

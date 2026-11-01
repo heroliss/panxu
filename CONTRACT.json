@@ -1,6 +1,6 @@
 {
   "product": "盘序",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "mode": "simulation",
   "root": "E:\\GPT-Projects\\win11-disk-assistant",
   "safety": "This build has NO real executor. All apply/undo/reset operations modify only SQLite simulation records. Never unlink/move/kill/control services/edit startup outside app-owned data.",
@@ -69,7 +69,13 @@
     "GET /api/item?id=...": "{item}",
     "GET /api/bootstrap?compact=1": "{csrf,summary,settings,history,disks,source,catalog_revision,latest_task}; omits items",
     "GET /api/files": "{offset?,limit?:1..100,query?,scope?,risk?,revision?} -> bounded projected page; 409 catalog_changed on old revision",
-    "GET /api/applications": "{section:background|software} -> only that application inventory"
+    "GET /api/applications": "{section:background|software} -> only that application inventory",
+    "GET /api/providers": "{presets,protocols,checked_at}; documented presets, no live vendor guarantee",
+    "POST /api/settings/test": "{} -> {passed,message,requests?,provider?,protocol?,model?}; fixed-data tool roundtrip, no catalog",
+    "POST /api/tasks/analyze": "{section,ids? OR query?/scope?/risk?/kind?,depth?,goal?} -> {task,job_id}; frozen analysis selection, no execution approval",
+    "GET /api/tasks/{id}/advice": "{offset?,limit?:1..50} -> {items,total,offset,limit,has_more}",
+    "GET /api/developer": "{offset?,limit?:1..30} -> {enabled,entries,total,retention}; local opt-in sanitized protocol trace",
+    "POST /api/developer": "{enabled?:bool,clear?:bool}; defaults off, captures subsequent requests only"
   },
   "mutations": "Require X-CSRF-Token from bootstrap. Errors are JSON {error,code}. Relative same-origin fetch only. Input limits apply.",
   "summary": "{total_items,visible_items,simulated_items,logical_bytes,simulated_bytes,process_memory_bytes,by_kind,source,mode}. Real disks separate; no simulated_bytes shown as actual freed space.",
@@ -79,5 +85,7 @@
   "plans": "Risk protected cannot queue. Default action by item kind. Incomplete dirs disallowed. Existing simulated skip. Planned catalog revision bound, stale live signatures checked before execute. No raw arbitrary path actions.",
   "privacy": "No user file body read for LLM. Metadata only; send_paths false by default. No real provider key expected in tests. LLM cannot execute or approve plans.",
   "agent_task": "statuses ready/investigating/awaiting_review/executing/needs_input/needs_model/paused/budget_exhausted/error/completed. Up to 6 model responses and 12 tools per turn. Personal files default unchecked; unknown/protected/out-of-scope and stale plans cannot bypass factual checks. Tool text is untrusted.",
-  "action_runtime": "simulation backend only. Per-item durable intent plus atomic overlay/receipt, status succeeded/failed/partial/cancelled/unverified. Recovery verifies receipts without blind replay. User undo is separately visible as current_state=undone. Actual reclaimed bytes always zero."
+  "action_runtime": "simulation backend only. Per-item durable intent plus atomic overlay/receipt, status succeeded/failed/partial/cancelled/unverified. Recovery verifies receipts without blind replay. User undo is separately visible as current_state=undone. Actual reclaimed bytes always zero.",
+  "release_status": "development_checkpoint_not_packaged",
+  "installed_release": "0.4.0"
 }

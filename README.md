@@ -6,6 +6,8 @@
 
 代码基地：[GitHub · heroliss/panxu](https://github.com/heroliss/panxu)（当前为私有仓库）。
 
+当前双击发布版为 0.4.0；0.5 源码暂作未发布开发快照。最新方向见[任务驱动 Harness 修订方案](docs/TASK_FIRST_HARNESS.md)及其中的固定版本源码调研。用户目标驱动模型调查，列表仅是表达意图与查看结果的方式。
+
 ## 工程记录
 
 - [产品设计](docs/DESIGN.md)：用户体验、模型与程序分工、信息层次和能力边界。

@@ -6,6 +6,7 @@ approve that exact version; the action runtime is simulation-only.
 from __future__ import annotations
 
 import copy
+from contextlib import nullcontext
 import json
 import os
 from pathlib import Path
@@ -37,6 +38,10 @@ propose_plan 提交待用户审阅的方案，用户点保留和跳过的内容�
 查询已有任务目标、观察、用户反馈和处理结果，避免重复调查已处理项目。
 形成方案时优先给出最有价值的3到5项，调用 propose_plan；需要用户补充或本轮确无更多建议时调用 present_findings。
 说明未解决的范围和不确定性，不把预算结束、工具失败或计划提出当作任务已完成。
+你可以使用 discover_tools 查询程序能提供的信息、工具参数和获取方式；工具调用不是系统命令。
+列表分析任务已有冻结的 target 范围：先用 list_items 查看、inspect_items 核对，
+使用 record_advice 保存每项的用途与保留/确认/推荐建议。分析选择不是处理授权。
+目录 depth=auto 时先整体分析再按需展开；overview 只作概览；detailed 分批逐项分析并报告未覆盖部分。
 最多6轮模型响应、12次工具调用；按需查询，最终只呈现最重要结论。'''
 
 
@@ -44,6 +49,10 @@ def tool_specs():
     ident = {'type': 'string', 'maxLength': 160}
     ids = {'type': 'array', 'items': ident, 'minItems': 1, 'maxItems': 20}
     definitions = [
+        ('discover_tools', '了解程序当前能提供哪些信息、用什么工具和参数取得；不执行系统命令。',
+         {'name': {'type': 'string', 'maxLength': 80}}, []),
+        ('list_scopes', '分页查看本任务可展开目录的位置ID；文件父目录不自动成为可展开范围。',
+         {'offset': {'type': 'integer', 'minimum': 0}, 'limit': {'type': 'integer', 'minimum': 1, 'maximum': 40}}, []),
         ('survey_scope', '检查用户所选位置的顶层分布，返回可继续展开的目录ID；不读取正文。',
          {'scope_id': ident}, ['scope_id']),
         ('inspect_directory', '按已观察到的目录ID做更深入的有界检查；不扩展到用户范围外。',
@@ -51,12 +60,17 @@ def tool_specs():
         ('list_items', '分页查看当前任务中尚未处理的项目，可按名称或类型查找。',
          {'offset': {'type': 'integer', 'minimum': 0}, 'query': {'type': 'string', 'maxLength': 120},
           'kind': {'type': 'string', 'enum': ['file', 'directory', 'software', 'startup', 'service', 'process']},
-          'limit': {'type': 'integer', 'minimum': 1, 'maximum': 40}}, []),
+          'limit': {'type': 'integer', 'minimum': 1, 'maximum': 40}, 'unanalysed': {'type': 'boolean'}}, []),
         ('inspect_items', '取得已观察项目的用途线索、可用动作与个人选择要求。', {'ids': ids}, ['ids']),
         ('collect_apps', '只读查询已安装软件或后台信息，辅助核对用途；不证明用户是否仍需要。',
          {'section': {'type': 'string', 'enum': ['software', 'background']}}, ['section']),
         ('compare_files', '在当前范围本地计算文件哈希，核对重复；不上传正文，不自动删除。', {'ids': ids}, ['ids']),
         ('cache_experience', '查看已有缓存配方的经验与当前采集证据，未知项目仍可继续调查。', {'ids': ids}, ['ids']),
+        ('record_advice', '保存已观察对象的用途与建议，包括建议保留；不能执行，不代替用户最后选择。',
+         {'items': {'type': 'array', 'minItems': 1, 'maxItems': 30, 'items': {'type': 'object',
+          'properties': {'id': ident, 'conclusion': {'type': 'string', 'enum': ['keep', 'review', 'recommend']},
+            **{field: {'type': 'string', 'maxLength': 400} for field in ('purpose', 'reason', 'impact')}},
+          'required': ['id', 'conclusion', 'purpose', 'reason', 'impact'], 'additionalProperties': False}}}, ['items']),
         ('propose_plan', '提交少量明确操作和原因供用户审阅，替换当前方案；不能执行。',
          {'summary': {'type': 'string', 'maxLength': 600}, 'items': {'type': 'array', 'minItems': 1, 'maxItems': 30,
           'items': {'type': 'object', 'properties': {'id': ident, 'action': ident,
@@ -71,9 +85,10 @@ def tool_specs():
 
 
 class TaskHarness:
-    def __init__(self, state, assistant, *, runtime=None):
+    def __init__(self, state, assistant, *, runtime=None, trace=None):
         self.state, self.assistant = state, assistant
         self.runtime = runtime or ActionRuntime(state)
+        self.trace = trace
         self.running = set()
         with state.lock, state.db:
             state.db.execute('CREATE TABLE IF NOT EXISTS tasks (id TEXT PRIMARY KEY, updated_at TEXT, payload TEXT)')
@@ -120,7 +135,8 @@ class TaskHarness:
             task['last_result'] = self.runtime.result(key, task['last_result']['plan_version'])
         value = {k: copy.deepcopy(task[k]) for k in ('id', 'goal', 'status', 'summary', 'plan', 'last_result', 'updated_at', 'turn', 'plan_version')}
         value['job_id'] = task.get('job_id') if task['status'] in BUSY else None
-        value['scopes'] = [{'id': r['id'], 'name': Path(r['path']).name or r['path'], 'path': r['path']} for r in task['roots']]
+        value['scopes'] = [{'id': r['id'], 'name': Path(r['path']).name or r['path'], 'path': r['path']} for r in task['roots'][:40]]
+        value['scope_count'] = len(task['roots'])
         with self.state.lock:
             events = self.state.db.execute('SELECT created_at,kind,message FROM task_events WHERE task_id=? ORDER BY seq DESC LIMIT 30', (key,)).fetchall()
         value['events'] = [dict(r) for r in reversed(events)]
@@ -128,7 +144,45 @@ class TaskHarness:
         value['feedback'] = task['feedback'][-8:]
         value['preset'] = task.get('preset', 'custom')
         value['scope_kind'] = task.get('scope_kind', 'filesystem')
+        all_advice = list(task.get('advice', {}).values())
+        value['advice'] = copy.deepcopy(all_advice[:50])
+        value['advice_total'] = len(all_advice)
+        value['advice_has_more'] = len(all_advice) > 50
+        current = {i['id']: i for i in self._items(task, include_processed=True)} if all_advice or task.get('analysis') else {}
+        for advice in value['advice']:
+            advice['stale'] = advice['id'] not in current or current[advice['id']]['signature'] != advice['signature']
+        if task.get('analysis'):
+            value['analysis'] = copy.deepcopy(task['analysis'])
+            value['analysis'].update(self._coverage(task, current))
         return value
+
+    def _coverage(self, task, current=None):
+        current = current if current is not None else {i['id']: i for i in self._items(task, include_processed=True)}
+        advised = skipped = 0
+        for key in task.get('target_ids', []):
+            item = current.get(key)
+            if item and self._kept(task, item):
+                skipped += 1
+            elif item and task.get('advice', {}).get(key, {}).get('signature') == item['signature']:
+                advised += 1
+        directories = task.get('action_directories', [])
+        checks = task.get('directory_checks', {})
+        checked = sum(checks.get(path, {}).get('complete') is True for path in directories)
+        return dict(advised_count=advised, skipped_count=skipped,
+                    remaining_count=max(0, len(task.get('target_ids', [])) - advised - skipped),
+                    directories_total=len(directories), directories_checked=checked,
+                    directory_coverage_complete=checked == len(directories))
+
+    def advice_page(self, key, offset=0, limit=20):
+        if type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 50:
+            raise AppError('请选择有效的建议页码。')
+        task = self._get(key)
+        rows = list(task.get('advice', {}).values())
+        items = copy.deepcopy(rows[offset:offset + limit])
+        current = {i['id']: i for i in self._items(task, include_processed=True)}
+        for advice in items:
+            advice['stale'] = advice['id'] not in current or current[advice['id']]['signature'] != advice['signature']
+        return dict(items=items, offset=offset, limit=limit, total=len(rows), has_more=offset + limit < len(rows))
 
     def latest(self):
         tasks = self._all()
@@ -161,6 +215,68 @@ class TaskHarness:
         self._event(task, 'created', '已建立整理任务，按所选目标和范围调查。')
         return self.public(task['id'])
 
+    def create_analysis(self, payload):
+        """Freeze the user's exact list selection; contextual lookup cannot expand actions."""
+        section, depth = payload.get('section', 'files'), payload.get('depth', 'auto')
+        kinds = {'files': ('file', 'directory'), 'background': ('startup', 'service', 'process'), 'software': ('software',)}
+        if not isinstance(section, str) or not isinstance(depth, str) or section not in kinds or depth not in ('auto', 'overview', 'detailed'):
+            raise AppError('请选择有效的分析列表和方式。')
+        query, scope, risk, kind = (payload.get(k, default) for k, default in (('query', ''), ('scope', ''), ('risk', 'all'), ('kind', None)))
+        if not isinstance(query, str) or len(query) > 200 or not isinstance(scope, str) or len(scope) > 2000:
+            raise AppError('分析筛选格式无效。')
+        if risk not in ('all', 'low', 'review', 'protected') or kind not in (None, 'all', *kinds[section]):
+            raise AppError('分析类型或保护筛选无效。')
+        ids = payload.get('ids')
+        if ids is not None and (not isinstance(ids, list) or not 1 <= len(ids) <= 500 or any(not isinstance(i, str) for i in ids) or len(set(ids)) != len(ids)):
+            raise AppError('请明确选择1到500个不同对象，或使用分析当前列表。')
+        with self.state.lock:
+            all_rows = [i for i in self.state.snapshot(self.assistant.public_settings()['protect_patterns'])['items']
+                        if i['kind'] in kinds[section] and not i['simulated'] and not i.get('details', {}).get('synthetic')]
+            if ids is not None:
+                by_id = {i['id']: i for i in all_rows}
+                if any(i not in by_id for i in ids):
+                    raise AppError('所选对象已变化或不属于当前列表，请重新选择。', 'selection_changed', 409)
+                rows = [by_id[i] for i in ids]
+            else:
+                rows = [i for i in all_rows if query.strip().casefold() in (i['name'] + ' ' + i['path']).casefold()
+                        and (not scope or within(i['path'], scope)) and (risk == 'all' or i['risk'] == risk)
+                        and (kind in (None, 'all') or i['kind'] == kind)]
+            if not rows:
+                raise AppError('当前范围没有可分析的对象，请先检查这个位置或调整筛选。')
+            if len(rows) > 50000:
+                raise AppError('当前清单超过五万项，请选择较小范围分批分析。')
+            roots, seen = [], set()
+            directories = [i['path'] for i in rows if i['kind'] == 'directory']
+            for item in sorted(rows, key=lambda item: item['kind'] != 'directory'):
+                if item['kind'] not in ('file', 'directory'):
+                    continue
+                location = item['path'] if item['kind'] == 'directory' else str(Path(item['path']).parent)
+                normalized = os.path.normcase(location)
+                if normalized in seen:
+                    continue
+                try:
+                    root, info = _checked_root(location)
+                except (OSError, ValueError):
+                    # Metadata remains explainable; no traversal capability is granted.
+                    continue
+                seen.add(normalized)
+                roots.append(dict(id='root' if not roots else f'selected-{len(roots)}', path=root,
+                                  identity=[info.st_dev, info.st_ino], inspectable=location in directories))
+            goal = payload.get('goal') or '分析这些对象的用途、是否值得整理和处理影响，先给建议；个人资料由我最后选择。'
+            if not isinstance(goal, str) or not 1 <= len(goal.strip()) <= 2000:
+                raise AppError('分析要求最多2000字。')
+            task = dict(id=secrets.token_hex(12), goal=self.clean(goal, 2000), status='ready', summary='准备分析所选清单。',
+                        roots=roots, preset='analysis', scope_kind='filesystem' if section == 'files' else 'applications',
+                        known_ids=[i['id'] for i in rows], target_ids=[i['id'] for i in rows], action_directories=directories,
+                        directory_checks={}, analysis=dict(section=section, depth=depth, target_count=len(rows), initial_target_count=len(rows), selection='selected' if ids is not None else 'filtered',
+                                      query=query, scope=scope, risk=risk, kind=kind, catalog_revision=self.state.revision),
+                        observations=[{'tool': 'selection_snapshot', 'at': now(), 'result': {
+                            'source': 'existing_catalog', 'target_count': len(rows), 'catalog_revision': self.state.revision}}],
+                        feedback=[], choices={}, advice={}, plan=None, plan_version=0, last_result=None, turn=0, updated_at=now())
+            self._save(task)
+            self._event(task, 'created', f'已冻结 {len(rows)} 项分析范围；分析选择不表示同意处理。')
+            return self.public(task['id'])
+
     def claim(self, key, *, execute=False):
         with self.state.lock:
             task = self._get(key)
@@ -183,9 +299,16 @@ class TaskHarness:
 
     def _items(self, task, *, include_processed=False):
         known = set(task['known_ids'])
-        items = self.state.view(self.assistant.public_settings()['protect_patterns'])['items']
+        targets = set(task.get('target_ids', []))
+        items = self.state.snapshot(self.assistant.public_settings()['protect_patterns'])['items']
         return [i for i in items if i['id'] in known and (include_processed or not i['simulated'])
-                and (i['kind'] not in ('file', 'directory') or any(within(i['path'], r['path']) for r in task['roots']))]
+                and (i['kind'] not in ('file', 'directory') or i['id'] in targets
+                     or any(within(i['path'], r['path']) for r in task['roots']))]
+
+    @staticmethod
+    def _action_target(task, item):
+        return not task.get('analysis') or item['id'] in task['target_ids'] or (
+            item['kind'] in ('file', 'directory') and any(within(item['path'], p) for p in task['action_directories']))
 
     def _kept(self, task, item):
         return any(c['choice'] in ('keep', 'defer') and (key == item['id'] or
@@ -217,6 +340,9 @@ class TaskHarness:
             raise AppError('目录已变化或包含链接，请重新检查。', 'scope_changed') from None
 
     def _scan(self, task, path, depth, cancel):
+        if task.get('analysis') and (task['analysis']['depth'] == 'overview' or
+                not any(within(path, p) for p in task.get('action_directories', []))):
+            raise AppError('该任务只分析所选对象或目录概况，不能展开旁边的文件。', 'outside_scope')
         self._validate_root(task, path)
         report = scan_directory(path, max_entries=4000, max_depth=depth, cancel=cancel)
         if cancel.is_set():
@@ -225,7 +351,19 @@ class TaskHarness:
             raise AppError('这个目录暂时无法读取，旧观察已保留。')
         self._validate_root(task, path)
         self.state.publish(report['items'], 'filesystem:' + os.path.normcase(os.path.abspath(path)))
-        task['known_ids'] = list(dict.fromkeys(task['known_ids'] + [i['id'] for i in report['items']]))[-6000:]
+        merged_ids = list(dict.fromkeys(task['known_ids'] + [i['id'] for i in report['items']]))
+        task['known_ids'] = merged_ids[:50000]
+        if task.get('analysis', {}).get('depth') == 'detailed':
+            current = {i['id']: i for i in self._items(task, include_processed=True)}
+            discovered = [i['id'] for i in report['items'] if i['id'] in current and not current[i['id']]['simulated']]
+            task['target_ids'] = list(dict.fromkeys(task['target_ids'] + discovered))[:50000]
+            task['analysis']['target_count'] = len(task['target_ids'])
+            complete = (report['summary'].get('status') == 'completed' and not report['summary'].get('output_truncated')
+                        and len(merged_ids) <= 50000)
+            for selected in task['action_directories']:
+                if within(selected, path):
+                    task.setdefault('directory_checks', {})[selected] = dict(complete=bool(complete), at=now(),
+                        omitted=report['summary'].get('omitted_items', 0))
         self._save(task)
         current = self._items(task)
         parent = next((i for i in report['items'] if os.path.normcase(i['path']) == os.path.normcase(path)), None)
@@ -244,6 +382,25 @@ class TaskHarness:
 
     def tool(self, key, name, args, *, cancel):
         task = self._get(key)
+        if name == 'discover_tools':
+            self._args(args, ['name'])
+            if args.get('name') is not None and not isinstance(args['name'], str):
+                raise AppError('请使用工具名称查询说明。')
+            specs = tool_specs()
+            matches = [s for s in specs if not args.get('name') or s['function']['name'] == args['name']]
+            if not matches:
+                raise AppError('没有这个工具；不支持任意命令或隐藏工具。')
+            return {'tools': matches, 'available_information': {'files': '已授权范围内的名称、大小、目录结构、软件线索和保护信息；不读取正文',
+                'applications': '有限的软件注册、启动项、服务与进程快照；不证明使用频率或完整依赖',
+                'duplicates': '本地有预算哈希校验；不上传字节', 'actions': '只提交用户审阅方案；无执行和批准工具'},
+                'model_connection': self.assistant.describe_capabilities() if hasattr(self.assistant, 'describe_capabilities') else {'tool_calling': True}}
+        if name == 'list_scopes':
+            self._args(args, ['offset', 'limit'])
+            offset, limit = args.get('offset', 0), args.get('limit', 20)
+            if type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 40:
+                raise AppError('位置分页参数无效。')
+            rows = [r for r in task['roots'] if not task.get('analysis') or r.get('inspectable')]
+            return {'total': len(rows), 'offset': offset, 'scopes': [dict(id=r['id'], name=Path(r['path']).name) for r in rows[offset:offset + limit]]}
         if name == 'survey_scope':
             self._args(args, ['scope_id'], ['scope_id'])
             root = next((r for r in task['roots'] if r['id'] == args['scope_id']), None)
@@ -257,13 +414,15 @@ class TaskHarness:
                 raise AppError('这项不是可继续检查的普通目录。')
             return self._scan(task, item['path'], 10, cancel)
         if name == 'list_items':
-            self._args(args, ['offset', 'limit', 'query', 'kind'])
+            self._args(args, ['offset', 'limit', 'query', 'kind', 'unanalysed'])
             offset, limit, query, kind = args.get('offset', 0), args.get('limit', 20), args.get('query', ''), args.get('kind')
             if (type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 40 or
-                    not isinstance(query, str) or len(query) > 120 or kind not in (None, 'file', 'directory', 'software', 'startup', 'service', 'process')):
+                    not isinstance(query, str) or len(query) > 120 or type(args.get('unanalysed', False)) is not bool or kind not in (None, 'file', 'directory', 'software', 'startup', 'service', 'process')):
                 raise AppError('分页或筛选参数不正确。')
+            unanalysed = args.get('unanalysed', task.get('analysis', {}).get('depth') == 'detailed')
             rows = [i for i in self._items(task) if not self._kept(task, i) and (not kind or i['kind'] == kind)
-                    and query.casefold() in i['name'].casefold()]
+                    and query.casefold() in i['name'].casefold() and (not unanalysed or
+                      task.get('advice', {}).get(i['id'], {}).get('signature') != i['signature'])]
             rows.sort(key=lambda i: i.get('size_bytes', 0), reverse=True)
             return dict(total=len(rows), offset=offset, items=[self.assistant.task_metadata(i) for i in rows[offset:offset+limit]])
         if name in ('inspect_items', 'compare_files', 'cache_experience'):
@@ -294,11 +453,34 @@ class TaskHarness:
             if cancel.is_set():
                 raise AppError('检查已停止。', 'cancelled')
             self.state.publish(report['items'], args['section'])
-            task['known_ids'] = list(dict.fromkeys(task['known_ids'] + [i['id'] for i in report['items']]))[-6000:]
+            task['known_ids'] = list(dict.fromkeys(task['known_ids'] + [i['id'] for i in report['items']]))[:50000]
             self._save(task)
             return {'observed_count': len(report['items']), 'warnings': report.get('warnings', [])[:4],
                     'items': [self.assistant.task_metadata(i) for i in report['items'][:25]],
                     'note': '这里只提供注册与运行事实，不证明某程序已无用；可以用list_items搜索其名称。'}
+        if name == 'record_advice':
+            self._args(args, ['items'], ['items'])
+            rows = args['items']
+            if not isinstance(rows, list) or not 1 <= len(rows) <= 30:
+                raise AppError('每次请保存1到30项建议。')
+            current = {i['id']: i for i in self._items(task)}
+            additions = {}
+            for row in rows:
+                self._args(row, ['id', 'conclusion', 'purpose', 'reason', 'impact'], ['id', 'conclusion', 'purpose', 'reason', 'impact'])
+                if not isinstance(row['id'], str) or row['id'] not in current or row['id'] in additions:
+                    raise AppError('建议包含未知或重复对象。')
+                if row['conclusion'] not in ('keep', 'review', 'recommend') or any(not isinstance(row[f], str) or not 1 <= len(row[f]) <= 400 for f in ('purpose', 'reason', 'impact')):
+                    raise AppError('请按格式提供结论、用途、原因和影响。')
+                item = current[row['id']]
+                if not self._action_target(task, item):
+                    raise AppError('关联信息可用于解释背景，但不能加入当前范围的对象建议。', 'outside_scope')
+                if item['risk'] == 'protected' and row['conclusion'] != 'keep':
+                    raise AppError('保护对象可以解释用途，但应建议保留，不能建议处理。')
+                additions[item['id']] = dict(id=item['id'], name=item['name'], conclusion=row['conclusion'],
+                    signature=item['signature'], at=now(), **{f: self.clean(row[f], 400) for f in ('purpose', 'reason', 'impact')})
+            task.setdefault('advice', {}).update(additions)
+            self._save(task)
+            return {'recorded_count': len(additions), 'total_advice_count': len(task['advice']), 'note': '建议已保存；没有批准或执行任何处理。'}
         if name == 'propose_plan':
             self._args(args, ['summary', 'items'], ['summary', 'items'])
             if not isinstance(args['summary'], str) or not 1 <= len(args['summary']) <= 600:
@@ -314,6 +496,8 @@ class TaskHarness:
                     raise AppError('方案包含未知、重复或已处理项目，请更新。')
                 seen.add(row['id'])
                 item = current[row['id']]
+                if not self._action_target(task, item):
+                    raise AppError('此对象仅用于了解背景，不属于用户选择的处理范围。', 'outside_scope')
                 if item['risk'] == 'protected' or self._kept(task, item):
                     raise AppError('方案中有受保护或用户已保留的内容，请移除。')
                 if item['kind'] == 'directory' and any(c['choice'] in ('keep', 'defer')
@@ -347,6 +531,10 @@ class TaskHarness:
                 raise AppError('请简短说明结论和是否需要用户补充。')
             if not task['observations'] and not args['needs_input']:
                 raise AppError('还没有取得调查结果，不能结束为已完成。')
+            if task.get('analysis', {}).get('depth') == 'detailed' and not args['needs_input']:
+                coverage = self._coverage(task)
+                if coverage['remaining_count'] or not coverage['directory_coverage_complete']:
+                    raise AppError(f'逐项模式还有 {coverage["remaining_count"]} 项未分析，且部分目录可能尚未完整展开；请继续调查，或明确说明尚未覆盖并请求继续。', 'coverage_incomplete')
             task.update(status='needs_input' if args['needs_input'] else 'completed', summary=self.clean(args['summary']), plan=None)
             self._save(task)
             return {'turn_finished': True}
@@ -397,15 +585,30 @@ class TaskHarness:
     def _context(self, task):
         choices = [dict(id=key, name=c['name'], choice=c['choice']) for key, c in task['choices'].items()]
         last_result = self.runtime.result(task['id'], task['last_result']['plan_version']) if task['last_result'] else None
-        return dict(goal=task['goal'], scopes=[dict(id=r['id'], name=r.get('label') or Path(r['path']).name) for r in task['roots']],
+        scopes = [r for r in task['roots'] if not task.get('analysis') or r.get('inspectable')]
+        return dict(goal=task['goal'], scopes=[dict(id=r['id'], name=r.get('label') or Path(r['path']).name) for r in scopes[:40]],
+                    scope_count=len(scopes), more_scopes_tool='list_scopes',
                     preset=task.get('preset', 'custom'), scope_kind=task.get('scope_kind', 'filesystem'),
                     priority_scopes=[r['id'] for r in task['roots'] if r['id'].startswith('priority-')],
                     user_feedback=task['feedback'][-12:], user_choices=choices[-100:],
                     observations=task['observations'][-3:], last_result=last_result,
                     preferences=self.assistant.public_settings()['custom_instructions'],
-                    available_items=len(self._items(task)), simulation_only=True)
+                    available_items=len(self._items(task)), simulation_only=True,
+                    analysis=dict(task['analysis'], **self._coverage(task)) if task.get('analysis') else None,
+                    initial_objects=[self.assistant.task_metadata(i) for i in self._items(task)[:12]] if task.get('analysis') else [],
+                    advice_progress={'recorded': len(task.get('advice', {})), 'target': len(task.get('target_ids', []))},
+                    information_guide={'directory_overview': 'survey_scope；只允许已授权可展开目录',
+                        'object_details': 'inspect_items(ids)，先用list_items取得ID',
+                        'remaining_objects': 'list_items(unanalysed=true)，offset/limit分页',
+                        'related_apps': 'collect_apps，再list_items按名称核对；背景对象不扩大处理范围',
+                        'tool_help': 'discover_tools(name)，返回参数格式与工具能力',
+                        'advice': 'record_advice；propose_plan另行提交可处理建议，无执行工具'})
 
     def investigate(self, key, *, cancel=None, progress=None, execute=False):
+        with self.trace.context(key) if self.trace else nullcontext():
+            return self._investigate(key, cancel=cancel, progress=progress, execute=execute)
+
+    def _investigate(self, key, *, cancel=None, progress=None, execute=False):
         cancel = cancel or threading.Event()
         try:
             task = self._get(key)
@@ -433,7 +636,8 @@ class TaskHarness:
             labels = {'survey_scope': '正在查看文件分布', 'inspect_directory': '正在深入了解目录',
                       'list_items': '正在筛选相关内容', 'inspect_items': '正在核对用途线索',
                       'collect_apps': '正在了解相关软件', 'compare_files': '正在核对文件是否重复',
-                      'cache_experience': '正在参考缓存经验', 'propose_plan': '正在整理建议方案', 'present_findings': '正在整理调查结论'}
+                      'cache_experience': '正在参考缓存经验', 'propose_plan': '正在整理建议方案', 'present_findings': '正在整理调查结论',
+                      'record_advice': '正在保存用途与建议', 'discover_tools': '正在了解可用调查工具'}
             for _ in range(MAX_ROUNDS):
                 if cancel.is_set():
                     break
@@ -465,9 +669,13 @@ class TaskHarness:
                         progress({'message': label})
                     try:
                         args = json.loads(call['function']['arguments'])
+                        if self.trace:
+                            self.trace.record({'kind': 'tool_call', 'payload': {'name': name, 'arguments': args, 'call_id': call['id']}})
                         result = self.tool(key, name, args, cancel=cancel)
                     except Exception as exc:
                         result = {'error': self.clean(str(exc), 500) if isinstance(exc, AppError) else '工具参数或读取结果无效，请调整后再试。'}
+                    if self.trace:
+                        self.trace.record({'kind': 'tool_result', 'payload': {'name': name, 'result': result, 'call_id': call['id']}})
                     self._event(task, 'tool', label + ('：未完成，已反馈原因。' if 'error' in result else '：已取得结果。'))
                     task = self._get(key)
                     if 'error' not in result and name not in ('propose_plan', 'present_findings'):

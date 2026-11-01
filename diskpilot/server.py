@@ -21,6 +21,7 @@ from .recommendations import build_recommendations
 from .scanner import scan_directory
 from .simulation import AppError, SimulationState
 from .tasks import TaskHarness
+from .trace import DeveloperTrace
 from .windows import disks, inventory, validate_system_items
 
 
@@ -43,7 +44,9 @@ class Application:
         if not developer_fixtures:
             self.state.discard_development_fixtures()
         self.assistant = ModelAssistant(Path(data_dir))
-        self.harness = TaskHarness(self.state, self.assistant)
+        self.trace = DeveloperTrace(data_dir, lambda value: self.assistant.clean_text(value, limit=1024 * 1024))
+        self.assistant.trace_hook = self.trace.record
+        self.harness = TaskHarness(self.state, self.assistant, trace=self.trace)
         self.catalog = FileCatalog(self.state, self.patterns)
         self.recommendation_cache = None
         self.settings_revision = 0
@@ -177,6 +180,14 @@ class Application:
             return {k: v for k, v in value.items() if not k.startswith('_')}
 
     def get(self, path, query):
+        if path == '/api/providers':
+            return self.assistant.provider_presets()
+        if path == '/api/developer':
+            try:
+                offset, limit = int(query.get('offset', ['0'])[0]), int(query.get('limit', ['10'])[0])
+            except (ValueError, TypeError):
+                raise AppError('请选择有效的开发记录页码。') from None
+            return self.trace.page(offset, limit)
         if path == '/api/bootstrap':
             view = self.state.overview(self.patterns()) if query.get('compact') == ['1'] else self.view()
             return dict(view, catalog_revision=self.catalog.token(), csrf=self.csrf, version=__version__, settings=self.assistant.public_settings(), disks=disks(), default_scan_path=str(Path.home() / 'Downloads'), latest_task=self.harness.latest())
@@ -204,6 +215,15 @@ class Application:
             return self.recommendations()
         if path == '/api/tasks':
             return {'tasks': [self.harness.public(t['id']) for t in self.harness._all()[:15]]}
+        if path.startswith('/api/tasks/') and path.endswith('/advice'):
+            parts = path.split('/')
+            if len(parts) != 5:
+                raise AppError('建议接口不存在。', 'not_found', 404)
+            try:
+                offset, limit = int(query.get('offset', ['0'])[0]), int(query.get('limit', ['20'])[0])
+            except (ValueError, TypeError):
+                raise AppError('请选择有效的建议页码。') from None
+            return self.harness.advice_page(parts[3], offset, limit)
         if path.startswith('/api/tasks/'):
             return {'task': self.harness.public(path.rsplit('/', 1)[-1])}
         if path.startswith('/api/jobs/'):
@@ -217,6 +237,19 @@ class Application:
         raise AppError('接口不存在。', 'not_found', 404)
 
     def post(self, path, payload):
+        if path == '/api/developer':
+            if set(payload) - {'enabled', 'clear'}:
+                raise AppError('开发模式设置格式无效。')
+            return self.trace.update(enabled=payload.get('enabled'), clear=payload.get('clear', False))
+        if path == '/api/settings/test':
+            try:
+                return self.assistant.test_connection()
+            except ValueError as exc:
+                raise AppError(str(exc), 'connection_test_failed') from None
+        if path == '/api/tasks/analyze':
+            task = self.harness.create_analysis(payload)
+            job = self.start_job('agent', {'task_id': task['id']})
+            return dict(job, task=self.harness.public(task['id']))
         if path == '/api/tasks':
             task = self.harness.create(payload.get('goal'), payload.get('path'), preset=payload.get('preset'))
             job = self.start_job('agent', {'task_id': task['id']})
@@ -306,6 +339,7 @@ class Application:
         for job in self.jobs.values():
             job['_cancel'].set()
         self.pool.shutdown(wait=True, cancel_futures=True)
+        self.trace.close()
         self.state.close()
         self.lease.close()
 
