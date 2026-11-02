@@ -10,6 +10,7 @@ from urllib.error import HTTPError
 
 from diskpilot import llm
 from diskpilot.llm import ModelAssistant
+from tests.prompt_fixture import parse_host_data
 
 
 ITEMS = [
@@ -86,7 +87,7 @@ class ModelAssistantTests(unittest.TestCase):
         self.assertNotIn("private-user", sent)
         self.assertNotIn("secret command line", sent)
         messages = fake.requests[1]["payload"]["messages"]
-        results = [json.loads(m["content"]) for m in messages if m["role"] == "tool"]
+        results = [parse_host_data(m["content"]) for m in messages if m["role"] == "tool"]
         self.assertEqual(results[0]["total"], 1)
         self.assertEqual(results[1]["outside_scope_or_missing_count"], 1)
         self.assertEqual(results[2]["count"], 1)
@@ -378,7 +379,7 @@ class TaskPreferenceBudgetTests(unittest.TestCase):
         assistant, fake = self.configured(preferences)
         assistant.agent_turn([{'role': 'user', 'content': json.dumps({
             'goal': 'fixture', 'preferences': preferences}, ensure_ascii=False)}], [], stream=False)
-        sent = json.loads(fake.requests[0]['payload']['messages'][0]['content'])
+        sent = parse_host_data(fake.requests[0]['payload']['messages'][0]['content'])
         self.assertEqual(sent['preferences'], preferences)
         self.assertEqual(len(sent['preferences']), 4000)
         self.assertTrue(sent['preferences'].endswith('保留照片'))
@@ -400,7 +401,7 @@ class TaskPreferenceBudgetTests(unittest.TestCase):
                 if role == 'tool':
                     message['tool_call_id'] = 'fixture-call'
                 assistant.agent_turn([message], [], stream=False)
-                sent = json.loads(fake.requests[0]['payload']['messages'][0]['content'])
+                sent = parse_host_data(fake.requests[0]['payload']['messages'][0]['content'])
                 if index == 0:
                     self.assertEqual(sent['preferences'], preferences)
                     self.assertEqual(len(sent['nested']['preferences']), 2000)
@@ -423,7 +424,7 @@ class TaskPreferenceBudgetTests(unittest.TestCase):
         assistant._settings['custom_instructions'] = preferences
         assistant.agent_turn([{'role': 'user', 'content': json.dumps({
             'preferences': preferences}, ensure_ascii=False)}], [], stream=False)
-        sent = json.loads(fake.requests[0]['payload']['messages'][0]['content'])['preferences']
+        sent = parse_host_data(fake.requests[0]['payload']['messages'][0]['content'])['preferences']
         self.assertIn('保留末尾要求', sent)
         self.assertIn('[路径隐藏]', sent)
         self.assertIn('[REDACTED]', sent)
@@ -475,7 +476,7 @@ class StructuredRecommendationTests(unittest.TestCase):
         self.assertNotIn("private-user", text)
         self.assertNotIn("secret command line", text)
         self.assertNotIn("private-second-file", text)  # protected entries excluded
-        self.assertTrue(json.loads(request["messages"][1]["content"])["inventory_untrusted"][0]["personal_content"])
+        self.assertTrue(parse_host_data(request["messages"][1]["content"])["inventory_untrusted"][0]["personal_content"])
 
     def test_invalid_ids_actions_extra_fields_or_free_text_rejected(self):
         for content in ["我觉得都可以删除", json.dumps({"recommendations": [self.row("outside")]}),
@@ -495,7 +496,7 @@ class StructuredRecommendationTests(unittest.TestCase):
                        "actions": ["disable_startup"], "details": {"optional": True, "purpose_verified": True}})
         fake = FakeTransport(answer(json.dumps({"recommendations": []})))
         result = self.configured(fake).recommend(values)
-        context = json.loads(fake.requests[0]["payload"]["messages"][1]["content"])
+        context = parse_host_data(fake.requests[0]["payload"]["messages"][1]["content"])
         self.assertEqual(len(context["inventory_untrusted"]), 100)
         self.assertIn("startup", [i["id"] for i in context["inventory_untrusted"]])
         self.assertEqual(result["candidate_count"], 141)

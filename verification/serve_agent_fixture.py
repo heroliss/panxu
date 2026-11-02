@@ -16,6 +16,7 @@ import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from diskpilot.server import create_server
+from tests.prompt_fixture import parse_host_data
 
 
 def response(name, args):
@@ -54,14 +55,14 @@ def main():
                 raw = json.dumps(payload, ensure_ascii=False)
                 stats['full_fixture_path_absent'] = str(scope).replace('\\', '\\\\') not in raw
                 messages = payload['messages']
-                context = json.loads(messages[1]['content'])
+                context = parse_host_data(messages[1]['content'])
                 if context.get('last_result'):
                     result = context['last_result']
                     answer = response('present_findings', {
                         'summary': f'已核对本轮 {result["succeeded"]}/{result["total"]} 项预演结果。你选择保留的内容会继续保留。',
                         'needs_input': False})
                 elif messages[-1]['role'] == 'tool':
-                    last = json.loads(messages[-1]['content'])
+                    last = parse_host_data(messages[-1]['content'])
                     if 'error' in last:
                         answer = response('present_findings', {'summary': '已收到保留要求，本轮没有继续处理。', 'needs_input': True})
                     else:

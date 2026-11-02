@@ -66,6 +66,18 @@ test('five score levels remain advisory and missing/skip/no-advice states never 
   assert.match(score.blocked({assessment:{blocked_reasons:['explicit_keep','coverage_incomplete','unexpected']}}),/保留.*完整核对.*不适合整目录/);
 });
 
+test('file ratings occupy the leading independent column and keep name, measurement and unknown state separate',async()=>{
+  const f=await fixture([record('rated',5),record('unknown',null,'unanalysed',{can_prepare:false})]);
+  const rows=f.root.querySelectorAll('.paged-file-row'),rating=rows[0].querySelector('.file-primary-rating');
+  assert.equal(rows[0].children[1],rating);assert.ok(rating.className.includes('cleanup-rating-primary'));
+  assert.equal(rating.querySelector('.cleanup-rating-value').textContent,'5');
+  assert.equal(rating.querySelector('.cleanup-rating-copy').textContent,'5/5 · 建议清理');
+  assert.equal(rows[0].querySelector('.paged-file-meta').querySelector('.cleanup-rating'),null);
+  assert.equal(rows[0].querySelector('.file-name-button').textContent,'rated.txt');
+  assert.equal(rows[1].querySelector('.cleanup-rating-value'),null);assert.equal(rows[1].querySelector('.cleanup-rating-copy').textContent,'尚未分析');
+  assert.equal(f.actions.length,0);assert.equal(f.requests.length,1);
+});
+
 test('suggestions use global catalog assessment and lazy tree navigation only requests a bounded existing branch',async()=>{
   const folder=record('folder',4,'explicit',{kind:'directory',has_children:true,details:{subtree_complete:false}});
   const f=await fixture([folder]);assert.equal(new URL(f.requests[0].path,'http://local').searchParams.get('view'),'suggestions');

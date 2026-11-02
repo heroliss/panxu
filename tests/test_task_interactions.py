@@ -13,6 +13,7 @@ from diskpilot.scanner import scan_directory
 from diskpilot.server import Application, create_server
 from diskpilot.simulation import AppError, SimulationState
 from diskpilot.tasks import TaskHarness, tool_specs
+from tests.prompt_fixture import parse_host_data
 
 
 def model_call(name, args):
@@ -127,7 +128,7 @@ class TaskInteractionTests(unittest.TestCase):
         self.harness.answer(self.task['id'], dict(version=question['version'], option_id='offline'))
 
         def next_turn(payload):
-            context = json.loads(payload['messages'][1]['content'])
+            context = parse_host_data(payload['messages'][1]['content'])
             self.assertEqual(context['user_feedback'][-1]['answer']['option_id'], 'offline')
             self.assertFalse(context['user_feedback'][-1]['answer']['execution_authorized'])
             return model_call('present_findings', dict(summary='先保留离线版本。', needs_input=True))
@@ -150,7 +151,7 @@ class TaskInteractionTests(unittest.TestCase):
         self.harness.validate_approval(self.task['id'], value['plan']['version'], [self.file['id']])
         self.harness.claim(self.task['id'], execute=True)
         result = self.harness.investigate(self.task['id'], execute=True)
-        self.assertEqual(result['status'], 'needs_model')
+        self.assertEqual(result['status'], 'completed')
         self.assertEqual(result['last_result']['succeeded'], 1)
         self.assertEqual(result['last_result']['actual_reclaimed_bytes'], 0)
         self.assertTrue((self.folder / 'chosen.zip').exists())
@@ -160,7 +161,7 @@ class TaskInteractionTests(unittest.TestCase):
         self.assertEqual(action['user_selected_ids'], [self.file['id']])
         self.assertEqual(action['result']['items'][0]['status'], 'succeeded')
 
-    def test_direct_plan_scope_protection_keep_and_stale_preflight_are_enforced(self):
+    def test_direct_plan_scope_protection_and_stale_preflight_with_explicit_keep_override(self):
         with self.assertRaises(AppError) as scope:
             self.direct(self.other)
         self.assertEqual(scope.exception.code, 'outside_scope')
@@ -176,8 +177,9 @@ class TaskInteractionTests(unittest.TestCase):
         self.state.publish(scan_directory(str(self.folder))['items'], 'fixture')
         self.file = next(i for i in self.state.view()['items'] if i['name'] == 'chosen.zip')
         self.harness.feedback(self.task['id'], keep_ids=[self.file['id']])
-        with self.assertRaisesRegex(AppError, '保留'):
-            self.direct()
+        override = self.direct()
+        self.assertEqual(override['plan']['origin'], 'user_direct')
+        self.assertEqual(override['plan']['items'][0]['id'], self.file['id'])
         self.assertEqual(self.state.plans, {})
 
     def test_context_apps_do_not_expand_host_action_scope(self):

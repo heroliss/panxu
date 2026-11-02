@@ -14,6 +14,7 @@ import time
 
 import serve_v050_fixture as fixture
 from serve_v080_fixture import answer as base_answer, create_with_icons
+from tests.prompt_fixture import parse_host_data
 
 
 FINAL_TEXT = '正在核对所选测试范围中的信息。公开说明会逐步到达，工具参数完整结束前不会执行。此轮仅取得只读证据，实际文件和系统设置均未改变。'
@@ -26,7 +27,7 @@ original_writer = fixture.write_response
 def context(payload):
     messages = payload.get('messages', [])
     try:
-        value = json.loads(messages[1]['content'])
+        value = parse_host_data(messages[1]['content'])
         return value if isinstance(value, dict) else {}
     except (ValueError, KeyError, IndexError, TypeError):
         return {}

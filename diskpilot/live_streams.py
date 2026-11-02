@@ -28,8 +28,13 @@ class LiveStreams:
         for key in list(self.rows):
             if now - self.rows[key][0] > self.ttl:
                 del self.rows[key]
-        while len(self.rows) > self.max_tasks or sum(len(r[1]['text'].encode('utf-8')) for r in self.rows.values()) > self.max_bytes:
+        while len(self.rows) > self.max_tasks or sum(self._text_bytes(r[1]) for r in self.rows.values()) > self.max_bytes:
             self.rows.popitem(last=False)
+
+    @staticmethod
+    def _text_bytes(value):
+        previous = value.get('last_complete') or {}
+        return len(value['text'].encode('utf-8')) + len(previous.get('text', '').encode('utf-8'))
 
     def record(self, task_id, event):
         if not isinstance(task_id, str) or not 0 < len(task_id) <= 128 or not isinstance(event, dict):
@@ -56,7 +61,9 @@ class LiveStreams:
             if kind != 'turn_start' and previous[1]['status'] != 'streaming':
                 return  # terminal snapshots are immutable
             value = dict(epoch=self.epoch, sequence=0, turn_id=turn, protocol=str(event.get('protocol', ''))[:32],
-                         text='', tool_pending=False, status='streaming', delivery='', truncated=False) if kind == 'turn_start' else copy.deepcopy(previous[1])
+                         text='', tool_pending=False, status='streaming', delivery='', truncated=False,
+                         last_complete=copy.deepcopy(previous[1].get('last_complete')) if previous else None
+                         ) if kind == 'turn_start' else copy.deepcopy(previous[1])
             if 'text' in event:
                 if not isinstance(event['text'], str):
                     return
@@ -70,6 +77,10 @@ class LiveStreams:
             if kind == 'turn_end':
                 status = event.get('status')
                 value['status'] = status if status in ('completed', 'error', 'cancelled') else 'error'
+                if value['status'] == 'completed' and value['text'].strip():
+                    value['last_complete'] = dict(text=value['text'], epoch=self.epoch, turn_id=turn,
+                        truncated=value['truncated'], completed_at=datetime.now(timezone.utc).isoformat(),
+                        protocol=value['protocol'], delivery=value['delivery'])
                 if isinstance(event.get('code'), str):
                     value['code'] = event['code'][:80]
             self.sequence += 1

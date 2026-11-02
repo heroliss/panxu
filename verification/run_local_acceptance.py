@@ -30,6 +30,7 @@ from diskpilot import __version__
 from diskpilot.scanner import scan_directory
 from diskpilot.simulation import AppError, SimulationState
 from diskpilot import windows
+from tests.prompt_fixture import parse_host_data
 
 
 def sha(value) -> str:
@@ -154,7 +155,7 @@ def model_acceptance(data_dir: Path, fixture_item: dict) -> dict:
             tools = [message for message in requests[1].get("messages", []) if message.get("role") == "tool"]
         tool_summary_matches = False
         if len(tools) == 1:
-            content = json.loads(tools[0]["content"])
+            content = parse_host_data(tools[0]["content"])
             tool_summary_matches = (tools[0].get("tool_call_id") == call_id
                                     and content.get("count") == 1
                                     and content.get("simulation_only") is True)

@@ -51,6 +51,19 @@ test('each subscription owns its listener lifetime and receives an isolated snap
   b();c();
 });
 
+test('last-complete public text survives channel projection with bounded fields and isolated nested snapshots',()=>{
+  const f=fixture(),received=[];
+  const a=f.subject.subscribe('one',value=>{if(value.stream?.last_complete)value.stream.last_complete.text='consumer mutation';});
+  const b=f.subject.subscribe('one',value=>received.push(value));
+  const last={text:'上一轮完整公开正文',epoch:'old-epoch',turn_id:'old-turn',completed_at:'2026-11-02T04:00:00Z',protocol:'chat_completions',delivery:'sse',truncated:false,api_key:'must-not-project'};
+  f.connections[0].message({stream:stream(1,'新的片段',{last_complete:last})});
+  assert.equal(received.at(-1).stream.last_complete.text,'上一轮完整公开正文');assert.equal(received.at(-1).stream.last_complete.completed_at,last.completed_at);
+  assert.equal(received.at(-1).stream.last_complete.api_key,undefined);
+  f.connections[0].message({stream:stream(2,'更多新片段',{last_complete:{...last,text:'x'.repeat(8001)}})});
+  assert.equal(received.at(-1).stream.text,'更多新片段');assert.equal(received.at(-1).stream.last_complete,null,'oversized previous text is not admitted into the shared channel');
+  a();b();
+});
+
 test('epoch/sequence and closed-connection generation prevent older packets replacing current text',async()=>{
   const f=fixture(),events=[];const off=f.subject.subscribe('one',value=>events.push(value));const old=f.connections[0];
   old.message({stream:stream(9,'最新正文')});old.message({stream:stream(8,'旧正文')});assert.equal(events.at(-1).stream.text,'最新正文');

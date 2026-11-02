@@ -56,6 +56,43 @@ class LiveStreamsTests(unittest.TestCase):
                     value.record('task', self.event(kind, text='迟到的错误覆盖', status='completed'))
                     self.assertEqual(value.snapshot('task'), terminal)
 
+    def test_last_complete_survives_next_partial_error_cancel_and_empty_tool_turn(self):
+        value = self.streams()
+        value.record('a', self.event(text='上次完整公开回复'))
+        value.record('a', self.event('turn_end', status='completed'))
+        saved = value.snapshot('a')['last_complete']
+        self.assertEqual(saved['text'], '上次完整公开回复')
+        for turn, status, text in (('partial-error', 'error', '未完成'),
+                                   ('cancelled', 'cancelled', '已取消片段'),
+                                   ('tool-only', 'completed', '')):
+            value.record('a', self.event(turn=turn))
+            self.assertEqual(value.snapshot('a')['last_complete'], saved)
+            value.record('a', self.event('stream_delta', turn=turn, text=text))
+            self.assertEqual(value.snapshot('a')['last_complete'], saved)
+            value.record('a', self.event('turn_end', turn=turn, status=status))
+            self.assertEqual(value.snapshot('a')['last_complete'], saved)
+        value.record('a', self.event(turn='fresh', text='下一条完整回复'))
+        value.record('a', self.event('turn_end', turn='fresh', status='completed'))
+        self.assertEqual(value.snapshot('a')['last_complete']['text'], '下一条完整回复')
+        self.assertEqual(value.snapshot('a')['last_complete']['turn_id'], 'fresh')
+        value.record('b', self.event(text='另一任务'))
+        self.assertIsNone(value.snapshot('b')['last_complete'])
+
+    def test_last_complete_is_host_owned_clipped_copied_and_counted_in_retention(self):
+        value = self.streams(max_text=3, max_bytes=40)
+        value.record('a', self.event(text='甲乙丙丁', last_complete={'text': 'forged'}))
+        self.assertIsNone(value.snapshot('a')['last_complete'])
+        value.record('a', self.event('turn_end', status='completed'))
+        saved = value.snapshot('a')
+        self.assertEqual(saved['last_complete']['text'], '甲乙丙')
+        self.assertTrue(saved['last_complete']['truncated'])
+        saved['last_complete']['text'] = 'consumer mutation'
+        self.assertEqual(value.snapshot('a')['last_complete']['text'], '甲乙丙')
+        for key in ('b', 'c', 'd'):
+            value.record(key, self.event(turn=key, text='一二三'))
+            value.record(key, self.event('turn_end', turn=key, status='completed'))
+        self.assertLessEqual(sum(value._text_bytes(row[1]) for row in value.rows.values()), 40)
+
     def test_only_public_whitelisted_fields_are_copied_and_bad_status_is_error(self):
         value = self.streams()
         value.record('task', self.event(text='公开文字', arguments='private-argument',

@@ -28,6 +28,7 @@ import serve_v090_fixture as stream_peer
 from diskpilot.llm import ModelAssistant
 from diskpilot.scanner import scan_directory
 from diskpilot.server import create_server
+from tests.prompt_fixture import parse_host_data
 
 
 SEED_GOAL = '验证0.10综合评分和目录继承：先给用途和倾向，所有文件保持原样，等待审阅。'
@@ -48,7 +49,7 @@ def _observed(payload):
     for message in payload.get('messages', []):
         if message.get('role') == 'tool':
             try:
-                result = json.loads(message['content'])
+                result = parse_host_data(message['content'])
             except (TypeError, ValueError, KeyError):
                 continue
             for row in result.get('items', []) if isinstance(result, dict) else []:

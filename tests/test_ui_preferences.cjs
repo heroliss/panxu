@@ -391,10 +391,10 @@ function protocolReply(protocol, calls) {
 for (const protocol of ['chat_completions', 'responses', 'anthropic', 'gemini']) {
   test(`${protocol}: tool details off retains public findings, questions, advice and handoff`, async () => {
     const calls = [
-      ['present_findings', { summary: '公开结论', needs_input: false, reasoning_content: 'private-opaque-canary' }],
+      ['present_findings', { summary: '公开结论', briefing:{highlights:['公开本轮重点'],cautions:['公开留意事项'],coverage:['公开检查范围']},needs_input: false, reasoning_content: 'private-opaque-canary' }],
       ['propose_plan', { summary: '公开方案', items: [{ id: 'fixture', action: 'delete', reason: '公开原因', impact: '公开影响' }], auto_approve: true }],
       ['ask_user', { question: '公开问题', options: [{ id: 'keep', label: '保留', description: '公开选项说明' }] }],
-      ['record_advice', { items: [{ id: 'fixture', conclusion: 'keep', purpose: '公开用途', reason: '公开保留依据', impact: '保持原样' }] }],
+      ['record_advice', { items: [{ id: 'fixture', conclusion: 'keep',cleanup_rating:1, purpose: '公开用途', reason: '公开保留依据', impact: '保持原样' }] }],
       ['checkpoint_task', { summary: '公开交接', next_steps: ['公开下一步'], unresolved: ['公开未决事项'] }],
       ['inspect_items', { ids: ['hidden-investigation-arguments'] }],
     ];
@@ -402,7 +402,7 @@ for (const protocol of ['chat_completions', 'responses', 'anthropic', 'gemini'])
     await fixture.open(); await fixture.check('developer-live', true);
     const entry = fixture.root.all().find((node) => node.className === 'developer-entry');
     const text = entry.all().map((node) => node.textContent || '').join('\n');
-    for (const value of ['公开结论', '公开方案', '公开原因', '公开影响', '公开问题', '公开选项说明', '公开用途', '公开保留依据', '公开交接', '公开下一步', '公开未决事项']) assert.ok(text.includes(value), value);
+    for (const value of ['公开结论', '公开本轮重点','公开留意事项','公开检查范围','清理倾向 1/5','公开方案', '公开原因', '公开影响', '公开问题', '公开选项说明', '公开用途', '公开保留依据', '公开交接', '公开下一步', '公开未决事项']) assert.ok(text.includes(value), value);
     assert.ok(text.includes('不代表操作或审批结果'));
     for (const value of ['private-opaque-canary', 'auto_approve', 'hidden-investigation-arguments', '"action"']) assert.ok(!text.includes(value), value);
     assert.equal(entry.querySelector('pre'), null);

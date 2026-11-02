@@ -9,6 +9,7 @@ import sys
 
 import serve_v050_fixture as fixture
 from serve_v060_fixture import answer as question_answer
+from tests.prompt_fixture import parse_host_data
 
 
 original_create = fixture.create_server
@@ -32,7 +33,7 @@ def answer(payload):
     if any(t.get('function', {}).get('name') == 'connection_probe' for t in payload.get('tools', [])):
         return question_answer(payload)
     messages = payload.get('messages', [])
-    context = json.loads(messages[1]['content']) if len(messages) > 1 else {}
+    context = parse_host_data(messages[1]['content']) if len(messages) > 1 else {}
     if not str(context.get('goal', '')).startswith('验证系统证据'):
         return question_answer(payload)
     if len(messages) == 2:

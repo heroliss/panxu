@@ -8,6 +8,7 @@ from diskpilot.llm import ModelAssistant
 from diskpilot.scanner import scan_directory
 from diskpilot.simulation import AppError, SimulationState
 from diskpilot.tasks import TaskHarness
+from tests.prompt_fixture import parse_host_data
 
 
 def call(name, args, *, usage=None, reasoning=None):
@@ -70,7 +71,7 @@ class ContinuityTests(unittest.TestCase):
             self.assertEqual(payload['model'], 'model-b')
             self.assertEqual([m['role'] for m in payload['messages']], ['system', 'user'])
             self.assertNotIn('opaque-private-sentinel', json.dumps(payload))
-            context = json.loads(payload['messages'][1]['content'])
+            context = parse_host_data(payload['messages'][1]['content'])
             self.assertTrue(context['connection_changed'])
             self.assertGreater(context['facts']['total'], 0)
             return call('present_findings', {'summary': '已使用历史事实继续。', 'needs_input': True})

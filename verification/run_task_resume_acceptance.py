@@ -27,6 +27,7 @@ from urllib.request import build_opener, ProxyHandler, Request
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from diskpilot.server import create_server
+from tests.prompt_fixture import parse_host_data
 
 
 MODEL_A = "resume-fixture-a"
@@ -116,7 +117,7 @@ class FixtureModel:
 
     def answer(self, payload):
         messages = payload["messages"]
-        context = json.loads(messages[1]["content"])
+        context = parse_host_data(messages[1]["content"])
         model = payload["model"]
         if model not in (MODEL_A, MODEL_B) or context["goal"] != self.goal:
             raise ValueError("fixture_context_changed")
@@ -137,7 +138,7 @@ class FixtureModel:
                 results.append((observation.get("tool"), result))
         for position, message in enumerate(messages):
             if message.get("role") == "tool":
-                result = json.loads(message["content"])
+                result = parse_host_data(message["content"])
                 if "error" in result:
                     raise ValueError("fixture_tool_result_error")
                 call_id = message["tool_call_id"]

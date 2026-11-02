@@ -5,6 +5,7 @@ Uses only a local protocol peer and inherits unchanged-file shutdown checks.
 import json
 
 import serve_v050_fixture as fixture
+from tests.prompt_fixture import parse_host_data
 
 
 base_answer = fixture.answer
@@ -15,14 +16,14 @@ def answer(payload):
     if 'connection_probe' in definitions:
         return base_answer(payload)
     messages = payload['messages']
-    context = json.loads(messages[1]['content'])
+    context = parse_host_data(messages[1]['content'])
     if context.get('last_result'):
         return fixture.tool('present_findings', {'summary': '已收到你直接选择处理的记录，并核对1项预演结果；实际文件未改变。', 'needs_input': False})
     answered = any(isinstance(row, dict) and row.get('answer') for row in context.get('user_feedback', []))
     if len(messages) == 2:
         return fixture.tool('list_items', {'limit': 20}) if answered else fixture.tool('list_skills', {'query': '缓存', 'limit': 3})
     previous = messages[-2]['tool_calls'][0]['function']['name']
-    result = json.loads(messages[-1]['content'])
+    result = parse_host_data(messages[-1]['content'])
     if previous == 'list_skills':
         return fixture.tool('read_skill', {'skill_id': 'application-caches'})
     if previous == 'read_skill':
@@ -32,7 +33,7 @@ def answer(payload):
     observed = {}
     for message in messages:
         if message['role'] == 'tool':
-            value = json.loads(message['content'])
+            value = parse_host_data(message['content'])
             for row in value.get('items', []) if isinstance(value, dict) else []:
                 if isinstance(row, dict) and 'kind' in row:
                     observed[row['id']] = row

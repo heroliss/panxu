@@ -5,7 +5,13 @@ window.PanxuStreamChannel = (() => {
   const channels=new Map(),maxChannels=4;
   const statuses=new Set(['streaming','completed','error','cancelled']);
   let watching=false;
-  function snapshot(channel){return {stream:channel.stream?{...channel.stream}:null,connection:channel.connection,incomplete:Boolean(channel.stream&&(channel.stream.status==='error'||(channel.stream.status==='streaming'&&['reconnecting','stopped','unavailable'].includes(channel.connection))))};}
+  function snapshot(channel){return {stream:channel.stream?{...channel.stream,last_complete:channel.stream.last_complete?{...channel.stream.last_complete}:null}:null,connection:channel.connection,incomplete:Boolean(channel.stream&&(channel.stream.status==='error'||(channel.stream.status==='streaming'&&['reconnecting','stopped','unavailable'].includes(channel.connection))))};}
+  function completed(value){
+    if(!value || typeof value!=='object' || typeof value.text!=='string' || value.text.length>16000 || Array.from(value.text).length>8000)return null;
+    return {text:value.text,epoch:typeof value.epoch==='string'?value.epoch.slice(0,120):'',turn_id:typeof value.turn_id==='string'?value.turn_id.slice(0,120):'',
+      truncated:value.truncated===true,completed_at:typeof value.completed_at==='string'?value.completed_at.slice(0,64):'',
+      protocol:typeof value.protocol==='string'?value.protocol.slice(0,40):'',delivery:typeof value.delivery==='string'?value.delivery.slice(0,24):''};
+  }
   function notify(channel){for(const listener of [...channel.listeners]){try{listener(snapshot(channel));}catch(_){}}}
   function stopTransport(channel){
     channel.generation++;if(channel.source){channel.source.close();channel.source=null;}
@@ -22,7 +28,7 @@ window.PanxuStreamChannel = (() => {
       channel.generationEpoch=stream.epoch;
       if(channel.lastEpoch===stream.epoch&&stream.sequence<=channel.lastSequence){channel.errors=0;channel.connection='open';notify(channel);return true;}
       channel.lastEpoch=stream.epoch;channel.lastSequence=stream.sequence;
-      channel.stream={epoch:stream.epoch,sequence:stream.sequence,turn_id:typeof stream.turn_id==='string'?stream.turn_id:'',protocol:typeof stream.protocol==='string'?stream.protocol:'',text:stream.text,tool_pending:stream.tool_pending===true,status:stream.status,delivery:typeof stream.delivery==='string'?stream.delivery.slice(0,24):'',updated_at:typeof stream.updated_at==='string'?stream.updated_at:'',truncated:stream.truncated===true};
+      channel.stream={epoch:stream.epoch,sequence:stream.sequence,turn_id:typeof stream.turn_id==='string'?stream.turn_id:'',protocol:typeof stream.protocol==='string'?stream.protocol:'',text:stream.text,tool_pending:stream.tool_pending===true,status:stream.status,delivery:typeof stream.delivery==='string'?stream.delivery.slice(0,24):'',updated_at:typeof stream.updated_at==='string'?stream.updated_at:'',truncated:stream.truncated===true,last_complete:completed(stream.last_complete)};
     }else channel.stream=null;
     channel.errors=0;channel.connection='open';notify(channel);return true;
   }

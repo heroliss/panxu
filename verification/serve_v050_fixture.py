@@ -15,6 +15,7 @@ import time
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from diskpilot.server import create_server
 from diskpilot.scanner import scan_directory
+from tests.prompt_fixture import parse_host_data
 
 
 def tool(name, args):
@@ -27,11 +28,11 @@ def answer(payload):
     definitions = {t['function']['name']: t['function'] for t in payload.get('tools', [])}
     if 'connection_probe' in definitions:
         if messages[-1]['role'] == 'tool':
-            nonce = json.loads(messages[-1]['content'])['nonce']
+            nonce = parse_host_data(messages[-1]['content'])['nonce']
             return {'choices': [{'message': {'role': 'assistant', 'content': '工具往返成功 ' + nonce}}]}
         nonce = definitions['connection_probe']['parameters']['properties']['nonce']['enum'][0]
         return tool('connection_probe', {'nonce': nonce})
-    context = json.loads(messages[1]['content'])
+    context = parse_host_data(messages[1]['content'])
     if context.get('last_result'):
         n = context['last_result']['succeeded']
         return tool('present_findings', {'summary': f'已核对本轮 {n} 项预演结果，实际文件未改变。', 'needs_input': False})
@@ -41,7 +42,7 @@ def answer(payload):
     if previous == 'discover_tools':
         return tool('list_items', {'limit': 30})
     if previous == 'list_items':
-        result = json.loads(messages[-1]['content'])
+        result = parse_host_data(messages[-1]['content'])
         rows = result.get('items', [])
         if not rows and context.get('scopes'):
             return tool('survey_scope', {'scope_id': context['scopes'][0]['id']})
@@ -53,7 +54,7 @@ def answer(payload):
     observed = []
     for message in messages:
         if message['role'] == 'tool':
-            value = json.loads(message['content'])
+            value = parse_host_data(message['content'])
             observed += value.get('items', []) if isinstance(value, dict) else []
     rows = {r['id']: r for r in observed if isinstance(r, dict) and 'kind' in r and 'id' in r}
     skipped = {c['id'] for c in context.get('user_choices', [])}

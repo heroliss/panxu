@@ -32,7 +32,7 @@ from .windows import disks, inventory, validate_system_items
 
 
 UI_DEFAULTS = dict(theme='system', developer_live=False, developer_conversation=True,
-                   developer_skills=True, developer_tools=False)
+                   developer_skills=True, developer_tools=False, cleanup_auto_select_four=True)
 
 
 def common_cache_paths():
@@ -76,6 +76,35 @@ class Application:
 
     def patterns(self):
         return self.assistant.public_settings().get('protect_patterns', [])
+
+    def selection_task(self, key, *, required=False):
+        if key in (None, '') and not required:
+            return None
+        if not isinstance(key, str) or not key or len(key) > 128:
+            raise AppError('请从当前整理任务查看清单。', 'invalid_selection_scope')
+        return self.harness._get(key)
+
+    def compile_selection(self, payload, *, for_plan=False):
+        required = {'task_id', 'selected_ids', 'excluded_ids', 'snapshots', 'revision', 'selection_revision'}
+        allowed = required if for_plan else required | {'cursor', 'limit'}
+        if not isinstance(payload, dict) or not required <= set(payload) or set(payload) - allowed:
+            raise AppError('勾选或排除信息无效，请重新查看当前清单。')
+        for field in ('selected_ids', 'excluded_ids'):
+            ids = payload[field]
+            if (not isinstance(ids, list) or len(ids) > 5000 or any(not isinstance(i, str) for i in ids)
+                    or len(set(ids)) != len(ids)):
+                raise AppError('选择信息过多或重复，请按范围分批整理。')
+        if (not isinstance(payload['snapshots'], dict) or not isinstance(payload['revision'], str)
+                or not isinstance(payload['selection_revision'], str)):
+            raise AppError('清单已变化，请刷新后重新勾选。', 'selection_changed', 409)
+        with self.state.lock:
+            task = self.selection_task(payload['task_id'], required=True)
+            if task['status'] in ('investigating', 'executing'):
+                raise AppError('本次任务仍在调查或执行，请结束当前步骤后再确认清单。', 'task_busy', 409)
+            return self.catalog.compile_selection(payload['selected_ids'], payload['excluded_ids'],
+                snapshots=payload['snapshots'], expected=payload['revision'], task=task,
+                expected_selection_revision=payload['selection_revision'],
+                limit=500 if for_plan else payload.get('limit', 500), cursor=None if for_plan else payload.get('cursor'))
 
     def ui_preferences(self, payload=None):
         with self.state.lock:
@@ -153,7 +182,7 @@ class Application:
                     self.harness.attach_job(task_id, key)
             cancel = threading.Event()
             job = dict(id=key, status='running', progress={'message': '准备只读采集'}, result=None, error=None)
-            self.jobs[key] = dict(job, _cancel=cancel)
+            self.jobs[key] = dict(job, _cancel=cancel, _task_id=payload.get('task_id') if kind == 'agent' else None)
         def progress(value):
             with self.job_lock:
                 self.jobs[key]['progress'] = value
@@ -162,8 +191,9 @@ class Application:
                 if kind == 'agent':
                     task = self.harness.investigate(payload['task_id'], cancel=cancel, progress=progress,
                                                     execute=bool(payload.get('execute')))
+                    execution = self.harness.execution_status(payload['task_id']) if payload.get('execute') else None
                     with self.job_lock:
-                        self.jobs[key].update(status='cancelled' if cancel.is_set() else 'completed',
+                        self.jobs[key].update(status='cancelled' if cancel.is_set() or execution and execution.get('status') == 'cancelled' else 'completed',
                                               result={'task': task}, progress={'message': task['summary']})
                     return
                 pending = []
@@ -233,7 +263,12 @@ class Application:
             value = self.jobs.get(key)
             if not value:
                 raise AppError('任务不存在。', 'unknown_job', 404)
-            return {k: v for k, v in value.items() if not k.startswith('_')}
+            result = {k: copy.deepcopy(v) for k, v in value.items() if not k.startswith('_')}
+            task_id = value.get('_task_id')
+        # Do not hold the job lock while reading task/control state.
+        if task_id:
+            result['execution'] = self.harness.execution_status(task_id)
+        return result
 
     def icon_item(self, key):
         """Resolve only an existing catalog ID; icon paths stay local and private."""
@@ -292,9 +327,11 @@ class Application:
                 limit = int(query.get('limit', ['50'])[0])
             except (ValueError, TypeError):
                 raise AppError('请使用有效的页码。') from None
-            return self.catalog.page(offset=offset, limit=limit, query=query.get('query', [''])[0],
-                scope=query.get('scope', [''])[0], risk=query.get('risk', ['all'])[0], expected=query.get('revision', [''])[0],
-                view=query.get('view', ['all'])[0], parent_id=query.get('parent_id', [''])[0], rating=query.get('rating', ['all'])[0])
+            with self.state.lock:
+                return self.catalog.page(offset=offset, limit=limit, query=query.get('query', [''])[0],
+                    scope=query.get('scope', [''])[0], risk=query.get('risk', ['all'])[0], expected=query.get('revision', [''])[0],
+                    view=query.get('view', ['all'])[0], parent_id=query.get('parent_id', [''])[0], rating=query.get('rating', ['all'])[0],
+                    task=self.selection_task(query.get('task_id', [''])[0]))
         if path == '/api/applications':
             section = query.get('section', ['background'])[0]
             kinds = {'background': ('startup', 'service', 'process'), 'software': ('software',)}.get(section)
@@ -333,6 +370,11 @@ class Application:
                 raise AppError('请选择有效的事实页码。') from None
             ids = query.get('ids', [''])[0].split(',') if query.get('ids') else None
             return self.harness.facts_page(parts[3], offset, limit, ids)
+        if path.startswith('/api/tasks/') and path.endswith('/execution'):
+            parts = path.split('/')
+            if len(parts) != 5:
+                raise AppError('执行进度接口不存在。', 'not_found', 404)
+            return {'execution': self.harness.execution_status(parts[3])}
         if path.startswith('/api/tasks/'):
             return {'task': self.harness.public(path.rsplit('/', 1)[-1])}
         if path.startswith('/api/jobs/'):
@@ -354,7 +396,28 @@ class Application:
         raise AppError('接口不存在。', 'not_found', 404)
 
     def post(self, path, payload):
+        if path == '/api/assessments/select':
+            allowed = {'task_id', 'category', 'mode', 'include_inherited', 'query', 'scope', 'risk', 'cursor', 'limit', 'revision', 'selection_revision'}
+            if not isinstance(payload, dict) or set(payload) - allowed:
+                raise AppError('分类选择信息无效，请刷新当前清单。')
+            with self.state.lock:
+                task = self.selection_task(payload.get('task_id'), required=True)
+                return self.catalog.batch_selection(task=task, category=payload.get('category', 'high'),
+                    mode=payload.get('mode', 'manual'), include_inherited=payload.get('include_inherited', True),
+                    query=payload.get('query', ''), scope=payload.get('scope', ''), risk=payload.get('risk', 'all'),
+                    cursor=payload.get('cursor'), limit=payload.get('limit', 500), expected=payload.get('revision'),
+                    expected_selection_revision=payload.get('selection_revision'))
+        if path == '/api/assessments/compile':
+            return self.compile_selection(payload)
         if path == '/api/assessments/plan':
+            if isinstance(payload, dict) and 'selected_ids' in payload:
+                with self.state.lock:
+                    selection = self.compile_selection(payload, for_plan=True)
+                    if not selection['ids']:
+                        raise AppError('当前勾选没有可执行项目，请查看保护、排除项和未扫描部分。', 'empty_selection')
+                    prepared = self.harness.prepare_assessment_plan(selection['ids'],
+                        expected_revision=self.harness.assessments.revision(), source_task_id=payload['task_id'])
+                    return dict(prepared, selection=selection, source_task_id=payload['task_id'])
             if not isinstance(payload, dict) or set(payload) != {'ids', 'snapshots', 'revision', 'action'}:
                 raise AppError('请重新选择要加入删除清单的项目。')
             ids, snapshots = payload['ids'], payload['snapshots']
@@ -403,6 +466,10 @@ class Application:
             return dict(job, task=self.harness.public(task['id']))
         if path.startswith('/api/tasks/'):
             parts = path.split('/')
+            if len(parts) == 6 and parts[4] == 'execution' and parts[5] in ('pause', 'resume', 'cancel'):
+                if not isinstance(payload, dict) or set(payload) != {'version'} or type(payload['version']) is not int:
+                    raise AppError('请从当前清理进度操作，执行版本无效。', 'stale_execution', 409)
+                return {'execution': self.harness.control_execution(parts[3], parts[5], version=payload['version'])}
             if len(parts) == 5 and parts[4] == 'direct-plan':
                 return self.harness.direct_plan(parts[3], payload)
             if len(parts) == 5 and parts[4] in ('continue', 'approve', 'feedback', 'answer'):
@@ -433,6 +500,12 @@ class Application:
                 if key not in self.jobs:
                     raise AppError('任务不存在。', 'unknown_job', 404)
                 self.jobs[key]['_cancel'].set()
+                task_id = self.jobs[key].get('_task_id')
+            if task_id:
+                try:
+                    self.harness.control_execution(task_id, 'cancel')
+                except AppError:
+                    pass  # An investigation has no execution controller.
             return {'job': self.job(key)}
         if path == '/api/plan':
             with self.state.lock:
@@ -490,6 +563,11 @@ class Application:
         self.live_streams.close()
         for job in self.jobs.values():
             job['_cancel'].set()
+            if job.get('_task_id'):
+                try:
+                    self.harness.control_execution(job['_task_id'], 'cancel')
+                except AppError:
+                    pass
         self.pool.shutdown(wait=True, cancel_futures=True)
         self.icons.close()
         self.scan_index.close()

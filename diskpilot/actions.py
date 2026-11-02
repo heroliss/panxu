@@ -73,40 +73,89 @@ class ActionRuntime:
                         message='已从处理记录核实上次结果。' if verified else '上次处理被中断，未确认完成；不会自动重复。')
             self._save(row['id'], row['task_id'], row['plan_version'], 'succeeded' if verified else 'unverified', data)
 
-    def run(self, task_id, version, entries, *, patterns=(), cancel=None, progress=None, guard=None, apply_context=None):
+    def run(self, task_id, version, entries, *, patterns=(), cancel=None, progress=None, guard=None, apply_context=None, control=None):
         cancel = cancel or threading.Event()
+
+        def emit(message):
+            if progress:
+                payload = {'message': message}
+                if control:
+                    payload['execution'] = control.snapshot()
+                progress(payload)
+
         for entry in entries:
             operation_id = hashlib.sha256(f'{task_id}:{version}:{entry["id"]}'.encode()).hexdigest()
             with self.state.lock:
-                previous = self.state.db.execute('SELECT status FROM action_attempts WHERE id=?', (operation_id,)).fetchone()
+                previous = self.state.db.execute('SELECT status,payload FROM action_attempts WHERE id=?', (operation_id,)).fetchone()
             if previous:
-                continue  # Failed/unverified attempts need a new reviewed plan, not a blind retry.
+                if control:
+                    control.finished_item(entry, previous['status'], json.loads(previous['payload']))
+                continue  # Reviewed retries never blindly reapply a durable attempt.
             data = {'entry': entry, 'backend': self.backend.name, 'verified': False,
                     'actual_reclaimed_bytes': 0, 'recovery': '撤销此工具中的处理记录'}
-            if cancel.is_set():
-                data['message'] = '你已停止处理，这项没有继续。'
+            ready = control.wait_ready(cancel, progress) if control else not cancel.is_set()
+            if not ready:
+                data['message'] = '你已取消，这项没有提交。'
                 self._save(operation_id, task_id, version, 'cancelled', data)
+                if control:
+                    control.finished_item(entry, 'cancelled', data)
+                emit(data['message'])
                 continue
+            if control:
+                control.begin(entry)
             self._save(operation_id, task_id, version, 'running', data)
-            if progress:
-                progress({'message': '正在处理并核对：' + entry['name']})
+            emit('正在处理并核对：' + entry['name'])
             try:
                 injected = self.fault(entry, 'before') if self.fault else None
                 if injected:
                     raise AppError('测试场景：这项暂时无法处理。', 'simulated_failure')
-                with self.state.lock, apply_context(entry) if apply_context else nullcontext(patterns) as current_patterns:
-                    if guard:
-                        guard(entry)
-                    batch = self.backend.apply(entry, operation_id, current_patterns)
-                data['batch_id'] = batch['id']
-                injected = self.fault(entry, 'after') if self.fault else None
-                verified = not injected and self.backend.verify(entry, batch)
-                data.update(verified=verified, message='已核对处理结果。' if verified else '已尝试处理，但结果尚未确认。')
-                self._save(operation_id, task_id, version, 'succeeded' if verified else 'unverified', data)
+                cancelled_before_commit = False
+                while True:
+                    # A pause may arrive while preparing the entry. Wait outside
+                    # both commit locks, then recheck the request atomically.
+                    ready = control.wait_ready(cancel, progress) if control else not cancel.is_set()
+                    if not ready:
+                        cancelled_before_commit = True
+                        break
+                    if control:
+                        control.begin(entry)
+                    with self.state.lock, apply_context(entry) if apply_context else nullcontext(patterns) as current_patterns:
+                        if cancel.is_set():
+                            cancelled_before_commit = True
+                            break
+                        if control and not control.enter_commit(entry, cancel):
+                            continue
+                        if guard:
+                            guard(entry)
+                        batch = self.backend.apply(entry, operation_id, current_patterns)
+                        break
+                if cancelled_before_commit:
+                    data['message'] = '你已取消，这项没有提交。'
+                    status = 'cancelled'
+                else:
+                    data['batch_id'] = batch['id']
+                    injected = self.fault(entry, 'after') if self.fault else None
+                    verified = not injected and self.backend.verify(entry, batch)
+                    data.update(verified=verified, message='已核对处理结果。' if verified else '已尝试处理，但结果尚未确认。')
+                    status = 'succeeded' if verified else 'unverified'
+                self._save(operation_id, task_id, version, status, data)
             except Exception as exc:
                 data['message'] = str(exc) if isinstance(exc, AppError) else '这项没有处理完成，可以重新检查后再试。'
-                self._save(operation_id, task_id, version, 'failed', data)
-        return self.result(task_id, version)
+                status = 'failed'
+                self._save(operation_id, task_id, version, status, data)
+            except BaseException:
+                if control:
+                    control.finish(self.result(task_id, version), interrupted=True)
+                    emit('处理被中断，已提交记录保留，未执行项不会自动继续。')
+                raise
+            if control:
+                control.finished_item(entry, status, data)
+            emit(data['message'])
+        result = self.result(task_id, version)
+        if control:
+            control.finish(result)
+            emit('这一批已结束，实际文件和系统未改动。')
+        return result
 
     def result(self, task_id, version):
         with self.state.lock:
@@ -128,4 +177,7 @@ class ActionRuntime:
         if items and all(x['status'] == 'cancelled' for x in items):
             status = 'cancelled'
         return dict(plan_version=version, backend=self.backend.name, status=status, items=items,
-                    succeeded=succeeded, total=len(items), actual_reclaimed_bytes=0)
+                    succeeded=succeeded, total=len(items), actual_reclaimed_bytes=0,
+                    failed=sum(x['status'] == 'failed' for x in items),
+                    unverified=sum(x['status'] in ('unverified', 'running') for x in items),
+                    cancelled=sum(x['status'] == 'cancelled' for x in items))

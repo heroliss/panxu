@@ -20,6 +20,7 @@ import time
 from urllib.error import HTTPError
 from urllib.parse import urlencode, urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
+from tests.prompt_fixture import parse_host_data
 
 
 GOAL = '验证系统证据：只读核对分页、休眠和所选测试位置所在卷的信息，不扫描或处理文件。'
@@ -216,7 +217,7 @@ def validate(client, scope):
         specs = {value['function']['name']: value['function']['parameters'] for value in requests[0].get('tools', [])}
         check('actual_registry_22_tools', len(specs) == EXPECTED_TOOLS and required <= set(specs))
         check('list_scopes_volume_contract', specs.get('list_scopes', {}).get('properties', {}).get('purpose', {}).get('enum') == ['traverse', 'volume'])
-        context = json.loads(requests[0]['messages'][1]['content'])
+        context = parse_host_data(requests[0]['messages'][1]['content'])
         check('volume_reference_discoverable', any(row.get('scope_id') == scope_id for row in context.get('volume_scopes', [])))
         calls = [trace_payload(row) for row in traces if row['kind'] == 'tool_call']
         check('only_read_only_model_calls', bool(calls) and all(call.get('name') in READ_ONLY_CALLS for call in calls))
@@ -226,7 +227,7 @@ def validate(client, scope):
         for request in requests:
             for message in request.get('messages', []):
                 if message.get('role') == 'tool':
-                    outbound.append(json.loads(message['content']))
+                    outbound.append(parse_host_data(message['content']))
         sent_config = next((row for row in outbound if row.get('source') == configuration.get('source') and 'memory' in row), None)
         check('actual_redacted_tool_result_observed', sent_config is not None)
         for field in ('commit_current_bytes', 'commit_limit_bytes', 'commit_peak_since_boot_bytes', 'physical_total_bytes'):

@@ -21,6 +21,7 @@ function fixture(value,responder=async()=>({})){
     get textContent(){return this._text+this.children.map(child=>child.textContent).join('');}
     set textContent(value){this._text=String(value);this.children.forEach(child=>child.parent=null);this.children=[];}
     get childNodes(){return this.children;}
+    get firstChild(){return this.children[0] || null;}
     get isConnected(){return this===root || Boolean(this.parent?.isConnected);}
     get classList(){return {add:token=>{this.className+=' '+token;}};}
     append(...children){children.forEach(child=>{child.parent=this;this.children.push(child);});}
@@ -28,7 +29,7 @@ function fixture(value,responder=async()=>({})){
     setAttribute(key,value){this[key]=value;}
     addEventListener(name,handler){this.handlers.set(name,[...(this.handlers.get(name)||[]),handler]);}
     all(){return this.children.flatMap(child=>[child,...child.all()]);}
-    matches(selector){return selector.startsWith('.')?this.className.split(' ').includes(selector.slice(1)):this.tag===selector;}
+    matches(selector){if(selector.startsWith('[data-')){const key=selector.slice(6,-1).replace(/-([a-z])/g,(_,letter)=>letter.toUpperCase());return Object.hasOwn(this.dataset,key);}return selector.startsWith('.')?this.className.split(' ').includes(selector.slice(1)):this.tag===selector;}
     querySelectorAll(selector){return this.all().filter(child=>child.matches(selector));}
     querySelector(selector){return this.querySelectorAll(selector)[0] || null;}
     async fire(name){await Promise.all((this.handlers.get(name)||[]).map(handler=>handler({preventDefault(){}})));await flush();}
@@ -94,6 +95,137 @@ test('persisted legacy plan without assessment is unscored while an explicit una
   assert.equal(ratings[0].textContent,'未评分');assert.equal(ratings[0].dataset.rating,'');assert.equal(ratings[0].querySelectorAll('.cleanup-rating-segment').length,0);
   assert.equal(ratings[1].textContent,'尚未分析');assert.equal(ratings[1].dataset.rating,'');
   assert.equal(f.get('pick-legacy').checked,true);assert.equal(f.requests.length,0);
+});
+
+test('plan ratings lead the row and hidden additional selections remain explicit and unchanged',async()=>{
+  const rows=Array.from({length:5},(_,index)=>item('row-'+index,'delete','file',{
+    assessment:{state:'explicit',rating:index===0?5:4},personal_choice_required:index===4,default_selected:true}));
+  const f=fixture(task(rows)),cards=f.root.querySelectorAll('.task-plan-item');
+  assert.equal(cards[0].children[1],cards[0].querySelector('.task-plan-rating'));
+  assert.equal(cards[0].querySelector('.cleanup-rating-value').textContent,'5');
+  assert.ok(cards[0].querySelector('.task-plan-rating').className.includes('cleanup-rating-primary'));
+  const more=f.root.querySelector('.task-plan-more');assert.equal(more.open,false);
+  assert.equal(more.querySelectorAll('.task-plan-item').length,2);
+  assert.match(more.querySelector('summary').textContent,/其余 2 项.*其中已选 1 项/);
+  assert.equal(f.get('task-approve').textContent,'模拟删除 4 个文件');
+  assert.equal(f.get('pick-row-4').checked,false,'personal hidden row is never auto-selected');
+  more.open=true;await more.fire('toggle');assert.equal(f.get('pick-row-3').checked,true);
+  await f.choose('row-3',false);assert.match(more.querySelector('summary').textContent,/其中已选 0 项/);
+  await f.choose('row-4',true);assert.match(more.querySelector('summary').textContent,/其中已选 1 项/);
+  assert.equal(f.get('task-approve').textContent,'模拟删除 4 个文件');assert.equal(f.requests.length,0);
+});
+
+test('short structured conclusions stay whole while legacy long prose remains in a closed full-text disclosure',()=>{
+  const short='不带句号的短结论'.repeat(12);
+  const concise=fixture(task([],{status:'paused',plan:null,summary:short}));
+  assert.equal(concise.root.querySelector('.task-summary-text').textContent,short);
+  assert.equal(concise.root.querySelector('.task-summary-original'),null);
+  const long='旧记录中的完整说明。'.repeat(50)+'<img src=x onerror=alert(1)>';
+  const f=fixture(task([],{status:'paused',plan:null,summary:long}));
+  const body=f.root.querySelector('.task-summary-original');assert.equal(body.textContent,long);
+  assert.equal(body.parent.open,false);assert.equal(body.querySelector('img'),null);
+  assert.equal(f.root.querySelector('.task-summary-text').textContent,Array.from(long).slice(0,100).join('')+'…');
+  assert.equal(f.requests.length,0);
+});
+
+test('structured briefing separates highlights, caveats and coverage without expanding secondary text or changing plan choices',()=>{
+  const briefing={highlights:['本轮重点甲','本轮重点乙'],cautions:['需要留意原件是否保留'],coverage:['尚有未读取范围']};
+  const value=task([item('one','delete','file',{assessment:{state:'explicit',rating:5}})],{briefing,briefing_provenance:provenanceForTest()});
+  const f=fixture(value),group=f.root.querySelector('.task-briefing');
+  assert.ok(group.textContent.includes('本轮重点甲'));assert.ok(group.textContent.includes('本轮重点乙'));
+  const sections=group.querySelectorAll('.task-detail');assert.equal(sections.length,2);
+  assert.ok(sections.every(section=>section.open===false));
+  assert.match(sections[0].querySelector('summary').textContent,/需要留意/);assert.match(sections[1].querySelector('summary').textContent,/检查范围/);
+  const panel=f.root.querySelector('.task-session');assert.ok(panel.children.indexOf(group)>panel.children.indexOf(f.root.querySelector('.task-approval')),'scored operation rows lead explanatory modules');
+  assert.equal(f.get('pick-one').checked,true);assert.equal(f.requests.length,0);
+  function provenanceForTest(){return {source:'llm',provider:'fixture',model:'fixture-model',protocol:'chat_completions',generated_at:'2026-11-02T04:05:06Z'};}
+});
+
+test('a new investigation does not revive a previous plan briefing after the host cleared the current task explanation',()=>{
+  const value=task([],{status:'investigating',briefing:{},plan:{version:7,items:[],briefing:{highlights:['旧方案的说明']}}});
+  const f=fixture(value);assert.equal(f.root.querySelector('.task-briefing'),null);assert.ok(!f.root.textContent.includes('旧方案的说明'));
+});
+
+test('a task without an operation plan shows only three concise scored advice previews before the full paged list',()=>{
+  const advice=Array.from({length:6},(_,index)=>({...item('advice-'+index),cleanup_rating:5,conclusion:'recommend',purpose:'完整用途',reason:'很长的原因'.repeat(50)}));
+  const f=fixture(task([],{status:'paused',plan:null,advice,advice_total:6}));
+  const preview=f.root.querySelector('.task-advice-preview');assert.equal(preview.querySelectorAll('.task-advice-item').length,3);
+  assert.equal(preview.querySelectorAll('.cleanup-rating-value').length,3);
+  assert.ok(preview.querySelectorAll('.task-item-reason').every(node=>Array.from(node.textContent).length===101));
+  assert.ok(preview.querySelectorAll('.task-detail').every(node=>node.open===false));assert.equal(f.requests.length,0);
+});
+
+test('main public stream keeps a focusable bounded full-text reader without truncating packets or changing the developer channel',async()=>{
+  const f=fixture(task([],{status:'investigating',plan:null}));let receiver,viewHost,updates=[];
+  f.environment.window.PanxuStreamView={create(host){viewHost=host;return {reset(){},dispose(){},update(value){updates.push(value);}};}};
+  f.environment.window.PanxuStreamChannel={subscribe(_id,callback){receiver=callback;return ()=>{};}};
+  f.helpers.redraw();await flush();
+  const full='公开回复正文'.repeat(500);
+  receiver({stream:{epoch:'fixture',turn_id:'one',status:'streaming',text:full}});
+  assert.equal(updates.at(-1).text,full);assert.equal(viewHost.tabIndex,0);assert.match(viewHost['aria-label'],/全文.*滚动/);
+  const disclosure=f.root.querySelector('.task-live-disclosure');assert.equal(disclosure.open,true);disclosure.open=false;await disclosure.fire('toggle');
+  receiver({stream:{epoch:'fixture',turn_id:'one',status:'completed',text:full+'结束'}});
+  assert.equal(updates.at(-1).text,full+'结束');assert.equal(disclosure.open,false,'a live packet does not reopen a reader closed by the user');
+  const css=readFileSync(join(__dirname,'..','web','hierarchy.css'),'utf8');assert.match(css,/\.task-live-body\s*\{[^}]*max-height:[^}]*overflow-y:\s*auto/);
+});
+
+test('the latest complete public reply stays visible during another turn and is replaced only by a completed nonempty reply',async()=>{
+  const f=fixture(task([],{status:'investigating',plan:null}));let receiver,updates=[];
+  f.environment.window.PanxuStreamView={create(){return {reset(){},dispose(){},update(value){updates.push(value);}};}};
+  f.environment.window.PanxuStreamChannel={subscribe(_id,callback){receiver=callback;return ()=>{};}};
+  f.helpers.redraw();await flush();
+  const send=(turn_id,status,text,extra={})=>receiver({stream:{epoch:'epoch-one',turn_id,status,text,...extra}});
+  send('a','completed','上轮完整公开回复',{updated_at:'2026-11-02T04:00:00Z'});
+  const complete=f.root.querySelector('.task-complete-body');assert.equal(complete.textContent,'上轮完整公开回复');
+  assert.equal(f.root.querySelector('.task-last-complete').hidden,false);assert.equal(f.root.querySelector('.task-current-reply').hidden,true);
+  send('b','streaming','本轮收到的一部分');assert.equal(complete.textContent,'上轮完整公开回复');assert.equal(updates.at(-1).text,'本轮收到的一部分');
+  assert.equal(f.root.querySelector('.task-current-reply').hidden,false);
+  send('b','error','本轮中断');assert.equal(complete.textContent,'上轮完整公开回复');
+  send('c','streaming','停止前的片段');send('c','cancelled','');
+  assert.equal(complete.textContent,'上轮完整公开回复');assert.equal(updates.at(-1).text,'停止前的片段');assert.equal(updates.at(-1).status,'incomplete');
+  send('d','completed','',{tool_pending:true});assert.equal(complete.textContent,'上轮完整公开回复','an empty tool-only turn cannot erase the last complete text');
+  send('e','completed','新一轮完整公开回复',{updated_at:'2026-11-02T04:01:00Z'});assert.equal(complete.textContent,'新一轮完整公开回复');
+  f.ui.accept(task([item('one')],{updated_at:'next-state',last_public_reply:{text:'更旧的持久回复',completed_at:'2026-11-02T03:00:00Z'}}));f.helpers.redraw();await flush();
+  assert.equal(f.root.querySelector('.task-complete-body').textContent,'新一轮完整公开回复','a later redraw with stale durable data cannot overwrite the recent completed packet');
+  assert.equal(f.root.querySelector('.task-last-complete').hidden,false,'review state still shows the last complete reply');
+});
+
+test('host and durable complete-reply recovery is task scoped and does not leak a previous task into a new task',async()=>{
+  const f=fixture(task([],{status:'investigating',plan:null,last_public_reply:{text:'任务甲持久正文',truncated:false,completed_at:'2026-11-02T04:00:00Z'}}));
+  const callbacks=[];
+  f.environment.window.PanxuStreamView={create(){return {reset(){},dispose(){},update(){}};}};
+  f.environment.window.PanxuStreamChannel={subscribe(id,callback){callbacks.push({id,callback});return ()=>{};}};
+  f.helpers.redraw();await flush();assert.equal(f.root.querySelector('.task-complete-body').textContent,'任务甲持久正文');
+  f.ui.accept(task([],{id:'task-b',status:'investigating',plan:null,updated_at:'task-b'}));f.helpers.redraw();await flush();
+  assert.equal(f.root.querySelector('.task-last-complete').hidden,true);assert.ok(!f.root.textContent.includes('任务甲持久正文'));
+  callbacks[0].callback({stream:{epoch:'late-a',turn_id:'one',status:'completed',text:'甲的晚到正文'}});
+  assert.ok(!f.root.textContent.includes('甲的晚到正文'));
+  callbacks.at(-1).callback({stream:{epoch:'fresh-b',turn_id:'next',status:'streaming',text:'乙的当前片段',last_complete:{text:'乙从宿主恢复的完整正文',epoch:'fresh-b',turn_id:'previous',completed_at:'2026-11-02T04:03:00Z'}}});
+  assert.equal(f.root.querySelector('.task-complete-body').textContent,'乙从宿主恢复的完整正文');
+  assert.equal(f.root.querySelector('.task-last-complete').hidden,false);assert.ok(!f.root.textContent.includes('任务甲持久正文'));
+});
+
+test('software table leads with the saved global rating and viewing it does not start another model analysis',async()=>{
+  const entry=item('software','uninstall','software',{assessment:{state:'explicit',rating:4,reason:'全局新建议'},owner:'测试发布者'});
+  const older={...entry,assessment:undefined,cleanup_rating:1,conclusion:'keep'};
+  const f=fixture(task([],{status:'paused',plan:null,advice:[older]}));
+  const host=f.environment.document.createElement('div');f.root.append(host);const calls=[];
+  const create=(tag,cls='',text)=>{const n=f.environment.document.createElement(tag);n.className=cls;if(text!==undefined)n.textContent=text;return n;};
+  Object.assign(f.environment,{state:{view:'software',limit:300},$:id=>id==='results-container'?host:null,
+    visibleItems:()=>[entry],sectionItems:()=>[entry],canAnalyze:()=>true,analysisIds:()=>new Set(),analysisSelected:()=>false,
+    selectionBox:()=>create('input'),append:(parent,...children)=>{parent.append(...children);return parent;},el:create,
+    button:(label,run,cls)=>{const b=create('button',cls,label);b.addEventListener('click',run);return b;},
+    itemTitle:(_item,n)=>n,kindNames:{software:'软件'},bytes:n=>n+' B',itemSize:()=>10,showItem:async i=>calls.push(['show',i.id]),
+    api:async()=>({items:[]}),analyzeList:async()=>calls.push(['analyze']),toast(){},notify(){}});
+  const app=readFileSync(join(__dirname,'..','web','app.js'),'utf8');
+  const start=app.indexOf('  function renderResults()'),end=app.indexOf('  function renderSelection()',start);
+  const openStart=app.indexOf('  async function showAdvice('),openEnd=app.indexOf('  function analysisOptions(',openStart);
+  runInNewContext(app.slice(openStart,openEnd)+app.slice(start,end)+';this.renderRows=renderResults;',f.environment);f.environment.renderRows();await flush();
+  const row=host.querySelector('.item-row');assert.equal(row.children[1],row.querySelector('.result-rating-cell'));
+  assert.equal(row.querySelector('.cleanup-rating-value').textContent,'4','older active-task advice cannot replace saved global rating');
+  assert.match(row.querySelector('.result-rating-cell').textContent,/4\/5.*倾向清理/);
+  const view=row.querySelectorAll('button').find(button=>button.textContent==='查看建议');await view.fire('click');
+  assert.deepEqual(calls,[['show','software']]);
 });
 
 test('actual approval submits the unchanged plan version/IDs and retains simulation wording while pending',async()=>{

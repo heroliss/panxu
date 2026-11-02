@@ -9,6 +9,7 @@ from urllib.error import HTTPError
 
 from diskpilot.llm import ModelAssistant, _http_transport
 from diskpilot import providers
+from tests.prompt_fixture import parse_host_data
 
 
 TOOLS = [{'type': 'function', 'function': {'name': 'inspect_items', 'description': 'Inspect known IDs',
@@ -45,20 +46,20 @@ class ProtocolFixture:
                 {'functionCall': {'id': 'probe-1', 'name': 'connection_probe', 'args': {'nonce': nonce}}, 'thoughtSignature': 'opaque-private-sentinel'}]}}]}
         if p == 'chat_completions':
             assert payload['messages'][-2]['reasoning_content'] == 'private protocol reasoning sentinel'
-            nonce = json.loads(payload['messages'][-1]['content'])['nonce']
+            nonce = parse_host_data(payload['messages'][-1]['content'])['nonce']
             return {'choices': [{'message': {'role': 'assistant', 'content': nonce}}]}
         if p == 'responses':
             assert any(i.get('encrypted_content') == 'opaque-private-sentinel' for i in payload['input'])
-            nonce = json.loads(payload['input'][-1]['output'])['nonce']
+            nonce = parse_host_data(payload['input'][-1]['output'])['nonce']
             return {'output': [{'type': 'message', 'role': 'assistant', 'content': [{'type': 'output_text', 'text': nonce}]}]}
         if p == 'anthropic':
             assert payload['messages'][-2]['content'][0]['signature'] == 'opaque-private-sentinel'
-            nonce = json.loads(payload['messages'][-1]['content'][0]['content'])['nonce']
+            nonce = parse_host_data(payload['messages'][-1]['content'][0]['content'])['nonce']
             return {'content': [{'type': 'text', 'text': nonce}]}
         assert payload['contents'][-2]['parts'][1]['thoughtSignature'] == 'opaque-private-sentinel'
         result = payload['contents'][-1]['parts'][0]['functionResponse']
         assert result['id'] == 'probe-1' and result['name'] == 'connection_probe'
-        nonce = result['response']['nonce']
+        nonce = parse_host_data(result['response'])['nonce']
         return {'candidates': [{'content': {'role': 'model', 'parts': [{'text': nonce}]}}]}
 
 

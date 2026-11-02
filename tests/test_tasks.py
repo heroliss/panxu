@@ -9,6 +9,7 @@ from unittest.mock import patch
 from diskpilot.llm import ModelAssistant
 from diskpilot.simulation import AppError, SimulationState
 from diskpilot.tasks import TaskHarness
+from tests.prompt_fixture import parse_host_data
 
 
 def call(name, arguments, key='call_1'):
@@ -64,12 +65,12 @@ class TaskTests(unittest.TestCase):
     def test_model_drives_scan_comparison_plan_and_feedback_after_execution(self):
         self.steps = [call('survey_scope', {'scope_id': 'root'})]
         def compare(payload):
-            result = json.loads(payload['messages'][-1]['content'])
+            result = parse_host_data(payload['messages'][-1]['content'])
             ids = [i['id'] for i in result['items'] if i['kind'] == 'file']
             self.assertEqual(len(ids), 2)
             return call('compare_files', {'ids': ids}, 'compare')
         def propose(payload):
-            result = json.loads(payload['messages'][-1]['content'])
+            result = parse_host_data(payload['messages'][-1]['content'])
             self.assertTrue(result['groups'][0]['verified'])
             entry = {'id': result['groups'][0]['ids'][1]}
             return call('propose_plan', self.proposal([entry]), 'plan')
@@ -82,12 +83,12 @@ class TaskTests(unittest.TestCase):
         self.assertFalse(entry['default_selected'])
         self.harness.validate_approval(self.task_id, reviewed['plan']['version'], [entry['id']])
         def verify_context(payload):
-            context = json.loads(payload['messages'][1]['content'])
+            context = parse_host_data(payload['messages'][1]['content'])
             self.assertEqual(context['last_result']['succeeded'], 1)
             self.assertEqual(context['last_result']['actual_reclaimed_bytes'], 0)
             return call('list_items', {'kind': 'file'}, 'remaining')
         def finish(payload):
-            result = json.loads(payload['messages'][-1]['content'])
+            result = parse_host_data(payload['messages'][-1]['content'])
             self.assertNotIn(entry['id'], [i['id'] for i in result['items']])
             return call('present_findings', {'summary': '已经核对本轮结果，剩下的原件建议保留。', 'needs_input': False}, 'done')
         self.steps = [verify_context, finish]
@@ -95,6 +96,11 @@ class TaskTests(unittest.TestCase):
         self.assertEqual(finished['status'], 'completed')
         self.assertTrue(all(p.exists() for p in (self.scope / 'a.zip', self.scope / 'b.zip')))
         self.assertEqual(finished['last_result']['backend'], 'simulation')
+        self.assertEqual(len(self.requests), 3)  # Execution finalization needs no model round trip.
+        self.assertEqual(len(self.steps), 2)
+        continued = self.run_turn()  # The user explicitly asks for further investigation.
+        self.assertEqual(continued['status'], 'completed')
+        self.assertEqual(self.steps, [])
         with self.assertRaises(AppError):
             self.harness.validate_approval(self.task_id, reviewed['plan']['version'], [entry['id']])
 
@@ -172,7 +178,7 @@ class TaskTests(unittest.TestCase):
     def test_unknown_tool_is_reported_to_model_and_can_be_repaired(self):
         self.steps = [call('shell', {'command': 'delete something'})]
         def recover(payload):
-            self.assertIn('error', json.loads(payload['messages'][-1]['content']))
+            self.assertIn('error', parse_host_data(payload['messages'][-1]['content']))
             return call('survey_scope', {'scope_id': 'root'}, 'scan')
         self.steps += [recover, call('present_findings', {'summary': '需要你确认是否保留安装包。', 'needs_input': True}, 'question')]
         result = self.run_turn()

@@ -128,6 +128,8 @@ class AssessmentStore:
         db.execute('INSERT OR IGNORE INTO assessment_generations(task_id) VALUES(?)', (task['id'],))
         generation = db.execute('SELECT generation FROM assessment_generations WHERE task_id=?', (task['id'],)).fetchone()[0]
         task['analysis_generation'] = generation
+        if task.get('non_analysis_intent') is True:
+            return generation
         for ident in task.get('target_ids', task.get('known_ids', [])):
             db.execute('INSERT INTO assessment_intents VALUES(?,?) ON CONFLICT(item_id) DO UPDATE SET generation=MAX(generation,excluded.generation)', (ident, generation))
         directories = task.get('action_directories') if task.get('analysis') else [r['path'] for r in task.get('roots', [])]
