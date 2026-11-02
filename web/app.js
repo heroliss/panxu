@@ -430,7 +430,6 @@ function initializePanxu() {
       openDuplicates:()=>setView('duplicates'),setContextBack,
       showItem,
       autoSelectFour:window.PanxuAppearance.get().cleanup_auto_select_four,
-      saveAutoSelectFour:value=>saveUiPreferences({cleanup_auto_select_four:value}),
       refreshCatalog: async () => { accept(await api('/api/bootstrap?compact=1')); }
     });
   }
@@ -492,18 +491,20 @@ function initializePanxu() {
   function renderFiles(root) {
     append(root, heading('我的文件', '先看清理建议，再决定哪些文件可以删除。'));
     const advanced=el('div','file-advanced-controls');locationPicker(advanced);analysisOptions(advanced);appendJob(root);
+    const prepare=async payload=>{
+      const data=await api('/api/assessments/plan',payload);
+      if(!window.PanxuTasks.acceptPickedPlan(data))throw new Error('返回的删除清单与选择不一致，请刷新后重试。');
+      setView('overview');
+      return data;
+    };
     window.PanxuFiles.render(root, {
-      revision: state.catalogRevision, disks: state.disks, bytes, ingest,advanced,
+      api,revision: state.catalogRevision, disks: state.disks, bytes, ingest,advanced,
       changed:renderSelection,analyze:(item)=>analyzeList(item),show:showItem,
       analyzeItems:async(items)=>{
         const ids=[...new Set(items.filter(canAnalyze).map(item=>item.id))];if(!ids.length)return;
         await task(async()=>{const data=await api('/api/tasks/analyze',{section:'files',depth:analysisDepth,ids});window.PanxuTasks.accept(data.task);setView('overview');});
       },
-      prepare:async(payload)=>{
-        const data=await api('/api/assessments/plan',payload);
-        if(!window.PanxuTasks.acceptPickedPlan(data))throw new Error('返回的删除清单与选择不一致，请刷新后重试。');
-        setView('overview');
-      },
+      prepare,prepareLogical:prepare,latestTask:()=>window.PanxuTasks.currentTask(),
       adviceChanged:()=>{if(state.inspector&&state.focused)renderInspector();}
     });
   }
@@ -849,7 +850,28 @@ function initializePanxu() {
       }catch(error){status.textContent=`偏好未保存。${error.message} 当前填写内容已保留。`;status.classList.add('field-error');status.dataset.state='error';status.dataset.tone='danger';}
       finally{save.disabled=false;form.setAttribute('aria-busy','false');}
     });
-    append(form,label,instructions,append(el('div','form-actions'),save),status);append(panel,form);append(root,panel);
+    append(form,label,instructions,append(el('div','form-actions'),save),status);append(panel,form);
+    renderCleanupSelectionPreference(panel);append(root,panel);
+  }
+  function renderCleanupSelectionPreference(panel) {
+    const section=el('div','cleanup-selection-preference'),line=el('label','check-line'),choice=el('input');
+    choice.type='checkbox';choice.id='cleanup-auto-select-four';choice.checked=window.PanxuAppearance.get().cleanup_auto_select_four!==false;
+    const description=el('p','field-help','5 分项仍会预选；只影响新分析，不改变当前勾选。');description.id='cleanup-auto-select-four-help';
+    choice.setAttribute('aria-describedby',description.id);
+    const status=el('p','field-help');status.hidden=true;status.setAttribute('role','status');
+    choice.addEventListener('change',async()=>{
+      if(choice.disabled)return;
+      const value=choice.checked,previous=window.PanxuAppearance.get().cleanup_auto_select_four;
+      choice.disabled=true;status.hidden=false;status.textContent='正在保存…';status.dataset.tone='neutral';
+      try{
+        await saveUiPreferences({cleanup_auto_select_four:value});
+        status.textContent='已保存，下次分析时生效。';
+      }catch(error){
+        window.PanxuAppearance.update({cleanup_auto_select_four:previous});choice.checked=previous!==false;
+        status.textContent=`未能保存，已恢复原设置。${error.message}`;status.dataset.tone='warning';
+      }finally{choice.disabled=false;}
+    });
+    append(line,choice,el('span','','新分析自动勾选 4 分项'));append(section,line,description,status);append(panel,section);
   }
   let preferenceSave=Promise.resolve(),preferenceRevision=0;
   function saveUiPreferences(patch) {

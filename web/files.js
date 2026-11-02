@@ -1,11 +1,62 @@
 'use strict';
 
+// Full-filter candidates are bounded, versioned snapshots, never a page-local
+// guess. The same nearest-path rules power both file lists and task reviews.
+window.PanxuFilteredSelection = (() => {
+  const maximum=5000,path=value=>String(value || '').replace(/\\/g,'/').replace(/\/+$/,'').toLowerCase();
+  const file=item=>['file','directory'].includes(item.kind),inside=(child,parent)=>child===parent||child.startsWith(parent+'/');
+  function mark(rules,item){
+    if(!file(item)){const selected=rules.get(item.id)?.selected===true;return {selected,checked:selected,indeterminate:false};}
+    const target=path(item.path);let chosen=null;
+    for(const rule of rules.values())if(file(rule)&&inside(target,rule.path)&&(!chosen||rule.path.length>chosen.path.length))chosen=rule;
+    const selected=chosen?.selected===true;
+    const mixed=[...rules.values()].some(rule=>file(rule)&&rule.path!==target&&inside(rule.path,target)&&rule.selected!==selected);
+    return {selected,checked:selected&&!mixed,indeterminate:mixed};
+  }
+  function write(rules,item,selected,clearDescendants=false){
+    const target=path(item.path);
+    if(clearDescendants)for(const [id,rule] of rules)if(id===item.id||file(item)&&file(rule)&&inside(rule.path,target))rules.delete(id);
+    if(!rules.has(item.id)&&rules.size>=maximum)throw new Error('最多保留 5,000 个勾选或排除规则，请缩小筛选范围或分批整理。');
+    rules.set(item.id,{...item,path:target,selected,item});
+  }
+  function aggregate(rules,items){
+    const states=items.map(item=>mark(rules,item));
+    // A selected directory with exceptions remains checked+mixed so the next
+    // native checkbox click can deselect it, rather than loop on "select".
+    const checked=states.length>0&&states.every(value=>value.selected);
+    return {checked,indeterminate:states.some(value=>value.indeterminate)||!checked&&states.some(value=>value.selected)};
+  }
+  async function collect(request,body,current=()=>true){
+    let cursor=null,revision=body.revision,selectionRevision=body.selection_revision;const items=[],seen=new Set(),cursors=new Set();
+    for(let batch=0;batch<10;batch++){
+      const data=await request({...body,representation:'rows',limit:500,...(cursor?{cursor}:{}),revision,selection_revision:selectionRevision});
+      if(!current())return null;
+      if(data.counts?.total_targets>maximum)throw new Error('当前筛选超过 5,000 个可选项目，请缩小范围后再全选；已有勾选保持不变。');
+      if((revision&&data.revision!==revision)||(selectionRevision&&data.selection_revision!==selectionRevision))throw new Error('清单或建议已更新，请刷新后重试；已有勾选保持不变。');
+      revision=data.revision;selectionRevision=data.selection_revision;
+      for(const item of data.items || []){
+        if(!item?.id||seen.has(item.id)||typeof item.signature!=='string')throw new Error('筛选结果不完整，请刷新后重试；已有勾选保持不变。');
+        seen.add(item.id);items.push(item);
+      }
+      if(items.length>maximum)throw new Error('当前筛选超过 5,000 个可选项目，请缩小范围后重试。');
+      if(!data.has_more){
+        if(Number.isFinite(data.counts?.total_targets)&&items.length!==data.counts.total_targets)throw new Error('筛选结果计数不一致，请刷新后重试；已有勾选保持不变。');
+        return {...data,items,revision,selection_revision:selectionRevision};
+      }
+      if(!data.next_cursor||cursors.has(data.next_cursor)||!(data.items || []).length)throw new Error('尚未取得完整筛选结果，暂不能全选；请刷新或缩小筛选范围。');
+      cursor=data.next_cursor;cursors.add(cursor);
+    }
+    throw new Error('尚未取得完整筛选结果，暂不能全选；请缩小筛选范围。');
+  }
+  return {maximum,mark,write,aggregate,collect,path,inside,file};
+})();
+
 // A bounded page, not an ever-growing DOM. Selection belongs to the workspace.
 window.PanxuFiles = (() => {
   const limit = 50, cache = new Map(), picked = new Map();
   let context, host, status, pager, scopeInput, searchInput, riskInput, ratingInput, trailHost, selectionHost,coverageDetails;
   let query = '', scope = '', risk = 'all', rating = 'all', view = 'suggestions', parentId = '', offset = 0, revision = '', page = null;
-  let controller, sequence = 0, debounce, loading = false, preparing = false, includeInherited = false, pickedRevision = '', externalRevision = '', selectionNotice = '';
+  let controller, sequence = 0, debounce, loading = false, preparing = false, pickedRevision = '', pickedSelectionRevision='', externalRevision = '', selectionNotice = '', matches=null, preparedTask=null;
   const node = (tag, cls, text) => {
     const n = document.createElement(tag); if (cls) n.className = cls;
     if (text !== undefined) n.textContent = String(text); return n;
@@ -44,23 +95,26 @@ window.PanxuFiles = (() => {
   }
   function unmount(){sequence++;controller?.abort();clearTimeout(debounce);host=null;}
   function assessment(item){return window.PanxuAssessment.read(item);}
-  function canPrepare(item){return !item.navigation_only && item.can_prepare===true;}
-  function eligible(item){
-    const value=assessment(item);
-    if(!canPrepare(item)||value.stale||![4,5].includes(value.rating))return false;
-    return value.state==='explicit'&&value.eligible_direct===true || includeInherited&&value.state==='inherited'&&value.eligible_with_inherited===true;
-  }
+  function canPrepare(item){return !item.navigation_only && (item.can_logical_select===true||item.can_logical_select===undefined&&item.can_prepare===true);}
+  const selectedItems=()=>[...picked.values()].filter(item=>item.selected).map(item=>item.item || item);
   function pick(item,checked){
-    if(!checked){picked.delete(item.id);if(!picked.size)pickedRevision='';return;}
     if(!canPrepare(item)||!page)return;
-    if(picked.size>=500&&!picked.has(item.id)){selectionNotice='一次最多选择 500 项，请分批查看操作清单。';return;}
-    if(pickedRevision&&pickedRevision!==page.revision){picked.clear();selectionNotice='建议或文件信息已有变化，请重新选择待确认项。';}
-    pickedRevision=page.revision;picked.set(item.id,item);
+    try{
+      window.PanxuFilteredSelection.write(picked,item,checked,true);
+      Object.assign(picked.get(item.id),{catalogRevision:page.revision,selectionRevision:page.selection_revision || matches?.selection_revision || ''});
+      updatePickedVersion(page.revision,page.selection_revision || matches?.selection_revision || '');
+    }
+    catch(error){selectionNotice=error.message;}
+  }
+  function updatePickedVersion(nextRevision,nextSelectionRevision){
+    if([...picked.values()].every(rule=>rule.catalogRevision===nextRevision&&rule.selectionRevision===nextSelectionRevision)){
+      pickedRevision=nextRevision;pickedSelectionRevision=nextSelectionRevision;selectionNotice='';
+    }else selectionNotice='部分勾选基于旧版清单，草案仍保留；请取消旧选择或重新勾选核对后再确认。';
   }
   function change(){offset=0;clearTimeout(debounce);load();}
   function navigate(id){parentId=id || '';offset=0;query='';if(searchInput)searchInput.value='';load();}
   function render(root,helpers){
-    unmount();context=helpers;invalidate(helpers.revision);
+    unmount();context=helpers;consumeExecution(helpers.latestTask?.());invalidate(helpers.revision);
     const modes=node('div','subtabs file-view-tabs');modes.setAttribute('aria-label','文件查看方式');
     [['suggestions','建议清单'],['tree','目录结构（已扫描）']].forEach(([id,label])=>{
       const entry=button(label,()=>{if(view===id)return;view=id;parentId='';offset=0;render(root,helpers);},`subtab${view===id?' active':''}`);
@@ -75,17 +129,14 @@ window.PanxuFiles = (() => {
       status.textContent='正在准备搜索…';host.setAttribute('aria-busy','true');selectionChanged();debounce=setTimeout(load,220);
     });
     scopeInput=select('筛选检查位置',[['','所有检查位置'],...(helpers.disks || []).map(d=>[d.path||d.name,d.name||d.path])],scope,value=>{scope=value;parentId='';change();});
-    ratingInput=select('筛选清理倾向',[['all','全部倾向'],['high','4–5 分 · 倾向清理'],['neutral','3 分 · 待你决定'],['low','1–2 分 · 倾向保留'],['unrated','未评分'],['skipped','已跳过'],['no_advice','暂无建议']],rating,value=>{rating=value;change();});
+    ratingInput=select('筛选清理倾向',[['all','全部倾向'],['5','5 分 · 建议清理'],['4','4 分 · 倾向清理'],['3','3 分 · 待你决定'],['2','2 分 · 倾向保留'],['1','1 分 · 建议保留'],['unrated','未评分'],['skipped','已跳过'],['no_advice','暂无建议']],rating,value=>{rating=value;change();});
     tools.append(searchInput,scopeInput,ratingInput,button('刷新清单',()=>refreshAdvice(),'plain-button'));
     const more=node('section','file-browser-options');more.hidden=true;more.setAttribute('aria-label','文件查看选项');
     const moreButton=button('查看选项',()=>{more.hidden=!more.hidden;moreButton.setAttribute('aria-expanded',String(!more.hidden));},'plain-button');moreButton.setAttribute('aria-expanded','false');tools.append(moreButton);
     riskInput=select('筛选保护状态',[['all','全部保护状态'],['low','可加入操作清单'],['review','需你决定'],['protected','已保护']],risk,value=>{risk=value;change();});
-    const line=node('label','check-line'),inherited=node('input');inherited.type='checkbox';inherited.checked=includeInherited;inherited.dataset.includeInherited='1';
-    inherited.addEventListener('change',()=>{includeInherited=inherited.checked;selectionChanged();});
-    line.append(inherited,node('span','','批选时包含继承评分（未逐项分析）'));
-    const selectedAnalysis=button('分析勾选项',()=>context.analyzeItems?.([...picked.values()]),'plain-button');selectedAnalysis.dataset.analyzePicked='1';
+    const selectedAnalysis=button('分析勾选项',()=>context.analyzeItems?.(selectedItems()),'plain-button');selectedAnalysis.dataset.analyzePicked='1';
     const pageAnalysis=button('分析本页',()=>context.analyzeItems?.((page?.items || []).filter(item=>!item.navigation_only)),'plain-button');pageAnalysis.dataset.analyzePage='1';
-    more.append(riskInput,line,selectedAnalysis,pageAnalysis,node('p','field-help','分析只调用助手，不会生成或确认删除操作。'),node('p','field-help','分数表示清理倾向：1–2 分偏保留，3 分待你决定，4–5 分偏清理；不代表安全保证或删除授权。'));
+    more.append(riskInput,selectedAnalysis,pageAnalysis,node('p','field-help','分析只调用助手，不会生成或确认删除操作。'),node('p','field-help','分数表示清理倾向：1–2 分偏保留，3 分待你决定，4–5 分偏清理；不代表安全保证或删除授权。'));
     if(helpers.advanced)more.append(helpers.advanced);
     coverageDetails=node('p','field-help');more.append(coverageDetails);
     trailHost=node('nav','file-tree-path');trailHost.setAttribute('aria-label','已扫描目录位置');trailHost.hidden=view!=='tree';
@@ -101,7 +152,7 @@ window.PanxuFiles = (() => {
   async function load(retry=false){
     if(!host?.isConnected)return;
     const run=++sequence;controller?.abort();controller=new AbortController();const control=controller,target=host;
-    loading=true;target.setAttribute('aria-busy','true');status.textContent='正在载入已扫描内容…';selectionChanged();
+    loading=true;matches=null;target.setAttribute('aria-busy','true');status.textContent='正在载入已扫描内容…';selectionChanged();
     pager.querySelectorAll('button').forEach(button=>button.disabled=true);
     const params=new URLSearchParams({view,parent_id:view==='tree'?parentId:'',offset,limit,query,scope,risk,rating,revision});const key=params.toString();
     const timeout=setTimeout(()=>{if(run===sequence)control.abort();},15000);
@@ -117,8 +168,15 @@ window.PanxuFiles = (() => {
         cache.set(key,data);if(cache.size>8)cache.delete(cache.keys().next().value);
       }
       if(run!==sequence||!target.isConnected)return;
-      if(picked.size&&pickedRevision!==data.revision){picked.clear();pickedRevision='';selectionNotice='建议或文件信息已有变化，已取消待确认选择，请重新勾选。';}
-      revision=data.revision;page=data;loading=false;context.ingest(data.items);paint();context.changed();context.adviceChanged?.();
+      if(picked.size&&pickedRevision!==data.revision)selectionNotice='清单或建议已更新，未完成的勾选草案仍保留；请重新核对后勾选，确认时还会校验版本。';
+      revision=data.revision;page=data;context.ingest(data.items);paint();context.changed();context.adviceChanged?.();
+      try{
+        const found=await window.PanxuFilteredSelection.collect(async body=>{
+          if(!context.api)throw new Error('清单连接尚未就绪，请重新打开文件页面。');
+          return context.api('/api/assessments/select',body);
+        },{task_id:null,mode:'manual',category:rating,include_inherited:true,view,parent_id:view==='tree'?parentId:'',query,scope,risk,kind:'all',revision:data.revision,...(data.selection_revision?{selection_revision:data.selection_revision}:{})},()=>run===sequence&&target.isConnected);
+        if(run===sequence&&target.isConnected){matches=found;if(!picked.size||pickedRevision===data.revision)selectionNotice='';}
+      }catch(error){if(run!==sequence||!target.isConnected)return;selectionNotice=error.message;}
     }catch(error){
       if(run!==sequence||!target.isConnected)return;
       status.textContent=error.name==='AbortError'?'载入时间较长，请重试。':error.message;
@@ -128,34 +186,49 @@ window.PanxuFiles = (() => {
   function selectionChanged(){
     if(!host?.isConnected)return;
     host.querySelectorAll('[data-review-check]').forEach(check=>{
-      const item=page?.items.find(entry=>entry.id===check.dataset.reviewCheck);check.checked=picked.has(check.dataset.reviewCheck);check.disabled=loading||preparing||!item||!canPrepare(item);
+      const item=page?.items.find(entry=>entry.id===check.dataset.reviewCheck),value=item?window.PanxuFilteredSelection.mark(picked,item):{};check.checked=!!value.checked;check.indeterminate=!!value.indeterminate;check.disabled=loading||preparing||!item||!canPrepare(item);
     });
     selectionHost.replaceChildren();
-    const actions=node('div','file-selection-actions'),quick=button('选择本页 4–5 分',()=>{
-      selectionNotice='';(page?.items || []).forEach(item=>picked.delete(item.id));if(!picked.size)pickedRevision='';
-      (page?.items || []).filter(eligible).forEach(item=>pick(item,true));selectionChanged();
-    });quick.disabled=loading||preparing||!(page?.items || []).some(eligible);
-    const count=node('p','field-help');const currentIds=new Set((page?.items || []).map(item=>item.id));
-    const hidden=[...picked.keys()].filter(id=>!currentIds.has(id)).length;
-    const inherited=[...picked.values()].filter(item=>assessment(item).state==='inherited').length;
-    count.textContent=`已选择 ${picked.size} 项待确认${hidden?`，其中 ${hidden} 项在其他页`:''}${inherited?`；含 ${inherited} 项继承评分`:''}。`;
-    const review=button(preparing?'正在核对删除清单…':`查看删除清单${picked.size?`（${picked.size} 项）`:''}`,prepareSelected,'button primary');
-    review.dataset.preparePicked='1';review.disabled=loading||preparing||!picked.size;
-    actions.append(quick,review);
-    if(picked.size){const clear=button('取消待确认选择',()=>{picked.clear();pickedRevision='';selectionNotice='';selectionChanged();},'plain-button');clear.disabled=preparing;actions.append(clear);}
-    selectionHost.append(actions);if(picked.size)selectionHost.append(count);
+    const actions=node('div','file-selection-actions'),all=node('label','check-line filter-select-all file-filter-selection'),check=node('input');check.type='checkbox';check.dataset.filterSelectAll='1';check.setAttribute('aria-label','全选当前筛选结果');
+    const combined=window.PanxuFilteredSelection.aggregate(picked,matches?.items || []);check.checked=combined.checked;check.indeterminate=combined.indeterminate;check.disabled=loading||preparing||!matches?.items.length;
+    check.title='覆盖当前视图和筛选的全部页面；其他筛选的勾选及子项例外保留。';
+    check.addEventListener('change',()=>{
+      if(!matches||loading||preparing)return;const staged=new Map(picked);
+      try{for(const item of matches.items){window.PanxuFilteredSelection.write(staged,item,check.checked);Object.assign(staged.get(item.id),{catalogRevision:matches.revision,selectionRevision:matches.selection_revision});}picked.clear();for(const [id,rule] of staged)picked.set(id,rule);updatePickedVersion(matches.revision,matches.selection_revision);}
+      catch(error){selectionNotice=error.message;}selectionChanged();
+    });all.append(check,node('span','','全选当前筛选结果'));
+    const entries=selectedItems(),count=node('p','field-help'),currentIds=new Set((page?.items || []).map(item=>item.id));
+    const hidden=entries.filter(item=>!currentIds.has(item.id)).length,inherited=entries.filter(item=>assessment(item).state==='inherited').length;
+    count.textContent=`已选择 ${entries.length} 项或目录范围待确认${hidden?`，其中 ${hidden} 项在其他页或筛选`:''}${inherited?`；含 ${inherited} 项继承评分`:''}。`;
+    const review=button(preparing?'正在核对删除清单…':`查看删除清单${entries.length?`（${entries.length} 项）`:''}`,prepareSelected,'button primary');
+    review.dataset.preparePicked='1';review.disabled=loading||preparing||!entries.length||!!pickedRevision&&pickedRevision!==page?.revision;
+    actions.append(all,review);
+    if(picked.size){const clear=button('取消待确认选择',()=>{picked.clear();pickedRevision='';pickedSelectionRevision='';selectionNotice='';selectionChanged();},'plain-button');clear.disabled=preparing;actions.append(clear);}
+    selectionHost.append(actions);if(entries.length)selectionHost.append(count);
     if(selectionNotice){const note=node('p','file-selection-notice');note.textContent=selectionNotice;note.setAttribute('role','status');selectionHost.append(note);}
     const controls=selectionHost.parentElement;
-    controls?.querySelectorAll('[data-analyze-picked]').forEach(button=>{button.disabled=loading||preparing||!picked.size;button.textContent=`分析勾选项${picked.size?`（${picked.size} 项）`:''}`;});
+    controls?.querySelectorAll('[data-analyze-picked]').forEach(button=>{button.disabled=loading||preparing||!entries.length;button.textContent=`分析勾选项${entries.length?`（${entries.length} 项）`:''}`;});
     controls?.querySelectorAll('[data-analyze-page]').forEach(button=>{button.disabled=loading||preparing||!(page?.items || []).some(item=>!item.navigation_only);});
   }
   async function prepareSelected(){
-    if(preparing||loading||!picked.size||!context.prepare)return;
+    if(preparing||loading||!selectedItems().length||!context.prepareLogical&&!context.prepare)return;
     preparing=true;selectionNotice='';selectionChanged();
-    const entries=[...picked.values()],payload={ids:entries.map(item=>item.id),snapshots:Object.fromEntries(entries.map(item=>[item.id,item.signature])),revision:pickedRevision,action:'delete'};
-    try{await context.prepare(payload);picked.clear();pickedRevision='';}
+    const rules=[...picked.values()],entries=selectedItems(),payload={task_id:null,selected_ids:rules.filter(item=>item.selected).map(item=>item.id),excluded_ids:rules.filter(item=>!item.selected).map(item=>item.id),snapshots:Object.fromEntries(rules.map(item=>[item.id,item.signature])),revision:pickedRevision,selection_revision:pickedSelectionRevision};
+    try{
+      if(context.prepareLogical){const result=await context.prepareLogical(payload);if(result?.task?.id&&result.plan)preparedTask={id:result.task.id,plan:result.plan};}
+      else{await context.prepare({ids:entries.map(item=>item.id),snapshots:Object.fromEntries(entries.map(item=>[item.id,item.signature])),revision:pickedRevision,action:'delete'});picked.clear();pickedRevision='';}
+    }
     catch(error){selectionNotice=error.message || '暂时无法准备删除清单，请重新核对选择。';}
     finally{preparing=false;if(host?.isConnected)selectionChanged();}
+  }
+  function consumeExecution(task){
+    if(!preparedTask||task?.id!==preparedTask.id||task.execution?.plan_version!==preparedTask.plan.version)return;
+    const records=new Map((task.last_result?.items || []).map(item=>[item.id,item]));
+    const done=new Set((task.execution.items || []).filter(item=>item.status==='succeeded'&&item.verified===true&&!item.undone&&records.get(item.id)?.current_state!=='undone').map(item=>item.id));
+    const receipt=JSON.stringify([...done]);if(preparedTask.consumed===receipt)return;preparedTask.consumed=receipt;
+    const shared=window.PanxuFilteredSelection,dirs=preparedTask.plan.items.filter(item=>done.has(item.id)&&item.kind==='directory').map(item=>shared.path(item.path));
+    for(const [id,rule] of picked)if(done.has(id)||dirs.some(parent=>shared.inside(rule.path,parent)))picked.delete(id);
+    if(!picked.size){pickedRevision='';pickedSelectionRevision='';}
   }
   async function refreshAdvice(){
     cache.clear();revision='';if(host?.isConnected)await load();
@@ -206,7 +279,7 @@ window.PanxuFiles = (() => {
 
 // A task-scoped review draft. Logical directory rules never become raw path operations.
 window.PanxuCleanupReview = (() => {
-  const states=new Map(),limit=50,ruleLimit=500;
+  const states=new Map(),limit=50;
   let mounted=null,serial=0,pollTimer=null;
   const node=(tag,cls,text)=>{const value=document.createElement(tag);if(cls)value.className=cls;if(text!==undefined)value.textContent=String(text);return value;};
   const add=(parent,...children)=>{children.flat().forEach(child=>{if(child)parent.append(child);});return parent;};
@@ -241,12 +314,25 @@ window.PanxuCleanupReview = (() => {
     if(!states.has(id)){
       if(states.size>=8)states.delete(states.keys().next().value);
       states.set(id,{id,source:task.cleanup_source_task_id?null:task,rules:new Map(),initialized:false,applications:applications(task),kind:'all',view:'suggestions',rating:'all',query:'',parentId:'',offset:0,revision:'',selectionRevision:'',mode:task.execution?'execution':'list',executionId:task.execution?task.id:null,execution:task.execution || null});
+      if(task.status==='awaiting_review'&&task.plan?.origin==='user_direct'&&task.plan.items?.length&&!task.execution&&!task.cleanup_source_task_id){
+        const restored=states.get(id);restored.initialized=true;restored.view=restored.applications?'all':'tree';
+        for(const item of task.plan.items)setRule(restored,item,true);
+        restored.pendingConfirmation={task,plan:task.plan,picked_ids:task.plan.items.map(item=>item.id)};
+      }
     }
     const state=states.get(id);if(!task.cleanup_source_task_id){state.source=task;state.applications=applications(task);}
     if(task.execution){updateExecution(state,task.execution,task.id);rememberExecutionPlan(state,task);}
     return state;
   }
   function sourceFor(task){return states.get(task.cleanup_source_task_id || task.id)?.source || (task.cleanup_source_task_id?null:task);}
+  function acceptPrepared(data){
+    if(!data?.task?.id||!data.plan?.items?.length||data.task.plan?.version!==data.plan.version)return false;
+    const wanted=new Set(data.picked_ids || []);if(!wanted.size||[...wanted].some(id=>!data.plan.items.some(item=>item.id===id)))return false;
+    const state=stateFor(data.task);state.initialized=true;state.view=state.applications?'all':'tree';
+    if(!data.task.cleanup_source_task_id)state.rules.clear();
+    for(const item of data.plan.items)if(wanted.has(item.id))setRule(state,item,true);
+    state.pendingConfirmation={...data,plan:{...data.plan,items:data.plan.items.filter(item=>wanted.has(item.id))}};return true;
+  }
   function unmount(){serial++;clearTimeout(pollTimer);pollTimer=null;mounted?.abort?.abort();mounted?.dialog?.close?.();mounted=null;}
   function active(token){return mounted===token&&token.root.isConnected;}
   function category(item){const value=window.PanxuAssessment.read(item);return value.rating!==null?String(value.rating):value.state==='skipped'?'skipped':value.state==='no_advice'?'no_advice':'unrated';}
@@ -258,18 +344,10 @@ window.PanxuCleanupReview = (() => {
     return `本批已纳入 ${returned} 个匹配目标${Number.isFinite(total)?`，还有 ${Math.max(0,total-returned)} 个未纳入本批`:''}；需要分批，不会自动执行。`;
   }
   function mark(state,item){
-    if(!fileItem(item))return {checked:state.rules.get(item.id)?.selected===true,indeterminate:false};
-    const target=path(item.path);let chosen=null;
-    for(const rule of state.rules.values())if(fileItem(rule)&&inside(target,rule.path)&&(!chosen || rule.path.length>chosen.path.length))chosen=rule;
-    const selected=chosen?.selected===true;
-    const mixed=[...state.rules.values()].some(rule=>fileItem(rule)&&rule.path!==target&&inside(rule.path,target)&&rule.selected!==selected);
-    return {checked:selected&&!mixed,indeterminate:mixed};
+    return window.PanxuFilteredSelection.mark(state.rules,item);
   }
   function setRule(state,item,selected,clearDescendants=false){
-    const target=path(item.path);
-    if(clearDescendants)for(const [id,rule] of state.rules)if(id===item.id||fileItem(item)&&fileItem(rule)&&inside(rule.path,target))state.rules.delete(id);
-    if(!state.rules.has(item.id)&&state.rules.size>=ruleLimit)throw new Error('本批最多保留 500 个勾选或排除规则，请先清理这一批，再继续选择。');
-    state.rules.set(item.id,{id:item.id,path:target,signature:item.signature,kind:item.kind,name:item.name,action:operation(item),selected,category:category(item)});
+    window.PanxuFilteredSelection.write(state.rules,{...item,action:operation(item),category:category(item)},selected,clearDescendants);
   }
   function payload(state){
     const rules=[...state.rules.values()];
@@ -291,74 +369,61 @@ window.PanxuCleanupReview = (() => {
     rating.addEventListener('change',()=>{state.rating=rating.value;state.offset=0;load(token);});
     add(filters,search,rating,button('刷新',()=>load(token),'plain-button'));
     if(state.applications){const kind=node('select');kind.setAttribute('aria-label','筛选项目类型');[['all','全部类型'],['startup','开机启动'],['service','后台服务'],['process','运行进程'],['software','已安装软件']].forEach(([id,label])=>{const option=node('option','',label);option.value=id;kind.append(option);});kind.value=state.kind;kind.addEventListener('change',()=>{state.kind=kind.value;state.offset=0;load(token);});filters.append(kind);}
-    const more=node('section','cleanup-options-panel');more.hidden=!state.selectionOpen;more.setAttribute('aria-label','按评分选择');
-    const selectionButton=button('按评分选择',()=>{state.selectionOpen=!state.selectionOpen;more.hidden=!state.selectionOpen;selectionButton.setAttribute('aria-expanded',String(!!state.selectionOpen));},'plain-button');selectionButton.setAttribute('aria-expanded',String(!!state.selectionOpen));filters.append(selectionButton);
-    const picks=node('div','cleanup-category-grid');
-    [['5','5 分'],['4','4 分'],['3','3 分'],['2','2 分'],['1','1 分'],['skipped','已跳过'],['unrated','未评分'],['no_advice','暂无建议']].forEach(([key,label])=>{
-      const row=node('div','cleanup-category-row'),select=button('选择',()=>bulk(token,key,true),'button small'),deselect=button('取消',()=>bulk(token,key,false),'plain-button');
-      select.setAttribute('aria-label','选择'+label.replace(' ',''));deselect.setAttribute('aria-label','取消'+label.replace(' ',''));
-      add(row,node('span','',label),select,deselect);row.dataset.cleanupCategory=key;picks.append(row);
-    });
-    const all=node('div','cleanup-bulk-actions');add(all,button('全选当前筛选',()=>bulk(token,'all',true),'button'),button('清空全部勾选',()=>{state.rules.clear();state.initialized=true;token.notice='已清空本轮的勾选草案。';paint(token);},'plain-button'));
-    const preference=node('label','check-line'),auto=node('input');auto.type='checkbox';auto.checked=helpers.autoSelectFour!==false;auto.dataset.cleanupAutoFour='1';
-    auto.addEventListener('change',async()=>{const value=auto.checked;try{await helpers.saveAutoSelectFour?.(value);token.notice='偏好已保存，下一次分析时使用；当前手动勾选保持不变。';}catch(error){auto.checked=!value;token.error=error.message;}paint(token);});
-    add(preference,auto,node('span','','新分析时自动勾选 4 分（5 分始终预选）'));
-    add(more,picks,all,node('p','field-help',state.applications?'分类选择覆盖本轮当前类型和搜索条件，不限当前页；其他类型的勾选会保留，确认时一起汇总。':'分类选择覆盖本轮当前搜索条件，不限当前页。勾选目录会包含内部项目，可以单独取消子项；未扫描及受保护内容不会被当作已核对。'),preference);
+    const all=node('label','check-line filter-select-all cleanup-filter-selection'),allCheck=node('input');allCheck.type='checkbox';allCheck.dataset.filterSelectAll='1';allCheck.setAttribute('aria-label','全选当前筛选结果');
+    allCheck.title='覆盖当前视图和筛选的全部页面；其他筛选的勾选及子项例外保留。';
+    allCheck.addEventListener('change',()=>bulk(token,allCheck.checked));add(all,allCheck,node('span','','全选当前筛选结果'));
     const taskTools=node('div','cleanup-task-tools');helpers.renderTools?.(taskTools,state.source || helpers.task);
     const trail=node('nav','file-tree-path');trail.setAttribute('aria-label','本轮已扫描目录位置');
     const info=node('p','cleanup-selection-info');info.setAttribute('role','status');
     const error=node('p','field-error');error.hidden=true;
     const host=node('div','cleanup-page-host'),navigation=node('div','file-page-navigation'),status=node('p','file-page-status'),pager=node('div','file-pagination');
-    add(navigation,status,pager);add(panel,toolbar,filters,more,taskTools,trail,info,error,navigation,host);root.append(panel);
-    Object.assign(token,{panel,tabs,deletion,filters,more,trail,info,errorHost:error,host,status,pager});
+    add(navigation,status,pager);add(panel,toolbar,filters,all,taskTools,trail,info,error,navigation,host);root.append(panel);
+    Object.assign(token,{panel,tabs,deletion,filters,allCheck,trail,info,errorHost:error,host,status,pager});
     if(!state.source&&helpers.task.cleanup_source_task_id){
       Promise.resolve(helpers.api('/api/tasks/'+encodeURIComponent(state.id))).then(data=>{if(!active(token))return;state.source=data.task;state.applications=applications(data.task);helpers.onSource?.(data.task);}).catch(error=>{if(active(token)){token.error=error.message;paint(token);}});
     }else helpers.onSource?.(state.source || helpers.task);
     load(token);
+    if(state.pendingConfirmation){const data=state.pendingConfirmation;state.pendingConfirmation=null;confirmDialog(token,data,{returnToFiles:!data.task.cleanup_source_task_id});}
   }
   async function load(token,retry=false){
-    if(!active(token))return;const state=token.state,run=++token.run;token.busy=true;token.error='';paint(token);
+    if(!active(token))return;const state=token.state,run=++token.run;token.busy=true;token.matches=null;token.error='';paint(token);
     const params=new URLSearchParams({task_id:state.id,view:state.view,kind:state.kind,parent_id:state.view==='tree'?state.parentId:'',offset:state.offset,limit,query:state.query,rating:state.rating,revision:state.revision});
     try{
       const page=await token.helpers.api('/api/files?'+params);
       if(!active(token)||run!==token.run)return;
       state.revision=page.revision;state.selectionRevision=page.selection_revision || state.selectionRevision;token.page=page;
       if(!state.initialized){
-        const data=await token.helpers.api('/api/assessments/select',{task_id:state.id,category:token.helpers.autoSelectFour===false?'5':'high',mode:'automatic',include_inherited:true,kind:'all',limit:ruleLimit,revision:state.revision,selection_revision:state.selectionRevision});
+        const data=await token.helpers.api('/api/assessments/select',{task_id:state.id,category:token.helpers.autoSelectFour===false?'5':'high',mode:'automatic',include_inherited:true,kind:'all',limit:500,revision:state.revision,selection_revision:state.selectionRevision});
         if(!active(token)||run!==token.run)return;
         state.selectionRevision=data.selection_revision;state.revision=data.revision;
         for(const item of data.items || [])setRule(state,item,true);
         state.initialized=true;
         token.notice=batchNotice(data);
       }
+      const matches=await window.PanxuFilteredSelection.collect(body=>token.helpers.api('/api/assessments/select',body),
+        {task_id:state.id,category:state.rating,mode:'manual',include_inherited:true,view:state.view,parent_id:state.view==='tree'?state.parentId:'',query:state.query,kind:state.kind,revision:state.revision,selection_revision:state.selectionRevision},()=>active(token)&&run===token.run);
+      if(active(token)&&run===token.run)token.matches=matches;
     }catch(error){
       if(!active(token)||run!==token.run)return;
       if(!retry&&['catalog_changed','selection_changed','selection_revision_changed'].includes(error.code)){state.revision='';state.offset=0;await load(token,true);return;}
       token.error=error.message || '清单暂时无法载入，请刷新重试。';
     }finally{if(active(token)&&run===token.run){token.busy=false;paint(token);}}
   }
-  async function bulk(token,categoryKey,selected){
-    if(token.busy||token.helpers.disabled||!active(token))return;token.busy=true;token.error='';paint(token);const state=token.state;
+  function bulk(token,selected){
+    if(token.busy||token.helpers.disabled||!active(token)||!token.matches)return;token.error='';const state=token.state;
     try{
-      const data=await token.helpers.api('/api/assessments/select',{task_id:state.id,category:categoryKey,mode:'manual',include_inherited:true,query:state.query,kind:state.kind,limit:ruleLimit,revision:state.revision,selection_revision:state.selectionRevision});
-      if(!active(token))return;
-      state.revision=data.revision;state.selectionRevision=data.selection_revision;
       const staged={...state,rules:new Map([...state.rules].map(([id,rule])=>[id,{...rule}]))};
-      for(const item of data.items || []){
-        const target=path(item.path);
-        for(const [id,rule] of staged.rules)if((id===item.id||fileItem(item)&&fileItem(rule)&&inside(rule.path,target))&&(categoryKey==='all'||rule.category===categoryKey))staged.rules.delete(id);
-        setRule(staged,item,selected);
-      }
+      for(const item of token.matches.items)setRule(staged,item,selected);
       state.rules=staged.rules;
       state.initialized=true;
-      token.notice=batchNotice(data) || '已更新本轮勾选草案，删除前还会核对实际清单。';
-    }catch(error){token.error=error.message;}finally{if(active(token)){token.busy=false;paint(token);}}
+      token.notice='';
+    }catch(error){token.error=error.message;}paint(token);
   }
   function paint(token){
     if(!active(token)||!token.host)return;const state=token.state,page=token.page;
     token.panel.setAttribute('aria-busy',String(token.busy));token.deletion.disabled=token.busy||token.helpers.disabled||!state.initialized||![...state.rules.values()].some(rule=>rule.selected);
     token.deletion.textContent=window.PanxuActionCopy.summary([...state.rules.values()].filter(rule=>rule.selected)).selectedButton;
-    token.more.querySelectorAll('button').forEach(entry=>{entry.disabled=token.busy||token.helpers.disabled;});
+    const aggregate=window.PanxuFilteredSelection.aggregate(state.rules,token.matches?.items || []);token.allCheck.checked=aggregate.checked;token.allCheck.indeterminate=aggregate.indeterminate;token.allCheck.disabled=token.busy||token.helpers.disabled||!token.matches?.items.length;
     token.tabs.querySelectorAll('button').forEach(entry=>{entry.setAttribute('aria-pressed',String(entry.dataset.cleanupView===state.view));entry.className='subtab'+(entry.dataset.cleanupView===state.view?' active':'');});
     const selected=[...state.rules.values()].filter(rule=>rule.selected).length,excluded=state.rules.size-selected;
     token.info.textContent=token.busy?'正在核对清单…':`${selected?`已勾选 ${selected} 个${state.applications?'项目':'项目或目录范围'}${excluded?`，另排除 ${excluded} 项`:''}。`:'可调整勾选后确认操作。'}${token.notice?' '+token.notice:''}`;
@@ -412,7 +477,7 @@ window.PanxuCleanupReview = (() => {
       confirmDialog(token,data);
     }catch(error){token.error=error.message;}finally{if(active(token)){token.busy=false;paint(token);}}
   }
-  function confirmDialog(token,data){
+  function confirmDialog(token,data,{returnToFiles=false}={}){
     const dialog=node('dialog','cleanup-confirm-dialog');token.dialog=dialog;
     const items=data.plan.items,copy=window.PanxuActionCopy.summary(items);
     const heading=node('h2','','确认所选操作');heading.id='cleanup-confirm-title-'+serial+'-'+data.plan.version;
@@ -435,7 +500,7 @@ window.PanxuCleanupReview = (() => {
       if(identity.length)add(row,node('p','cleanup-confirm-identity',identity.join(' · ')));
       add(row,node('p','',item.impact || item.action_effect || '影响尚未说明，请先核对。'));if(item.path)add(row,node('small','file-location',item.path));list.append(row);
     });dialog.append(list);
-    const actions=node('div','cleanup-dialog-actions'),back=button('返回修改',()=>dialog.close(),'button');
+    const actions=node('div','cleanup-dialog-actions'),back=button('返回修改',()=>{dialog.close();if(returnToFiles)token.helpers.openFiles?.();},'button');
     const start=button(copy.button,async()=>{
       start.disabled=true;back.disabled=true;
       try{
@@ -502,5 +567,5 @@ window.PanxuCleanupReview = (() => {
       if(active(token)&&updateExecution(token.state,data.execution))paintExecution(token);
     }catch(error){if(active(token)){token.error=error.message;paintExecution(token);}}finally{token.controlling=false;if(active(token))paintExecutionControls(token);}
   }
-  return {render,unmount,sourceFor,refresh:()=>mounted?load(mounted):Promise.resolve()};
+  return {render,unmount,sourceFor,acceptPrepared,refresh:()=>mounted?load(mounted):Promise.resolve()};
 })();

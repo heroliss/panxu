@@ -99,8 +99,8 @@ class Application:
                 or not isinstance(payload['selection_revision'], str)):
             raise AppError('清单已变化，请刷新后重新勾选。', 'selection_changed', 409)
         with self.state.lock:
-            task = self.selection_task(payload['task_id'], required=True)
-            if task['status'] in ('investigating', 'executing'):
+            task = self.selection_task(payload['task_id'], required=payload['task_id'] is not None)
+            if task and task['status'] in ('investigating', 'executing'):
                 raise AppError('本次任务仍在调查或执行，请结束当前步骤后再确认清单。', 'task_busy', 409)
             return self.catalog.compile_selection(payload['selected_ids'], payload['excluded_ids'],
                 snapshots=payload['snapshots'], expected=payload['revision'], task=task,
@@ -405,16 +405,17 @@ class Application:
 
     def post(self, path, payload):
         if path == '/api/assessments/select':
-            allowed = {'task_id', 'category', 'mode', 'include_inherited', 'query', 'scope', 'risk', 'kind', 'cursor', 'limit', 'revision', 'selection_revision'}
+            allowed = {'task_id', 'category', 'mode', 'include_inherited', 'query', 'scope', 'risk', 'kind', 'cursor', 'limit', 'revision', 'selection_revision', 'view', 'parent_id', 'representation'}
             if not isinstance(payload, dict) or set(payload) - allowed:
                 raise AppError('分类选择信息无效，请刷新当前清单。')
             with self.state.lock:
-                task = self.selection_task(payload.get('task_id'), required=True)
+                task = self.selection_task(payload.get('task_id'), required=payload.get('task_id') is not None)
                 return self.catalog.batch_selection(task=task, category=payload.get('category', 'high'),
                     mode=payload.get('mode', 'manual'), include_inherited=payload.get('include_inherited', True),
                     query=payload.get('query', ''), scope=payload.get('scope', ''), risk=payload.get('risk', 'all'), kind=payload.get('kind', 'all'),
                     cursor=payload.get('cursor'), limit=payload.get('limit', 500), expected=payload.get('revision'),
-                    expected_selection_revision=payload.get('selection_revision'))
+                    expected_selection_revision=payload.get('selection_revision'), view=payload.get('view', 'all'),
+                    parent_id=payload.get('parent_id', ''), representation=payload.get('representation', 'roots'))
         if path == '/api/assessments/compile':
             return self.compile_selection(payload)
         if path == '/api/assessments/plan':

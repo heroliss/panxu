@@ -451,7 +451,7 @@ test('unparseable public calls explain how to view raw data instead of inventing
   fixture.context.developerCleanup();
 });
 
-function modelSettings({saved={},testResult={passed:true,message:'测试成功'},saveError,testError}={}) {
+function modelSettings({saved={},testResult={passed:true,message:'测试成功'},saveError,testError,autoFour=true,uiPreferenceError}={}) {
   const root=new Element('main');root.root=true;
   const state={settings:{provider:'custom',base_url:'https://fixture.invalid/v1',model:'fixture',protocol:'chat_completions',has_key:false,custom_instructions:'保留个人资料',...saved},providers:[
     {id:'fixture_vendor',name:'测试服务',base_url:'https://other.invalid/v1',protocol:'responses',models:['fixture-other'],default_model:'fixture-other'},
@@ -465,7 +465,9 @@ function modelSettings({saved={},testResult={passed:true,message:'测试成功'}
   };
   const append=(node,...children)=>{node.append(...children);return node;};
   const button=(label,handler,className='button')=>{const node=el('button',className,label);node.addEventListener('click',handler);return node;};
+  let uiPreferences={cleanup_auto_select_four:autoFour,theme:'system'};
   const context={state,el,append,button,
+    window:{PanxuAppearance:{get:()=>({...uiPreferences}),update:patch=>{uiPreferences={...uiPreferences,...patch};return {...uiPreferences};}}},
     heading:()=>el('h1'),renderAppearance:()=>{},renderDeveloperEntry:()=>{},renderAbout:()=>{},
     inputField:(label,id,type='text',value='')=>{const box=el('div'),input=el('input');input.id=id;input.type=type;input.value=value;box.append(input);return {box,input};},
     makeSelect:(options,value,callback)=>{const node=el('select');node.value=value;node.addEventListener('change',()=>callback(node.value));return node;},
@@ -475,10 +477,11 @@ function modelSettings({saved={},testResult={passed:true,message:'测试成功'}
       if(path==='/api/settings'){if(saveError)throw new Error(saveError);const {api_key,clear_key,...fields}=payload;return {settings:{...state.settings,...fields,has_key:api_key?true:clear_key?false:state.settings.has_key}};}
       if(path==='/api/settings/test'){if(testError)throw new Error(testError);return testResult;}
       if(path==='/api/preferences')return {preferences:{custom_instructions:payload.custom_instructions}};
+      if(path==='/api/ui-preferences'){if(uiPreferenceError)throw new Error(uiPreferenceError);return {preferences:{...uiPreferences,...payload}};}
       throw new Error('Unexpected path '+path);
     },
   };
-  const start=source.indexOf('  function settingsPayload('),end=source.indexOf('  let preferenceSave=',start);
+  const start=source.indexOf('  function settingsPayload('),end=source.indexOf('  function renderAppearance(',start);
   assert.ok(start>=0&&end>start);createContext(context);
   runInContext(source.slice(start,end)+';this.renderModel=renderModel;',context);context.renderModel(root);
   const get=id=>root.all().find(node=>node.id===id);
@@ -524,6 +527,31 @@ test('shared organizing preferences save independently without touching unsaved 
   const provider=f.get('model-provider');provider.value='fixture_vendor';await provider.fire('change');
   assert.equal(preferences.value,'保留源码；清理旧安装包');assert.equal(f.get('model-key').value,'','a new vendor never receives the previous draft key');
   const advanced=f.root.all().find(node=>node.className.includes('provider-advanced'));assert.equal(advanced.querySelector('textarea'),null);
+});
+
+test('automatic four-point selection lives in settings and saves separately from model and text drafts',async()=>{
+  const f=modelSettings({autoFour:false}),choice=f.get('cleanup-auto-select-four');
+  assert.equal(choice.checked,false);
+  assert.ok(choice.closest('.organizing-preferences'),'ordinary organizing settings contain the rare preference');
+  f.get('model-key').value='unsaved-key';f.get('organizing-instructions').value='unsaved-personal-preference';
+  choice.checked=true;await choice.fire('change');await flush();
+  assert.equal(choice.checked,true);assert.equal(choice.disabled,false);
+  assert.deepEqual(f.calls.map(call=>call.path),['/api/ui-preferences']);
+  assert.deepEqual(Object.keys(f.calls[0].payload),['cleanup_auto_select_four']);
+  assert.equal(f.calls[0].payload.cleanup_auto_select_four,true);
+  assert.equal(f.get('model-key').value,'unsaved-key');assert.equal(f.get('organizing-instructions').value,'unsaved-personal-preference');
+  const copy=choice.closest('.cleanup-selection-preference').all().map(node=>node.textContent).join(' ');
+  assert.match(copy,/只影响新分析/);assert.match(copy,/不改变当前勾选/);assert.match(copy,/5 分项仍会预选/);assert.match(copy,/已保存/);
+});
+
+test('failed automatic-selection preference save restores the durable choice and reports the error',async()=>{
+  const f=modelSettings({autoFour:true,uiPreferenceError:'本地保存失败'}),choice=f.get('cleanup-auto-select-four');
+  choice.checked=false;await choice.fire('change');await flush();
+  assert.equal(choice.checked,true);assert.equal(choice.disabled,false);
+  assert.equal(f.context.window.PanxuAppearance.get().cleanup_auto_select_four,true);
+  assert.equal(f.calls.length,1);assert.equal(f.calls[0].path,'/api/ui-preferences');
+  const status=choice.closest('.cleanup-selection-preference').querySelector('[role="status"]') || choice.closest('.cleanup-selection-preference').all().find(node=>node.role==='status');
+  assert.match(status.textContent,/已恢复原设置/);assert.match(status.textContent,/本地保存失败/);
 });
 
 test('stream is an independent transport checkbox, enabled for old settings and preserving an explicit off value',async()=>{

@@ -220,6 +220,179 @@ class CatalogSelectionTests(unittest.TestCase):
         self.assertIn(self.rows['four.bin']['id'], first['ids'])
         self.assertNotIn('keep.txt', self.actual_files(first))
 
+    def filter_rows(self, *, task_id='current', **query):
+        return self.app.post('/api/assessments/select', dict(task_id=self.task_id if task_id == 'current' else task_id,
+            mode='manual', category=query.pop('rating', 'all'), representation='rows', **query))
+
+    def listed_rows(self, *, task_id='current', **query):
+        task_id = self.task_id if task_id == 'current' else task_id
+        rows, offset = [], 0
+        while True:
+            params = dict(query, offset=offset, limit=3)
+            if task_id is not None:
+                params['task_id'] = task_id
+            page = self.app.get('/api/files', {key: [str(value)] for key, value in params.items()})
+            rows.extend(page['items'])
+            if not page['has_more']:
+                return rows
+            offset += page['limit']
+
+    def test_row_selection_reuses_visible_view_filters_across_pages_and_current_source(self):
+        self.advice('.', 5, inheritance='subtree')
+        self.advice('four.bin', 4)
+        self.advice('skip.tmp', None, 'skip')
+        other = self.app.harness.create_analysis({'section': 'files', 'ids': [self.rows['high.bin']['id']]})['id']
+        self.advice('high.bin', 5, task_id=other)
+        for query in (dict(view='suggestions'), dict(view='all', rating='5'),
+                      dict(view='all', query='.bin', kind='file', scope=str(self.scope)),
+                      dict(view='tree', parent_id=self.rows['.']['id']),
+                      dict(view='tree', parent_id=self.rows['sub']['id'], query='reselect')):
+            with self.subTest(query=query):
+                listed = self.listed_rows(**query)
+                selected = self.filter_rows(**query)
+                self.assertEqual(selected['ids'], [row['id'] for row in listed if row['can_logical_select']])
+                self.assertEqual(selected['counts']['total_targets'], len(selected['ids']))
+                self.assertEqual(selected['representation'], 'rows')
+        suggestions = self.filter_rows(view='suggestions')
+        self.assertNotIn(self.rows['high.bin']['id'], suggestions['ids'])
+        self.assertNotIn(self.rows['whole/a.bin']['id'], suggestions['ids'])
+        self.assertFalse(self.app.state.history())
+
+    def test_tree_row_selection_keeps_partial_directory_as_a_rule_and_compile_keeps_exclusions(self):
+        partial = copy.deepcopy(self.rows['sub'])
+        partial['details'].update(complete=False, subtree_complete=False, can_simulate_delete=False)
+        self.app.state.publish([partial], 'partial')
+        listed = self.listed_rows(view='tree', parent_id=self.rows['.']['id'])
+        selected = self.filter_rows(view='tree', parent_id=self.rows['.']['id'])
+        self.assertEqual(selected['ids'], [row['id'] for row in listed if row['can_logical_select']])
+        self.assertIn(partial['id'], selected['ids'])
+        result = self.compile(['.', 'sub/reselect.bin'], ['sub'])
+        self.assertNotIn('sub/excluded.bin', self.actual_files(result))
+        self.assertIn('sub/reselect.bin', self.actual_files(result))
+        self.assertNotIn(self.rows['.']['id'], result['ids'])
+        self.assertFalse(self.app.state.history())
+
+    def test_row_cursors_bind_view_parent_filters_representation_and_task_revision(self):
+        first = self.filter_rows(view='all', limit=1)
+        self.assertTrue(first['has_more'])
+        for changed in (dict(view='suggestions'), dict(view='tree', parent_id=self.rows['.']['id']),
+                        dict(query='bin'), dict(kind='file'), dict(rating='5'),
+                        dict(scope=str(self.scope / 'sub')), dict(representation='roots'), dict(task_id=None)):
+            payload = dict(task_id=self.task_id, mode='manual', category='all', representation='rows',
+                           view='all', limit=1, cursor=first['next_cursor'])
+            changed = dict(changed)
+            if 'rating' in changed:
+                changed['category'] = changed.pop('rating')
+            payload.update(changed)
+            with self.subTest(changed=changed), self.assertRaises(AppError):
+                self.app.post('/api/assessments/select', payload)
+        self.app.harness.feedback(self.task_id, keep_ids=[self.rows['high.bin']['id']])
+        with self.assertRaises(AppError) as caught:
+            self.filter_rows(view='all', revision=first['revision'], selection_revision=first['selection_revision'])
+        self.assertEqual(caught.exception.code, 'selection_changed')
+
+    def test_tree_navigation_cannot_disclose_an_unrelated_known_directory(self):
+        foreign = next(row for row in self.app.state.snapshot([])['items']
+                       if row['kind'] == 'directory' and Path(row['path']) == self.other)
+        for operation in (lambda: self.listed_rows(view='tree', parent_id=foreign['id']),
+                          lambda: self.filter_rows(view='tree', parent_id=foreign['id'])):
+            with self.assertRaises(AppError) as caught:
+                operation()
+            self.assertEqual(caught.exception.code, 'outside_scope')
+
+    def test_filtered_tree_ancestors_are_navigation_not_selectable_filter_escape(self):
+        self.advice('sub/reselect.bin', 5)
+        for query in (dict(rating='5'), dict(query='reselect'), dict(kind='file')):
+            with self.subTest(query=query), patch('os.scandir', side_effect=AssertionError('query must not scan')):
+                page = self.listed_rows(view='tree', **query)
+                self.assertTrue(page)
+                self.assertTrue(all(row['navigation_only'] and not row['can_logical_select'] for row in page))
+                self.assertEqual(self.filter_rows(view='tree', **query)['ids'], [])
+                deeper = self.filter_rows(view='tree', parent_id=self.rows['sub']['id'], **query)
+                self.assertIn(self.rows['sub/reselect.bin']['id'], deeper['ids'])
+        self.assertIn(self.rows['.']['id'], self.filter_rows(view='tree')['ids'])
+
+    def test_protected_unsupported_and_stale_rows_never_forge_complete_filter_selection(self):
+        self.app.assistant.save_settings({'protect_patterns': ['*keep.txt']})
+        unsupported = copy.deepcopy(self.rows['four.bin'])
+        unsupported['actions'] = []
+        self.app.state.publish([unsupported], 'unsupported')
+        first = self.filter_rows(view='all', limit=1)
+        listed = self.listed_rows(view='all')
+        self.assertGreater(first['counts']['matched_rows'], first['counts']['eligible_rows'])
+        self.assertGreater(first['counts']['blocked_reasons']['protected'], 0)
+        self.assertGreater(first['counts']['blocked_reasons']['unsupported_action'], 0)
+        all_candidates = self.filter_rows(view='all')
+        self.assertEqual(all_candidates['ids'], [row['id'] for row in listed if row['can_logical_select']])
+        changed = copy.deepcopy(self.rows['high.bin'])
+        changed['signature'] = 'changed-owned-snapshot'
+        self.app.state.publish([changed], 'changed')
+        with self.assertRaises(AppError) as caught:
+            self.filter_rows(view='all', cursor=first['next_cursor'], revision=first['revision'],
+                             selection_revision=first['selection_revision'])
+        self.assertEqual(caught.exception.code, 'selection_changed')
+
+    def test_taskless_manual_rows_and_logical_plan_stay_files_only_and_preserve_directory_exclusions(self):
+        from diskpilot.windows import _item
+        process = _item('process', 'owned-global-process', 'Owned process', 'Fixture', 'Fixture', 'stop_process',
+                        {'synthetic': False, 'pid': 123, 'create_time': 1}, path='fixture.exe')
+        self.app.state.publish([process], 'owned-program')
+        self.advice('.', 5, inheritance='subtree')
+        self.advice('four.bin', 4)
+        for view in ('all', 'suggestions', 'tree'):
+            result = self.filter_rows(task_id=None, view=view)
+            self.assertEqual(result['ids'], [row['id'] for row in self.listed_rows(task_id=None, view=view)
+                                           if row['can_logical_select']])
+            self.assertTrue(all(row['kind'] in ('file', 'directory') for row in result['items']))
+        self.assertEqual(self.filter_rows(task_id=None, kind='process')['ids'], [])
+        selected, excluded = [self.rows[name] for name in ('.', 'sub/reselect.bin')], [self.rows['sub']]
+        page = self.app.catalog.page()
+        payload = dict(task_id=None, selected_ids=[row['id'] for row in selected], excluded_ids=[row['id'] for row in excluded],
+            snapshots={row['id']: row['signature'] for row in selected + excluded},
+            revision=page['revision'], selection_revision=page['selection_revision'])
+        compiled = self.app.post('/api/assessments/compile', payload)
+        self.assertIn('sub/reselect.bin', self.actual_files(compiled))
+        self.assertNotIn('sub/excluded.bin', self.actual_files(compiled))
+        planned = self.app.post('/api/assessments/plan', payload)
+        self.assertIsNone(planned['source_task_id'])
+        self.assertEqual(planned['picked_ids'], compiled['ids'])
+        self.assertTrue(all(row['kind'] in ('file', 'directory') for row in planned['plan']['items']))
+        self.assertFalse(self.app.state.history())
+        self.assertTrue((self.scope / 'sub/excluded.bin').exists())
+        for task_id in ('', 'unknown-task'):
+            with self.subTest(task_id=task_id), self.assertRaises(AppError):
+                self.app.post('/api/assessments/compile', dict(payload, task_id=task_id))
+        with self.assertRaises(AppError):
+            self.app.post('/api/assessments/compile', dict(payload, selected_ids=[process['id']], excluded_ids=[],
+                snapshots={process['id']: process['signature']}))
+        with self.assertRaises(AppError):
+            self.app.post('/api/assessments/select', dict(mode='automatic', category='high', representation='rows'))
+
+    def test_taskless_row_cursor_and_plan_keep_honest_total_and_five_hundred_execution_batch(self):
+        for index in range(520):
+            (self.scope / f'cross-page-{index:03d}.bin').write_bytes(b'owned')
+        self.app.state.publish(scan_directory(str(self.scope))['items'], 'fixture')
+        self.refresh()
+        first = self.filter_rows(task_id=None, view='all', kind='file', scope=str(self.scope))
+        second = self.filter_rows(task_id=None, view='all', kind='file', scope=str(self.scope), cursor=first['next_cursor'])
+        self.assertEqual(len(first['ids']), 500)
+        self.assertTrue(first['has_more'])
+        self.assertTrue(first['requires_batches'])
+        ids = first['ids'] + second['ids']
+        self.assertEqual(len(ids), first['counts']['total_targets'])
+        self.assertEqual(len(ids), len(set(ids)))
+        self.assertEqual(ids, [row['id'] for row in self.listed_rows(task_id=None, view='all', kind='file', scope=str(self.scope))])
+        payload = dict(task_id=None, selected_ids=ids, excluded_ids=[], snapshots={**first['snapshots'], **second['snapshots']},
+                       revision=first['revision'], selection_revision=first['selection_revision'])
+        compiled = self.app.post('/api/assessments/compile', payload)
+        self.assertEqual(compiled['counts']['total_targets'], len(ids))
+        self.assertEqual(compiled['counts']['returned'], 500)
+        planned = self.app.post('/api/assessments/plan', payload)
+        self.assertEqual(len(planned['picked_ids']), 500)
+        self.assertEqual(planned['selection']['counts']['total_targets'], len(ids))
+        self.assertTrue(planned['selection']['has_more'])
+        self.assertFalse(self.app.state.history())
+
 
 if __name__ == '__main__':
     unittest.main()

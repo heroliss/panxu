@@ -13,7 +13,7 @@ function row(id,relative,rating=4,kind='file',state='explicit'){
 }
 const parent=row('parent','P',5,'directory'),folder=row('folder','P/D',2,'directory'),leaf=row('leaf','P/D/F',1),high=row('high','P/G',4),neutral=row('neutral','P/N',3),skip=row('skip','P/U',null,'file','skipped');
 
-async function fixture({auto=[high],autoFour=true,rows=[parent,folder,leaf,high,neutral,skip],selectionHasMore=false,planRows=[high],scopeKind='filesystem'}={}){
+async function fixture({auto=[high],autoFour=true,rows=[parent,folder,leaf,high,neutral,skip],selectionHasMore=false,planRows=[high],scopeKind='filesystem',intercept}={}){
   let root,timerId=0;const timers=new Map(),calls=[],events=[],preferences=[];
   class Element{
     constructor(tag){this.tag=tag;this.children=[];this.className='';this.dataset={};this.attrs={};this.parent=null;this._text='';this.open=false;this.handlers=new Map();this.disabled=false;}
@@ -42,19 +42,30 @@ async function fixture({auto=[high],autoFour=true,rows=[parent,folder,leaf,high,
   const meta=item=>({id:item.id,name:item.name,path:item.path,signature:item.signature,kind:item.kind,action:item.action,assessment:item.assessment,category:item.assessment.rating===null?'skipped':String(item.assessment.rating)});
   const entries=planRows.map(item=>({...item,action:item.action || 'delete',impact:item.impact || item.assessment?.impact,personal_choice_required:true,default_selected:false}));
   const prepared={task:{id:'host-batch',cleanup_source_task_id:analysis.id,scope_kind:scopeKind,status:'awaiting_review',plan:{version:2,items:entries}},plan:{version:2,items:entries},picked_ids:entries.map(item=>item.id),selection:{counts:{returned:entries.length},has_more:false}};
+  function filtered({view='all',parent_id='',kind='all',category='all',query=''}={}){
+    let values=currentRows;
+    if(view==='suggestions')values=values.filter(item=>['explicit','skipped','no_advice'].includes(item.assessment.state));
+    if(kind!=='all')values=values.filter(item=>item.kind===kind);
+    if(view==='tree')values=values.filter(item=>{
+      const ancestors=currentRows.filter(parent=>parent.kind==='directory'&&parent.id!==item.id&&item.path.startsWith(parent.path+'/')).sort((a,b)=>b.path.length-a.path.length);
+      return (ancestors[0]?.id || '')===parent_id;
+    });
+    if(category!=='all')values=values.filter(item=>String(item.assessment.rating)===category||category==='skipped'&&item.assessment.state==='skipped'||category==='unrated'&&item.assessment.rating==null&&item.assessment.state!=='skipped');
+    if(query)values=values.filter(item=>(item.name+' '+item.path).toLowerCase().includes(query.toLowerCase()));
+    return values;
+  }
   async function api(path,payload){
     calls.push({path,payload:payload===undefined?undefined:plain(payload)});
+    const replacement=await intercept?.(path,payload,calls);if(replacement!==undefined)return replacement;
     if(path.startsWith('/api/files?')){
-      const url=new URL(path,'http://fixture');let values=currentRows;
-      if(url.searchParams.get('view')==='suggestions')values=values.filter(item=>item.assessment.state!=='unanalysed');
-      if(url.searchParams.get('kind')&&url.searchParams.get('kind')!=='all')values=values.filter(item=>item.kind===url.searchParams.get('kind'));
-      if(url.searchParams.get('view')==='tree')values=url.searchParams.get('parent_id')==='parent'?[folder,high,neutral,skip]:url.searchParams.get('parent_id')==='folder'?[leaf]:[parent];
+      const url=new URL(path,'http://fixture'),values=filtered({...Object.fromEntries(url.searchParams),category:url.searchParams.get('rating') || 'all'});
       const offset=Number(url.searchParams.get('offset'));return {revision:'r1',selection_revision:'s1',offset,total:values.length,items:values.slice(offset,offset+50),has_more:offset+50<values.length,breadcrumbs:[]};
     }
     if(path==='/api/assessments/select'){
       const pool=payload.kind&&payload.kind!=='all'?currentRows.filter(item=>item.kind===payload.kind):currentRows;
-      const values=payload.mode==='automatic'?auto:payload.category==='all'?(scopeKind==='applications'?pool:[parent]):pool.filter(item=>String(item.assessment.rating)===payload.category || payload.category==='skipped'&&item.assessment.state==='skipped');
-      return {revision:'r1',selection_revision:'s1',items:values.map(meta),ids:values.map(item=>item.id),snapshots:Object.fromEntries(values.map(item=>[item.id,item.signature])),has_more:selectionHasMore,requires_batches:selectionHasMore};
+      const values=payload.mode==='automatic'?auto:payload.representation==='rows'?filtered(payload).filter(item=>item.can_logical_select!==false&&item.risk!=='protected'):payload.category==='all'?(scopeKind==='applications'?pool:[parent]):pool.filter(item=>String(item.assessment.rating)===payload.category);
+      const offset=Number(payload.cursor || 0),chosen=values.slice(offset,offset+payload.limit),more=selectionHasMore||offset+payload.limit<values.length;
+      return {revision:'r1',selection_revision:'s1',items:chosen.map(meta),ids:chosen.map(item=>item.id),snapshots:Object.fromEntries(chosen.map(item=>[item.id,item.signature])),has_more:more,requires_batches:more,...(!selectionHasMore&&more?{next_cursor:String(offset+payload.limit)}:{}),counts:{returned:chosen.length,total_targets:values.length}};
     }
     if(path==='/api/assessments/plan')return prepared;
     if(path==='/api/tasks/host-batch/approve'){
@@ -80,7 +91,7 @@ async function fixture({auto=[high],autoFour=true,rows=[parent,folder,leaf,high,
   subject.render(root,helpers);await flush();await flush();
   return {root,subject,helpers,environment,calls,events,preferences,timers,setRows(value){currentRows=value;},
     async activateTaskUI(){
-      const ui=window.PanxuTasks;taskHelpers={...helpers,heading(title,subtitle){const header=new Element('header');header.append(Object.assign(new Element('h1'),{textContent:title}),Object.assign(new Element('p'),{textContent:subtitle || ''}));return header;},disks:[],defaultPath:'E:/fixture',isActive:()=>true,refreshCatalog:async()=>{},setContextBack(label,run){navigation=label?{label,run}:null;},openDuplicates:()=>events.push('duplicates'),redraw(){root.replaceChildren();ui.render(root,taskHelpers);}};
+      const ui=window.PanxuTasks;taskHelpers={...helpers,heading(title,subtitle){const header=new Element('header');header.append(Object.assign(new Element('h1'),{textContent:title}),Object.assign(new Element('p'),{textContent:subtitle || ''}));return header;},disks:[],defaultPath:'E:/fixture',isActive:()=>true,refreshCatalog:async()=>{},setContextBack(label,run){navigation=label?{label,run}:null;},openFiles:()=>events.push('files'),openDuplicates:()=>events.push('duplicates'),redraw(){root.replaceChildren();ui.render(root,taskHelpers);}};
       ui.accept(helpers.task);taskHelpers.redraw();await flush();await flush();return ui;
     },
     get topBack(){return navigation;},
@@ -89,30 +100,32 @@ async function fixture({auto=[high],autoFour=true,rows=[parent,folder,leaf,high,
     finishExecution(items,status='completed'){execution={...execution,status,revision:execution.revision+1,items,processed:items.length,current:null,can_pause:false,can_resume:false,can_cancel:false,...Object.fromEntries(['succeeded','failed','unverified','cancelled'].map(key=>[key,items.filter(item=>item.status===key).length]))};},
     button:label=>root.all().find(item=>item.tag==='button'&&!item.hidden&&item.textContent===label),check:id=>root.all().find(item=>item.dataset.cleanupPick===id),
     async pick(id,checked){const check=this.check(id);check.checked=checked;await check.fire('change');},
-    async category(key,selected=true){const row=root.all().find(item=>item.dataset.cleanupCategory===key);await row.querySelectorAll('button')[selected?0:1].fire('click');},
+    all:()=>root.querySelector('[data-filter-select-all]'),
+    async toggleAll(selected){const check=this.all();check.checked=selected;await check.fire('change');},
+    async filter(value){const rating=root.querySelectorAll('select').find(node=>node.attrs['aria-label']==='筛选本轮清理倾向');rating.value=value;await rating.fire('change');await flush();},
     async tick(){const [id,timer]=[...timers][0];assert.ok(timer);timers.delete(id);await timer.run();await flush();},
   };
 }
 
 test('completed analysis uses a task-scoped two-view list and initializes high choices once without refreshing over edits',async()=>{
   const f=await fixture();assert.equal(f.check('high').checked,true);assert.equal(f.check('leaf').checked,false);
+  assert.equal(f.all().indeterminate,true);assert.equal(f.all().checked,false);
   assert.equal(f.calls.filter(call=>call.path==='/api/assessments/select')[0].payload.category,'high');
   assert.equal(new URL(f.calls[0].path,'http://fixture').searchParams.get('task_id'),'analysis-one');
   await f.pick('high',false);await f.subject.refresh();assert.equal(f.check('high').checked,false);
   assert.equal(f.calls.filter(call=>call.path==='/api/assessments/select'&&call.payload.mode==='automatic').length,1);
-  const category=f.root.all().find(item=>item.dataset.cleanupCategory==='5');
-  assert.deepEqual(category.querySelectorAll('button').map(entry=>entry.attrs['aria-label']),['选择5分','取消5分']);
-  assert.equal(f.root.all().find(item=>item.dataset.cleanupCategory==='skipped').querySelectorAll('button')[0].attrs['aria-label'],'选择已跳过');
+  assert.equal(f.root.querySelector('.cleanup-options-panel'),null);assert.equal(f.button('按评分选择'),undefined);
+  assert.equal(f.all().indeterminate,false);assert.equal(f.all().checked,false);
   await f.button('目录结构（已扫描）').fire('click');assert.equal(f.check('parent').indeterminate,false);
-  assert.ok(f.calls.at(-1).path.includes('view=tree'));assert.equal(f.calls.filter(call=>call.path.includes('approve')).length,0);
+  assert.ok(f.calls.filter(call=>call.path.startsWith('/api/files?')).at(-1).path.includes('view=tree'));assert.equal(f.calls.filter(call=>call.path.includes('approve')).length,0);
 });
 
-test('a saved false four-point preference is used before automatic selection and changing it does not replace the current draft',async()=>{
+test('the saved four-point preference only seeds a new review and has no inline settings control',async()=>{
   const f=await fixture({autoFour:false,auto:[]});
   assert.equal(f.calls.find(call=>call.path==='/api/assessments/select').payload.category,'5');
-  await f.pick('neutral',true);const pref=f.root.querySelector('[data-cleanup-auto-four]');pref.checked=true;await pref.fire('change');
-  assert.deepEqual(f.preferences,[true]);assert.equal(f.check('neutral').checked,true);
-  assert.equal(f.calls.filter(call=>call.path==='/api/assessments/select').length,1);
+  await f.pick('neutral',true);assert.equal(f.root.querySelector('[data-cleanup-auto-four]'),null);
+  assert.deepEqual(f.preferences,[]);assert.equal(f.check('neutral').checked,true);
+  assert.equal(f.calls.filter(call=>call.path==='/api/assessments/select'&&call.payload.mode==='automatic').length,1);
 });
 
 test('directory rules are tri-state and specific exclusions or re-inclusions survive the compiled confirmation request',async()=>{
@@ -126,10 +139,11 @@ test('directory rules are tri-state and specific exclusions or re-inclusions sur
   await f.button('返回修改').fire('click');assert.equal(f.check('parent').indeterminate,true);
 });
 
-test('category cancellation changes only matching descendants and leaves other selected score categories intact',async()=>{
+test('filter-wide cancellation changes matching descendants and preserves selections in other score filters',async()=>{
   const f=await fixture({auto:[]});await f.pick('parent',true);
-  await f.category('4',false);assert.equal(f.check('high').checked,false);assert.equal(f.check('neutral').checked,true);assert.equal(f.check('parent').indeterminate,true);
-  await f.category('skipped',true);assert.equal(f.check('skip').checked,true);
+  await f.filter('4');assert.equal(f.all().checked,true);await f.toggleAll(false);assert.equal(f.check('high').checked,false);
+  await f.filter('all');assert.equal(f.check('neutral').checked,true);assert.equal(f.check('parent').indeterminate,true);
+  await f.filter('skipped');await f.toggleAll(true);assert.equal(f.check('skip').checked,true);
   assert.ok(f.calls.filter(call=>call.path==='/api/assessments/select').every(call=>call.payload.limit===500));
 });
 
@@ -186,7 +200,7 @@ test('task navigation keeps the review draft while explanation and adjustment us
   const ui=await f.activateTaskUI();assert.equal(f.topBack.label,'返回常用任务');assert.equal(f.root.querySelectorAll('details').length,0);
   assert.ok(f.root.querySelector('.cleanup-task-summary').textContent.includes('需留意原件'));
   assert.equal(f.root.querySelector('.cleanup-task-summary').querySelector('.task-briefing'),null);assert.equal(f.root.querySelector('.cleanup-task-summary').querySelectorAll('.cleanup-task-caution').length,1);assert.ok(!f.root.textContent.includes('重点在详情完整可读'));assert.ok(!f.root.textContent.includes('第二条注意保留在详情'));
-  const options=f.root.querySelector('.cleanup-options-panel');assert.equal(options.hidden,true);await f.button('按评分选择').fire('click');assert.equal(options.hidden,false);assert.equal(options.tag,'section');
+  assert.equal(f.root.querySelector('.cleanup-options-panel'),null);assert.equal(f.button('按评分选择'),undefined);assert.ok(f.all());
   await f.pick('high',false);await f.button('分析详情').fire('click');assert.equal(f.root.querySelector('.cleanup-page-list'),null);assert.equal(f.topBack.label,'返回清理清单');assert.ok(f.root.textContent.includes('尚未全部读取'));assert.ok(f.root.textContent.includes('重点在详情完整可读'));assert.ok(f.root.textContent.includes('第二条注意保留在详情'));assert.equal(f.root.querySelectorAll('details').length,0);
   await f.button('查看调查过程').fire('click');assert.equal(f.root.querySelectorAll('details').length,0);assert.ok(f.root.textContent.includes('已观察 6 项'));
   await f.button('测试指导').fire('click');assert.ok(f.root.textContent.includes('指导全文'));
@@ -231,11 +245,87 @@ test('background tasks share the review flow with flat per-ID selection, explici
   await f.button('确认执行 3 项').fire('click');const approval=f.calls.find(call=>call.path.endsWith('/approve'));assert.deepEqual(approval.payload.ids,[startup.id,service.id,process.id]);assert.equal(approval.payload.version,2);assert.ok(f.root.textContent.includes('禁用开机启动'));
 });
 
-test('background category selection binds kind across pages without erasing selections in another type',async()=>{
+test('background filter-wide selection binds kind and score without erasing selections in another type',async()=>{
   const startup={...row('startup','same.exe',4,'startup'),action:'disable_startup',actions:['disable_startup']},service={...row('service','same.exe',5,'service'),action:'stop_service',actions:['stop_service']},process={...row('process','same.exe',4,'process'),action:'stop_process',actions:['stop_process']};
   const f=await fixture({scopeKind:'applications',rows:[startup,service,process],auto:[startup,service,process],planRows:[startup,process]});
   await f.button('全部项目').fire('click');const kind=f.root.querySelectorAll('select').find(node=>node.attrs['aria-label']==='筛选项目类型');kind.value='service';await kind.fire('change');assert.ok(f.check(service.id));assert.equal(f.check(startup.id),undefined);
-  await f.category('5',false);assert.equal(f.calls.filter(call=>call.path==='/api/assessments/select').at(-1).payload.kind,'service');
-  kind.value='all';await kind.fire('change');assert.equal(f.check(startup.id).checked,true);assert.equal(f.check(process.id).checked,true);assert.equal(f.check(service.id).checked,false);
+  await f.filter('5');await f.toggleAll(false);assert.equal(f.calls.filter(call=>call.path==='/api/assessments/select').at(-1).payload.kind,'service');
+  kind.value='all';await kind.fire('change');await f.filter('all');assert.equal(f.check(startup.id).checked,true);assert.equal(f.check(process.id).checked,true);assert.equal(f.check(service.id).checked,false);
   await f.button('执行勾选项').fire('click');const payload=f.calls.filter(call=>call.path==='/api/assessments/plan').at(-1).payload;assert.deepEqual([...payload.selected_ids].sort(),[startup.id,process.id].sort());assert.deepEqual(payload.excluded_ids,[service.id]);
+});
+
+test('filter-wide selection covers every result page and a second toggle only clears that filter',async()=>{
+  const rows=Array.from({length:620},(_,index)=>row('four-'+index,'four-'+index,4));
+  const outside=row('outside','outside',5),blocked={...row('blocked','blocked',4),can_logical_select:false,risk:'protected'};
+  const f=await fixture({rows:[...rows,outside,blocked],auto:[outside]});await f.filter('4');
+  assert.equal(f.check('four-49').checked,false);assert.equal(f.check('four-50'),undefined);assert.equal(f.all().checked,false);
+  const reads=f.calls.filter(call=>call.path==='/api/assessments/select'&&call.payload.category==='4');
+  assert.equal(reads.length,2);assert.equal(reads[0].payload.representation,'rows');assert.equal(reads[1].payload.cursor,'500');
+  await f.toggleAll(true);assert.equal(f.all().checked,true);assert.equal(f.all().indeterminate,false);
+  await f.button('下一页').fire('click');assert.equal(f.check('four-50').checked,true);assert.equal(f.all().checked,true);
+  await f.toggleAll(false);await f.filter('5');assert.equal(f.check('outside').checked,true);assert.equal(f.all().checked,true);
+  await f.button('删除勾选项').fire('click');const payload=f.calls.find(call=>call.path==='/api/assessments/plan').payload;
+  assert.deepEqual(payload.selected_ids,['outside']);assert.equal(payload.excluded_ids.length,620);assert.ok(!Object.hasOwn(payload.snapshots,'blocked'));
+});
+
+test('a filtered directory header keeps exclusions and can toggle back off from checked plus mixed',async()=>{
+  const f=await fixture({auto:[]});await f.pick('parent',true);await f.pick('folder',false);await f.pick('leaf',true);
+  await f.button('目录结构（已扫描）').fire('click');await f.filter('5');
+  assert.equal(f.all().checked,true);assert.equal(f.all().indeterminate,true);
+  await f.toggleAll(true);assert.equal(f.all().checked,true);assert.equal(f.all().indeterminate,true);
+  await f.toggleAll(false);assert.equal(f.all().checked,false);assert.equal(f.all().indeterminate,true);
+  await f.button('删除勾选项').fire('click');const payload=f.calls.find(call=>call.path==='/api/assessments/plan').payload;
+  assert.deepEqual(payload.selected_ids,['leaf']);assert.deepEqual([...payload.excluded_ids].sort(),['folder','parent']);
+});
+
+test('incomplete and oversized candidate sets cannot claim all or change an existing selection',async()=>{
+  for(const total of [501,5001]){
+    const f=await fixture({intercept(path,payload){
+      if(path==='/api/assessments/select'&&payload.representation==='rows')return {revision:'r1',selection_revision:'s1',items:[],has_more:true,counts:{total_targets:total}};
+    }});
+    assert.equal(f.all().disabled,true);assert.equal(f.all().checked,false);assert.equal(f.check('high').checked,true);
+    assert.match(f.root.textContent,total>5000?/5,000/:/完整筛选/);assert.equal(f.calls.filter(call=>call.path.endsWith('/approve')).length,0);
+  }
+});
+
+test('a delayed older-filter result never supplies candidates or selection to the current filter',async()=>{
+  let finish;
+  const delayed=new Promise(resolve=>{finish=resolve;});
+  const f=await fixture({auto:[],intercept(path,payload){if(path==='/api/assessments/select'&&payload.representation==='rows'&&payload.category==='4')return delayed;}});
+  await f.filter('4');assert.equal(f.all().disabled,true);await f.filter('5');
+  finish({revision:'r1',selection_revision:'s1',items:[high],has_more:false,counts:{total_targets:1}});await flush();await flush();
+  assert.equal(f.all().disabled,false);await f.toggleAll(true);assert.equal(f.all().checked,true);
+  await f.button('删除勾选项').fire('click');assert.deepEqual(f.calls.find(call=>call.path==='/api/assessments/plan').payload.selected_ids,['parent']);
+});
+
+test('an empty or protected-only filtered view has no selectable-all state',async()=>{
+  const f=await fixture({rows:[{...high,can_logical_select:false,risk:'protected'}],auto:[]});
+  assert.equal(f.all().disabled,true);assert.equal(f.all().checked,false);assert.equal(f.all().indeterminate,false);
+  assert.equal(f.check('high').disabled,true);
+});
+
+test('a taskless prepared plan opens its real frozen confirmation without advice, a new plan request or automatic approval',async()=>{
+  const owned={...high,assessment:{state:'unanalysed',rating:null}},f=await fixture({rows:[owned],auto:[]});
+  const ui=await f.activateTaskUI(),entry={...owned,purpose:'Owned purpose',impact:'Owned impact',default_selected:false};
+  const unpicked={...neutral,name:'Unpicked owned name',impact:'Unpicked impact'},plan={version:9,origin:'user_direct',items:[entry,unpicked]},task={id:'manual-without-source',scope_kind:'filesystem',status:'awaiting_review',plan,advice:[],advice_total:0};
+  const before=f.calls.length;
+  assert.equal(ui.acceptPickedPlan({task,plan,picked_ids:[entry.id],source_task_id:null,selection:{has_more:true,counts:{total_targets:620}}}),true);
+  f.redrawTaskUI();await flush();await flush();
+  const dialog=f.root.querySelector('dialog');assert.equal(dialog.open,true);assert.ok(dialog.textContent.includes('删除 1 个文件'));assert.ok(dialog.textContent.includes('Owned impact'));assert.ok(dialog.textContent.includes('619 个尚未纳入本批'));
+  assert.ok(!dialog.textContent.includes('Unpicked owned name'));assert.ok(!dialog.textContent.includes('Unpicked impact'),'a legacy subset cannot silently expand to every plan item');
+  assert.equal(f.check(entry.id).checked,true);assert.equal(f.root.querySelector('.inventory-advice-pending')!==null,true,'unknown advice is not fabricated');
+  assert.ok(f.calls.slice(before).filter(call=>call.path==='/api/assessments/select').every(call=>call.payload.mode==='manual'));assert.equal(f.calls.filter(call=>call.path==='/api/assessments/plan'||call.path.endsWith('/approve')).length,0);
+  await f.button('返回修改').fire('click');assert.ok(f.events.includes('files'));assert.equal(f.root.querySelector('dialog'),null);assert.equal(f.calls.filter(call=>call.path.endsWith('/approve')).length,0);
+  f.redrawTaskUI();await flush();assert.equal(f.root.querySelector('dialog'),null,'the one-shot handoff cannot reopen after cancellation');
+});
+
+test('a fresh UI restores a persisted user-direct frozen plan without relying on an earlier handoff response',async()=>{
+  const owned={...high,assessment:{state:'unanalysed',rating:null}},f=await fixture({rows:[owned],auto:[]}),ui=await f.activateTaskUI();
+  const plan={version:11,origin:'user_direct',items:[{...owned,impact:'Persisted owned impact'}]};
+  const before=f.calls.length;
+  ui.accept({id:'persisted-manual',scope_kind:'filesystem',status:'awaiting_review',plan,advice:[],advice_total:0});
+  f.redrawTaskUI();await flush();await flush();
+  assert.equal(f.root.querySelector('dialog').open,true);assert.ok(f.root.querySelector('dialog').textContent.includes('Persisted owned impact'));assert.equal(f.check(owned.id).checked,true);
+  assert.ok(f.calls.slice(before).filter(call=>call.path==='/api/assessments/select').every(call=>call.payload.mode==='manual'));assert.equal(f.calls.filter(call=>call.path.endsWith('/approve')||call.path==='/api/assessments/plan').length,0);
+  await f.button('返回修改').fire('click');assert.ok(f.events.includes('files'));f.redrawTaskUI();await flush();assert.equal(f.root.querySelector('dialog'),null,'restoration is only for a new state, not every redraw');
 });

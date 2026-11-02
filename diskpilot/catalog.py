@@ -229,6 +229,60 @@ class FileCatalog:
                 and (not scope or row['kind'] in FILE_KINDS and within(row['path'], scope))
                 and (risk == 'all' or row['risk'] == risk) and (kind == 'all' or row['kind'] == kind)]
 
+    def _query_rows(self, rows, *, task=None, query='', scope='', risk='all', kind='all',
+                    view='all', parent_id='', rating='all'):
+        """One observed-only query for visible pages and filter-wide checkbox rows."""
+        if view not in ('all', 'suggestions', 'tree') or not isinstance(parent_id, str) or len(parent_id) > 200:
+            raise AppError('请选择有效的文件视图或目录。')
+        if rating not in ('all', 'high', 'low', 'neutral', 'unrated', 'skipped', 'no_advice', '1', '2', '3', '4', '5'):
+            raise AppError('请选择有效的评分筛选。')
+        if view == 'tree' and task and task.get('scope_kind') == 'applications':
+            raise AppError('后台和软件对象按身份列出，请使用建议或全部对象视图。', 'invalid_catalog_view')
+        base = self._filter_rows(rows, query, scope, risk, kind)
+        filtered = [row for row in base if self._rating_matches(row, rating)]
+        breadcrumbs = []
+        if view == 'suggestions':
+            filtered = [row for row in filtered if row['assessment']['state'] in ('explicit', 'skipped', 'no_advice')
+                        and (task is None or row['assessment'].get('from_current_task'))]
+        elif view == 'tree':
+            if parent_id and (parent_id not in self._nodes or self._nodes[parent_id]['kind'] != 'directory'):
+                raise AppError('目录已更新，请返回已扫描范围。', 'catalog_changed', 409)
+            # Missing bridge nodes can navigate to authorized descendants, but
+            # an arbitrary known directory cannot expose another task's paths.
+            authorized = {row['id'] for row in rows}
+            for row in rows:
+                current = row.get('tree_parent_id')
+                while current:
+                    authorized.add(current)
+                    current = self._nodes[current].get('tree_parent_id')
+            if parent_id and parent_id not in authorized:
+                raise AppError('此目录不属于当前清单范围。', 'outside_scope', 409)
+            matches = {row['id'] for row in filtered}
+            visible = set(matches)
+            for ident in list(visible):
+                current = self._nodes[ident].get('tree_parent_id')
+                while current:
+                    visible.add(current)
+                    current = self._nodes[current].get('tree_parent_id')
+            scoped = {row['id']: row for row in rows}
+            filtered = []
+            for row in self._children.get(parent_id, []):
+                if row['id'] not in visible:
+                    continue
+                if row['id'] in scoped and row['id'] in matches:
+                    filtered.append(scoped[row['id']])
+                else:
+                    navigation = copy.deepcopy(scoped.get(row['id'], row))
+                    navigation.update(navigation_only=True, can_select=False, can_prepare=False,
+                                      can_logical_select=False, can_auto_select=False)
+                    filtered.append(navigation)
+            current = parent_id
+            while current:
+                row = self._nodes[current]
+                breadcrumbs.insert(0, {key: row[key] for key in ('id', 'name', 'path')})
+                current = row.get('tree_parent_id')
+        return base, filtered, breadcrumbs
+
     def _selection_tree(self, rows):
         index = {row['id']: row for row in rows}
         paths = {canonical(row['path']): row['id'] for row in rows if row['kind'] == 'directory'}
@@ -307,7 +361,7 @@ class FileCatalog:
 
     def batch_selection(self, *, task=None, category='high', mode='manual', include_inherited=True,
                         query='', scope='', risk='all', kind='all', cursor=None, limit=500, expected=None,
-                        expected_selection_revision=None):
+                        expected_selection_revision=None, view='all', parent_id='', representation='roots'):
         """Read the full filtered task, returning logical category roots in bounded batches."""
         if category == 'skip':
             category = 'skipped'
@@ -315,22 +369,23 @@ class FileCatalog:
             raise AppError('请选择有效的评分分类和选择方式。')
         if mode == 'automatic' and task is None:
             raise AppError('自动选择需要当前分析任务。', 'task_scope_required')
+        if representation not in ('roots', 'rows'):
+            raise AppError('请选择有效的筛选选择方式。')
         with self.state.lock:
             rows = self._selection_rows(task)
-            filtered = self._filter_rows(rows, query, scope, risk, kind)
-            matching = [row for row in filtered if self._rating_matches(row, category)]
-            index, children, roots, outside = self._selection_tree(rows)
+            filtered, matching, _ = self._query_rows(rows, task=task, query=query, scope=scope,
+                risk=risk, kind=kind, view=view, parent_id=parent_id, rating=category)
             eligible, reasons = set(), Counter()
             for row in matching:
                 blockers = self._manual_blockers(row)
                 if mode == 'automatic':
-                    if row['user_kept']:
+                    if row.get('user_kept'):
                         blockers.append('user_kept')
-                    if not row['assessment']['from_current_task']:
+                    if not row['assessment'].get('from_current_task'):
                         blockers.append('other_task_advice')
                     if row['assessment'].get('rating') not in (4, 5) or row['assessment'].get('state') not in ('explicit', 'inherited'):
                         blockers.append('not_high_rating')
-                    if not row['can_prepare']:
+                    if not row.get('can_prepare'):
                         blockers.append('advisory_or_coverage_barrier')
                 if not include_inherited and row['assessment'].get('state') == 'inherited':
                     blockers.append('inherited_not_included')
@@ -338,6 +393,18 @@ class FileCatalog:
                     reasons.update(set(blockers))
                 else:
                     eligible.add(row['id'])
+            fingerprint = dict(kind='category', category=category, mode=mode, include_inherited=include_inherited,
+                ordering='direct-rating-size-v1' if mode == 'automatic' else 'tree-v1', query=query,
+                scope=scope, risk=risk, object_kind=kind, view=view, parent_id=parent_id, representation=representation)
+            if representation == 'rows':
+                chosen = [row['id'] for row in matching if row['id'] in eligible]
+                return self._selection_page(chosen, rows, task=task,
+                    counts=dict(scope_rows=len(rows), filtered_rows=len(filtered), matched_rows=len(matching),
+                                eligible_rows=len(eligible), expanded_directories=0, blocked_reasons=dict(reasons)),
+                    groups=self._groups(filtered), fingerprint=fingerprint, limit=limit, cursor=cursor,
+                    expected=expected, expected_selection_revision=expected_selection_revision,
+                    extra=dict(representation='rows', view=view, parent_id=parent_id))
+            index, children, roots, outside = self._selection_tree(rows)
             full = {}
             for row in sorted(rows, key=lambda row: len(canonical(row['path'])), reverse=True):
                 ident = row['id']
@@ -362,8 +429,7 @@ class FileCatalog:
             return self._selection_page(chosen, rows, task=task,
                 counts=dict(scope_rows=len(rows), filtered_rows=len(filtered), matched_rows=len(matching), eligible_rows=len(eligible),
                             expanded_directories=expanded, blocked_reasons=dict(reasons)), groups=self._groups(filtered),
-                fingerprint=dict(kind='category', category=category, mode=mode, include_inherited=include_inherited,
-                                 ordering='direct-rating-size-v1' if mode == 'automatic' else 'tree-v1', query=query, scope=scope, risk=risk, object_kind=kind),
+                fingerprint=fingerprint,
                 limit=limit, cursor=cursor, expected=expected, expected_selection_revision=expected_selection_revision)
 
     def compile_selection(self, selected_ids, excluded_ids=(), *, snapshots, expected, task=None,
@@ -469,49 +535,13 @@ class FileCatalog:
             raise AppError('搜索或范围过长。')
         if risk not in ('all', 'low', 'review', 'protected'):
             raise AppError('请选择有效的内容筛选。')
-        if view not in ('all', 'suggestions', 'tree') or not isinstance(parent_id, str) or len(parent_id) > 200:
-            raise AppError('请选择有效的文件视图或目录。')
-        if rating not in ('all', 'high', 'low', 'neutral', 'unrated', 'skipped', 'no_advice', '1', '2', '3', '4', '5'):
-            raise AppError('请选择有效的评分筛选。')
         with self.state.lock:
             token, _ = self._index()
             rows = self._selection_rows(task)
-            if view == 'tree' and task and task.get('scope_kind') == 'applications':
-                raise AppError('后台和软件对象按身份列出，请使用建议或全部对象视图。', 'invalid_catalog_view')
             if expected and expected != token:
                 raise AppError('检查清单已有更新，将重新载入第一页。', 'catalog_changed', 409)
-            base_filtered = self._filter_rows(rows, query, scope, risk, kind)
-            filtered = [row for row in base_filtered if self._rating_matches(row, rating)]
-            breadcrumbs = []
-            if view == 'suggestions':
-                filtered = [i for i in filtered if i['assessment']['state'] in ('explicit', 'skipped', 'no_advice')
-                            and (task is None or i['assessment'].get('from_current_task'))]
-            elif view == 'tree':
-                if parent_id and (parent_id not in self._nodes or self._nodes[parent_id]['kind'] != 'directory'):
-                    raise AppError('目录已更新，请返回已扫描范围。', 'catalog_changed', 409)
-                visible = {row['id'] for row in filtered}
-                for ident in list(visible):
-                    current = self._nodes[ident].get('tree_parent_id')
-                    while current:
-                        visible.add(current)
-                        current = self._nodes[current].get('tree_parent_id')
-                scoped = {row['id']: row for row in rows}
-                selected_rows = []
-                for row in self._children.get(parent_id, []):
-                    if row['id'] not in visible:
-                        continue
-                    if row['id'] in scoped:
-                        selected_rows.append(scoped[row['id']])
-                    else:
-                        navigation = copy.deepcopy(row)
-                        navigation.update(navigation_only=True, can_select=False, can_prepare=False, can_logical_select=False, can_auto_select=False)
-                        selected_rows.append(navigation)
-                filtered = selected_rows
-                current = parent_id
-                while current:
-                    row = self._nodes[current]
-                    breadcrumbs.insert(0, {key: row[key] for key in ('id', 'name', 'path')})
-                    current = row.get('tree_parent_id')
+            base_filtered, filtered, breadcrumbs = self._query_rows(rows, task=task, query=query,
+                scope=scope, risk=risk, kind=kind, view=view, parent_id=parent_id, rating=rating)
             return dict(revision=token, offset=offset, limit=limit, total=len(filtered), catalog_total=len(rows),
                         items=copy.deepcopy(filtered[offset:offset + limit]),
                         has_more=offset + limit < len(filtered), view=view, parent_id=parent_id, breadcrumbs=breadcrumbs, kind=kind,

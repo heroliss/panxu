@@ -458,7 +458,7 @@ window.PanxuTasks = (() => {
     const entries=new Map(task.plan.items.map(item=>[item.id,item]));
     if(plan.items.length!==entries.size || plan.items.some(item=>{const entry=entries.get(item.id);return !entry || entry.signature!==item.signature || entry.action!==item.action;}))return false;
     if(response.picked_ids.some(id=>!entries.has(id)))return false;
-    accept(task);selected=new Set(response.picked_ids);return true;
+    accept(task);selected=new Set(response.picked_ids);window.PanxuCleanupReview?.acceptPrepared?.(response);return true;
   }
   function redraw() { if (context?.isActive()) context.redraw(); }
   async function request(path, payload) {
@@ -901,7 +901,7 @@ window.PanxuTasks = (() => {
     }
     window.PanxuCleanupReview.render(list,{
       task:current,api:context.api,bytes:context.bytes,showItem:context.showItem,autoSelectFour:context.autoSelectFour,disabled:pending,
-      setContextBack:context.setContextBack,saveAutoSelectFour:context.saveAutoSelectFour,onSource:showContext,acceptTask:accept,redraw,
+      setContextBack:context.setContextBack,openFiles:context.openFiles,onSource:showContext,acceptTask:accept,redraw,
       renderTools:tools=>add(tools,action('分析详情',()=>reviewPane('analysis'),'plain-button'),action('调整要求',()=>reviewPane('adjust'),'plain-button'))
     });
     if(!context.setContextBack&&!busy())add(root,action('返回常用任务',returnHome,'plain-button task-new'));
