@@ -65,7 +65,7 @@ body { line-height: 1.7; }
 .plain-button { font-size: var(--type-meta); line-height: 1.7; }
 .navigation-back { font-size: var(--type-label); }
 .nav-item { font-size: var(--type-body); }
-.safety-banner,.breadcrumb,.source-line,.local-status,.app-footer { font-size: var(--type-meta); }
+.safety-banner,.source-line,.app-footer { font-size: var(--type-meta); }
 .subtab { font-size: var(--type-label); }
 .task-intent-copy strong { font-size: var(--type-lead); font-weight: 650; }
 .task-intent-copy > span { font-size: var(--type-label); }

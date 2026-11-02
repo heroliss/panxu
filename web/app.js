@@ -503,7 +503,6 @@ function initializePanxu() {
     state.view = view; state.query = snapshot?.query || ''; state.risk = snapshot?.risk || 'all'; state.origin = snapshot?.origin || 'all'; state.subtype = snapshot?.subtype || 'all'; state.limit = snapshot?.limit || 50;state.inventoryOffset=snapshot?.inventoryOffset || 0;
     const current = view === 'software' ? 'background' : view === 'duplicates' ? 'overview' : view==='user_tools'?'cleanup':view;
     document.querySelectorAll('[data-view]').forEach((b) => { const active = b.dataset.view === current; b.classList.toggle('active', active); if (active) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current'); });
-    $('breadcrumb-current').textContent = names[view];
     toggleInspector(false); render();$('workspace').scrollTop=snapshot?.scroll_y || 0;
   }
   function render() {

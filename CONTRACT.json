@@ -1,6 +1,6 @@
 {
   "product": "盘序",
-  "version": "0.23.1",
+  "version": "0.23.2",
   "mode": "simulation",
   "root": "E:\\GPT-Projects\\win11-disk-assistant",
   "safety": "This build has NO real executor. All apply/undo/reset operations modify only SQLite simulation records. Never unlink/move/kill/control services/edit startup outside app-owned data.",
@@ -142,7 +142,7 @@
   "agent_task": "statuses ready/investigating/awaiting_review/executing/needs_input/needs_model/paused/budget_exhausted/error/completed. Configurable per-turn model_requests4..32 and tool_calls6..128 (defaults6/12). Soft remaining-resource guidance retains normal tools until the hard ceiling; checkpoints preserve work for continuation. Output-error recovery alone narrows tools to durable evidence/conclusion. Model record_advice/propose_plan schemas cap6 items; host historical30 and manual500 remain separate. High-rating initialization is an editable draft, never approval; final selection determines targets. Protected/out-of-scope/unsupported identities and stale plans cannot bypass factual checks. Unknown score is not3 or permission. Tool text is untrusted.",
   "action_runtime": "simulation backend only. Per-item durable intent plus atomic overlay/receipt, status succeeded/failed/partial/cancelled/unverified. Recovery verifies receipts without blind replay. User undo is separately visible as current_state=undone. Actual reclaimed bytes always zero.",
   "release_status": "verified_portable_native_scoped_acceptance_passed",
-  "installed_release": "0.23.1",
+  "installed_release": "0.23.2",
   "review_selection": "Version0.18 removes score-selection panel and per-score buttons from review/myfiles. Exact rating plus one tri-state select-current-filter control uses shared view,parent,query,rating,scope,risk,kind filters across complete rows. Tree is current parent level, navigation-only not selectable. Fetch cursor pages<=500 serially, candidate cap5000 and total logical-rule cap5000; incomplete/oversize/version-error collection leaves old selection atomically unchanged. Tri-state derives from complete candidates and nearest rules; selected roots with child exceptions remain checked+mixed so next click can deselect. Preserve outside-filter explicit rules and child exclusions. Plans freeze<=500 physical targets; remaining draft retained and stale catalog requires recheck. cleanup_auto_select_four lives in Settings cleanup preferences, existing UI-pref API auto-saves/rolls back error independently of model/text settings; eligible5 preselect stays, only new analysis initial drafts change. Current manual choices untouched. Explicit confirmation and simulation-only boundaries unchanged.",
   "dark_surface_refinement": "Version0.17.1 only dims dark canvas/card/soft/input/sidebar/interaction and rating/impact background tokens; canvas#090e16,panel#151f2d,soft#1d2b3d. Preserve surface separation, ink/muted/rating foregrounds, typography/layout/text-selection, scoring/action/model/backend semantics and simulation-only boundaries; light/non-dark declarations verified identical to0.17 baseline. Strict Python590,Node165,7JSsyntax passed, detector empty. Actual source dark1280x720/light960x680 no horizontal overflow, sampled explanation/label/rating minimum contrast8.01/5.21. Final EXE scoped native dark review/myfiles inspected and recorded, no UI LLM request or processing action. Original four durable files restored byte-for-byte; normal launch verified with 8 tasks,12 prior advice,18 model requests and identical model settings, not an all-module native claim; version0.17 evidence remains historical.",
   "task_memory": "Durable goal, choices, versioned plan, simulation receipts, up to300 historical facts/task with32MiB global fact-payload retention. Separate last_public_reply stores accepted public text<=8000 chars with completed_at,protocol,host provenance,truncated; not private continuation, model context or partial-stream success. Model connection change reconstructs fresh context. Request attempts/tools/work counted; missing provider token usage is unknown.",
@@ -285,5 +285,6 @@
     "task_kind": "public host-derived analysis|operation from saved direct origin; persists after plan cleared; receipt alone is not operation kind",
     "details": "Diagnostics and process lazily rendered behind one disclosure; in-progress public reply keeps previous complete reply visible; task history available locally",
     "navigation_state": "Read-only nav text for analyzing/executing/awaiting-answer/model/recovery; no actual mutation or model calls from visiting hub"
-  }
+  },
+  "page_chrome": "Sidebar and page heading identify the current page. No duplicate brand/page breadcrumb or top local-status. Context toolbar collapses when all controls are hidden; return and inspector close remain usable, including narrow layouts. Settings advanced proxy ID retained."
 }
