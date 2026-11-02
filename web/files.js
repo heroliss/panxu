@@ -77,7 +77,8 @@ window.PanxuFiles = (() => {
     scopeInput=select('筛选检查位置',[['','所有检查位置'],...(helpers.disks || []).map(d=>[d.path||d.name,d.name||d.path])],scope,value=>{scope=value;parentId='';change();});
     ratingInput=select('筛选清理倾向',[['all','全部倾向'],['high','4–5 分 · 倾向清理'],['neutral','3 分 · 待你决定'],['low','1–2 分 · 倾向保留'],['unrated','未评分'],['skipped','已跳过'],['no_advice','暂无建议']],rating,value=>{rating=value;change();});
     tools.append(searchInput,scopeInput,ratingInput,button('刷新清单',()=>refreshAdvice(),'plain-button'));
-    const more=node('details','file-browser-options');more.append(node('summary','field-help','更多选项'));
+    const more=node('section','file-browser-options');more.hidden=true;more.setAttribute('aria-label','文件查看选项');
+    const moreButton=button('查看选项',()=>{more.hidden=!more.hidden;moreButton.setAttribute('aria-expanded',String(!more.hidden));},'plain-button');moreButton.setAttribute('aria-expanded','false');tools.append(moreButton);
     riskInput=select('筛选保护状态',[['all','全部保护状态'],['low','可加入操作清单'],['review','需你决定'],['protected','已保护']],risk,value=>{risk=value;change();});
     const line=node('label','check-line'),inherited=node('input');inherited.type='checkbox';inherited.checked=includeInherited;inherited.dataset.includeInherited='1';
     inherited.addEventListener('change',()=>{includeInherited=inherited.checked;selectionChanged();});
@@ -280,7 +281,8 @@ window.PanxuCleanupReview = (() => {
     [['all','全部倾向'],['5','5 分 · 建议清理'],['4','4 分 · 倾向清理'],['3','3 分 · 待你决定'],['2','2 分 · 倾向保留'],['1','1 分 · 建议保留'],['skipped','已跳过'],['unrated','未评分 / 尚未分析'],['no_advice','暂无建议']].forEach(([id,label])=>{const option=node('option','',label);option.value=id;rating.append(option);});rating.value=state.rating;
     rating.addEventListener('change',()=>{state.rating=rating.value;state.offset=0;load(token);});
     add(filters,search,rating,button('刷新',()=>load(token),'plain-button'));
-    const more=node('details','cleanup-more');add(more,node('summary','','选择与更多选项'));
+    const more=node('section','cleanup-options-panel');more.hidden=!state.selectionOpen;more.setAttribute('aria-label','按评分选择');
+    const selectionButton=button('按评分选择',()=>{state.selectionOpen=!state.selectionOpen;more.hidden=!state.selectionOpen;selectionButton.setAttribute('aria-expanded',String(!!state.selectionOpen));},'plain-button');selectionButton.setAttribute('aria-expanded',String(!!state.selectionOpen));filters.append(selectionButton);
     const picks=node('div','cleanup-category-grid');
     [['5','5 分'],['4','4 分'],['3','3 分'],['2','2 分'],['1','1 分'],['skipped','已跳过'],['unrated','未评分'],['no_advice','暂无建议']].forEach(([key,label])=>{
       const row=node('div','cleanup-category-row'),select=button('选择',()=>bulk(token,key,true),'button small'),deselect=button('取消',()=>bulk(token,key,false),'plain-button');
@@ -292,12 +294,12 @@ window.PanxuCleanupReview = (() => {
     auto.addEventListener('change',async()=>{const value=auto.checked;try{await helpers.saveAutoSelectFour?.(value);token.notice='偏好已保存，下一次分析时使用；当前手动勾选保持不变。';}catch(error){auto.checked=!value;token.error=error.message;}paint(token);});
     add(preference,auto,node('span','','新分析时自动勾选 4 分（5 分始终预选）'));
     add(more,picks,all,node('p','field-help','按类别选择覆盖本轮已扫描范围，不限当前页。勾选目录会包含内部项目，可以单独取消子项；未扫描及受保护内容不会被当作已核对。'),preference);
-    helpers.renderMore?.(more,state.source || helpers.task);
+    const taskTools=node('div','cleanup-task-tools');helpers.renderTools?.(taskTools,state.source || helpers.task);
     const trail=node('nav','file-tree-path');trail.setAttribute('aria-label','本轮已扫描目录位置');
     const info=node('p','cleanup-selection-info');info.setAttribute('role','status');
     const error=node('p','field-error');error.hidden=true;
     const host=node('div','cleanup-page-host'),navigation=node('div','file-page-navigation'),status=node('p','file-page-status'),pager=node('div','file-pagination');
-    add(navigation,status,pager);add(panel,toolbar,filters,more,trail,info,error,navigation,host);root.append(panel);
+    add(navigation,status,pager);add(panel,toolbar,filters,more,taskTools,trail,info,error,navigation,host);root.append(panel);
     Object.assign(token,{panel,tabs,deletion,filters,more,trail,info,errorHost:error,host,status,pager});
     if(!state.source&&helpers.task.cleanup_source_task_id){
       Promise.resolve(helpers.api('/api/tasks/'+encodeURIComponent(state.id))).then(data=>{if(!active(token))return;state.source=data.task;helpers.onSource?.(data.task);}).catch(error=>{if(active(token)){token.error=error.message;paint(token);}});
@@ -422,17 +424,20 @@ window.PanxuCleanupReview = (() => {
     const heading=node('h2'),progress=node('progress'),status=node('p','cleanup-execution-summary'),current=node('p'),error=node('p','field-error'),controls=node('div','cleanup-execution-controls'),list=node('ul','cleanup-live-items');
     status.setAttribute('role','status');
     const pause=button('暂停',()=>control(token,'pause'),'button'),resume=button('继续本批',()=>control(token,'resume'),'button primary'),cancel=button('取消剩余项',()=>control(token,'cancel'),'button');
-    const back=button('返回清理清单',()=>{removeCompletedRules(token.state);token.state.mode='list';token.state.revision='';token.helpers.redraw();},'button primary');
+    const back=button('返回清理清单',()=>returnToList(token),'button primary');
     add(controls,pause,resume,cancel,back);
     add(token.executionPanel,heading,progress,status,current,node('p','field-help','实际文件与系统保持不变，实际释放空间为 0 B。'),error,controls,node('p','field-help','暂停会等待当前项目完成；取消只停止尚未提交的项目，已完成记录会保留。'),list);
     token.executionNodes={heading,progress,status,current,error,controls,list,pause,resume,cancel,back};return token.executionNodes;
   }
   function paintExecutionControls(token){
     const value=token.state.execution,ui=token.executionNodes;if(!value||!ui)return;
-    ui.pause.hidden=!value.can_pause;ui.resume.hidden=!value.can_resume;ui.cancel.hidden=value.status!=='paused'||!value.can_cancel;ui.back.hidden=!['completed','cancelled','interrupted'].includes(value.status);
+    const finished=['completed','cancelled','interrupted'].includes(value.status);
+    ui.pause.hidden=!value.can_pause;ui.resume.hidden=!value.can_resume;ui.cancel.hidden=value.status!=='paused'||!value.can_cancel;ui.back.hidden=!finished||!!token.helpers.setContextBack;
+    if(finished)token.helpers.setContextBack?.('返回清理清单',()=>returnToList(token));
     [ui.pause,ui.resume,ui.cancel,ui.back].forEach(entry=>{entry.disabled=!!token.controlling;});
     ui.controls.setAttribute('aria-busy',String(!!token.controlling));
   }
+  function returnToList(token){if(!active(token))return;removeCompletedRules(token.state);token.state.mode='list';token.state.revision='';token.helpers.redraw();}
   function paintExecution(token){
     if(!active(token))return;const value=token.state.execution;if(!value)return;const ui=executionNodes(token);
     const names={running:'正在模拟删除',pausing:'正在暂停，等待当前项核对完成',paused:'已暂停',cancelling:'正在取消剩余项',completed:'本批模拟操作已结束',cancelled:'剩余操作已取消',interrupted:'本批被中断，未确认项目不会自动重做'};

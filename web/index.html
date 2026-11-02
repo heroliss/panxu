@@ -15,6 +15,7 @@
   <script src="/stream-channel.js" defer></script>
   <script src="/tasks.js" defer></script>
   <script src="/files.js" defer></script>
+  <script src="/duplicates.js" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#workspace">跳到工作区</a>
@@ -35,7 +36,7 @@
     </aside>
     <div class="app-body">
       <header class="topbar">
-        <div class="breadcrumb">盘序 <span aria-hidden="true">/</span> <span id="breadcrumb-current">整理助手</span></div>
+        <div class="topbar-location"><button id="navigation-back" class="navigation-back" type="button" hidden>返回</button><div class="breadcrumb">盘序 <span aria-hidden="true">/</span> <span id="breadcrumb-current">整理助手</span></div></div>
         <div class="topbar-tools"><span class="local-status"><span class="status-dot"></span>本地运行</span><button id="advanced-toggle" hidden aria-expanded="false">高级选项</button><button id="inspector-toggle" class="icon-button" aria-expanded="false" aria-controls="inspector" hidden>收起说明</button></div>
       </header>
       <div class="safety-banner"><span class="banner-mark" aria-hidden="true">i</span><p><strong>模拟模式：</strong>仅记录删除、关闭启动项等操作，不会实际改动文件或系统。</p></div>

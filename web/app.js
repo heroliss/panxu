@@ -178,7 +178,7 @@ window.PanxuDeveloperView = (() => {
 
 function initializePanxu() {
   const $ = (id) => document.getElementById(id);
-  const names = { overview: '整理助手', files: '我的文件', background: '后台与软件', software: '后台与软件', history: '操作记录', model: '设置' };
+  const names = { overview: '整理助手', files: '我的文件', background: '后台与软件', software: '后台与软件', history: '操作记录', model: '设置', duplicates: '查找重复文件' };
   const kindNames = { file: '文件', directory: '目录汇总', startup: '启动项', service: '服务', process: '进程', software: '软件' };
   const state = { csrf: '', version: '', view: 'overview', items: [], summary: {}, settings: {}, history: [], disks: [], source: 'demo', warnings: [], selected: new Set(), focused: null, query: '', risk: 'all', origin: 'all', subtype: 'all', limit: 300, busy: false, job: null, plan: null, scanPath: '', inspector: false, assistant: null, recommendations: [], checked: false, analyzing: false, filesExpanded: false, backgroundExpanded: false, inventoryTarget: 'startup', checkDestination: 'overview', showAllCards: new Set() };
   let toastTimer;
@@ -371,10 +371,29 @@ function initializePanxu() {
   function sourceLine() { return el('p', 'source-line', `已检查 ${state.items.filter((item) => !item.simulated).length} 项，选择之后会先让你确认。`); }
   function chosen() { return state.items.filter((item) => state.selected.has(item.id)); }
 
-  function setView(view) {
+  const navigationStack=[];
+  let contextBack=null;
+  function setContextBack(label,handler) {
+    const back=$('navigation-back');contextBack=typeof handler==='function'?handler:null;
+    if(!back)return;
+    back.hidden=!label||!contextBack;back.textContent=label?'← '+label:'返回';back.setAttribute('aria-label',label || '返回');
+  }
+  function defaultBack() {
+    const previous=navigationStack.at(-1);
+    if(previous)setContextBack('返回'+names[previous.view],()=>{
+      navigationStack.pop();setView(previous.view,false,previous);
+    });
+    else if(state.view!=='overview')setContextBack('返回整理助手',()=>setView('overview',false));
+    else setContextBack('',null);
+  }
+  function setView(view,remember=true,snapshot=null) {
     if (!names[view]) return;
-    state.view = view; state.query = ''; state.risk = 'all'; state.origin = 'all'; state.subtype = 'all'; state.limit = 300;
-    const current = view === 'software' ? 'background' : view;
+    if(view!==state.view&&remember){
+      navigationStack.push({view:state.view,query:state.query,risk:state.risk,origin:state.origin,subtype:state.subtype,limit:state.limit});
+      if(navigationStack.length>12)navigationStack.shift();
+    }
+    state.view = view; state.query = snapshot?.query || ''; state.risk = snapshot?.risk || 'all'; state.origin = snapshot?.origin || 'all'; state.subtype = snapshot?.subtype || 'all'; state.limit = snapshot?.limit || 300;
+    const current = view === 'software' ? 'background' : view === 'duplicates' ? 'overview' : view;
     document.querySelectorAll('[data-view]').forEach((b) => { const active = b.dataset.view === current; b.classList.toggle('active', active); if (active) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current'); });
     $('breadcrumb-current').textContent = names[view];
     toggleInspector(false); render();
@@ -382,8 +401,10 @@ function initializePanxu() {
   function render() {
     window.PanxuFiles?.unmount();
     window.PanxuTasks?.unmountLive?.();
+    window.PanxuDuplicates?.unmount();
+    defaultBack();
     const root = $('workspace'); root.replaceChildren();
-    const renderers = { overview: renderOverview, files: renderFiles, background: renderBackground, software: renderSoftware, history: renderHistory, model: renderModel };
+    const renderers = { overview: renderOverview, files: renderFiles, background: renderBackground, software: renderSoftware, history: renderHistory, model: renderModel, duplicates: renderDuplicates };
     renderers[state.view](root);
     renderInspector(); renderSelection();
     $('connection-status').textContent = '本机检查 · 文件正文不会发送';
@@ -405,11 +426,15 @@ function initializePanxu() {
       redraw: render, isActive: () => state.view === 'overview',
       openSettings: () => setView('model'), openFiles: () => setView('files'),
       openAssistant: () => setView('overview'),
+      openDuplicates:()=>setView('duplicates'),setContextBack,
       showItem,
       autoSelectFour:window.PanxuAppearance.get().cleanup_auto_select_four,
       saveAutoSelectFour:value=>saveUiPreferences({cleanup_auto_select_four:value}),
       refreshCatalog: async () => { accept(await api('/api/bootstrap?compact=1')); }
     });
+  }
+  function renderDuplicates(root) {
+    window.PanxuDuplicates.render(root,{api,heading,bytes,defaultPath:state.scanPath,disks:state.disks,setContextBack,redraw:render});
   }
   async function showItem(item) {
     state.focused = item; state.assistant = null; renderInspector(); toggleInspector(true);
@@ -1164,6 +1189,7 @@ function initializePanxu() {
   }
 
   $('navigation').addEventListener('click', (e) => { const buttonNode = e.target.closest('[data-view]'); if (buttonNode) { setView(buttonNode.dataset.view); } });
+  $('navigation-back')?.addEventListener('click',()=>contextBack?.());
   document.querySelector('.sidebar-bottom [data-view]').addEventListener('click', () => setView('model'));
   document.querySelector('.brand').addEventListener('click', (e) => { e.preventDefault(); setView('overview'); });
   $('inspector-toggle').addEventListener('click', () => toggleInspector());

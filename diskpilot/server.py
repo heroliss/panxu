@@ -15,6 +15,7 @@ from urllib.parse import urlsplit, parse_qs
 
 from . import __version__
 from .duplicates import verify_duplicates
+from .dedup import validate_duplicate_request, run_duplicate_scan
 from .catalog import FileCatalog
 from .llm import ModelAssistant
 from .lease import DataLease
@@ -188,6 +189,12 @@ class Application:
                 self.jobs[key]['progress'] = value
         def run():
             try:
+                if kind == 'duplicates':
+                    result = run_duplicate_scan(payload, patterns=self.patterns, cancel=cancel, progress=progress)
+                    with self.job_lock:
+                        self.jobs[key].update(status='cancelled' if result.get('status') == 'cancelled' else 'completed',
+                                              result=result, progress={'phase': 'finished', 'message': '本地重复检查已结束'})
+                    return
                 if kind == 'agent':
                     task = self.harness.investigate(payload['task_id'], cancel=cancel, progress=progress,
                                                     execute=bool(payload.get('execute')))
@@ -456,6 +463,9 @@ class Application:
                 return self.assistant.test_connection()
             except ValueError as exc:
                 raise AppError(str(exc), 'connection_test_failed') from None
+        if path == '/api/duplicates/scan':
+            request = validate_duplicate_request(payload)
+            return self.start_job('duplicates', request)
         if path == '/api/tasks/analyze':
             task = self.harness.create_analysis(payload)
             job = self.start_job('agent', {'task_id': task['id']})
@@ -650,7 +660,7 @@ def create_server(data_dir, port=0, *, developer_fixtures=False):
                     return self.send(200, app.get(parsed.path, parse_qs(parsed.query)))
                 names = {'/': ('index.html', 'text/html; charset=utf-8'), '/index.html': ('index.html', 'text/html; charset=utf-8'),
                          '/app.js': ('app.js', 'text/javascript; charset=utf-8'), '/tasks.js': ('tasks.js', 'text/javascript; charset=utf-8'), '/files.js': ('files.js', 'text/javascript; charset=utf-8'), '/style.css': ('style.css', 'text/css; charset=utf-8'),
-                         '/stream-view.js': ('stream-view.js', 'text/javascript; charset=utf-8'), '/stream-channel.js': ('stream-channel.js', 'text/javascript; charset=utf-8'), '/icons.js': ('icons.js', 'text/javascript; charset=utf-8'), '/icons.css': ('icons.css', 'text/css; charset=utf-8'), '/hierarchy.css': ('hierarchy.css', 'text/css; charset=utf-8')}
+                         '/duplicates.js': ('duplicates.js', 'text/javascript; charset=utf-8'), '/stream-view.js': ('stream-view.js', 'text/javascript; charset=utf-8'), '/stream-channel.js': ('stream-channel.js', 'text/javascript; charset=utf-8'), '/icons.js': ('icons.js', 'text/javascript; charset=utf-8'), '/icons.css': ('icons.css', 'text/css; charset=utf-8'), '/hierarchy.css': ('hierarchy.css', 'text/css; charset=utf-8')}
                 if parsed.path not in names:
                     raise AppError('页面不存在。', 'not_found', 404)
                 name, mime = names[parsed.path]

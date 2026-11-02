@@ -81,7 +81,8 @@ test('file ratings occupy the leading independent column and keep name, measurem
 test('suggestions use global catalog assessment and lazy tree navigation only requests a bounded existing branch',async()=>{
   const folder=record('folder',4,'explicit',{kind:'directory',has_children:true,details:{subtree_complete:false}});
   const f=await fixture([folder]);assert.equal(new URL(f.requests[0].path,'http://local').searchParams.get('view'),'suggestions');
-  const more=f.root.querySelector('.file-browser-options');assert.ok(!more.open);assert.equal(more.querySelector('.location-picker'),f.context.advanced.querySelector('.location-picker'));
+  const more=f.root.querySelector('.file-browser-options');assert.equal(more.tag,'section');assert.equal(more.hidden,true);assert.equal(more.querySelector('.location-picker'),f.context.advanced.querySelector('.location-picker'));
+  await f.button('查看选项').fire('click');assert.equal(more.hidden,false);assert.equal(f.button('查看选项').attrs?.['aria-expanded'] || f.button('查看选项')['aria-expanded'],'true');
   assert.equal(f.root.querySelector('.file-coverage-note'),null);assert.ok(f.root.querySelector('.file-page-status').textContent.includes('仅已扫描'));
   assert.equal(f.root.querySelector('.file-pagination').hidden,true,'a single page keeps its item count without disabled pagination controls');
   assert.equal(f.root.querySelector('.file-review-selection').children.filter(node=>node.className==='field-help').length,0,'empty selection does not repeat the helper sentence');

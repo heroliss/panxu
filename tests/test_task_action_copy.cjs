@@ -163,9 +163,9 @@ test('main public stream keeps a focusable bounded full-text reader without trun
   const full='公开回复正文'.repeat(500);
   receiver({stream:{epoch:'fixture',turn_id:'one',status:'streaming',text:full}});
   assert.equal(updates.at(-1).text,full);assert.equal(viewHost.tabIndex,0);assert.match(viewHost['aria-label'],/全文.*滚动/);
-  const disclosure=f.root.querySelector('.task-live-disclosure');assert.equal(disclosure.open,true);disclosure.open=false;await disclosure.fire('toggle');
+  assert.equal(f.root.querySelector('.task-live-reply').querySelectorAll('details').length,0,'public replies are directly readable without accordion controls');
   receiver({stream:{epoch:'fixture',turn_id:'one',status:'completed',text:full+'结束'}});
-  assert.equal(updates.at(-1).text,full+'结束');assert.equal(disclosure.open,false,'a live packet does not reopen a reader closed by the user');
+  assert.equal(updates.at(-1).text,full+'结束');assert.equal(f.root.querySelector('.task-live-reply').querySelectorAll('details').length,0);
   const css=readFileSync(join(__dirname,'..','web','hierarchy.css'),'utf8');assert.match(css,/\.task-live-body\s*\{[^}]*max-height:[^}]*overflow-y:\s*auto/);
 });
 

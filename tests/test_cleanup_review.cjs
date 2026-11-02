@@ -21,6 +21,7 @@ async function fixture({auto=[high],autoFour=true,rows=[parent,folder,leaf,high,
     get childNodes(){return this.children;}get firstChild(){return this.children[0] || null;}get isConnected(){return this===root || !!this.parent?.isConnected;}
     get classList(){return {add:token=>{this.className+=' '+token;}};}
     append(...children){for(const child of children){child.parent=this;this.children.push(child);}}
+    appendChild(child){this.append(child);return child;}
     replaceChildren(...children){this.children.forEach(child=>child.parent=null);this.children=[];this._text='';this.append(...children);}
     remove(){if(this.parent)this.parent.children=this.parent.children.filter(child=>child!==this);this.parent=null;}
     setAttribute(key,value){this.attrs[key]=String(value);}
@@ -32,7 +33,7 @@ async function fixture({auto=[high],autoFour=true,rows=[parent,folder,leaf,high,
     showModal(){this.open=true;events.push('modal');}close(){this.open=false;for(const handler of this.handlers.get('close')||[])handler();}
     focus(){}set innerHTML(_){throw new Error('HTML interpolation forbidden');}
   }
-  root=new Element('main');const window={},document={createElement:tag=>new Element(tag),getElementById:id=>root.all().find(item=>item.id===id),querySelector:selector=>root.querySelector(selector)};
+  root=new Element('main');const window={},document={createElement:tag=>new Element(tag),createElementNS:(_ns,tag)=>new Element(tag),getElementById:id=>root.all().find(item=>item.id===id),querySelector:selector=>root.querySelector(selector)};
   const environment={window,document,URLSearchParams,setTimeout:(run,delay)=>{timers.set(++timerId,{run,delay});return timerId;},clearTimeout:id=>timers.delete(id)};
   runInNewContext(tasks,environment);runInNewContext(source,environment);const subject=window.PanxuCleanupReview;
   let currentRows=rows,execution=null,controlNext=null,pollOverride=null;
@@ -65,11 +66,21 @@ async function fixture({auto=[high],autoFour=true,rows=[parent,folder,leaf,high,
     if(path.endsWith('/execution/cancel')){execution={...execution,revision:execution.revision+1,status:'cancelling',can_pause:false,can_resume:false};controlNext={...execution,revision:execution.revision+1,status:'cancelled',processed:1,cancelled:1,pending:0,can_cancel:false};return {execution};}
     if(path==='/api/tasks/host-batch')return {task:{...prepared.task,status:'paused',execution}};
     if(path==='/api/tasks/analysis-one')return {task:analysis};
+    if(path==='/api/tasks/analysis-one/feedback')return {task:{...analysis,status:'investigating',summary:'正在按新要求核对'}};
+    if(path.startsWith('/api/tasks/analysis-one/facts?'))return {items:[{tool:'scan_directory',at:'2026-11-02T00:00:00Z',value:'saved-source-fact'}],total:1,has_more:false};
+    if(path==='/api/skills/test-guide')return {id:'test-guide',summary:'指导摘要',content:'指导全文',version:'1',sources:[]};
     throw new Error('Unexpected fixture API '+path);
   }
   const helpers={task:analysis,api,bytes:n=>n+' B',autoSelectFour:autoFour,saveAutoSelectFour:async value=>preferences.push(value),showItem:item=>events.push(['show',item.id]),onSource:value=>events.push(['source',value.id]),acceptTask(value){helpers.task=value;},redraw(){root.replaceChildren();subject.render(root,helpers);}};
+  let navigation=null,taskHelpers=null;
   subject.render(root,helpers);await flush();await flush();
   return {root,subject,helpers,environment,calls,events,preferences,timers,setRows(value){currentRows=value;},
+    async activateTaskUI(){
+      const ui=window.PanxuTasks;taskHelpers={...helpers,heading(title,subtitle){const header=new Element('header');header.append(Object.assign(new Element('h1'),{textContent:title}),Object.assign(new Element('p'),{textContent:subtitle || ''}));return header;},disks:[],defaultPath:'E:/fixture',isActive:()=>true,refreshCatalog:async()=>{},setContextBack(label,run){navigation=label?{label,run}:null;},openDuplicates:()=>events.push('duplicates'),redraw(){root.replaceChildren();ui.render(root,taskHelpers);}};
+      ui.accept(helpers.task);taskHelpers.redraw();await flush();await flush();return ui;
+    },
+    get topBack(){return navigation;},
+    redrawTaskUI(){taskHelpers.redraw();},
     staleExecution(){pollOverride={...execution,status:'running',revision:1,can_pause:true,can_resume:false};},
     finishExecution(items,status='completed'){execution={...execution,status,revision:execution.revision+1,items,processed:items.length,current:null,can_pause:false,can_resume:false,can_cancel:false,...Object.fromEntries(['succeeded','failed','unverified','cancelled'].map(key=>[key,items.filter(item=>item.status===key).length]))};},
     button:label=>root.all().find(item=>item.tag==='button'&&!item.hidden&&item.textContent===label),check:id=>root.all().find(item=>item.dataset.cleanupPick===id),
@@ -161,4 +172,36 @@ test('a verified completed directory removes its covered draft rules while an un
   f.finishExecution([{id:folder.id,status:'succeeded',verified:true}]);await f.tick();await f.button('返回清理清单').fire('click');await flush();
   await f.button('模拟删除勾选项').fire('click');const second=f.calls.filter(call=>call.path==='/api/assessments/plan').at(-1).payload;
   assert.deepEqual(second.selected_ids,['parent']);assert.equal(Object.hasOwn(second.snapshots,'folder'),false);assert.equal(Object.hasOwn(second.snapshots,'leaf'),false);
+});
+
+test('task navigation keeps the review draft while explanation and adjustment use separate pages instead of nested accordions',async()=>{
+  const f=await fixture();Object.assign(f.helpers.task,{usage:{tool_calls:2},facts:{total:1},loaded_skills:[{id:'test-guide',name:'测试指导'}],scans:[{root_name:'所选位置',coverage:{complete:false,observed_entries:6}}]});
+  f.helpers.task.briefing={highlights:['重点在详情完整可读'],cautions:['需留意原件','第二条注意保留在详情'],coverage:['尚未全部读取']};
+  const ui=await f.activateTaskUI();assert.equal(f.topBack.label,'返回常用任务');assert.equal(f.root.querySelectorAll('details').length,0);
+  assert.ok(f.root.querySelector('.cleanup-task-summary').textContent.includes('需留意原件'));
+  assert.equal(f.root.querySelector('.cleanup-task-summary').querySelector('.task-briefing'),null);assert.equal(f.root.querySelector('.cleanup-task-summary').querySelectorAll('.cleanup-task-caution').length,1);assert.ok(!f.root.textContent.includes('重点在详情完整可读'));assert.ok(!f.root.textContent.includes('第二条注意保留在详情'));
+  const options=f.root.querySelector('.cleanup-options-panel');assert.equal(options.hidden,true);await f.button('按评分选择').fire('click');assert.equal(options.hidden,false);assert.equal(options.tag,'section');
+  await f.pick('high',false);await f.button('分析详情').fire('click');assert.equal(f.root.querySelector('.cleanup-page-list'),null);assert.equal(f.topBack.label,'返回清理清单');assert.ok(f.root.textContent.includes('尚未全部读取'));assert.ok(f.root.textContent.includes('重点在详情完整可读'));assert.ok(f.root.textContent.includes('第二条注意保留在详情'));assert.equal(f.root.querySelectorAll('details').length,0);
+  await f.button('查看调查过程').fire('click');assert.equal(f.root.querySelectorAll('details').length,0);assert.ok(f.root.textContent.includes('已观察 6 项'));
+  await f.button('测试指导').fire('click');assert.ok(f.root.textContent.includes('指导全文'));
+  await f.button('载入已保存事实').fire('click');await f.root.querySelector('.task-fact-choice').fire('click');assert.ok(f.root.querySelector('.task-fact-viewer').textContent.includes('saved-source-fact'));
+  assert.equal(f.topBack.label,'返回分析详情');f.topBack.run();await flush();assert.equal(f.topBack.label,'返回清理清单');f.topBack.run();await flush();assert.equal(f.check('high').checked,false);
+  await f.button('调整要求').fire('click');assert.equal(f.root.querySelectorAll('details').length,0);const draft=f.root.querySelector('textarea');draft.value='保留个人原件';await draft.fire('input');
+  f.topBack.run();await flush();assert.equal(f.check('high').checked,false);await f.button('调整要求').fire('click');assert.equal(f.root.querySelector('textarea').value,'保留个人原件');
+  f.topBack.run();await flush();f.topBack.run();await flush();assert.equal(ui.currentTask().id,'analysis-one');assert.equal(f.topBack,null);assert.equal(f.root.querySelectorAll('details').length,0);
+  const duplicate=f.root.all().find(item=>item.dataset.preset==='duplicates');await duplicate.fire('click');assert.ok(f.events.includes('duplicates'));assert.equal(f.calls.filter(call=>call.path==='/api/tasks').length,0);
+  await f.button('返回当前整理').fire('click');assert.equal(f.check('high').checked,false);assert.equal(f.calls.filter(call=>call.path==='/api/assessments/select'&&call.payload.mode==='automatic').length,1);
+});
+
+test('completed execution publishes the contextual top-left return without a duplicate bottom return button',async()=>{
+  const f=await fixture();let back=null;f.helpers.setContextBack=(label,run)=>{back={label,run};};
+  await f.button('模拟删除勾选项').fire('click');await f.button('开始模拟删除').fire('click');f.finishExecution([{id:high.id,status:'succeeded',verified:true}]);await f.tick();
+  assert.equal(back.label,'返回清理清单');assert.equal(f.button('返回清理清单'),undefined);back.run();await flush();assert.equal(f.check('high').checked,false);
+});
+
+test('submitting adjusted requirements returns to the results list when the next investigation completes',async()=>{
+  const f=await fixture(),ui=await f.activateTaskUI();await f.button('调整要求').fire('click');const input=f.root.querySelector('textarea');input.value='请继续核对';await input.fire('input');await f.root.querySelector('form').fire('submit');
+  assert.equal(ui.currentTask().status,'investigating');assert.deepEqual(f.calls.find(call=>call.path.endsWith('/feedback')).payload,{message:'请继续核对'});
+  ui.accept({...f.helpers.task,status:'completed',summary:'核对完成'});f.redrawTaskUI();await flush();
+  assert.ok(f.root.querySelector('.cleanup-page-list'));assert.equal(f.root.querySelector('form'),null);assert.equal(f.topBack.label,'返回常用任务');
 });

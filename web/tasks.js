@@ -166,6 +166,8 @@ window.PanxuTasks = (() => {
   let pending = false;
   let lastError = '';
   let intent = '';
+  let homeVisible=false;
+  const reviewPanes=new Map();
   let livePreview = null;
   const completedReplies=new Map();
   function completeReply(value,taskId) {
@@ -237,14 +239,12 @@ window.PanxuTasks = (() => {
     const complete=node('div','task-last-complete'),completeCaption=node('p','task-live-caption','最近完整回复');
     const completeBody=node('div','task-live-body task-complete-body');completeBody.tabIndex=0;
     completeBody.setAttribute('aria-label','最近完整回复正文，可在此滚动阅读');
-    const completeDisclosure=detail('回复全文',completeBody);completeDisclosure.className+=' task-live-disclosure';completeDisclosure.open=true;
-    add(complete,completeCaption,completeDisclosure);
+    add(complete,completeCaption,completeBody);
     const receiving=node('div','task-current-reply');receiving.hidden=true;
     const body = node('div', 'task-live-body');body.tabIndex=0;
     body.setAttribute('aria-label','公开回复全文，可在此滚动阅读');
     const caption = node('p', 'task-live-caption', '助手正在回复');
-    const expanded=detail('公开回复全文',body);expanded.className+=' task-live-disclosure';expanded.open=true;
-    add(receiving,caption,expanded);add(section,complete,receiving);add(panel,section);
+    add(receiving,caption,body);add(section,complete,receiving);add(panel,section);
     const token = {id: sourceTask.id,ownerId:current.id,view: window.PanxuStreamView.create(body), off: null, turn: '',partialText:''};
     livePreview = token;
     function paintComplete(){
@@ -322,7 +322,7 @@ window.PanxuTasks = (() => {
     add(root,node('p','task-summary-text',previewText(text,100)),
       detail('展开完整说明',node('p','task-summary-original',text)));
   }
-  function briefing(root,sourceTask=current) {
+  function briefing(root,sourceTask=current,{flat=false}={}) {
     const value=sourceTask.briefing;
     if(!value || typeof value!=='object')return;
     const modules=[['highlights','本轮重点',3],['cautions','需要留意',2],['coverage','检查范围',2]];
@@ -331,7 +331,7 @@ window.PanxuTasks = (() => {
       const points=Array.isArray(value[key])?value[key].filter(point=>typeof point==='string'&&point.trim()).slice(0,limit):[];
       if(!points.length)return;
       const list=node('ul','task-briefing-points');points.forEach(point=>add(list,node('li','',point)));
-      if(key==='highlights')add(group,node('h3','task-briefing-title',label),list);
+      if(key==='highlights'||flat)add(group,node('h3','task-briefing-title',label),list);
       else add(group,detail(`${label}（${points.length} 项）`,list));
     });
     if(group.childNodes.length){
@@ -356,6 +356,7 @@ window.PanxuTasks = (() => {
     return {input, box: add(node('div', 'task-field'), lab, input)};
   }
   function accept(task) {
+    if(current?.id!==task?.id)homeVisible=false;
     if(current?.id!==task?.id || current?.updated_at!==task?.updated_at) {adviceGeneration++;adviceCache.clear();adviceRequests.clear();}
     current = task;
     const nextQuestionKey=task?.question?`${task.id}:${task.question.id}:${task.question.version}`:'';
@@ -411,9 +412,13 @@ window.PanxuTasks = (() => {
   function newTask() {
     stopLivePreview();
     adviceGeneration++; adviceCache.clear(); adviceRequests.clear();
-    current = null; intent = ''; planKey = ''; selected.clear(); lastError = ''; feedbackDraft = ''; redraw();
+    current = null; homeVisible=false; intent = ''; planKey = ''; selected.clear(); lastError = ''; feedbackDraft = ''; redraw();
   }
+  function returnHome(){stopLivePreview();homeVisible=true;intent='';redraw();}
+  function reviewPane(pane=''){const id=current.cleanup_source_task_id || current.id;if(reviewPanes.size>=8&&!reviewPanes.has(id))reviewPanes.delete(reviewPanes.keys().next().value);reviewPanes.set(id,pane);redraw();}
   function choose(preset) {
+    if(preset==='duplicates'&&context.openDuplicates){context.openDuplicates();return;}
+    if(current&&homeVisible)newTask();
     if (preset === 'c_cleanup' || preset === 'background') {
       request('/api/tasks', {preset}); return;
     }
@@ -421,18 +426,20 @@ window.PanxuTasks = (() => {
   }
   function welcome(root) {
     if (!intent) {
+      context.setContextBack?.('',null);
       add(root, context.heading('今天想整理什么？', '助手先调查并解释，再由你确认具体操作。'));
+      if(current)add(root,action('返回当前整理',()=>{homeVisible=false;redraw();},'button task-return-current'));
       const grid = node('div', 'task-intents');
       ['c_cleanup', 'disk_cleanup', 'directory_cleanup', 'duplicates'].forEach((key) => {
         const card = action('', () => choose(key), 'task-intent'); card.dataset.preset = key;
         const paths={c_cleanup:['M4 5h16v14H4z','M4 14h16','M8 17h.01M11 17h.01'],disk_cleanup:['M4 4h16v6H4z','M4 14h16v6H4z','M8 7h.01M8 17h.01'],directory_cleanup:['M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v10H3Z','M3 11h18'],duplicates:['M8 3h12v14H8z','M4 7v14h12','M12 7h4M12 11h4']};
         add(card,icon(paths[key],'task-intent-symbol'),add(node('span','task-intent-copy'),node('strong','',intents[key][0]),node('span','',intents[key][1])),icon(['M5 12h14m-5-5 5 5-5 5'],'task-intent-arrow')); add(grid, card);
       });
-      add(root, grid, detail('更多任务',
-        ...['background', 'installers', 'custom'].map((key) => action(intents[key][0], () => choose(key), 'plain-button more-task'))),
-        detail('助手会查看什么？', node('p', '', '根据目标分步检查文件名、大小、目录和软件信息，必要时在本地核对重复。不会向模型发送文件正文。个人资料的最后去留由你决定。')));
+      const extras=node('div','task-secondary-intents');add(extras,...['background','installers','custom'].map(key=>action(intents[key][0],()=>choose(key),'plain-button more-task')));
+      add(root,grid,extras,node('p','task-privacy-note','助手查看文件与软件信息，按需在本机核对；不会向模型发送文件正文，个人资料由你决定去留。'));
       return;
     }
+    context.setContextBack?.('返回常用任务',()=>{intent='';redraw();});
     add(root, context.heading(intents[intent][0], intent === 'disk_cleanup' ? '选择位置，助手会分步调查，并说明哪些地方还没检查。' : '选择要检查的文件夹。'));
     const panel = node('section', 'task-welcome panel');
     const goal = textInput('你想怎么整理', draftGoal, (value) => { draftGoal = value; }, true);
@@ -463,35 +470,37 @@ window.PanxuTasks = (() => {
     }); }, 'button primary task-primary');
     add(panel, start);
     add(root, panel);
-    add(root, action('返回常用任务', () => { intent = ''; redraw(); }, 'plain-button task-new'));
+    if(!context.setContextBack)add(root,action('返回常用任务',()=>{intent='';redraw();},'plain-button task-new'));
   }
-  function processDetails(root) {
-    if (!current?.events?.length && !current?.handoff && !current?.usage && !current?.facts?.total) return;
-    const taskId=current.id, box=detail('查看调查过程');
-    const handoff=current.handoff;
+  function processDetails(root,{flat=false,sourceTask=current}={}) {
+    if(!sourceTask?.events?.length&&!sourceTask?.handoff&&!sourceTask?.usage&&!sourceTask?.facts?.total&&!sourceTask?.scans?.length&&!sourceTask?.loaded_skills?.length){if(flat)add(root,node('p','field-help','本轮没有额外调查记录。'));return;}
+    const taskId=sourceTask.id,box=flat?node('section','task-process-page'):detail('查看调查过程');
+    const group=(label,...children)=>flat?add(node('section','task-process-section'),node('h3','',label),...children):detail(label,...children);
+    const sameTask=()=>current&&(current.cleanup_source_task_id || current.id)===taskId;
+    const handoff=sourceTask.handoff;
     if(handoff?.summary) add(box,node('p','',handoff.summary));
     const steps=Array.isArray(handoff?.next_steps)?handoff.next_steps:[];
     if(steps.length) {const list=node('ul','task-events');steps.slice(0,5).forEach(value=>add(list,node('li','',typeof value==='string'?value:value.summary || value.description || '继续核对已有线索')));add(box,node('p','field-label','下一步会继续核对'),list);}
     const unresolved=Array.isArray(handoff?.unresolved)?handoff.unresolved:[];
-    if(unresolved.length) {const list=node('ul','task-events');unresolved.slice(0,5).forEach(value=>add(list,node('li','',typeof value==='string'?value:value.summary || value.description || '尚待核对')));add(box,detail('尚未解决的内容',list));}
+    if(unresolved.length) {const list=node('ul','task-events');unresolved.slice(0,5).forEach(value=>add(list,node('li','',typeof value==='string'?value:value.summary || value.description || '尚待核对')));add(box,group('尚未解决的内容',list));}
     if(handoff?.model?.model) add(box,node('p','field-help',`上轮使用 ${handoff.model.model}。继续时会根据当前连接和已保存的目标、事实、选择重建上下文。`));
-    if(Array.isArray(current.loaded_skills) && current.loaded_skills.length) {
-      const guides=detail('本次参考的指导');
-      current.loaded_skills.slice(0,20).forEach(read=>{
-        const section=detail(read.name || read.id), body=node('div','task-skill-content');let loaded=false,loading=false,cursor=null,content='';
+    if(Array.isArray(sourceTask.loaded_skills) && sourceTask.loaded_skills.length) {
+      const guides=group('本次参考的指导');
+      sourceTask.loaded_skills.slice(0,20).forEach(read=>{
+        const section=flat?node('section','task-guide-entry'):detail(read.name || read.id),body=node('div','task-skill-content');body.hidden=flat;let loaded=false,loading=false,cursor=null,content='';
         const more=action('继续读取指导',()=>load(),'plain-button');more.hidden=true;
         async function load() {
           if(loading)return;loading=true;more.disabled=true;
           try {
             const data=await context.api(`/api/skills/${encodeURIComponent(read.id)}${cursor?`?cursor=${encodeURIComponent(cursor)}`:''}`);
-            if(!section.isConnected || current?.id!==taskId)return;
+            if(!section.isConnected||!sameTask())return;
             const skill=data.skill || data;
             if(!content){
               body.replaceChildren(node('p','field-help',`参考版本 ${read.version || '未提供'} · 当前版本 ${skill.version || '未提供'}`));
               if(read.sha256 && skill.sha256!==read.sha256)add(body,node('p','field-help','这份指导已更新，下面展示当前版本。'));
               if(skill.summary)add(body,node('p','',skill.summary));
               const sources=(skill.sources || []).map(source=>`${source.title || '参考资料'}：${source.url || ''}`).join('\n');
-              if(sources)add(body,detail('来源与核对日期',node('p','field-help',`资料核对日期：${skill.checked_at || '未提供'}`),node('p','task-skill-sources',sources)));
+              if(sources)add(body,group('来源与核对日期',node('p','field-help',`资料核对日期：${skill.checked_at || '未提供'}`),node('p','task-skill-sources',sources)));
               add(body,node('pre','developer-json'));
             }
             content+=(skill.content || '');body.querySelector('pre').textContent=content;
@@ -499,41 +508,41 @@ window.PanxuTasks = (() => {
           } catch(error) {add(body,node('p','field-error',error.message));loaded=false;}
           finally {loading=false;more.disabled=false;}
         }
-        section.addEventListener('toggle',()=>{if(section.open&&!loaded)load();});add(section,body,more);add(guides,section);
+        if(flat)add(section,action(read.name || read.id,()=>{guides.querySelectorAll('.task-skill-content').forEach(entry=>{entry.hidden=entry!==body;});body.hidden=false;if(!loaded)load();},'plain-button'));else section.addEventListener('toggle',()=>{if(section.open&&!loaded)load();});add(section,body,more);add(guides,section);
       });add(box,guides);
     }
-    const usage=current.usage;
+    const usage=sourceTask.usage;
     if(usage) {
       const rows=node('dl','task-workload');
       const fields=[['model_requests','模型请求',n=>`${n} 次`],['tool_calls','工具调用',n=>`${n} 次`],['tool_failures','工具未完成',n=>`${n} 次`],['metadata_items','采集条目',n=>`${n} 项`],['scan_pages','扫描批次',n=>`${n} 批`],['hash_bytes','本地哈希读取',n=>context.bytes(n)],['input_tokens','输入 token',n=>n.toLocaleString('zh-CN')],['output_tokens','输出 token',n=>n.toLocaleString('zh-CN')],['elapsed_ms','累计调查用时',n=>n<60000?`${Math.round(n/1000)} 秒`:`${(n/60000).toFixed(1)} 分钟`]];
       fields.forEach(([key,label,format])=>{if(typeof usage[key]==='number' && Number.isFinite(usage[key]))add(rows,node('dt','',label),node('dd','',format(usage[key])));});
-      if(rows.childNodes.length)add(box,detail('累计工作量',rows,node('p','field-help',
+      if(rows.childNodes.length)add(box,group('累计工作量',rows,node('p','field-help',
         `${usage.input_tokens == null && usage.output_tokens == null ? '服务商未返回 token 用量。' : ''}累计已记录的请求和本地工作；未记录的用量不推算为零，也不等于实际释放空间。`)));
     }
-    if(Array.isArray(current.scans) && current.scans.length) {
+    if(Array.isArray(sourceTask.scans) && sourceTask.scans.length) {
       const scans=node('ul','task-events');
-      current.scans.slice(0,20).forEach(scan=>{
+      sourceTask.scans.slice(0,20).forEach(scan=>{
         const coverage=scan.coverage || {}, count=Number.isFinite(coverage.observed_entries)?coverage.observed_entries.toLocaleString('zh-CN'):'若干';
         const state=coverage.invalidated?'已有变化，需重新核对':coverage.limit_reached?'达到本次检查上限':coverage.complete?'目录观察完成':'尚未完整检查';
         add(scans,node('li','',`${scan.root_name || '所选目录'}：已观察 ${count} 项，${state}。`));
       });
-      add(box,detail('目录检查范围',scans,node('p','field-help','这里是目录观察的覆盖情况，不表示每个文件都已获得建议，也不代替处理前核查。最多展示 20 处。')));
+      add(box,group('目录检查范围',scans,node('p','field-help','这里是目录观察的覆盖情况，不表示每个文件都已获得建议，也不代替处理前核查。最多展示 20 处。')));
     }
-    if(current.facts?.total) {
-      const facts=detail(`已保存的事实（${current.facts.total} 条）`),list=node('div','task-facts'),nav=node('div','file-pagination');
+    if(sourceTask.facts?.total) {
+      const facts=group(`已保存的事实（${sourceTask.facts.total} 条）`),list=node('div','task-facts'),nav=node('div','file-pagination'),viewer=node('div','task-fact-viewer');
       let offset=0,loading=false,loaded=false;
       async function load() {
         if(loading || !facts.isConnected)return;loading=true;list.setAttribute('aria-busy','true');nav.querySelectorAll('button').forEach(button=>button.disabled=true);
         if(!loaded)list.replaceChildren(node('p','muted','正在载入已有事实…'));
         try {
           const data=await context.api(`/api/tasks/${taskId}/facts?offset=${offset}&limit=20`);
-          if(!facts.isConnected || current?.id!==taskId)return;loaded=true;list.replaceChildren();nav.replaceChildren();
+          if(!facts.isConnected||!sameTask())return;loaded=true;list.replaceChildren();nav.replaceChildren();viewer.replaceChildren();
           (data.items || []).forEach(entry=>{
             const labels={scan_directory:'目录观察',survey_scope:'目录概况',inspect_directory:'深入目录',continue_scan:'继续目录观察',read_scan:'目录观察分页',validate_directory:'目录完整核查',list_items:'清单查询',inspect_items:'条目信息',describe_item:'条目信息',inspect_item:'条目信息',inspect_files:'文件信息',compare_duplicates:'重复核对',compare_files:'重复核对',read_facts:'已有事实',collect_apps:'软件与后台',list_applications:'软件与后台',cache_experience:'缓存经验',lookup_knowledge:'经验查询'};
             const stamp=entry.at?new Date(entry.at).toLocaleString('zh-CN'):'';
-            const item=detail(`${labels[entry.tool] || '调查观察'}${stamp?' · '+stamp:''}`);
-            add(item,node('p','field-help','这是当时采集的观察，执行前仍需核对当前状态。'));
-            item.addEventListener('toggle',()=>{if(item.open&&!item.querySelector('pre'))add(item,node('pre','developer-json',JSON.stringify(entry,null,2)));});
+            const label=`${labels[entry.tool] || '调查观察'}${stamp?' · '+stamp:''}`;
+            const item=flat?action(label,()=>viewer.replaceChildren(node('p','field-help','这是当时采集的观察，执行前仍需核对当前状态。'),node('pre','developer-json',JSON.stringify(entry,null,2))),'plain-button task-fact-choice'):detail(label);
+            if(!flat){add(item,node('p','field-help','这是当时采集的观察，执行前仍需核对当前状态。'));item.addEventListener('toggle',()=>{if(item.open&&!item.querySelector('pre'))add(item,node('pre','developer-json',JSON.stringify(entry,null,2)));});}
             add(list,item);
           });
           if(!(data.items || []).length)add(list,node('p','muted','该页没有事实记录。'));
@@ -541,14 +550,14 @@ window.PanxuTasks = (() => {
         } catch(error) {if(facts.isConnected){list.replaceChildren(node('p','field-error',error.message),action('重新载入事实',load));nav.replaceChildren();}}
         finally{loading=false;list.setAttribute('aria-busy','false');}
       }
-      facts.addEventListener('toggle',()=>{if(facts.open&&!loaded)load();});add(facts,list,nav);add(box,facts);
+      if(flat)add(facts,action('载入已保存事实',load,'button'));else facts.addEventListener('toggle',()=>{if(facts.open&&!loaded)load();});add(facts,list,nav,viewer);add(box,facts);
     }
     const list = node('ol', 'task-events');
-    (current.events || []).filter((event) => ['tool', 'result', 'feedback', 'summary'].includes(event.kind)).slice(-12).forEach((event) => add(list,node('li','',event.message)));
-    if(list.childNodes.length)add(box,detail('最近调查记录',list));
+    (sourceTask.events || []).filter((event) => ['tool', 'result', 'feedback', 'summary'].includes(event.kind)).slice(-12).forEach((event) => add(list,node('li','',event.message)));
+    if(list.childNodes.length)add(box,group('最近调查记录',list));
     add(root,box);
   }
-  function feedbackForm(root, label = '补充要求，让助手调整',taskId=current.id) {
+  function feedbackForm(root, label = '补充要求，让助手调整',taskId=current.id,{flat=false}={}) {
     const form = node('form', 'task-feedback');
     const input = node('textarea'); input.value = feedbackDraft; input.maxLength = 2000;
     input.setAttribute('aria-label', '补充整理要求');
@@ -558,9 +567,10 @@ window.PanxuTasks = (() => {
     form.addEventListener('submit', (event) => {
       event.preventDefault();
       if (!input.value.trim()) { input.focus(); return; }
+      if(flat)reviewPanes.set(taskId,'');
       request('/api/tasks/' + taskId + '/feedback', {message: input.value.trim()});
     });
-    add(form, input, send); add(root, detail(label, form));
+    add(form, input, send);add(root,flat?form:detail(label,form));
   }
   function question(root) {
     const q=current.question, taskId=current.id;
@@ -747,6 +757,7 @@ window.PanxuTasks = (() => {
     entries.forEach(entry=>add(list,adviceCard(entry,current.id)));add(root,list);
   }
   function taskView(root) {
+    context.setContextBack?.('返回常用任务',returnHome);
     const filesystem=current.scope_kind!=='applications'&&!['background','software'].includes(current.analysis?.section);
     if(window.PanxuCleanupReview&&filesystem&&!current.question&&(current.status==='executing'||!busy()&&['awaiting_review','completed','paused','budget_exhausted','error'].includes(current.status))){reviewView(root);return;}
     add(root, context.heading(intents[current.preset]?.[0] || '整理助手', current.preset && current.preset !== 'custom' ? '按需调查，先给出最值得关注的建议。' : current.goal));
@@ -785,37 +796,51 @@ window.PanxuTasks = (() => {
     }
     briefing(panel);renderLivePreview(panel);results(panel); renderAdvice(panel); processDetails(panel);
     add(root, panel);
-    if (!busy()) add(root, action('开始新的整理', newTask, 'plain-button task-new'));
+    if(!context.setContextBack&&!busy())add(root,action('返回常用任务',returnHome,'plain-button task-new'));
   }
   function reviewView(root) {
+    const sourceId=current.cleanup_source_task_id || current.id,pane=reviewPanes.get(sourceId) || '';
+    const knownSource=window.PanxuCleanupReview.sourceFor(current);
+    if(pane&&knownSource){
+      const returnLabel=pane==='process'?'返回分析详情':'返回清理清单',returnPane=pane==='process'?'analysis':'';
+      context.setContextBack?.(returnLabel,()=>reviewPane(returnPane));
+      const title={analysis:'分析详情',adjust:'调整整理要求',process:'调查过程'}[pane] || '分析详情';
+      add(root,context.heading(title,pane==='adjust'?'说明要保留的内容，或让助手继续核对。':'查看本轮结论、依据和调查记录。'));
+      const content=node('section','task-reading-page');add(root,content);
+      if(pane==='adjust')feedbackForm(content,'补充整理要求',sourceId,{flat:true});
+      else if(pane==='process')processDetails(content,{flat:true,sourceTask:knownSource});
+      else{
+        if(knownSource.summary)add(content,node('p','task-summary-original',knownSource.summary));
+        briefing(content,knownSource,{flat:true});renderLivePreview(content,knownSource);
+        const tools=node('div','task-reading-actions');add(tools,action('继续调查',()=>{reviewPanes.set(sourceId,'');request('/api/tasks/'+sourceId+'/continue',{});},'button'),action('查看调查过程',()=>reviewPane('process'),'plain-button'));add(content,tools);
+      }
+      if(!context.setContextBack)add(root,action(returnLabel,()=>reviewPane(returnPane),'plain-button task-new'));
+      return;
+    }
     add(root,context.heading('清理清单','按评分查看，勾选决定要清理的内容。'));
     const summary=node('div','cleanup-task-summary');add(root,summary);
     const list=node('div','cleanup-task-list');add(root,list);
     const explanation=node('div','cleanup-task-explanation');add(root,explanation);
     function showContext(source){
       if(!summary.isConnected)return;summary.replaceChildren();explanation.replaceChildren();
-      summaryText(summary,source.summary);
-      const details=detail('本轮分析说明');briefing(details,source);add(explanation,details);
+      if(source.summary)add(summary,node('p','task-summary-text',previewText(source.summary,160)));
+      const caution=Array.isArray(source.briefing?.cautions)?source.briefing.cautions.find(point=>typeof point==='string'&&point.trim()):null;
+      if(caution)add(summary,add(node('div','cleanup-task-caution'),semanticTag('留意','warning'),node('p','',caution)));
       stopLivePreview();renderLivePreview(explanation,source);
     }
     window.PanxuCleanupReview.render(list,{
       task:current,api:context.api,bytes:context.bytes,showItem:context.showItem,autoSelectFour:context.autoSelectFour,disabled:pending,
-      saveAutoSelectFour:context.saveAutoSelectFour,onSource:showContext,acceptTask:accept,redraw,
-      renderMore:(more,source)=>{
-        const sourceId=source.cleanup_source_task_id || source.id;
-        add(more,action('继续调查',()=>request('/api/tasks/'+sourceId+'/continue',{}),'plain-button'));
-        feedbackForm(more,'补充整理要求',sourceId);
-        if(source.id===current.id&&!source.cleanup_source_task_id)processDetails(more);
-      }
+      setContextBack:context.setContextBack,saveAutoSelectFour:context.saveAutoSelectFour,onSource:showContext,acceptTask:accept,redraw,
+      renderTools:tools=>add(tools,action('分析详情',()=>reviewPane('analysis'),'plain-button'),action('调整要求',()=>reviewPane('adjust'),'plain-button'))
     });
-    if(!busy())add(root,action('开始新的整理',newTask,'plain-button task-new'));
+    if(!context.setContextBack&&!busy())add(root,action('返回常用任务',returnHome,'plain-button task-new'));
   }
   function render(root, helpers) {
     stopLivePreview();
     window.PanxuCleanupReview?.unmount();
     context = helpers;
     if (lastError) add(root, node('p', 'global-message error task-error', lastError));
-    if (current) taskView(root); else welcome(root);
+    if(current&&!homeVisible)taskView(root);else welcome(root);
     updateApproval();
     if (busy()) schedule();
   }
