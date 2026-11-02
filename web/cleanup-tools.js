@@ -16,11 +16,12 @@ window.PanxuCleanupTools = (() => {
   function unmount() {if(mounted){cancelInspection(mounted);clearTimeout(mounted.progressTimer);mounted.dialog?.close?.();}mounted = null; sequence++;}
   function heading(root, title, description) {const h = node('header', 'page-heading'); append(h, node('h1', '', title), description ? node('p', '', description) : null); root.append(h);}
   function message(t, text, error = false) {const p = node('p', error ? 'field-error cleanup-message' : 'field-help cleanup-message', text); p.setAttribute('role', error ? 'alert' : 'status'); t.root.append(p); return p;}
+  function sourceLabel(t){return t.context.returnLabel || '返回清单';}
   function controls(t, label, run) {if (typeof t.context.setContextBack==='function') {t.context.setContextBack(label,run); return;} const nav = node('div', 'cleanup-navigation'); nav.append(button(label, run, 'plain-button')); t.root.append(nav);}
   function returnToSource(t) {if (t.context.onReturn) {unmount(); t.context.onReturn();} else renderList(t);}
   function detailBack(t) {if (t.extra) {t.error = ''; return renderExtra(t, t.extra);} if (t.extraList) return renderExtraList(t, t.extraList); return t.context.onReturn && t.source ? returnToSource(t) : renderList(t);}
   function loading(t, title) {t.root.replaceChildren(); heading(t.root, title, '正在读取…');}
-  function failed(t, error, retry) {if (!alive(t)) return; t.root.replaceChildren(); controls(t, t.context.onReturn ? '返回清单' : '返回工具', () => returnToSource(t)); heading(t.root, '暂时无法打开', '已有选择和操作记录会保留。'); message(t, error.message || '读取失败，请稍后重试。', true); t.root.append(button('重试', retry));}
+  function failed(t, error, retry) {if (!alive(t)) return; t.root.replaceChildren(); controls(t, t.context.onReturn ? sourceLabel(t) : '返回工具', () => returnToSource(t)); heading(t.root, '暂时无法打开', '已有选择和操作记录会保留。'); message(t, error.message || '读取失败，请稍后重试。', true); t.root.append(button('重试', retry));}
 
   async function mount(root, context = {}) {
     unmount(); const t = {root, context, source: context.source || null, token: sequence}; mounted = t;
@@ -128,7 +129,7 @@ window.PanxuCleanupTools = (() => {
   function backToTool(t) {t.plan=null;t.result=null;t.submitted=false;renderDetail(t);scheduleInspection(t,0);}
   function renderDetail(t) {
     if (!alive(t)) return; const tool = t.detail; t.root.replaceChildren();
-    controls(t, t.extra ? '返回专项方案' : t.extraList ? '返回专项建议' : t.context.onReturn && t.source ? '返回清单' : '返回工具', () => detailBack(t));
+    controls(t, t.extra ? '返回专项方案' : t.extraList ? '返回专项建议' : t.context.onReturn && t.source ? sourceLabel(t) : '返回工具', () => detailBack(t));
     heading(t.root, tool.title, t.plan ? '' : tool.description);
     if (t.result) {if(t.error)message(t,t.error,true);renderResult(t);return;}
     if (t.source?.item_name || t.source?.path) t.root.append(node('p', 'cleanup-origin', '来自：' + (t.source.item_name || t.source.path)));
@@ -328,11 +329,11 @@ window.PanxuCleanupTools = (() => {
     for (const item of r.items || []) append(box, node('p', 'cleanup-result-item', (item.name ? item.name + '：' : '') + (item.message || displayValue(item.status))));
     if (r.message) box.append(node('p', '', r.message));
     if (typeof r.actual_reclaimed_bytes === 'number') box.append(node('p', 'field-help', '实际释放空间：' + formatBytes(r.actual_reclaimed_bytes)));
-    if (t.context.onReturn && t.source && !t.context.setContextBack) box.append(button('返回清单', () => returnToSource(t), 'button primary'));box.append(button('返回工具说明',()=>backToTool(t),'button'));t.root.append(box);
+    if (t.context.onReturn && t.source && !t.context.setContextBack) box.append(button(sourceLabel(t), () => returnToSource(t), 'button primary'));box.append(button('返回工具说明',()=>backToTool(t),'button'));t.root.append(box);
   }
   function renderExtra(t, suggestion) {
     if (!alive(t)) return; cancelInspection(t);t.route = (t.route || 0) + 1; t.extra = suggestion; t.source = t.source || suggestion.source || null; t.detail = null; t.root.replaceChildren();
-    controls(t, t.extraList ? '返回专项建议' : t.context.onReturn ? '返回清单' : '返回工具', () => t.extraList ? renderExtraList(t,t.extraList) : returnToSource(t)); heading(t.root, suggestion.title || '专项方案', suggestion.explanation || '请选择适合你的处理方式。');
+    controls(t, t.extraList ? '返回专项建议' : t.context.onReturn ? sourceLabel(t) : '返回工具', () => t.extraList ? renderExtraList(t,t.extraList) : returnToSource(t)); heading(t.root, suggestion.title || '专项方案', suggestion.explanation || '请选择适合你的处理方式。');
     if (suggestion.impact) t.root.append(copyBlock('操作影响', suggestion.impact, 'cleanup-impact'));
     if (suggestion.provenance) {const p = suggestion.provenance; t.root.append(node('p', 'field-help cleanup-source-note', [p.model || p.model_id, p.at || p.created_at].filter(Boolean).join(' · ')));}
     const choices = node('div', 'cleanup-options'); const selected = suggestion.selection?.option_id || suggestion.selection?.id;
@@ -362,7 +363,7 @@ window.PanxuCleanupTools = (() => {
   }
   function renderExtraList(t,suggestions) {
     if (!alive(t)) return;cancelInspection(t);t.route=(t.route || 0)+1;t.extraList=suggestions;t.extra=null;t.detail=null;t.plan=null;t.batch=false;t.root.replaceChildren();
-    controls(t,t.context.onReturn?'返回清单':'返回工具',()=>returnToSource(t));heading(t.root,'专项建议','勾选需要的操作后一起执行，执行前会确认范围。');
+    controls(t,t.context.onReturn?sourceLabel(t):'返回工具',()=>returnToSource(t));heading(t.root,'专项建议','勾选需要的操作后一起执行，执行前会确认范围。');
     if (!suggestions.length) {message(t,'本次任务暂时没有额外专项建议。');return;}
     const list=node('div','cleanup-extra-list'), eligible=suggestions.filter(s=>(s.options || []).some(option=>option.kind==='tool'));
     const all=node('input');all.type='checkbox';all.disabled=t.busy===true||!eligible.length;all.setAttribute('aria-label','全选可批量处理的专项建议');

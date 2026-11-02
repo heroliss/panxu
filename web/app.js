@@ -179,7 +179,7 @@ window.PanxuDeveloperView = (() => {
 
 function initializePanxu() {
   const $ = (id) => document.getElementById(id);
-  const names = { overview: '首页', current: '当前任务', files: '文件清理', recovery: '已删除文件', background: '后台与软件', software: '后台与软件', history: '操作记录', model: '设置', duplicates: '查找重复文件', cleanup: '清理工具', user_tools:'我的工具' };
+  const names = { overview: '首页', current: '整理进度', files: '文件清理', recovery: '已删除文件', background: '后台与软件', software: '后台与软件', history: '操作记录', model: '设置', duplicates: '查找重复文件', cleanup: '清理工具', user_tools:'我的工具' };
   const kindNames = { file: '文件', directory: '目录汇总', startup: '启动项', service: '服务', process: '进程', software: '软件' };
   const state = { csrf: '', version: '', view: 'overview', items: [], summary: {}, settings: {}, history: [], disks: [], source: 'demo', warnings: [], selected: new Set(), focused: null, query: '', risk: 'all', origin: 'all', subtype: 'all', limit: 50, busy: false, job: null, plan: null, scanPath: '', inspector: false, assistant: null, recommendations: [], checked: false, analyzing: false, filesExpanded: false, backgroundExpanded: false, inventoryTarget: 'startup', checkDestination: 'overview', showAllCards: new Set() };
   let toastTimer;
@@ -464,7 +464,7 @@ function initializePanxu() {
     if(previous)requestAnimationFrame(()=>window.scrollTo({top:previous.scroll_y || 0,behavior:'instant'}));
   }
   function renderCleanupTools(root) {
-    const context={api,source:cleanupReference?.source || {},onReturn:returnFromCleanup,toast,setContextBack,
+    const context={api,source:cleanupReference?.source || {},onReturn:returnFromCleanup,returnLabel:cleanupReturn?'返回'+(names[cleanupReturn.view] || '原页面'):'返回清单',toast,setContextBack,
       onOpenUserTools:openUserTools,onSaveTool:ref=>openUserTools(ref),
       onOpenSettings:async(tool_id,entry,index,parameters)=>{
         const result=await api('/api/cleanup-tools/open-settings',{tool_id,index,parameters,source:cleanupReference?.source || {}});
@@ -474,7 +474,7 @@ function initializePanxu() {
       onAnswer:async()=>{const key=cleanupReference?.source?.task_id;if(key){const value=await api('/api/tasks/'+encodeURIComponent(key));window.PanxuTasks.accept(value.task);}},
       onResult:async()=>{const key=cleanupReference?.source?.task_id;if(key){const value=await api('/api/tasks/'+encodeURIComponent(key));window.PanxuTasks.accept(value.task);}}
     };
-    if(cleanupReturn)setContextBack('返回清单',returnFromCleanup);
+    if(cleanupReturn)setContextBack('返回'+(names[cleanupReturn.view] || '原页面'),returnFromCleanup);
     const render=cleanupReference?window.PanxuCleanupTools.open(root,cleanupReference,context):window.PanxuCleanupTools.mount(root,context);
     Promise.resolve(render).catch(error=>notify(error.message,true));
   }
@@ -515,7 +515,7 @@ function initializePanxu() {
     window.PanxuFiles?.unmount();
     window.PanxuTasks?.unmountLive?.();
     window.PanxuDuplicates?.unmount();
-    defaultBack();
+    defaultBack();updateTaskNavigation(window.PanxuTasks?.currentTask?.());
     const root = $('workspace'); root.replaceChildren();
     const renderers = { overview: renderOverview, current: renderCurrentTask, files: renderFiles, recovery:renderRecovery, background: renderBackground, software: renderSoftware, history: renderHistory, model: renderModel, duplicates: renderDuplicates, cleanup: renderCleanupTools, user_tools:renderUserTools };
     renderers[state.view](root);
@@ -538,6 +538,12 @@ function initializePanxu() {
     if(application){backgroundTaskId=task.id;setView('background',false);}
     else{fileTaskId=task.id;window.PanxuFileWorkspace.open(task.scopes?.[0]?.path || '',{suggestions:true});setView('files',false);}
   }
+  function updateTaskNavigation(task){
+    const label=$('current-task-state');if(!label)return;
+    const statuses={investigating:'分析中',executing:'执行中',needs_input:'待回答',needs_model:'待连接',paused:'已暂停',budget_exhausted:'待继续',error:'未完成'};
+    const text=task?.question?'待回答':statuses[task?.status] || '';
+    label.textContent=text;label.hidden=!text;
+  }
   function taskHelpers(page) {
     return {
       api, heading, bytes, defaultPath: state.scanPath, disks: state.disks, systemDrive:state.systemDrive, providerPresets:state.providers, modelProfile: {provider:state.settings.provider,model:state.settings.model,protocol:state.settings.protocol},
@@ -545,7 +551,7 @@ function initializePanxu() {
       page,embeddedResult:page==='results',redraw: render, isActive: () => page==='home'?state.view==='overview':page==='task'?state.view==='current':['files','background'].includes(state.view),
       renderHomeInfo:host=>window.PanxuRecovery.home(host,{api,bytes,open:()=>setView('recovery')}),
       openSettings: () => setView('model'), openFiles: () => {fileTaskId=null;window.PanxuFileWorkspace.open('',{suggestions:true});setView('files');},
-      openAssistant: () => setView('current'),openHome:()=>setView('overview'),
+      openAssistant: () => setView('current'),openHome:()=>setView('overview'),openHistory:()=>setView('history'),onTaskStateChange:updateTaskNavigation,
       onTaskCreated:()=>setView('current',false),onTaskReady:task=>{if(state.view==='current')openTaskResults(task);},openResults:openTaskResults,
       openDuplicates:()=>setView('duplicates'),setContextBack,
       openCleanupTools:()=>{cleanupReference=null;cleanupReturn=null;setView('cleanup');},

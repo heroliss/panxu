@@ -105,3 +105,8 @@
 用最终EXE的`--data-dir`指向该native目录，在隔离端口启动后，运行 `check_v0230_release.py --base-url <应用回环地址> --metadata verification/<新目录>/fixture-meta.json --output verification/agent-ui-acceptance.json --artifact dist/PanXu/PanXu.exe`。关闭并以同一资料目录重开后，加`--recovery-only`核对已保存版本、事实、收据和来源回流。只接受命名的无密钥离线peer和自有小夹具；不会接触真实云配置。
 
 HTTP与原生窗口证据分别记录。活动后台取消的竞态/事务由单元测试覆盖，HTTP只验证完成取消幂等和跨任务边界；不把二者写成真实长任务或系统操作通过。500项内部投影测试保持30秒限制，并核对执行不复制完整库存，单次Windows调用仍不保证硬截止。
+
+
+## 0.23.1 整理进度
+
+`serve_v0231_fixture.py` 创建可丢弃文件、无密钥本地SSE peer和分离的源码/原生profile。8个演示状态供窗口核对，另有两个checker任务专用于接口继续/回答；不使用用户资料。`check_v0231_release.py --base-url <回环应用> --metadata verification/<目录>/fixture-meta.json --output verification/agent-ui-acceptance.json --artifact dist/PanXu/PanXu.exe` 包含只读10项及两个独立checker交互共12项；加`--read-only`保留所有演示状态。先运行checker，再在原生窗口继续/回答演示任务；初始状态的严格断言不在事后静默放宽。真实云模型、真实执行与全DPI/主题矩阵不由这些报告代替。

@@ -841,6 +841,8 @@ class TaskHarness(Orchestration):
         value['briefing'] = copy.deepcopy(task['briefing'])
         value['briefing_provenance'] = self._provenance(task.get('briefing_provenance'))
         value['last_public_reply'] = copy.deepcopy(task.get('last_public_reply'))
+        value['task_kind'] = 'operation' if (task.get('user_tool_origin') or (task.get('plan') or {}).get('origin') == 'user_direct'
+            or (task.get('last_user_action') or {}).get('source') == 'user_direct') else 'analysis'
         value['cleanup_source_task_id'] = task.get('cleanup_source_task_id')
         value['last_cleanup_result'] = copy.deepcopy(task.get('last_cleanup_result'))
         value['extra_suggestions'] = copy.deepcopy(task.get('extra_suggestions', []))

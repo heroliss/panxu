@@ -129,7 +129,7 @@ function taskFixture(value,{page:target='task',respond,systemDrive}={}){
 const taskValue=(extra={})=>({id:'task-one',goal:'当前目标',status:'completed',summary:'调查已完成',updated_at:'stamp',preset:'directory_cleanup',advice_total:1,advice:[],events:[],...extra});
 
 test('current task is an independent navigation page with an explicit results link and no duplicate home back',async()=>{
- const f=taskFixture(taskValue());assert.match(f.root.textContent,/当前任务/);assert.ok(f.button('查看建议与操作清单'));assert.equal(f.button('返回常用任务'),undefined);assert.equal(f.requests.length,0);assert.equal(f.events.at(-1)[1],'');await f.button('查看建议与操作清单').fire();assert.deepEqual(f.events.at(-1),['results','task-one']);
+ const f=taskFixture(taskValue());assert.match(f.root.textContent,/整理进度/);assert.ok(f.button('查看文件建议'));assert.equal(f.button('返回常用任务'),undefined);assert.equal(f.requests.length,0);assert.equal(f.events.at(-1)[1],'');await f.button('查看文件建议').fire();assert.deepEqual(f.events.at(-1),['results','task-one']);
 });
 
 test('home remains a task launcher while preserving the current task until a new task is explicitly started',async()=>{

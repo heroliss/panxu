@@ -947,3 +947,27 @@ dialog::backdrop{background:var(--overlay);backdrop-filter:none}
 @media(max-width:1050px){.topbar-location{gap:10px}.topbar-location .breadcrumb{display:none}.duplicate-stats{gap:15px 24px}}
 @media(max-width:700px){.duplicate-search-controls{align-items:stretch;flex-direction:column}.duplicate-group-row{align-items:start}.duplicate-stats>div{flex-direction:column;gap:2px}.duplicate-note-facts{grid-template-columns:100px minmax(0,1fr)}}
 .duplicate-result-actions{display:flex;align-items:center;gap:12px;margin:0 0 18px}.duplicate-result-actions+.duplicate-results{margin-top:18px}
+
+/* Task progress: one next step, shared results stay in their workspaces. */
+.nav-task-state{margin-left:auto;font-size:11px;line-height:1.5;padding:2px 5px;color:var(--ink);background:var(--surface-soft);border-radius:5px;white-space:nowrap}
+.task-hub-main{max-width:1040px;padding:26px 28px;background:var(--panel);border:1px solid var(--line);border-radius:14px;margin:24px 0}
+.task-hub-goal{font-size:15px;color:var(--muted);margin:0 0 16px;overflow-wrap:anywhere;max-width:76ch}
+.task-hub-phase{display:flex;gap:12px;align-items:center;margin-bottom:12px}
+.task-hub-phase h2{font-size:25px;line-height:1.4;margin:0;letter-spacing:-.02em}
+.task-hub-main .task-summary-text,.task-hub-main .task-summary-original{font-size:16px;line-height:1.8;max-width:74ch;margin:8px 0}
+.task-hub-hint{font-size:14px;line-height:1.8;color:var(--muted);max-width:78ch;margin:14px 0 0}
+.task-hub-count{font-size:13px;color:var(--muted);margin:14px 0 0}
+.task-hub-actions{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:22px}
+.task-hub-actions .button{min-height:44px;padding-inline:19px}
+.task-hub-secondary{display:flex;gap:22px;flex-wrap:wrap;align-items:center;margin:22px 0}
+.task-hub-secondary .plain-button{min-height:36px}
+.task-hub-live{max-width:1040px;margin:24px 0}
+.task-hub-adjust{max-width:820px;margin:20px 0}
+.task-hub-main .task-feedback{padding:18px 0 0}
+.task-hub-main .task-question{margin-top:24px}
+.task-hub-reading{padding:12px 0;max-width:1040px}
+.task-hub-reading .task-orchestration{margin-top:24px}
+.task-hub-empty{max-width:760px;padding:24px 0 36px}
+.task-hub-empty h2{font-size:23px;margin:0 0 12px}
+.task-hub-empty p{color:var(--muted);margin:0 0 22px;max-width:68ch}
+@media(max-width:1050px){.nav-task-state{font-size:10px;padding-inline:3px}.task-hub-main{padding:22px}.task-hub-phase h2{font-size:23px}}

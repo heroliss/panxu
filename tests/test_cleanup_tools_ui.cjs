@@ -262,3 +262,34 @@ test('a user-tool specialist choice records its versioned answer before opening 
  assert.deepEqual(f.requests[0],{path:'/api/tasks/owned-task/specialist-answer',body:{suggestion_id:'recipe-suggestion',option_id:'use',version:9}});
  assert.deepEqual(refs,[{draft_id:'owned-draft',source:{task_id:'owned-task',suggestion_id:'recipe-suggestion'}}]);assert.equal(f.answers.length,1);assert.equal(f.requests.some(r=>/prepare|execute|approve/.test(r.path)),false);
 });
+
+test('a tool opened from the progress hub preserves its host return label and destination',async()=>{
+  const f=fixture(),backs=[];f.context.returnLabel='返回整理进度';f.context.setContextBack=(label,run)=>backs.push({label,run});
+  await f.subject.open(f.root,{tool_id:'browser_cache',source:{task_id:'owned-task'}},f.context);
+  assert.equal(backs.at(-1).label,'返回整理进度');assert.equal(f.find('返回清单'),undefined);
+  assert.ok(f.find('刷新'));assert.equal(f.requests.filter(row=>row.path==='/api/cleanup-tools/inspect').length,1);
+  await backs.at(-1).run();await flush();assert.deepEqual(f.returns,['returned']);
+  assert.equal(f.requests.some(row=>/prepare|execute|approve|\/agent|\/continue/.test(row.path)),false);
+});
+
+test('a failed tool read retains the actual file-workspace return destination instead of a generic list',async()=>{
+  const f=fixture(path=>{if(path==='/api/cleanup-tools/browser_cache')throw Error('自有夹具读取失败');}),backs=[];
+  f.context.returnLabel='返回文件清理';f.context.setContextBack=(label,run)=>backs.push({label,run});
+  await f.subject.open(f.root,{tool_id:'browser_cache',source:{task_id:'owned-task',item_id:'owned-item'}},f.context);
+  assert.match(f.root.textContent,/暂时无法打开/);assert.ok(f.find('重试'));assert.equal(backs.at(-1).label,'返回文件清理');
+  await backs.at(-1).run();await flush();assert.deepEqual(f.returns,['returned']);
+  assert.deepEqual(f.requests,[{path:'/api/cleanup-tools/browser_cache',body:undefined}]);
+});
+
+test('specialist intermediate navigation returns to its options before using the supplied source label',async()=>{
+  const suggestion={id:'owned-path',version:3,title:'核对缓存',explanation:'先用专用工具核对。',impact:'选择不等于执行。',options:[
+    {id:'tool',kind:'tool',label:'使用专用工具',tool_id:'browser_cache',parameters:{browser:'chrome'}},{id:'keep',kind:'answer',label:'暂不清理'}]};
+  const f=fixture(path=>path.endsWith('/specialist-answer')?{selection:{option_id:'tool'},extra_suggestion:{...suggestion,selection:{option_id:'tool'}},specialist:{tool_id:'browser_cache',parameters:{browser:'chrome'}}}:undefined),backs=[];
+  f.context.returnLabel='返回整理进度';f.context.setContextBack=(label,run)=>backs.push({label,run});
+  await f.subject.open(f.root,{extra_suggestion:suggestion,source:{task_id:'owned-task'}},f.context);
+  assert.equal(backs.at(-1).label,'返回整理进度');await f.find('使用专用工具').fire();
+  assert.equal(backs.at(-1).label,'返回专项方案');assert.equal(f.input('browser').value,'chrome');
+  await backs.at(-1).run();await flush();assert.equal(backs.at(-1).label,'返回整理进度');assert.equal(f.returns.length,0);
+  await backs.at(-1).run();await flush();assert.deepEqual(f.returns,['returned']);
+  assert.equal(f.requests.some(row=>/prepare|execute|approve|\/agent|\/continue/.test(row.path)),false);
+});

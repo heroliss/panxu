@@ -465,6 +465,7 @@ window.PanxuTasks = (() => {
     if(current?.id!==task?.id)homeVisible=false;
     if(current?.id!==task?.id || current?.updated_at!==task?.updated_at) {adviceGeneration++;adviceCache.clear();adviceRequests.clear();}
     current = task;
+    context?.onTaskStateChange?.(task);
     const nextQuestionKey=task?.question?`${task.id}:${task.question.id}:${task.question.version}`:'';
     if(nextQuestionKey!==questionKey) {questionKey=nextQuestionKey;answerOption='';answerText='';}
     (task?.advice || []).forEach(entry=>cacheAdvice(adviceKey(entry.id,entry.signature),entry));
@@ -513,7 +514,7 @@ window.PanxuTasks = (() => {
       accept(data.task);
       if (!busy()) await context.refreshCatalog();
       if(current?.id!==id)return;
-      if(!busy()&&(current.advice_total || current.advice?.length || current.plan))context.onTaskReady?.(current);
+      if(['completed','awaiting_review'].includes(current.status)&&!current.question&&hasTaskResults(current))context.onTaskReady?.(current);
       if (before !== current.status + ':' + current.summary) redraw();
     } catch (error) { lastError = '暂时连不上本机服务。重新打开程序后可以继续这个任务。'; redraw(); }
     if (busy()) schedule();
@@ -670,13 +671,13 @@ window.PanxuTasks = (() => {
     if(list.childNodes.length)add(box,group('最近调查记录',list));
     add(root,box);
   }
-  function feedbackForm(root, label = '补充要求，让助手调整',taskId=current.id,{flat=false}={}) {
+  function feedbackForm(root, label = '补充要求，让助手调整',taskId=current.id,{flat=false,submitLabel='让助手调整'}={}) {
     const form = node('form', 'task-feedback');
     const input = node('textarea'); input.value = feedbackDraft; input.maxLength = 2000;
     input.setAttribute('aria-label', '补充整理要求');
     input.placeholder = '例如：这个安装包要保留离线版，继续看看其他内容。';
     input.addEventListener('input', () => { feedbackDraft = input.value; });
-    const send = node('button', 'button', '让助手调整'); send.type = 'submit'; send.disabled = pending;
+    const send = node('button', 'button', submitLabel); send.type = 'submit'; send.disabled = pending;
     form.addEventListener('submit', (event) => {
       event.preventDefault();
       if (!input.value.trim()) { input.focus(); return; }
@@ -853,10 +854,10 @@ window.PanxuTasks = (() => {
     add(card,window.PanxuAssessment.render(entry,{direct:true,primary:true,cls:'task-advice-rating'}),copy);
     return card;
   }
-  function specialistSuggestions(root) {
+  function specialistSuggestions(root,{hostOnly=false}={}) {
     if(!current.extra_suggestions?.length || !context.openSpecialist)return;
     const isHost=item=>item.origin==='host'&&item.provenance?.source==='local';
-    const host=current.extra_suggestions.filter(isHost),other=current.extra_suggestions.filter(item=>!isHost(item));
+    const host=current.extra_suggestions.filter(isHost),other=hostOnly?[]:current.extra_suggestions.filter(item=>!isHost(item));
     const taskId=current.id;
     if(host.length){
       const section=node('section','task-specialist-suggestions');
@@ -913,14 +914,89 @@ window.PanxuTasks = (() => {
     const list=node('div','task-advice-preview');list.setAttribute('aria-label','本轮逐项建议');
     entries.forEach(entry=>add(list,adviceCard(entry,current.id)));add(root,list);
   }
+  function hasTaskResults(task){
+    return Boolean(task?.advice_total>0 || task?.advice?.length || task?.plan?.items?.length);
+  }
+  function taskHub(root){
+    context.setContextBack?.('',null);
+    add(root,context.heading('整理进度','在这里查看分析进度、回答问题，再到清单中选择要处理的内容。'));
+    if(!current){
+      const empty=node('section','task-hub-empty');
+      add(empty,node('h2','','先选择一个整理目标'),node('p','','从首页选择磁盘、目录或开机与后台分析，进度和需要你回答的问题会出现在这里。'),
+        action('选择整理目标',()=>context.openHome?.(),'button primary'));
+      add(root,empty);renderHistory(root);return;
+    }
+    const task=current,id=task.id,hasResults=hasTaskResults(task),questionPending=Boolean(task.question),
+      application=task.scope_kind==='applications'||['background','software'].includes(task.analysis?.section),
+      direct=task.task_kind==='operation'||task.plan?.origin==='user_direct',
+      executing=task.status==='executing',analysing=task.status==='investigating',
+      resultLabel=application?'查看后台建议':'查看文件建议';
+    const stages={ready:['准备开始','开始分析后，助手会按需检查所选范围。'],
+      investigating:['正在分析','可以切换页面，分析会继续；需要你回答时，左侧会显示提示。'],
+      executing:['正在执行所选操作','到执行进度中查看逐项结果，或暂停、取消剩余项。'],
+      needs_model:['需要连接模型',context.modelConfigured?'模型已配置，可以继续分析。':'连接模型后，可以从已有进度继续。'],
+      needs_input:['需要你补充信息','补充你的使用习惯或保留要求，助手才能继续判断。'],
+      paused:['分析已暂停','已有进度和建议已保留，可以继续分析。'],
+      budget_exhausted:['本轮分析已到上限','已有结果已保存。继续分析会使用新一轮模型额度。'],
+      error:['分析暂未完成','已有结果已保留。可以重试，或检查模型连接。'],
+      awaiting_review:['建议已准备好','到清单中查看用途与影响，勾选后再确认具体操作。'],
+      completed:['本轮分析已结束',hasResults?'建议已保存。到清单中勾选要处理的内容，仍需确认操作。':'结论已保存；是否继续取决于你的整理需要。']};
+    let [stage,hint]=stages[task.status] || ['进度已保存','查看已有结果，或继续分析所选范围。'];
+    if(questionPending&&!analysing&&!executing){stage='需要你回答';hint='回答下面的问题后，助手会接着分析；已有建议会保留。';}
+    if(direct&&!executing&&!questionPending){
+      stage=task.last_result?(['interrupted','cancelled'].includes(task.execution?.status)?'本次操作已中断':'本次操作已结束'):'待你确认操作';
+      hint=task.last_result?'操作结果已保存。可以查看记录，或回到清理清单。':'按你的勾选准备了操作清单，核对范围和影响后再确认。';
+    }
+    const panel=node('section','task-hub-main');panel.setAttribute('aria-label','当前整理与下一步');
+    add(panel,node('p','task-hub-goal',direct?(application?'本次后台与软件操作':'本次文件操作'):task.goal || intents[task.preset]?.[0] || '本次整理'));
+    const phase=node('div','task-hub-phase');if(analysing||executing)add(phase,node('span','spinner'));
+    add(phase,node('h2','',stage));add(panel,phase);
+    if(task.summary&&(!questionPending||analysing||executing))summaryText(panel,task.summary);
+    add(panel,node('p','task-hub-hint',hint));
+    const count=Number.isFinite(task.advice_total)?task.advice_total:null;
+    if(count>0)add(panel,node('p','task-hub-count',`已保存 ${count} 项分析建议`));
+    const buttons=node('div','task-hub-actions');
+    const openResults=()=>context.openResults?.(task);
+    const resume=()=>request('/api/tasks/'+id+'/continue',{});
+    if(executing){add(buttons,action('查看执行进度',openResults,'button primary'));}
+    else if(analysing){
+      if(hasResults)add(buttons,action('查看已有建议',openResults,'button'));
+      const stop=action('停止分析',()=>task.job_id?request('/api/jobs/'+task.job_id+'/cancel',{}):undefined,'plain-button');
+      stop.disabled=pending||!task.job_id;add(buttons,stop);
+    }else if(questionPending){question(panel);if(hasResults)add(buttons,action('查看已有建议',openResults,'plain-button'));}
+    else if(direct){
+      if(task.last_result)add(buttons,action('查看操作记录',()=>context.openHistory?.(),'button primary'));
+      if(task.plan||task.last_result)add(buttons,action(task.last_result?'查看清理清单':'核对操作清单',openResults,task.last_result?'button':'button primary'));
+    }else if(task.status==='needs_model'){
+      add(buttons,context.modelConfigured?action('继续分析',resume,'button primary'):action('连接模型',context.openSettings,'button primary'));
+      if(hasResults)add(buttons,action('查看已有建议',openResults,'plain-button'));
+    }else if(['error','paused','budget_exhausted','ready'].includes(task.status)){
+      add(buttons,action(task.status==='error'?'重试分析':task.status==='ready'?'开始分析':'继续分析',resume,'button primary'));
+      if(hasResults)add(buttons,action('查看已有建议',openResults,'button'));
+      if(task.status==='error')add(buttons,action('检查模型连接',context.openSettings,'plain-button'));
+    }else if(task.status==='needs_input'){
+      feedbackForm(panel,'补充整理要求',id,{flat:true,submitLabel:'补充并继续'});
+      if(hasResults)add(buttons,action('查看已有建议',openResults,'plain-button'));
+    }else if(hasResults){add(buttons,action(resultLabel,openResults,'button primary'));}
+    if(buttons.childNodes.length)add(panel,buttons);add(root,panel);
+    specialistSuggestions(root,{hostOnly:analysing||executing});
+    if(analysing){const live=node('section','task-hub-live');add(root,live);renderLivePreview(live);}
+    const secondary=node('div','task-hub-secondary'),adjust=node('section','task-hub-adjust');adjust.hidden=true;
+    if(!analysing&&!executing&&!questionPending&&!direct&&task.status!=='needs_input'){
+      const edit=action('补充要求',()=>{adjust.hidden=!adjust.hidden;edit.setAttribute('aria-expanded',String(!adjust.hidden));if(!adjust.hidden)adjust.querySelector('textarea')?.focus();},'plain-button');
+      edit.setAttribute('aria-expanded','false');add(secondary,edit);feedbackForm(adjust,'补充整理要求',id,{flat:true});
+      if(task.status==='completed')add(secondary,action('继续分析',resume,'plain-button'));
+    }
+    add(secondary,action('选择新目标',()=>context.openHome?.(),'plain-button'));add(root,secondary,adjust);
+    const reading=node('section','task-hub-reading'),extra=detail('分析说明与检查详情',reading);let loaded=false;
+    extra.addEventListener('toggle',()=>{
+      if(!extra.open||loaded||current?.id!==id||!reading.isConnected)return;loaded=true;
+      briefing(reading,task,{flat:true});if(!analysing)renderLivePreview(reading,task);
+      orchestration(reading,task);processDetails(reading,{flat:true,sourceTask:task});
+    });add(root,extra);renderHistory(root);
+  }
   function taskView(root) {
     context.setContextBack?.(context.page==='task'?'':'返回常用任务',context.page==='task'?null:returnHome);
-    if(context.page==='task'&&context.openResults&&!busy()&&!current.question&&(current.advice_total || current.advice?.length || current.plan)){
-      add(root,context.heading('当前任务',current.goal));
-      orchestration(root);
-      const panel=node('section','panel task-session');add(panel,node('p','task-summary-original',current.summary || '建议已保存，可以查看清单并调整选择。'),action('查看建议与操作清单',()=>context.openResults(current),'button primary'));
-      briefing(panel);renderLivePreview(panel);specialistSuggestions(panel);add(root,panel);return;
-    }
     if(context.page!=='task'&&window.PanxuCleanupReview&&!current.question&&(current.status==='executing'||!busy()&&['awaiting_review','completed','paused','budget_exhausted','error'].includes(current.status))){reviewView(root);return;}
     add(root, context.heading(intents[current.preset]?.[0] || '整理助手', current.preset && current.preset !== 'custom' ? '按需调查，先给出最值得关注的建议。' : current.goal));
     orchestration(root);
@@ -1010,7 +1086,7 @@ window.PanxuTasks = (() => {
     context = helpers;
     if (lastError) add(root, node('p', 'global-message error task-error', lastError));
     if(context.page==='home'){homeVisible=true;welcome(root);}
-    else if(context.page==='task'){homeVisible=false;if(current)taskView(root);else add(root,context.heading('当前任务','还没有当前任务。'),action('选择常用任务',()=>context.openHome?.(),'button primary'));}
+    else if(context.page==='task'){homeVisible=false;taskHub(root);}
     else if(current&&!homeVisible)taskView(root);else welcome(root);
     updateApproval();
     if (busy()) schedule();
@@ -1024,7 +1100,8 @@ window.PanxuTasks = (() => {
       try {
         const data = await context.api('/api/tasks');
         data.tasks.forEach((task) => {
-          const button=action(task.goal, () => {accept(task); context.openAssistant();}, 'plain-button task-history-item');
+          const taskLabel=task.task_kind==='operation'?(task.scope_kind==='applications'?'后台与软件操作':'文件操作'):task.goal;
+          const button=action(taskLabel, () => {accept(task); context.openAssistant();}, 'plain-button task-history-item');
           const date=Number.isFinite(Date.parse(task.updated_at))?new Date(task.updated_at).toLocaleString('zh-CN'):'';
           add(button,node('span','task-history-caption',[date,(task.summary || '').slice(0,140)].filter(Boolean).join(' · ')));
           add(entries,button);
