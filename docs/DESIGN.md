@@ -1,6 +1,6 @@
 # 盘序设计说明
 
-最新依据是2026-11-02的[任务驱动Harness方案](TASK_FIRST_HARNESS.md)、[专项工具方案](CLEANUP_TOOLBOX_AND_EXTENSIONS.md)与[文件工作区](NAVIGATION_FILE_WORKSPACE.md)。0.20正在整合48项注册能力、原生入口/自动检查、逐层浏览和专用保留记录；操作仍仅模拟，最终产物验收待完成。0.19已通过的证据保持历史归属，见[发布记录](RELEASES.md)，旧章节按各自版本理解。
+最新依据是2026-11-02的[任务驱动Harness方案](TASK_FIRST_HARNESS.md)、[专项工具方案](CLEANUP_TOOLBOX_AND_EXTENSIONS.md)与[文件工作区](NAVIGATION_FILE_WORKSPACE.md)。0.20已交付48项注册能力、原生入口/自动检查、逐层浏览和专用保留记录；0.21继续完善首页、混合系统清理及证据交接。操作仍仅模拟，当前最终产物证据见发布记录。0.19已通过的证据保持历史归属，见[发布记录](RELEASES.md)，旧章节按各自版本理解。
 
 统一分析与模型连接的实现状态见 README 和发布记录；[统一分析流程提案](UNIFIED_ANALYSIS_FLOW.md)与[预设提案](MODEL_PROVIDER_PRESETS.md)保留为设计依据。其余章节描述当前基线及历史设计；不能把新提案当作当前按钮、连接或真实恢复能力。
 

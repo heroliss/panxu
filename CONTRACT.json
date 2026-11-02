@@ -1,6 +1,6 @@
 {
   "product": "盘序",
-  "version": "0.20.0",
+  "version": "0.21.0",
   "mode": "simulation",
   "root": "E:\\GPT-Projects\\win11-disk-assistant",
   "safety": "This build has NO real executor. All apply/undo/reset operations modify only SQLite simulation records. Never unlink/move/kill/control services/edit startup outside app-owned data.",
@@ -44,8 +44,8 @@
     "uninstall"
   ],
   "api": {
-    "GET /api/bootstrap": "{csrf,version,mode,items,summary,settings,history,disks,source,job?}",
-    "POST /api/tasks": "{preset?:c_cleanup|disk_cleanup|directory_cleanup|downloads|duplicates|background|installers,goal?,path?}; or custom {goal,path}",
+    "GET /api/bootstrap": "{csrf,version,mode,items,summary,settings,history,disks,system_drive:{path,label},source,job?}",
+    "POST /api/tasks": "{preset?:system_cleanup|c_cleanup|disk_cleanup|directory_cleanup|downloads|duplicates|background|installers,goal?,path?}; or custom {goal,path}",
     "GET /api/tasks": "{tasks}; latest 15 durable tasks, current plan and event summaries",
     "GET /api/tasks/{id}": "{task}; status, goal, scopes, versioned plan, latest result, feedback, events, briefing, last_public_reply, investigation_notice and execution; plan/items and advice include host-owned provenance; previous advice identity independent of new plan",
     "POST /api/tasks/{id}/continue": "{} -> {task,job_id}; continue a stopped or completed investigation",
@@ -129,7 +129,7 @@
   "agent_task": "statuses ready/investigating/awaiting_review/executing/needs_input/needs_model/paused/budget_exhausted/error/completed. Up to6 model requests and12 executed tools per user turn; normally4 investigation+2 reserved scoring/conclusion rounds, earlier finalization near budget. Model record_advice/propose_plan schemas cap6 items; host historical30 and manual500 remain separate. High-rating initialization is an editable draft, never approval; final selection determines targets. Protected/out-of-scope/unsupported identities and stale plans cannot bypass factual checks. Unknown score is not3 or permission. Tool text is untrusted.",
   "action_runtime": "simulation backend only. Per-item durable intent plus atomic overlay/receipt, status succeeded/failed/partial/cancelled/unverified. Recovery verifies receipts without blind replay. User undo is separately visible as current_state=undone. Actual reclaimed bytes always zero.",
   "release_status": "verified_portable_native_scoped_acceptance_passed",
-  "installed_release": "0.20.0",
+  "installed_release": "0.21.0",
   "review_selection": "Version0.18 removes score-selection panel and per-score buttons from review/myfiles. Exact rating plus one tri-state select-current-filter control uses shared view,parent,query,rating,scope,risk,kind filters across complete rows. Tree is current parent level, navigation-only not selectable. Fetch cursor pages<=500 serially, candidate cap5000 and total logical-rule cap5000; incomplete/oversize/version-error collection leaves old selection atomically unchanged. Tri-state derives from complete candidates and nearest rules; selected roots with child exceptions remain checked+mixed so next click can deselect. Preserve outside-filter explicit rules and child exclusions. Plans freeze<=500 physical targets; remaining draft retained and stale catalog requires recheck. cleanup_auto_select_four lives in Settings cleanup preferences, existing UI-pref API auto-saves/rolls back error independently of model/text settings; eligible5 preselect stays, only new analysis initial drafts change. Current manual choices untouched. Explicit confirmation and simulation-only boundaries unchanged.",
   "dark_surface_refinement": "Version0.17.1 only dims dark canvas/card/soft/input/sidebar/interaction and rating/impact background tokens; canvas#090e16,panel#151f2d,soft#1d2b3d. Preserve surface separation, ink/muted/rating foregrounds, typography/layout/text-selection, scoring/action/model/backend semantics and simulation-only boundaries; light/non-dark declarations verified identical to0.17 baseline. Strict Python590,Node165,7JSsyntax passed, detector empty. Actual source dark1280x720/light960x680 no horizontal overflow, sampled explanation/label/rating minimum contrast8.01/5.21. Final EXE scoped native dark review/myfiles inspected and recorded, no UI LLM request or processing action. Original four durable files restored byte-for-byte; normal launch verified with 8 tasks,12 prior advice,18 model requests and identical model settings, not an all-module native claim; version0.17 evidence remains historical.",
   "task_memory": "Durable goal, choices, versioned plan, simulation receipts, up to300 historical facts/task with32MiB global fact-payload retention. Separate last_public_reply stores accepted public text<=8000 chars with completed_at,protocol,host provenance,truncated; not private continuation, model context or partial-stream success. Model connection change reconstructs fresh context. Request attempts/tools/work counted; missing provider token usage is unknown.",
@@ -204,5 +204,21 @@
     "system_recycle_bin_included": false,
     "logical_bytes_are_physical_usage": false,
     "legacy_undo_reset_cannot_restore_purged": true
-  }
+  },
+  "harness_working_evidence": {
+    "source": "current-task durable facts only; no new collection",
+    "budget_utf8_bytes": 24000,
+    "max_facts": 3,
+    "max_complete_object_rows": 16,
+    "fields": "fact identity/time/source/scope + complete rows; partial/counts/duplicate references explicit",
+    "rebuilds": [
+      "resume",
+      "compaction",
+      "connection_changed",
+      "output_recovery"
+    ],
+    "finalization": "saved fact retrieval remains during scoring; final turn consumes provided evidence only"
+  },
+  "tool_activity": "Host-owned durable metadata ledger, no raw parameters/paths/free text/credentials; opened/accepted/declined/answered/cancelled/completed/interrupted/undone are separate. New events reach next model round; current/other/global relation supplied by host. read_tool_activity(limit1..20) is read-only; choices never authorize execution.",
+  "request_budget": "Context compaction target96KiB over visible-message estimate; ignores duplicate canonical continuation, not token usage. Hard192KiB limit enforced on actual native wire after provider preparation."
 }

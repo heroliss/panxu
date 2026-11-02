@@ -23,6 +23,7 @@ from .tool_launch import open_entry
 from .llm import ModelAssistant
 from .lease import DataLease
 from .live_streams import LiveStreams
+from .presets import system_root
 from .knowledge import SkillRegistry
 from .icons import IconService, IconNotFound
 from .recommendations import build_recommendations
@@ -100,6 +101,8 @@ class Application:
         result = open_entry(entry)
         result.update(tool_id=payload.get('tool_id'),applied=False,
                       message='已打开对应程序或系统界面，尚未核实是否完成清理。')
+        tool = self.cleanup_tools.detail(payload['tool_id'])
+        self.harness.tool_activity.record('opened:' + secrets.token_hex(12), tool['id'], tool['title'], 'opened', source=source)
         if source.get('task_id'):
             self.harness._record_fact(source['task_id'], 'specialist_settings_opened', result)
         return result
@@ -394,7 +397,7 @@ class Application:
             return self.trace.page(offset, limit)
         if path == '/api/bootstrap':
             view = self.state.overview(self.patterns()) if query.get('compact') == ['1'] else self.view()
-            return dict(view, catalog_revision=self.catalog.token(), csrf=self.csrf, version=__version__, settings=self.assistant.public_settings(), disks=disks(), default_scan_path=str(Path.home() / 'Downloads'), latest_task=self.harness.latest())
+            return dict(view, catalog_revision=self.catalog.token(), csrf=self.csrf, version=__version__, settings=self.assistant.public_settings(), disks=disks(), system_drive=dict(path=system_root(), label='系统盘'), default_scan_path=str(Path.home() / 'Downloads'), latest_task=self.harness.latest())
         if path == '/api/files':
             try:
                 offset = int(query.get('offset', ['0'])[0])
@@ -510,7 +513,9 @@ class Application:
             if operation == 'control':
                 return {'execution': self.cleanup_tools.control(payload.get('plan_id'), payload.get('action'))}
             if operation == 'cancel':
-                return self.cleanup_tools.cancel_plan(payload.get('plan_id'), payload.get('version'))
+                plan = self.cleanup_tools.cancel_plan(payload.get('plan_id'), payload.get('version'))
+                self.harness.record_tool_plan_activity(plan)
+                return plan
             if operation == 'undo':
                 plan = self.cleanup_tools.undo(payload.get('plan_id'))
                 self._cleanup_feedback(plan, plan.get('result'))

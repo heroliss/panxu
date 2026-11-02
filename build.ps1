@@ -165,7 +165,7 @@ runtime_resources = {name: [str(p.relative_to(package)) for p in files if p.name
 archive = CArchiveReader(str(exe))
 pyz_name = next(name for name in archive.toc if name.endswith('.pyz'))
 modules = sorted(archive.open_embedded_archive(pyz_name).toc)
-required_modules = {name: name in modules for name in ('diskpilot.server', 'diskpilot.llm', 'diskpilot.knowledge', 'diskpilot.tasks', 'diskpilot.scan_index', 'diskpilot.icons', 'diskpilot.system_evidence', 'diskpilot.streaming', 'diskpilot.live_streams', 'diskpilot.cleanup_tools', 'diskpilot.file_browser', 'diskpilot.tool_inspection', 'diskpilot.tool_launch', 'diskpilot.recovery', 'psutil', 'webview', 'webview.platforms.winforms', 'webview.platforms.edgechromium')}
+required_modules = {name: name in modules for name in ('diskpilot.server', 'diskpilot.llm', 'diskpilot.knowledge', 'diskpilot.tasks', 'diskpilot.scan_index', 'diskpilot.icons', 'diskpilot.system_evidence', 'diskpilot.streaming', 'diskpilot.live_streams', 'diskpilot.cleanup_tools', 'diskpilot.file_browser', 'diskpilot.tool_inspection', 'diskpilot.tool_launch', 'diskpilot.recovery', 'diskpilot.context_memory', 'diskpilot.activity', 'psutil', 'webview', 'webview.platforms.winforms', 'webview.platforms.edgechromium')}
 forbidden_modules = [name for name in modules if name == 'tests' or name.startswith(('tests.', 'verification.'))]
 with exe.open('rb') as f:
     f.seek(0x3c)

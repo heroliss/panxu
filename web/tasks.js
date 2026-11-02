@@ -298,10 +298,12 @@ window.PanxuTasks = (() => {
     return generation===adviceGeneration && current?.id===taskId;
   }
   const intents = {
-    c_cleanup: ['清理 C 盘垃圾', '先找常见缓存和临时内容'],
+    c_cleanup: ['清理系统盘垃圾', '结合系统工具与文件调查'],
+    system_cleanup: ['清理系统盘垃圾', '结合系统工具与文件调查'],
     disk_cleanup: ['清理某个磁盘', '逐步找出值得清理的内容'],
     downloads: ['整理下载文件夹', '看看旧安装包和下载资料'],
-    directory_cleanup: ['清理某个目录', '选择文件夹，先分析再决定'],
+    directory_cleanup: ['清理磁盘或目录', '选择位置，分析后决定清理内容'],
+    cleanup_tools: ['清理工具', '缓存、隐私与系统设置'],
     duplicates: ['查找重复文件', '在本地核对内容是否一致'],
     background: ['优化开机与后台', '看看哪些应用可以按需运行'],
     installers: ['清理旧安装包', '区分安装包与仍在使用的程序'],
@@ -504,8 +506,9 @@ window.PanxuTasks = (() => {
   function reviewPane(pane=''){const id=current.cleanup_source_task_id || current.id;if(reviewPanes.size>=8&&!reviewPanes.has(id))reviewPanes.delete(reviewPanes.keys().next().value);reviewPanes.set(id,pane);redraw();}
   function choose(preset) {
     if(preset==='duplicates'&&context.openDuplicates){context.openDuplicates();return;}
-    if (preset === 'c_cleanup' || preset === 'background') {
-      request('/api/tasks', {preset}); return;
+    if(preset==='cleanup_tools'){context.openCleanupTools?.();return;}
+    if (['system_cleanup','c_cleanup','background'].includes(preset)) {
+      request('/api/tasks', {preset:preset==='c_cleanup'?'system_cleanup':preset}); return;
     }
     intent = preset; draftPath = ''; draftGoal = ''; redraw();
   }
@@ -515,10 +518,12 @@ window.PanxuTasks = (() => {
       add(root, context.heading('今天想整理什么？', '助手先调查并解释，再由你确认具体操作。'));
       if(current&&context.page!=='home')add(root,action('返回当前整理',()=>{homeVisible=false;redraw();},'button task-return-current'));
       const grid = node('div', 'task-intents');
-      ['c_cleanup', 'disk_cleanup', 'directory_cleanup', 'duplicates'].forEach((key) => {
+      ['system_cleanup', 'directory_cleanup', 'cleanup_tools', 'duplicates'].forEach((key) => {
         const card = action('', () => choose(key), 'task-intent'); card.dataset.preset = key;
-        const paths={c_cleanup:['M4 5h16v14H4z','M4 14h16','M8 17h.01M11 17h.01'],disk_cleanup:['M4 4h16v6H4z','M4 14h16v6H4z','M8 7h.01M8 17h.01'],directory_cleanup:['M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v10H3Z','M3 11h18'],duplicates:['M8 3h12v14H8z','M4 7v14h12','M12 7h4M12 11h4']};
-        add(card,icon(paths[key],'task-intent-symbol'),add(node('span','task-intent-copy'),node('strong','',intents[key][0]),node('span','',intents[key][1])),icon(['M5 12h14m-5-5 5 5-5 5'],'task-intent-arrow')); add(grid, card);
+        const paths={system_cleanup:['M4 5h16v14H4z','M4 14h16','M8 17h.01M11 17h.01'],directory_cleanup:['M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v10H3Z','M3 11h18'],cleanup_tools:['M14 6l4-3 3 3-3 4-3-1-6 6 1 3-4 3-3-3 3-4 3 1 6-6Z'],duplicates:['M8 3h12v14H8z','M4 7v14h12','M12 7h4M12 11h4']};
+        const systemPath=typeof context.systemDrive?.path==='string'?context.systemDrive.path:'';
+        const description=key==='system_cleanup'&&systemPath?`系统工具与文件调查 · ${systemPath}`:intents[key][1];
+        add(card,icon(paths[key],'task-intent-symbol'),add(node('span','task-intent-copy'),node('strong','',intents[key][0]),node('span','',description)),icon(['M5 12h14m-5-5 5 5-5 5'],'task-intent-arrow')); add(grid, card);
       });
       const extras=node('div','task-secondary-intents');add(extras,...['background','installers','custom'].map(key=>action(intents[key][0],()=>choose(key),'plain-button more-task')));
       add(root,grid,extras,node('p','task-privacy-note','助手查看文件与软件信息，按需在本机核对；不会向模型发送文件正文，个人资料由你决定去留。'));
@@ -526,16 +531,17 @@ window.PanxuTasks = (() => {
       return;
     }
     context.setContextBack?.('返回首页',()=>{intent='';redraw();});
-    add(root, context.heading(intents[intent][0], intent === 'disk_cleanup' ? '选择位置，助手会分步调查，并说明哪些地方还没检查。' : '选择要检查的文件夹。'));
+    const locationIntent=['disk_cleanup','directory_cleanup'].includes(intent);
+    add(root, context.heading(intents[intent][0], locationIntent?'选择整个磁盘，或输入一个文件夹位置。':'选择要检查的文件夹。'));
     const panel = node('section', 'task-welcome panel');
     const goal = textInput('你想怎么整理', draftGoal, (value) => { draftGoal = value; }, true);
     goal.input.placeholder = '例如：整理下载文件夹，保留照片，看看旧安装包和重复文件能否清理。';
     if (intent === 'custom') add(panel, goal.box);
-    const path = textInput('检查位置', draftPath || context.defaultPath, (value) => { draftPath = value; });
-    path.input.placeholder = '例如 E:\\Downloads';
-    if (intent === 'disk_cleanup') {
-      const disk = node('select'); disk.setAttribute('aria-label', '选择要清理的磁盘');
-      add(disk, node('option', '', '选择一个磁盘'));
+    const path = textInput('检查位置', locationIntent?draftPath:draftPath || context.defaultPath, (value) => { draftPath = value; });
+    path.input.placeholder = locationIntent?'例如 D:\\ 或 E:\\Downloads':'例如 E:\\Downloads';
+    if (locationIntent) {
+      const disk = node('select'); disk.setAttribute('aria-label', '选择整个磁盘');
+      add(disk, node('option', '', '选择磁盘，也可在下方输入目录'));
       context.disks.forEach((entry) => {
         const option = node('option', '', entry.name || entry.path); option.value = entry.path || entry.name; add(disk, option);
       });
@@ -544,8 +550,8 @@ window.PanxuTasks = (() => {
       disk.addEventListener('change', () => { draftPath = disk.value; path.input.value = disk.value; });
       add(panel, disk);
     }
-    if (intent !== 'disk_cleanup') {
-      add(panel, path.box);
+    add(panel, path.box);
+    if (!locationIntent) {
       add(panel, action('使用下载文件夹', () => { draftPath = context.defaultPath; path.input.value = draftPath; }, 'plain-button folder-shortcut'));
     }
     const start = action('开始分析', () => {
@@ -827,11 +833,19 @@ window.PanxuTasks = (() => {
   }
   function specialistSuggestions(root) {
     if(!current.extra_suggestions?.length || !context.openSpecialist)return;
-    const section=node('section','task-specialist-suggestions');
-    add(section,node('h2','','专项建议'),node('p','field-help',current.extra_suggestions.map(item=>item.title).join('、')),
-      action('查看专项建议',()=>context.openSpecialist({extra_suggestions:current.extra_suggestions,source:{task_id:current.id}}),'button'));
-    if(current.last_specialist_result)add(section,node('p','field-help','最近一次专项操作结果已记录，可在操作记录中查看。'));
-    add(root,section);
+    const isHost=item=>item.origin==='host'&&item.provenance?.source==='local';
+    const host=current.extra_suggestions.filter(isHost),other=current.extra_suggestions.filter(item=>!isHost(item));
+    const groups=[{items:host,title:'系统工具（无需 AI）',label:'查看系统工具'},
+      {items:other,title:host.length?'其他专项建议':'专项建议',label:'查看专项建议'}];
+    const taskId=current.id;
+    for(const group of groups){
+      if(!group.items.length)continue;
+      const section=node('section','task-specialist-suggestions');
+      add(section,node('h2','',group.title));
+      if(group.items===other)add(section,node('p','field-help',group.items.map(item=>item.title).join('、')));
+      add(section,action(group.label,()=>context.openSpecialist({extra_suggestions:group.items,source:{task_id:taskId}}),'button'));add(root,section);
+    }
+    if(current.last_specialist_result)add(root,node('p','field-help','最近一次专项操作结果已记录，可在操作记录中查看。'));
   }
   function advicePreview(root) {
     if(current.plan || busy())return;
@@ -847,7 +861,7 @@ window.PanxuTasks = (() => {
       const panel=node('section','panel task-session');add(panel,node('p','task-summary-original',current.summary || '建议已保存，可以查看清单并调整选择。'),action('查看建议与操作清单',()=>context.openResults(current),'button primary'));
       briefing(panel);renderLivePreview(panel);specialistSuggestions(panel);add(root,panel);return;
     }
-    if(window.PanxuCleanupReview&&!current.question&&(current.status==='executing'||!busy()&&['awaiting_review','completed','paused','budget_exhausted','error'].includes(current.status))){reviewView(root);return;}
+    if(context.page!=='task'&&window.PanxuCleanupReview&&!current.question&&(current.status==='executing'||!busy()&&['awaiting_review','completed','paused','budget_exhausted','error'].includes(current.status))){reviewView(root);return;}
     add(root, context.heading(intents[current.preset]?.[0] || '整理助手', current.preset && current.preset !== 'custom' ? '按需调查，先给出最值得关注的建议。' : current.goal));
     const panel = node('section', 'panel task-session');
     const summary = node('div', 'task-summary'); summary.setAttribute('role', 'status');

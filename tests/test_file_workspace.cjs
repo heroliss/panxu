@@ -119,9 +119,10 @@ test('late delete preview metadata cannot open a plan after the user navigates t
  const pending=deferred();let checking=false;const f=fixture(url=>{if(url.pathname!=='/api/file-browser')return;if(url.searchParams.get('limit')==='1'){checking=true;return pending.promise;}return page([item('selected')],{path:url.searchParams.get('path')});});await f.open();await f.select('selected');const preview=f.button('删除勾选项').fire();await flush();assert.equal(checking,true);await f.button('此电脑').fire();pending.resolve(page([]));await preview;assert.equal(f.actions.length,0);assert.equal(f.input('文件位置').value,'');
 });
 
-function taskFixture(value,{page:target='task',respond}={}){
+function taskFixture(value,{page:target='task',respond,systemDrive}={}){
  const f=fixture(),ui=f.window.PanxuTasks,events=[];let active=true;
- const helpers={...f.helpers,page:target,heading:(title,description)=>{const h=new f.Element('header');h.textContent=title+(description||'');return h;},isActive:()=>active,modelConfigured:true,disks:[{name:'E:',path:'E:\\'}],defaultPath:'E:\\Downloads',refreshCatalog:async()=>events.push(['catalog']),openSettings:()=>events.push(['settings']),openAssistant:()=>events.push(['assistant']),openHome:()=>events.push(['home']),openDuplicates:()=>events.push(['duplicates']),openResults:task=>events.push(['results',task.id]),onTaskCreated:task=>events.push(['created',task.id]),onTaskReady:task=>events.push(['ready',task.id]),setContextBack:(label,run)=>events.push(['back',label,run]),
+ const helpers={...f.helpers,page:target,systemDrive,heading:(title,description)=>{const h=new f.Element('header');h.textContent=title+(description||'');return h;},isActive:()=>active,modelConfigured:true,disks:[{name:'E:',path:'E:\\'}],defaultPath:'E:\\Downloads',refreshCatalog:async()=>events.push(['catalog']),openSettings:()=>events.push(['settings']),openAssistant:()=>events.push(['assistant']),openHome:()=>events.push(['home']),openCleanupTools:()=>events.push(['tools']),openDuplicates:()=>events.push(['duplicates']),openResults:task=>events.push(['results',task.id]),onTaskCreated:task=>events.push(['created',task.id]),onTaskReady:task=>events.push(['ready',task.id]),setContextBack:(label,run)=>events.push(['back',label,run]),
+  openSpecialist:ref=>events.push(['specialist',plain(ref)]),
   api:async(path,body)=>{f.requests.push({path,body:body===undefined?undefined:plain(body)});return await respond?.(path,body)||{};},redraw:()=>{f.root.replaceChildren();ui.render(f.root,helpers);}};
  if(value)ui.accept(value);ui.render(f.root,helpers);return {...f,ui,events,taskHelpers:helpers,active:value=>{active=value;}};
 }
@@ -140,11 +141,52 @@ test('opening a new-task location form and returning home does not discard the e
 });
 
 test('failed new task creation retains the previous task rather than replacing current navigation with an empty state',async()=>{
- const f=taskFixture(taskValue(),{page:'home',respond:async()=>{throw new Error('新任务创建失败');}});await f.all().find(n=>n.dataset.preset==='c_cleanup').fire();assert.equal(f.ui.currentTask()?.id,'task-one');assert.match(f.root.textContent,/新任务创建失败/);assert.equal(f.events.some(e=>e[0]==='created'),false);assert.equal(f.requests.length,1);
+ const f=taskFixture(taskValue(),{page:'home',respond:async()=>{throw new Error('新任务创建失败');}});await f.all().find(n=>n.dataset.preset==='system_cleanup').fire();assert.equal(f.ui.currentTask()?.id,'task-one');assert.match(f.root.textContent,/新任务创建失败/);assert.equal(f.events.some(e=>e[0]==='created'),false);assert.equal(f.requests.length,1);
 });
 
 test('launching a task calls the host created hook once and never approves or executes it',async()=>{
- const created=taskValue({id:'task-created',status:'needs_model',advice_total:0});const f=taskFixture(null,{page:'home',respond:async(path,body)=>path==='/api/tasks'?{task:created}:undefined});const launch=f.all().find(n=>n.dataset.preset==='c_cleanup');await launch.fire();assert.equal(f.requests.length,1);assert.deepEqual(f.requests[0],{path:'/api/tasks',body:{preset:'c_cleanup'}});assert.equal(f.events.filter(e=>e[0]==='created').length,1);assert.equal(f.ui.currentTask().id,'task-created');assert.equal(f.requests.some(r=>/approve|execute/.test(r.path)),false);
+ const created=taskValue({id:'task-created',status:'needs_model',advice_total:0});const f=taskFixture(null,{page:'home',respond:async(path,body)=>path==='/api/tasks'?{task:created}:undefined});const launch=f.all().find(n=>n.dataset.preset==='system_cleanup');await launch.fire();assert.equal(f.requests.length,1);assert.deepEqual(f.requests[0],{path:'/api/tasks',body:{preset:'system_cleanup'}});assert.equal(f.events.filter(e=>e[0]==='created').length,1);assert.equal(f.ui.currentTask().id,'task-created');assert.equal(f.requests.some(r=>/approve|execute/.test(r.path)),false);
+});
+
+test('home consolidates location cleanup and gives local tools a direct card without duplicate disk actions',async()=>{
+ const f=taskFixture(taskValue(),{page:'home'}),cards=f.all().filter(node=>node.dataset.preset);
+ assert.deepEqual(cards.map(node=>node.dataset.preset),['system_cleanup','directory_cleanup','cleanup_tools','duplicates']);assert.equal(cards.length,4);assert.equal(f.root.textContent.includes('清理 C 盘'),false);assert.equal(f.root.textContent.includes('清理某个磁盘'),false);assert.match(f.root.textContent,/清理磁盘或目录/);
+ await cards.find(node=>node.dataset.preset==='cleanup_tools').fire();assert.deepEqual(f.events.at(-1),['tools']);assert.equal(f.requests.length,0);assert.equal(f.ui.currentTask().id,'task-one');
+});
+
+test('system cleanup uses the host system-volume label and never supplies a guessed C-drive scope',async()=>{
+ const f=taskFixture(null,{page:'home',systemDrive:{path:'Z:\\',label:'系统盘'},respond:async()=>({task:taskValue({id:'system-task',preset:'system_cleanup'})})});assert.match(f.root.textContent,/系统工具与文件调查 · Z:\\/);await f.all().find(node=>node.dataset.preset==='system_cleanup').fire();assert.deepEqual(f.requests,[{path:'/api/tasks',body:{preset:'system_cleanup'}}]);
+});
+
+test('combined location entry requires an explicit path and accepts a whole drive using the same preset',async()=>{
+ const f=taskFixture(taskValue(),{page:'home',respond:async()=>({task:taskValue({id:'drive-task'})})});await f.all().find(node=>node.dataset.preset==='directory_cleanup').fire();const location=f.all().find(node=>node.tag==='input');assert.equal(location.value,'');await f.button('开始分析').fire();assert.equal(f.requests.length,0);assert.match(f.root.textContent,/请先选择要检查的磁盘或文件夹/);
+ const drive=f.input('选择整个磁盘');drive.value='E:\\';await drive.fire('change');await f.button('开始分析').fire();assert.deepEqual(f.requests,[{path:'/api/tasks',body:{preset:'directory_cleanup',path:'E:\\'}}]);
+});
+
+test('combined location entry accepts a typed folder without inventing a separate directory workflow',async()=>{
+ const f=taskFixture(null,{page:'home',respond:async()=>({task:taskValue({id:'directory-task'})})});await f.all().find(node=>node.dataset.preset==='directory_cleanup').fire();const input=f.all().find(node=>node.tag==='input');input.value=' E:\\Downloads\\个人资料 ';await input.fire('input');await f.button('开始分析').fire();assert.deepEqual(f.requests,[{path:'/api/tasks',body:{preset:'directory_cleanup',path:'E:\\Downloads\\个人资料'}}]);assert.equal(f.events.filter(event=>event[0]==='created').length,1);
+});
+
+test('host system-tool suggestions remain visible during file investigation and open without a model request',async()=>{
+ const fixed={id:'system-tools',title:'系统工具',origin:'host',provenance:{source:'local'},options:[{id:'temp',label:'临时文件',kind:'tool',tool_id:'windows_temporary_files'},{id:'skip',label:'暂不清理',kind:'answer'}]};
+ const f=taskFixture(taskValue({status:'investigating',preset:'system_cleanup',extra_suggestions:[fixed]}));assert.match(f.root.textContent,/系统工具（无需 AI）/);assert.ok(f.button('查看系统工具'));assert.equal(f.button('查看专项建议'),undefined);assert.equal(f.requests.length,0);
+ await f.button('查看系统工具').fire();assert.deepEqual(f.events.at(-1),['specialist',{extra_suggestions:[fixed],source:{task_id:'task-one'}}]);assert.equal(f.requests.length,0);assert.equal(f.ui.currentTask().status,'investigating');
+});
+
+test('completed system tasks with only host tools keep the session view instead of opening an empty cleanup list',()=>{
+ const fixed={id:'host-system-windows_temp',title:'系统临时文件',origin:'host',provenance:{source:'local'},options:[{id:'tool',label:'查看方案',kind:'tool',tool_id:'windows_temp'},{id:'skip',label:'暂不清理',kind:'answer'}]};
+ const f=taskFixture(null),renders=[];f.window.PanxuCleanupReview={unmount(){},render:(...args)=>renders.push(args)};
+ f.ui.accept(taskValue({preset:'system_cleanup',scope_kind:'filesystem',status:'completed',summary:'系统工具已准备好，文件部分暂未形成建议。',advice_total:0,advice:[],plan:null,extra_suggestions:[fixed]}));f.taskHelpers.redraw();
+ assert.equal(renders.length,0);assert.match(f.root.textContent,/系统工具已准备好，文件部分暂未形成建议/);assert.ok(f.button('查看系统工具'));assert.equal(f.button('查看建议与操作清单'),undefined);assert.equal(f.root.textContent.includes('建议清单'),false);assert.equal(f.root.textContent.includes('目录结构（已扫描）'),false);assert.equal(f.requests.length,0);
+});
+
+test('local system tools and other specialist suggestions keep separate sources and task-scoped entries',async()=>{
+ const fixed={id:'system-tools',title:'系统工具',origin:'host',provenance:{source:'local'},options:[]},model={id:'model-choice',title:'可选软件缓存',origin:'model',provenance:{source:'llm',model:'fixture-model'},options:[]};
+ const f=taskFixture(taskValue({extra_suggestions:[fixed,model]}));assert.match(f.root.textContent,/系统工具（无需 AI）/);assert.match(f.root.textContent,/其他专项建议/);await f.button('查看专项建议').fire();assert.deepEqual(f.events.at(-1),['specialist',{extra_suggestions:[model],source:{task_id:'task-one'}}]);assert.equal(f.requests.length,0);
+});
+
+test('an unverified host label alone cannot make a model suggestion look like a deterministic system tool',()=>{
+ const f=taskFixture(taskValue({extra_suggestions:[{id:'unknown',title:'来源待核实',origin:'host',provenance:{source:'llm'}}]}));assert.equal(f.button('查看系统工具'),undefined);assert.ok(f.button('查看专项建议'));assert.equal(f.root.textContent.includes('无需 AI'),false);
 });
 
 test('poll completion notifies the host of ready results without navigating or approving by itself',async()=>{

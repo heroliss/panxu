@@ -353,6 +353,7 @@ function initializePanxu() {
     if (data.settings) state.settings = data.settings;
     if (Array.isArray(data.history)) state.history = data.history;
     if (Array.isArray(data.disks)) state.disks = data.disks;
+    if(data.system_drive&&typeof data.system_drive==='object')state.systemDrive=data.system_drive;
     if (data.source) state.source = data.source;
     if (data.warnings || data.scan?.warnings || data.inventory?.warnings) state.warnings = data.warnings || data.scan?.warnings || data.inventory?.warnings || [];
     itemMap = new Map(state.items.map((item) => [item.id, item]));
@@ -479,7 +480,7 @@ function initializePanxu() {
   }
   function taskHelpers(page) {
     return {
-      api, heading, bytes, defaultPath: state.scanPath, disks: state.disks, providerPresets:state.providers, modelProfile: {provider:state.settings.provider,model:state.settings.model,protocol:state.settings.protocol},
+      api, heading, bytes, defaultPath: state.scanPath, disks: state.disks, systemDrive:state.systemDrive, providerPresets:state.providers, modelProfile: {provider:state.settings.provider,model:state.settings.model,protocol:state.settings.protocol},
       modelConfigured: Boolean(state.settings.base_url && state.settings.model),
       page,embeddedResult:page==='results',redraw: render, isActive: () => page==='home'?state.view==='overview':page==='task'?state.view==='current':['files','background'].includes(state.view),
       renderHomeInfo:host=>window.PanxuRecovery.home(host,{api,bytes,open:()=>setView('recovery')}),
@@ -487,6 +488,7 @@ function initializePanxu() {
       openAssistant: () => setView('current'),openHome:()=>setView('overview'),
       onTaskCreated:()=>setView('current',false),onTaskReady:task=>{if(state.view==='current')openTaskResults(task);},openResults:openTaskResults,
       openDuplicates:()=>setView('duplicates'),setContextBack,
+      openCleanupTools:()=>{cleanupReference=null;cleanupReturn=null;setView('cleanup');},
       showItem,openSpecialist,
       autoSelectFour:window.PanxuAppearance.get().cleanup_auto_select_four,
       refreshCatalog: async () => { accept(await api('/api/bootstrap?compact=1')); }

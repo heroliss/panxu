@@ -87,10 +87,10 @@ class InvestigationCompletionTests(unittest.TestCase):
         self.queue = [call('collect_apps', {'section': 'background'}, 'inventory'),
             call('list_items', {'kind': 'startup'}, 'list'),
             call('inspect_items', {'ids': [row['id'] for row in self.rows[:6]]}, 'inspect'),
-            call('cache_experience', {'ids': [row['id'] for row in self.rows[:6]]}, 'experience')]
+            call('read_facts', {'limit': 1}, 'saved-evidence')]
 
         def score(payload):
-            self.assertEqual(self.tools(payload), {'record_advice', 'propose_plan', 'present_findings', 'ask_user'})
+            self.assertEqual(self.tools(payload), {'record_advice', 'propose_plan', 'present_findings', 'ask_user', 'read_facts'})
             return call('record_advice', self.ratings(), 'scores')
 
         def finish(payload):

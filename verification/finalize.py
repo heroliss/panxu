@@ -233,7 +233,7 @@ def finalize(*, tests_run: int, health_url: str) -> dict:
             "Release README differs from current source")
     for name in ("index.html", "style.css", "app.js", "tasks.js", "files.js", "icons.js", "icons.css", "hierarchy.css", "stream-view.js", "stream-channel.js", "duplicates.js", "cleanup-tools.js", "cleanup-tools.css", "specialist-links.js", "file-workspace.js", "file-workspace.css", "recovery.js", "recovery.css"):
         require(sha(ROOT / "web" / name) == sha(release / "_internal" / "web" / name), "Packaged web asset differs from source")
-    required_modules = ('diskpilot.file_browser', 'diskpilot.tool_inspection', 'diskpilot.tool_launch', 'diskpilot.recovery')
+    required_modules = ('diskpilot.file_browser', 'diskpilot.tool_inspection', 'diskpilot.tool_launch', 'diskpilot.recovery', 'diskpilot.context_memory', 'diskpilot.activity')
     require(all(package.get('required_modules', {}).get(name) is True for name in required_modules),
             'Static package report does not verify the current file, tool and recovery modules')
     from diskpilot.knowledge import BUNDLED_SKILL_FILES

@@ -114,7 +114,8 @@ class CatalogTests(unittest.TestCase):
         cache = local / 'D3DSCache'
         cache.mkdir(parents=True)
         with patch.dict(os.environ, {'LOCALAPPDATA': str(local), 'TEMP': str(self.root / 'outside')}), \
-             patch('diskpilot.presets.system_root', return_value=str(self.scope)):
+             patch('diskpilot.presets.system_root', return_value=str(self.scope)), \
+             patch('diskpilot.tasks.system_tool_suggestions', return_value=[]):
             spec = resolve_preset('c_cleanup')
             self.assertEqual(spec['paths'][0][0], str(self.scope))
             self.assertIn(str(cache), spec['priority'])

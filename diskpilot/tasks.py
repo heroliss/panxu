@@ -25,13 +25,17 @@ from .recommendations import build_recommendations
 from .scanner import scan_directory, _checked_root, validate_item_snapshot
 from .simulation import AppError, within
 from .windows import inventory
-from .presets import resolve_preset
+from .presets import resolve_preset, system_tool_suggestions
+from .activity import ToolActivity
+from .context_memory import build_working_evidence, model_visible_bytes
+from .prompt_text import render_host_text
 from .knowledge import SkillRegistry
 from .system_evidence import system_configuration, volume_snapshot, validate_volume_path
 from .action_semantics import APP_KINDS, FILE_KINDS, action_details, action_groups, in_task_scope, primary_action
 
 
 MAX_ROUNDS, MAX_CALLS = 6, 12
+CONTEXT_TARGET_BYTES = 96 * 1024
 MODEL_ADVICE_BATCH = 6
 FINAL_TOOLS = frozenset(('record_advice', 'propose_plan', 'present_findings', 'ask_user'))
 FINISH_TOOLS = frozenset(('present_findings', 'ask_user'))
@@ -47,7 +51,8 @@ record_advice保存稀疏判断：明确倾向尽量评分1–5（1偏保留、3
 impact_rating独立表示所述操作的后果程度：1很小、2轻微、3明显、4较大、5重大或难逆；不表示发生概率或清理倾向。证据不足填null，不由cleanup_rating推算，不影响操作权限或勾选。
 目录默认只针对自身，仅inheritance=subtree才让未独立分析的已观察后代沿用倾向/解释；不继承动作或许可。具体子项、保留、跳过、未知及失效记录优先，有冲突改选具体项。
 按需用list_skills/read_skill取得经验与来源；指导不是本机事实或额外权限。系统占用用collect_system_configuration/inspect_volume核查已有范围的有限配置统计，不能据此证明可恢复、健康或扩大范围。工具用法可discover_tools。需要专项清理时按需discover_cleanup_tools/inspect_cleanup_tool，建议正文直接说明；record_advice可附specialist入口，mode=replace表示用专项替代普通动作，不能再把高分目录提议整删。特殊情况用record_specialist_suggestions提供可读说明及选项；用户回答不等于执行授权。
-先读已有目标、用户选择、事实和结果，避免重复调查。read_facts核对历史来源，checkpoint_task保存下一步与缺口；有关键偏好用ask_user一次问一个易懂问题。
+先读已有目标、用户选择、事实和结果，避免重复调查。working_evidence是压缩后保留的有限事实正文，不是全库或新的扫描；不足时在read_facts可用的阶段回读本任务事实。最后结论阶段只基于已给出的内容，不把未覆盖当成没有问题。checkpoint_task保存下一步与缺口；有关键偏好用ask_user一次问一个易懂问题。
+系统工具建议由程序直接提供，无需你重复生成；recent_tool_activity记录用户选择与工具结果，仅作背景，不扩大处理范围。打开工具不等于完成清理，接受建议不等于授权执行，模拟记录不等于真实系统已修改。
 输出先给约80字的一句结论，最值得处理的3–5项用propose_plan；需要补充或本轮无更多建议用present_findings。有多方面信息时用briefing分模块，只填相关类：highlights最多3条重点，cautions最多2条关键影响/待确认，coverage最多2条已查范围/缺口，每条约40–80字。不要重复摘要、逐项建议或调查流水账。
 每项purpose用短用途，reason一句主要依据，impact一句主要后果；通常40–80字，必要事实仍要说清。评分是最直观的倾向，理由负责解释它，避免在各字段重复介绍软件。建议和方案每次最多6项，可分批保存。
 最多6次模型响应、12次工具调用；最后2次留给已有证据的评分和短结论，收束时不再采集新信息。工具失败、预算耗尽、提出计划或只采集元数据都不能伪报已完成。只呈现当前最重要内容，其余可由用户展开或继续查询。'''
@@ -106,6 +111,8 @@ def tool_specs():
         ('read_facts', '查询本任务持久事实及来源。上下文只给摘要，可按事实ID或分页取得具体工具观察。',
          {'ids': {'type': 'array', 'items': ident, 'minItems': 1, 'maxItems': 12},
           'offset': {'type': 'integer', 'minimum': 0}, 'limit': {'type': 'integer', 'minimum': 1, 'maximum': 20}}, []),
+        ('read_tool_activity', '只读查看用户近期工具选择与已核验结果。打开、拒绝、确认和模拟完成分别记录，不代表真实系统已改变。',
+         {'limit': {'type': 'integer', 'minimum': 1, 'maximum': 20}}, []),
         ('checkpoint_task', '保存进展、下一步调查意图和未解决问题，便于中断或更换模型后继续；不代表完成或批准。',
          {'summary': {'type': 'string', 'maxLength': 1000},
           'next_steps': {'type': 'array', 'items': {'type': 'string', 'maxLength': 300}, 'maxItems': 8},
@@ -162,6 +169,7 @@ class TaskHarness:
         self.trace = trace
         self.scan_index = scan_index
         self.skills = skill_registry or SkillRegistry()
+        self.tool_activity = ToolActivity(state)
         self.running = set()
         self._execution_lock = threading.RLock()
         self._executions = {}
@@ -250,6 +258,8 @@ class TaskHarness:
             self._args(row, ['id', 'title', 'explanation', 'impact', 'cleanup_rating', 'item_ids', 'options'],
                        ['id', 'title', 'explanation', 'impact', 'options'])
             ident = row['id']
+            if isinstance(ident, str) and ident.startswith('host-system-'):
+                raise AppError('这些系统工具由程序维护，无需模型重复创建或修改。', 'host_suggestion_reserved')
             if not self._specialist_id(ident) or ident in seen:
                 raise AppError('专项建议ID须是不同的简短字母、数字、下划线或连字符。')
             seen.add(ident)
@@ -364,14 +374,35 @@ class TaskHarness:
     def answer_specialist(self, key, suggestion_id, option_id, *, version=None):
         with self.state.lock:
             task = self._get(key)
-            if key in self.running or task['status'] in BUSY:
-                raise AppError('请先等待当前调查结束，再选择专项方案。', 'task_busy', 409)
             suggestion = next((row for row in task['extra_suggestions'] if row['id'] == suggestion_id), None)
             if suggestion is None or version is not None and (type(version) is not int or version != suggestion['version']):
                 raise AppError('专项建议已更新，请重新查看当前选项。', 'specialist_stale', 409)
             option = next((row for row in suggestion['options'] if row['id'] == option_id), None)
             if option is None:
                 raise AppError('请选择当前专项建议提供的选项。', 'invalid_option')
+            if suggestion.get('origin') == 'host':
+                # Immutable host suggestions have their own durable activity
+                # ledger. Never overwrite a running model's task snapshot.
+                recent = self.tool_activity.recent(limit=1, task_id=key, suggestion_id=suggestion_id, statuses=('accepted', 'declined'))
+                previous = recent[0] if recent else None
+                status = 'accepted' if option['kind'] == 'tool' else 'declined'
+                tool = next(row for row in suggestion['options'] if row['kind'] == 'tool')
+                if previous and previous.get('source', {}).get('option_id') == option_id:
+                    record = previous
+                else:
+                    event = f'choice:{key}:{suggestion_id}:{suggestion["version"]}:{option_id}:{previous["id"] if previous else "first"}'
+                    record = self.tool_activity.record(event, tool['tool_id'], suggestion['title'], status,
+                        source=dict(task_id=key, suggestion_id=suggestion_id, option_id=option_id), option_label=option['label'])
+                selected = dict(option_id=option_id, label=option['label'], kind=option['kind'],
+                    version=suggestion['version'], at=record['time'], execution_authorized=False)
+                result = dict(task_id=key, suggestion_id=suggestion_id, selection=selected, execution_authorized=False,
+                    extra_suggestion=dict(suggestion, selection=selected))
+                if option['kind'] == 'tool':
+                    result['specialist'] = self.cleanup_tools.validate_reference({k: option[k] for k in ('tool_id', 'parameters') if k in option})
+                    result['source'] = dict(task_id=key, suggestion_id=suggestion_id)
+                return result
+            if key in self.running or task['status'] in BUSY:
+                raise AppError('请先等待当前调查结束，再选择专项方案。', 'task_busy', 409)
             current = {item['id']: item for item in self.state.snapshot(self.assistant.public_settings()['protect_patterns'])['items']}
             if any(ident not in current or current[ident]['signature'] != snapshot
                    for ident, snapshot in suggestion.get('target_snapshots', {}).items()):
@@ -384,6 +415,11 @@ class TaskHarness:
             task['feedback'] = task['feedback'][-20:]
             self._save(task)
             self._record_fact(key, 'specialist_answer', dict(suggestion_id=suggestion_id, **selected))
+            linked_tool = next((row for row in suggestion['options'] if row.get('tool_id')), None)
+            if linked_tool:
+                self.tool_activity.record('answer:' + key + ':' + suggestion_id + ':' + selected['at'],
+                    linked_tool['tool_id'], suggestion['title'], 'accepted' if option['kind'] == 'tool' else 'answered',
+                    source=dict(task_id=key, suggestion_id=suggestion_id, option_id=option_id))
             self._event(task, 'specialist_answer', '已记录专项选择；没有批准或执行清理。')
             result = dict(task_id=key, suggestion_id=suggestion_id, selection=selected,
                           execution_authorized=False, extra_suggestion=copy.deepcopy(suggestion))
@@ -442,6 +478,7 @@ class TaskHarness:
         ident = plan.get('id') if isinstance(plan, dict) else plan
         saved = self.cleanup_tools.get_plan(ident)
         source, receipt = saved.get('source', {}), saved.get('result')
+        self.record_tool_plan_activity(saved)
         key = source.get('task_id')
         if not key or not isinstance(receipt, dict):
             return None
@@ -775,6 +812,15 @@ class TaskHarness:
         value['cleanup_source_task_id'] = task.get('cleanup_source_task_id')
         value['last_cleanup_result'] = copy.deepcopy(task.get('last_cleanup_result'))
         value['extra_suggestions'] = copy.deepcopy(task.get('extra_suggestions', []))
+        for suggestion in value['extra_suggestions']:
+            if suggestion.get('origin') == 'host':
+                choices = self.tool_activity.recent(limit=1, task_id=key, suggestion_id=suggestion['id'], statuses=('accepted', 'declined'))
+                choice = choices[0] if choices else None
+                if choice:
+                    option = next((row for row in suggestion['options'] if row['id'] == choice.get('source', {}).get('option_id')), None)
+                    if option:
+                        suggestion['selection'] = dict(option_id=option['id'], label=option['label'], kind=option['kind'],
+                            version=suggestion['version'], at=choice['time'], execution_authorized=False)
         value['last_specialist_result'] = copy.deepcopy(task.get('last_specialist_result'))
         value['investigation_notice'] = copy.deepcopy(task.get('investigation_notice'))
         with self._execution_lock:
@@ -884,6 +930,13 @@ class TaskHarness:
                     scope_kind=spec['kind'] if spec else 'filesystem',
                     known_ids=[], observations=[], feedback=[], choices={}, plan=None, plan_version=0,
                     last_result=None, turn=0, created_at=now(), updated_at=now())
+        if preset in ('system_cleanup', 'c_cleanup'):
+            task['extra_suggestions'] = []
+            for suggestion in system_tool_suggestions():
+                suggestion = dict(suggestion, version=1, created_at=now(), updated_at=now(), item_ids=[], target_snapshots={})
+                suggestion['provenance'] = self._provenance(dict(source='local', generated_at=now()))
+                task['extra_suggestions'].append(suggestion)
+            task['summary'] = '系统工具已准备好；文件部分由助手按需调查，工具操作无需模型。'
         self._save(task)
         self._event(task, 'created', '已建立整理任务，按所选目标和范围调查。')
         return self.public(task['id'])
@@ -1159,11 +1212,20 @@ class TaskHarness:
 
     @staticmethod
     def _args(args, allowed, required=()):
-        if not isinstance(args, dict) or set(args) - set(allowed) or any(k not in args for k in required):
-            raise AppError('工具参数格式无效，请按工具说明调整。')
+        if not isinstance(args, dict):
+            raise AppError('工具参数需要一个对象，请按当前工具说明填写。', 'invalid_tool_arguments')
+        missing = [key for key in required if key not in args]
+        if missing:
+            raise AppError('缺少必填参数：' + '、'.join(missing) + '。本工具接受：' + '、'.join(allowed) + '。', 'invalid_tool_arguments')
+        if set(args) - set(allowed):
+            raise AppError('参数包含本工具不接受的字段。本工具只接受：' + '、'.join(allowed) + '。', 'invalid_tool_arguments')
 
     def tool(self, key, name, args, *, cancel, provenance=None):
         task = self._get(key)
+        if name == 'read_tool_activity':
+            self._args(args, ['limit'])
+            return dict(items=self._prompt_activity(task, self.tool_activity.recent(limit=args.get('limit', 6))),
+                        scope='recent_user_tool_activity', note='仅作操作背景，不扩大范围；打开与接受不等于执行，模拟记录不等于真实修改。')
         if name == 'discover_cleanup_tools':
             self._args(args, ['query', 'category'])
             result = self.cleanup_tools.list(query=args.get('query', ''), category=args.get('category', 'all'))
@@ -1245,7 +1307,7 @@ class TaskHarness:
             self._args(args, ['name'])
             if args.get('name') is not None and not isinstance(args['name'], str):
                 raise AppError('请使用工具名称查询说明。')
-            specs = tool_specs()
+            specs = self._task_tool_specs(task)
             matches = [s for s in specs if not args.get('name') or s['function']['name'] == args['name']]
             if not matches:
                 raise AppError('没有这个工具；不支持任意命令或隐藏工具。')
@@ -1269,7 +1331,10 @@ class TaskHarness:
                                    can_traverse=bool(not task.get('analysis') or r.get('inspectable'))) for r in rows[offset:offset + limit]]}
         if name == 'read_facts':
             self._args(args, ['ids', 'offset', 'limit'])
-            return self.facts_page(key, args.get('offset', 0), args.get('limit', 10), args.get('ids'))
+            result = self.facts_page(key, args.get('offset', 0), args.get('limit', 10), args.get('ids'))
+            if args.get('ids'):
+                result['requested_fact_ids'] = list(args['ids'])
+            return result
         if name == 'checkpoint_task':
             self._args(args, ['summary', 'next_steps', 'unresolved'], ['summary', 'next_steps', 'unresolved'])
             if not isinstance(args['summary'], str) or not 1 <= len(args['summary']) <= 1000 or any(
@@ -1748,6 +1813,22 @@ class TaskHarness:
             task['approved'] = [entries[i] for i in ids]
             self._save(task)
 
+    def record_tool_plan_activity(self, plan):
+        status = plan.get('status')
+        if status not in ('completed', 'interrupted', 'cancelled', 'undone'):
+            return
+        receipt = plan.get('result') or {}
+        by_id = {row['id']: row for row in receipt.get('items', [])}
+        for entry in plan.get('entries', []):
+            item = by_id.get(entry['id'], {})
+            outcome = item.get('status')
+            counts = dict(total=1, succeeded=int(outcome == 'succeeded'), failed=int(outcome == 'failed'),
+                          cancelled=int(outcome == 'cancelled' or status == 'cancelled'),
+                          unverified=int(outcome in ('unverified', 'running')))
+            self.tool_activity.record(f'plan:{plan["id"]}:{plan["version"]}:{status}:{entry["id"]}',
+                entry['tool_id'], entry.get('name') or plan['title'], status,
+                source={**plan.get('source', {}), 'plan_id': plan['id']}, result=counts)
+
     def _prompt_facts(self, task):
         page = self.facts_page(task['id'], limit=5, detail=False)
         rows = list(page['items'])
@@ -1780,7 +1861,7 @@ class TaskHarness:
         rows = []
         bookkeeping = {'selection_snapshot', 'record_advice', 'checkpoint_task',
                        'read_advice', 'list_skills', 'read_skill', 'discover_tools', 'list_scopes',
-                       'discover_cleanup_tools', 'record_specialist_suggestions'}
+                       'discover_cleanup_tools', 'record_specialist_suggestions', 'read_tool_activity'}
         with self.state.lock:
             retained = {row[0] for row in self.state.db.execute('SELECT id FROM task_facts WHERE task_id=?', (task['id'],))}
         for row in task['observations'][-6:]:
@@ -1799,7 +1880,52 @@ class TaskHarness:
             rows.append(projected)
         return rows[-3:]
 
-    def _context(self, task):
+    def _working_evidence(self, task):
+        """Hydrate a bounded decision window from saved facts, without new I/O."""
+        preferred = []
+        for observation in reversed(task.get('observations', [])[-6:]):
+            if observation.get('tool') == 'read_facts':
+                result = observation.get('result', {})
+                explicit = result.get('requested_fact_ids')
+                if explicit:
+                    preferred.extend(explicit)
+                else:
+                    # A generic history page is not a request to prioritize
+                    # every log/guidance record over useful object evidence.
+                    preferred.extend(row['id'] for row in result.get('items', [])[:1]
+                                     if isinstance(row, dict) and isinstance(row.get('id'), str))
+        facts = self.facts_page(task['id'], limit=8, detail=True)['items']
+        missing = [ident for ident in dict.fromkeys(preferred) if ident not in {row['id'] for row in facts}][:12]
+        if missing:
+            facts.extend(self.facts_page(task['id'], ids=missing, limit=12, detail=True)['items'])
+        return build_working_evidence(facts, preferred_ids=preferred,
+            budget_bytes=min(24000, max(1500, CONTEXT_TARGET_BYTES // 2)))
+
+    @staticmethod
+    def _prompt_activity(task, rows):
+        result = []
+        for row in rows:
+            source_id = row.get('source', {}).get('task_id')
+            value = {key: copy.deepcopy(item) for key, item in row.items() if key not in ('id', 'source')}
+            value['scope_relation'] = 'current_task' if source_id == task['id'] else 'other_task' if source_id else 'global_user'
+            result.append(value)
+        return result
+
+    def _turn_messages(self, task, reason='resume'):
+        context = self._context(task, working=True)
+        context['context_state'] = dict(reason=reason,
+            note='这是当前任务状态和有限已存证据；缺少正文时可在工具可用阶段回读，不必重新采集。')
+        return [{'role': 'system', 'content': SYSTEM},
+                {'role': 'user', 'content': json.dumps(context, ensure_ascii=False)}]
+
+    @staticmethod
+    def _task_tool_specs(task, allowed=None):
+        unavailable = {'survey_scope', 'inspect_directory', 'continue_scan', 'read_scan',
+                       'validate_directory', 'inspect_volume', 'compare_files', 'cache_experience', 'list_scopes'}
+        return [spec for spec in tool_specs() if (allowed is None or spec['function']['name'] in allowed)
+                and not (task.get('scope_kind') == 'applications' and spec['function']['name'] in unavailable)]
+
+    def _context(self, task, *, working=False):
         """Decision inputs only; the persisted task and fact payloads stay complete.
 
         Omit absent optional sections, not meaningful false/zero/partial facts.
@@ -1863,6 +1989,13 @@ class TaskHarness:
         if task.get('last_cleanup_result'):
             context['last_cleanup_result'] = copy.deepcopy(task['last_cleanup_result'])
         context['facts'] = self._prompt_facts(task)
+        recent = self.tool_activity.recent(limit=6)
+        if recent:
+            context['recent_tool_activity'] = self._prompt_activity(task, recent)
+        if working:
+            evidence = self._working_evidence(task)
+            if evidence.get('items'):
+                context['working_evidence'] = evidence
         return context
 
     def _recent_host_actions(self, task):
@@ -1974,9 +2107,9 @@ class TaskHarness:
             task['previous_connection'] = task.get('last_connection')
             task['last_connection'] = connection
             self._save(task)
-            messages = [{'role': 'system', 'content': SYSTEM},
-                        {'role': 'user', 'content': json.dumps(self._context(task), ensure_ascii=False)}]
+            messages = self._turn_messages(task, 'resume' if task.get('turn', 0) > 1 else 'new_turn')
             calls_used = 0
+            activity_seen = {row['id'] for row in self.tool_activity.recent(limit=20)}
             labels = {'survey_scope': '正在查看文件分布', 'inspect_directory': '正在深入了解目录',
                       'list_items': '正在筛选相关内容', 'inspect_items': '正在核对用途线索',
                       'collect_apps': '正在了解相关软件', 'compare_files': '正在核对文件是否重复',
@@ -1992,11 +2125,15 @@ class TaskHarness:
             for round_index in range(MAX_ROUNDS):
                 if cancel.is_set():
                     break
-                if len(json.dumps(messages, ensure_ascii=False).encode()) > 110000:
+                new_activity = [row for row in self.tool_activity.recent(limit=6) if row['id'] not in activity_seen]
+                if new_activity:
+                    messages.append({'role': 'user', 'content': render_host_text(dict(tool_activity_update=self._prompt_activity(self._get(key), list(reversed(new_activity))),
+                        note='用户刚刚的工具选择与记录；仅作背景，打开或接受不等于已执行。'))})
+                    activity_seen.update(row['id'] for row in new_activity)
+                if model_visible_bytes(messages) > CONTEXT_TARGET_BYTES:
                     # All tool calls in previous rounds have results. Compact only
                     # at this boundary, preserving task intent and recent evidence.
-                    messages = [{'role': 'system', 'content': SYSTEM}, {'role': 'user', 'content':
-                                json.dumps(self._context(self._get(key)), ensure_ascii=False)}]
+                    messages = self._turn_messages(self._get(key), 'compacted')
                 current_connection = self._model()
                 if current_connection['connection_id'] != connection['connection_id']:
                     task = self._get(key)
@@ -2004,26 +2141,32 @@ class TaskHarness:
                     self._checkpoint(task, 'connection_changed')
                     self._save(task)
                     connection = current_connection
-                    messages = [{'role': 'system', 'content': SYSTEM}, {'role': 'user', 'content': json.dumps(self._context(task), ensure_ascii=False)}]
+                    messages = self._turn_messages(task, 'connection_changed')
                 task = self._get(key)
                 finalizing = force_finalization or round_index >= MAX_ROUNDS - 2 or calls_used >= MAX_CALLS - 2
                 finish_only = round_index == MAX_ROUNDS - 1 or calls_used >= MAX_CALLS - 1
                 allowed = FINISH_TOOLS if finish_only else FINAL_TOOLS if finalizing else None
+                if finalizing and not finish_only:
+                    if self._prompt_facts(task)['total']:
+                        allowed = allowed | {'read_facts'}
+                    if self.tool_activity.recent(limit=1):
+                        allowed = allowed | {'read_tool_activity'}
                 # Ordinary investigations retain the small scoring/conclusion
                 # contract. Specialist recording is relevant only after this
                 # task requested that capability or already has related work.
                 if finalizing and not finish_only and (task.get('specialist_tools_requested')
-                        or task.get('extra_suggestions') or any(advice.get('specialist') or advice.get('extra_suggestion_id')
+                        or any(row.get('origin') != 'host' for row in task.get('extra_suggestions', [])) or any(advice.get('specialist') or advice.get('extra_suggestion_id')
                             for advice in task.get('advice', {}).values())):
                     allowed = allowed | {'record_specialist_suggestions'}
-                specs = [spec for spec in tool_specs() if allowed is None or spec['function']['name'] in allowed]
+                specs = self._task_tool_specs(task, allowed)
+                available_names = {spec['function']['name'] for spec in specs}
                 # Reserve one tool for a real conclusion, not just another
                 # collection result. Rejected calls still get paired native
                 # results below, so the next request never has dangling calls.
                 call_limit = MAX_CALLS if finish_only else MAX_CALLS - 1 if finalizing else MAX_CALLS - 2
                 if finalizing:
                     messages.append({'role': 'user', 'content':
-                        '现在收束本轮：只依据已取得的事实，不再采集或重复查询。'
+                        '现在收束本轮：只依据已取得的事实，不重新采集；可用read_facts时允许回读已保存正文。'
                         + ('本次只提交present_findings短结论，或用ask_user询问一个真正阻塞的选择。' if finish_only else
                            '先用record_advice保存最重要对象的评分，每次最多6项；再用present_findings提交短结论。')
                         + '说清已检查范围和未覆盖部分；没有检查不等于没问题。不能宣称系统已优化或实际处理。'})
@@ -2050,8 +2193,7 @@ class TaskHarness:
                     # A new bounded request can only summarize durable facts.
                     force_finalization = True
                     recovery_used = True
-                    messages = [{'role': 'system', 'content': SYSTEM},
-                                {'role': 'user', 'content': json.dumps(self._context(task), ensure_ascii=False)}]
+                    messages = self._turn_messages(task, 'output_recovery')
                     continue
                 response_provenance = self._provenance(message.pop('_provenance', None))
                 public_text_truncated = message.pop('_public_text_truncated', False) is True
@@ -2108,12 +2250,16 @@ class TaskHarness:
                             self.trace.record({'kind': 'tool_call', 'payload': {'name': name, 'arguments': args, 'call_id': call['id']}})
                         if allowed is not None and name not in allowed:
                             raise AppError('本轮正在收束，请只提交当前可用的评分、结论或必要问题；不会再采集新内容。', 'finalization_only')
+                        if name not in available_names:
+                            raise AppError('此工具不适用于当前任务或阶段；请使用本次提供的工具。', 'tool_unavailable')
                         if (name in ('record_advice', 'propose_plan') and isinstance(args.get('items'), list)
                                 and len(args['items']) > MODEL_ADVICE_BATCH):
                             raise AppError('模型建议每次最多6项，请分批保存，再提交简短结论。', 'advice_batch_limit')
                         result = self.tool(key, name, args, cancel=cancel, provenance=response_provenance)
                     except Exception as exc:
-                        result = {'error': self.clean(str(exc), 500) if isinstance(exc, AppError) else '工具参数或读取结果无效，请调整后再试。'}
+                        result = dict(error=self.clean(str(exc), 500) if isinstance(exc, AppError) else '工具参数或读取结果无效，请调整后再试。',
+                            code=exc.code if isinstance(exc, AppError) else 'invalid_tool_arguments',
+                            next_step='按照当前工具参数说明修正，不要扩大范围；当前阶段不可用的工具请改用已提供的工具。')
                     task = self._get(key)
                     if 'error' in result:
                         task['usage']['tool_failures'] += 1
