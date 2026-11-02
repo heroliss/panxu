@@ -55,30 +55,30 @@ function fixture(value,responder=async()=>({})){
 test('shared copy describes each supported operation and unknown inherited names conservatively',()=>{
   const f=fixture(task([]));
   for(const [action,kind,expected] of [['delete','file','删除文件'],['delete','directory','删除文件夹'],
-    ['disable_startup','startup','关闭开机启动'],['stop_service','service','停止服务'],['stop_process','process','结束应用'],['uninstall','software','卸载软件']]){
+    ['disable_startup','startup','禁用开机启动'],['stop_service','service','停止服务'],['stop_process','process','结束进程'],['uninstall','software','卸载软件']]){
     assert.equal(f.copy.label(action,kind),expected);
-    assert.ok(f.copy.summary([item('one',action,kind)]).button.startsWith('模拟'));
+    assert.ok(!f.copy.summary([item('one',action,kind)]).button.includes('模拟'));
   }
   for(const action of ['__proto__','constructor','toString','unexpected']){
     assert.equal(f.copy.label(action,'file'),'未知操作');assert.equal(f.copy.summary([item('one',action)]).breakdown,'未知操作 1 项');
   }
 });
 
-test('shared summaries distinguish file/folder deletion, mixed actions, and an explicit future non-simulation copy mode',()=>{
+test('shared summaries distinguish file/folder deletion and mixed actions without changing backend execution',()=>{
   const f=fixture(task([])),file=item('f'),folder=item('d','delete','directory'),service=item('s','stop_service','service');
-  const deletion=f.copy.summary([file,folder]);assert.equal(deletion.button,'模拟删除 2 项');assert.equal(deletion.breakdown,'删除 1 个文件、删除 1 个文件夹');
-  assert.match(deletion.effect,/不会实际删除/);assert.match(deletion.effect,/包含内部文件/);
-  const mixed=f.copy.summary([file,folder,service]);assert.equal(mixed.button,'确认模拟 3 项');assert.equal(mixed.groups.length,3);assert.match(mixed.breakdown,/停止 1 个服务/);
-  assert.equal(f.copy.summary([service],{simulation:false}).button,'停止 1 个服务');assert.equal(f.copy.summary([file]).button,'模拟删除 1 个文件');
+  const deletion=f.copy.summary([file,folder]);assert.equal(deletion.button,'删除 2 项');assert.equal(deletion.breakdown,'删除 1 个文件、删除 1 个文件夹');
+  assert.match(deletion.effect,/核对/);assert.match(deletion.effect,/包含内部文件/);
+  const mixed=f.copy.summary([file,folder,service]);assert.equal(mixed.button,'确认执行 3 项');assert.equal(mixed.groups.length,3);assert.match(mixed.breakdown,/停止 1 个服务/);
+  assert.equal(f.copy.summary([service]).selectedButton,'停止勾选的服务');assert.equal(f.copy.summary([file]).button,'删除 1 个文件');
 });
 
 test('actual plan checkboxes update action wording and breakdown without changing personal defaults or sending requests',async()=>{
   const f=fixture(task([item('file'),item('folder','delete','directory',{personal_choice_required:true}),item('service','stop_service','service')]));
-  assert.equal(f.get('pick-folder').checked,false);assert.equal(f.get('task-approve').textContent,'确认模拟 2 项');
+  assert.equal(f.get('pick-folder').checked,false);assert.equal(f.get('task-approve').textContent,'确认执行 2 项');
   assert.equal(f.root.querySelector('.task-selection-count').textContent,'删除 1 个文件、停止 1 个服务');
-  await f.choose('service',false);assert.equal(f.get('task-approve').textContent,'模拟删除 1 个文件');
-  await f.choose('folder',true);assert.equal(f.get('task-approve').textContent,'模拟删除 2 项');assert.match(f.get('task-simulation-effect').textContent,/内部文件/);
-  await f.choose('file',false);await f.choose('folder',false);assert.equal(f.get('task-approve').disabled,true);assert.equal(f.get('task-approve').textContent,'选择要模拟的操作');
+  await f.choose('service',false);assert.equal(f.get('task-approve').textContent,'删除 1 个文件');
+  await f.choose('folder',true);assert.equal(f.get('task-approve').textContent,'删除 2 项');assert.match(f.get('task-simulation-effect').textContent,/内部文件/);
+  await f.choose('file',false);await f.choose('folder',false);assert.equal(f.get('task-approve').disabled,true);assert.equal(f.get('task-approve').textContent,'选择要执行的操作');
   assert.equal(f.requests.length,0);assert.match(f.get('task-approve')['aria-describedby'],/task-selection-summary.*task-simulation-effect/);
 });
 
@@ -97,22 +97,16 @@ test('persisted legacy plan without assessment is unscored while an explicit una
   assert.equal(f.get('pick-legacy').checked,true);assert.equal(f.requests.length,0);
 });
 
-test('plan ratings lead the row and hidden additional selections remain explicit and unchanged',async()=>{
+test('plan ratings lead every row with direct explanations and unchanged personal choices',async()=>{
   const rows=Array.from({length:5},(_,index)=>item('row-'+index,'delete','file',{
     assessment:{state:'explicit',rating:index===0?5:4},personal_choice_required:index===4,default_selected:true}));
   const f=fixture(task(rows)),cards=f.root.querySelectorAll('.task-plan-item');
   assert.equal(cards[0].children[1],cards[0].querySelector('.task-plan-rating'));
   assert.equal(cards[0].querySelector('.cleanup-rating-value').textContent,'5');
   assert.ok(cards[0].querySelector('.task-plan-rating').className.includes('cleanup-rating-primary'));
-  const more=f.root.querySelector('.task-plan-more');assert.equal(more.open,false);
-  assert.equal(more.querySelectorAll('.task-plan-item').length,2);
-  assert.match(more.querySelector('summary').textContent,/其余 2 项.*其中已选 1 项/);
-  assert.equal(f.get('task-approve').textContent,'模拟删除 4 个文件');
-  assert.equal(f.get('pick-row-4').checked,false,'personal hidden row is never auto-selected');
-  more.open=true;await more.fire('toggle');assert.equal(f.get('pick-row-3').checked,true);
-  await f.choose('row-3',false);assert.match(more.querySelector('summary').textContent,/其中已选 0 项/);
-  await f.choose('row-4',true);assert.match(more.querySelector('summary').textContent,/其中已选 1 项/);
-  assert.equal(f.get('task-approve').textContent,'模拟删除 4 个文件');assert.equal(f.requests.length,0);
+  assert.equal(f.root.querySelector('.task-plan-more'),null);assert.equal(cards.length,5);assert.ok(cards.every(card=>card.querySelectorAll('.advice-explanation-part').length===4));
+  assert.equal(f.get('task-approve').textContent,'删除 4 个文件');assert.equal(f.get('pick-row-4').checked,false,'personal row is never auto-selected');
+  await f.choose('row-3',false);await f.choose('row-4',true);assert.equal(f.get('task-approve').textContent,'删除 4 个文件');assert.equal(f.requests.length,0);
 });
 
 test('short structured conclusions stay whole while legacy long prose remains in a closed full-text disclosure',()=>{
@@ -151,7 +145,7 @@ test('a task without an operation plan shows only three concise scored advice pr
   const f=fixture(task([],{status:'paused',plan:null,advice,advice_total:6}));
   const preview=f.root.querySelector('.task-advice-preview');assert.equal(preview.querySelectorAll('.task-advice-item').length,3);
   assert.equal(preview.querySelectorAll('.cleanup-rating-value').length,3);
-  assert.ok(preview.querySelectorAll('.task-item-reason').every(node=>Array.from(node.textContent).length===101));
+  assert.equal(preview.querySelectorAll('.advice-explanation-grid').length,3);assert.ok(preview.querySelectorAll('.advice-explanation-grid').every(node=>node.textContent.includes('很长的原因'.repeat(50))));
   assert.ok(preview.querySelectorAll('.task-detail').every(node=>node.open===false));assert.equal(f.requests.length,0);
 });
 
@@ -232,7 +226,7 @@ test('software table leads with the saved global rating and viewing it does not 
     itemTitle:(_item,n)=>n,kindNames:{software:'软件'},bytes:n=>n+' B',itemSize:()=>10,showItem:async i=>calls.push(['show',i.id]),
     api:async()=>({items:[]}),analyzeList:async()=>calls.push(['analyze']),toast(){},notify(){}});
   const app=readFileSync(join(__dirname,'..','web','app.js'),'utf8');
-  const start=app.indexOf('  function renderResults()'),end=app.indexOf('  function renderSelection()',start);
+  const start=app.indexOf('  function renderInventoryAdvice('),end=app.indexOf('  function renderSelection()',start);
   const openStart=app.indexOf('  async function showAdvice('),openEnd=app.indexOf('  function analysisOptions(',openStart);
   runInNewContext(app.slice(openStart,openEnd)+app.slice(start,end)+';this.renderRows=renderResults;',f.environment);f.environment.renderRows();await flush();
   const row=host.querySelector('.item-row');assert.equal(row.children[1],row.querySelector('.result-rating-cell'));
@@ -242,13 +236,13 @@ test('software table leads with the saved global rating and viewing it does not 
   assert.deepEqual(calls,[['show','software']]);
 });
 
-test('actual approval submits the unchanged plan version/IDs and retains simulation wording while pending',async()=>{
+test('actual approval submits unchanged plan version/IDs and retains concrete action wording while pending',async()=>{
   let complete;
   const value=task([item('service','stop_service','service')]);
   const f=fixture(value,(path)=>path.endsWith('/approve')?new Promise(resolve=>{complete=resolve;}):Promise.resolve({}));
   await f.get('task-approve').fire('click');
   assert.deepEqual(f.requests,[{path:'/api/tasks/copy-task/approve',payload:{version:7,ids:['service']}}]);
-  assert.equal(f.get('task-approve').disabled,true);assert.equal(f.get('task-approve').textContent,'模拟停止 1 个服务');
+  assert.equal(f.get('task-approve').disabled,true);assert.equal(f.get('task-approve').textContent,'停止 1 个服务');
   complete({task:{...value,status:'paused',plan:null,updated_at:'second'}});await flush();assert.equal(f.requests.length,1);
 });
 
@@ -265,16 +259,16 @@ test('actual direct-action expansion names deletion and preserves signature/prep
   });
   const adviceDetails=f.root.all().find(node=>node.tag==='details'&&node.querySelector('summary')?.textContent.startsWith('用途分析'));
   adviceDetails.open=true;await adviceDetails.fire('toggle');
-  const direct=f.root.querySelector('.task-direct');assert.equal(direct.querySelector('summary').textContent,'选择要模拟的操作');
-  direct.open=true;await direct.fire('toggle');assert.match(direct.textContent,/不会实际删除.*包含内部文件/);
-  const button=direct.querySelector('button');assert.equal(button.textContent,'模拟删除文件夹');await button.fire('click');
+  const direct=f.root.querySelector('.task-direct');assert.equal(direct.querySelector('summary').textContent,'选择要执行的操作');
+  direct.open=true;await direct.fire('toggle');assert.match(direct.textContent,/核对.*包含内部文件/);
+  const button=direct.querySelector('button');assert.equal(button.textContent,'删除文件夹');await button.fire('click');
   assert.deepEqual(f.requests.filter(call=>call.path.endsWith('/direct-plan')),[{path:'/api/tasks/copy-task/direct-plan',payload:{ids:['folder'],action:'delete',snapshots:{folder:'signature-folder'}}}]);
   assert.deepEqual(f.requests.filter(call=>call.path.endsWith('/approve')),[{path:'/api/tasks/copy-task/approve',payload:{version:11,ids:['folder']}}]);
 });
 
-test('actual result status says simulation completed and never claims files were deleted',()=>{
+test('result labels describe recorded outcomes and retain zero reclaimed bytes and backend identity',()=>{
   const f=fixture(task([],{status:'paused',plan:null,last_result:{total:1,succeeded:1,items:[{...item('one'),status:'succeeded',message:'只修改本地模拟记录。'}]}}));
-  assert.equal(f.root.querySelector('.task-result-state').textContent,'模拟完成');assert.match(f.root.querySelector('.task-results').textContent,/实际文件和系统未改动/);
+  assert.equal(f.root.querySelector('.task-result-state').textContent,'已记录');assert.match(f.root.querySelector('.task-results').textContent,/实际释放空间：0 B/);assert.equal(f.root.querySelector('.task-results').dataset.backend,'simulation');
   assert.equal(f.root.querySelector('.task-result-state').dataset.tone,'info');
 });
 

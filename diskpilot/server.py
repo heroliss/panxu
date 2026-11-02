@@ -338,6 +338,7 @@ class Application:
                 return self.catalog.page(offset=offset, limit=limit, query=query.get('query', [''])[0],
                     scope=query.get('scope', [''])[0], risk=query.get('risk', ['all'])[0], expected=query.get('revision', [''])[0],
                     view=query.get('view', ['all'])[0], parent_id=query.get('parent_id', [''])[0], rating=query.get('rating', ['all'])[0],
+                    kind=query.get('kind', ['all'])[0],
                     task=self.selection_task(query.get('task_id', [''])[0]))
         if path == '/api/applications':
             section = query.get('section', ['background'])[0]
@@ -404,14 +405,14 @@ class Application:
 
     def post(self, path, payload):
         if path == '/api/assessments/select':
-            allowed = {'task_id', 'category', 'mode', 'include_inherited', 'query', 'scope', 'risk', 'cursor', 'limit', 'revision', 'selection_revision'}
+            allowed = {'task_id', 'category', 'mode', 'include_inherited', 'query', 'scope', 'risk', 'kind', 'cursor', 'limit', 'revision', 'selection_revision'}
             if not isinstance(payload, dict) or set(payload) - allowed:
                 raise AppError('分类选择信息无效，请刷新当前清单。')
             with self.state.lock:
                 task = self.selection_task(payload.get('task_id'), required=True)
                 return self.catalog.batch_selection(task=task, category=payload.get('category', 'high'),
                     mode=payload.get('mode', 'manual'), include_inherited=payload.get('include_inherited', True),
-                    query=payload.get('query', ''), scope=payload.get('scope', ''), risk=payload.get('risk', 'all'),
+                    query=payload.get('query', ''), scope=payload.get('scope', ''), risk=payload.get('risk', 'all'), kind=payload.get('kind', 'all'),
                     cursor=payload.get('cursor'), limit=payload.get('limit', 500), expected=payload.get('revision'),
                     expected_selection_revision=payload.get('selection_revision'))
         if path == '/api/assessments/compile':
@@ -435,6 +436,8 @@ class Application:
                 raise AppError('请明确选择1到500个项目，并保留当前清单信息。')
             with self.state.lock:
                 selected = self.catalog.selected(ids, expected=payload['revision'])
+                if any(item['kind'] not in ('file', 'directory') for item in selected):
+                    raise AppError('此兼容接口仅接收删除文件清单；请从当前任务选择后台或软件操作。', 'unsupported_action')
                 if any(snapshots[item['id']] != item['signature'] for item in selected):
                     raise AppError('所选内容已更新，请重新查看后选择。', 'selection_changed', 409)
                 return self.harness.prepare_assessment_plan(ids, expected_revision=self.harness.assessments.revision())
@@ -542,7 +545,9 @@ class Application:
         if path == '/api/execute':
             return self.state.execute(payload.get('plan_id'), self.patterns(), validate_system_items)
         if path == '/api/undo':
-            return self.state.undo(payload.get('batch_id'), self.patterns())
+            result = self.state.undo(payload.get('batch_id'), self.patterns())
+            self.harness.refresh_operation_receipts(payload.get('batch_id'))
+            return result
         if path == '/api/reset':
             return self.state.reset(self.patterns())
         if path == '/api/settings':

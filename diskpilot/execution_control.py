@@ -118,7 +118,7 @@ class ExecutionControl:
             if self._pause or self._cancel:
                 return False
             self._current, self._committing = entry['id'], True
-            self._items[entry['id']].update(status='running', message='正在提交模拟记录。')
+            self._items[entry['id']].update(status='running', message='正在提交操作记录。')
             self._touch()
             return True
 

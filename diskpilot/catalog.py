@@ -8,6 +8,7 @@ import hashlib
 import json
 
 from .simulation import AppError, canonical, within, _parent
+from .action_semantics import FILE_KINDS, KINDS, action_details, action_groups, in_task_scope, primary_action, unavailable_reason
 
 
 class FileCatalog:
@@ -31,11 +32,11 @@ class FileCatalog:
             snapshot = self.state.snapshot(self.patterns())
             snapshot_index = {item['id']: item for item in snapshot['items']}
             resolved = self.assessments.resolve(snapshot['items']) if self.assessments else {}
-            rows = [i for i in snapshot['items'] if i['kind'] in ('file', 'directory') and not i['simulated']
+            rows = [i for i in snapshot['items'] if i['kind'] in KINDS and not i['simulated']
                     and not i.get('details', {}).get('synthetic')]
             blocked = set()
             for item in rows:
-                if item['risk'] != 'protected':
+                if item['risk'] != 'protected' or item['kind'] not in FILE_KINDS:
                     continue
                 path = canonical(item['path'])
                 while path:
@@ -52,10 +53,16 @@ class FileCatalog:
                     selectable = selectable and details.get('complete') is True and details.get('subtree_complete') is True
                     selectable = selectable and details.get('can_simulate_delete') is not False and canonical(item['path']) not in blocked
                 projected = {k: item.get(k) for k in ('id', 'kind', 'name', 'path', 'owner', 'category', 'size_bytes', 'allocated_bytes', 'risk', 'actions', 'signature', 'simulated')}
-                projected['can_select'] = bool(selectable)
+                projected['can_select'] = bool(selectable and primary_action(item))
+                projected.update(action_details(primary_action(item)))
+                projected['action_unavailable_reason'] = unavailable_reason(item)
                 projected['details'] = {k: copy.deepcopy(details[k]) for k in (
                     'complete', 'subtree_complete', 'can_simulate_delete', 'file_identity', 'is_hardlink', 'hardlink_entities',
-                    'timestamps', 'parent_id', 'root', 'scan_only') if k in details}
+                    'timestamps', 'parent_id', 'root', 'scan_only', 'state', 'start_mode', 'pid',
+                    'version', 'scope', 'has_uninstaller', 'observed_at', 'registry_location') if k in details}
+                if item['kind'] == 'service':
+                    projected['details']['state_label'] = {'Running': '正在运行', 'Stopped': '已停止',
+                        'Start Pending': '正在启动', 'Stop Pending': '正在停止', 'Paused': '已暂停'}.get(details.get('state'), '状态尚未确认')
                 assessment = copy.deepcopy(resolved.get(item['id'], dict(state='unanalysed', rating=None,
                     conclusion=None, stale=False, blocked_reasons=[])))
                 assessment.update(analysis_state=assessment['state'], cleanup_rating=assessment['rating'])
@@ -65,7 +72,7 @@ class FileCatalog:
                     assessment.update(inherited_from_name=source['name'], inherited_from_path=source['path'])
                 projected['assessment'] = assessment
                 projected['navigation_only'] = False
-                projected['can_prepare'] = bool(selectable and 'delete' in (item.get('actions') or [])
+                projected['can_prepare'] = bool(selectable and projected['action']
                     and not assessment.get('blocked_reasons') and not assessment.get('stale'))
                 high = assessment['rating'] in (4, 5) and projected['can_prepare']
                 assessment['eligible_direct'] = bool(high and assessment['state'] == 'explicit')
@@ -105,7 +112,7 @@ class FileCatalog:
                 path, parent_path = parent_path, _parent(parent_path)
         self._children = {}
         for row in self._nodes.values():
-            parent = paths.get(_parent(canonical(row['path'])))
+            parent = paths.get(_parent(canonical(row['path']))) if row['kind'] in FILE_KINDS else None
             if parent == row['id']:
                 parent = None
             row['tree_parent_id'] = parent or ''
@@ -141,7 +148,7 @@ class FileCatalog:
     @staticmethod
     def _task_holds(task, row):
         return bool(task and any(choice.get('choice') in ('keep', 'defer') and (ident == row['id']
-            or choice.get('kind') == 'directory' and within(row['path'], choice.get('path', '')))
+            or choice.get('kind') == 'directory' and row['kind'] in FILE_KINDS and within(row['path'], choice.get('path', '')))
             for ident, choice in task.get('choices', {}).items()))
 
     @staticmethod
@@ -153,7 +160,7 @@ class FileCatalog:
             reasons.append('already_simulated')
         if row.get('risk') == 'protected':
             reasons.append('protected')
-        if 'delete' not in (row.get('actions') or []):
+        if not primary_action(row):
             reasons.append('unsupported_action')
         if not isinstance(row.get('signature'), str) or not row.get('signature'):
             reasons.append('missing_snapshot')
@@ -165,17 +172,18 @@ class FileCatalog:
         if cache_key in self._selection_cache:
             return self._selection_cache[cache_key]
         if task is not None:
-            self.selection_revision(task)
             known = set(task.get('known_ids', [])) | set(task.get('target_ids', []))
-            targets = set(task.get('target_ids', []))
-            directories = task.get('action_directories', [])
-            roots = [root['path'] for root in task.get('roots', []) if isinstance(root, dict) and isinstance(root.get('path'), str)]
-            rows = [row for row in rows if row['id'] in known and (
-                row['id'] in targets or (task.get('analysis') and any(within(row['path'], path) for path in directories))
-                or (not task.get('analysis') and task.get('scope_kind', 'filesystem') == 'filesystem'
-                    and any(within(row['path'], path) for path in roots)))]
+            rows = [row for row in rows if in_task_scope(task, row, known=known)]
+        else:
+            rows = [row for row in rows if row['kind'] in FILE_KINDS]
         result = copy.deepcopy(rows)
+        resolved = self.assessments.resolve(self.state.snapshot(self.patterns())['items'], task=task) if task and self.assessments else {}
         for row in result:
+            if row['id'] in resolved:
+                row['assessment'] = copy.deepcopy(resolved[row['id']])
+                row['assessment'].update(analysis_state=row['assessment']['state'], cleanup_rating=row['assessment']['rating'])
+                row['can_prepare'] = bool(row['can_select'] and row['action'] and not row['assessment'].get('blocked_reasons')
+                                          and not row['assessment'].get('stale'))
             row['can_logical_select'] = not self._manual_blockers(row)
             row['user_kept'] = self._task_holds(task, row)
             assessment = row['assessment']
@@ -209,20 +217,26 @@ class FileCatalog:
         return list(groups.values())
 
     @staticmethod
-    def _filter_rows(rows, query='', scope='', risk='all'):
+    def _filter_rows(rows, query='', scope='', risk='all', kind='all'):
         if not isinstance(query, str) or len(query) > 200 or not isinstance(scope, str) or len(scope) > 2000:
             raise AppError('搜索或范围过长。')
         if risk not in ('all', 'low', 'review', 'protected'):
             raise AppError('请选择有效的内容筛选。')
+        if kind not in ('all', *KINDS):
+            raise AppError('请选择有效的对象类型。')
         query = query.strip().casefold()
         return [row for row in rows if (not query or query in (row['name'] + ' ' + row['path']).casefold())
-                and (not scope or within(row['path'], scope)) and (risk == 'all' or row['risk'] == risk)]
+                and (not scope or row['kind'] in FILE_KINDS and within(row['path'], scope))
+                and (risk == 'all' or row['risk'] == risk) and (kind == 'all' or row['kind'] == kind)]
 
     def _selection_tree(self, rows):
         index = {row['id']: row for row in rows}
         paths = {canonical(row['path']): row['id'] for row in rows if row['kind'] == 'directory'}
         children, roots = {}, []
         for row in rows:
+            if row['kind'] not in FILE_KINDS:
+                roots.append(row['id'])
+                continue
             own_path = canonical(row['path'])
             path = _parent(own_path)
             while path and path not in paths:
@@ -237,7 +251,7 @@ class FileCatalog:
                 roots.append(row['id'])
         outside = set()
         for row in self._rows:
-            if row['id'] in index:
+            if row['id'] in index or row['kind'] not in FILE_KINDS:
                 continue
             path = _parent(canonical(row['path']))
             while path:
@@ -279,18 +293,20 @@ class FileCatalog:
         index = {row['id']: row for row in rows}
         result = dict(ids=chosen, snapshots={ident: index[ident]['signature'] for ident in chosen},
             items=[dict({key: index[ident][key] for key in ('id', 'name', 'kind', 'path', 'signature')},
+                        **action_details(primary_action(index[ident])),
                         category=self._category(index[ident]),
                         assessment={key: copy.deepcopy(index[ident]['assessment'].get(key)) for key in ('state', 'rating')}) for ident in chosen],
             revision=revision, catalog_revision=revision, selection_revision=selection_revision,
             task_id=task['id'] if task else None, counts=dict(counts, total_targets=len(ids), returned=len(chosen)),
             groups=groups, has_more=has_more, next_cursor=next_cursor, requires_batches=len(ids) > limit,
             offset=offset, limit=limit, observed_only=True)
+        result['action_groups'] = action_groups([dict(index[ident], action=primary_action(index[ident])) for ident in ids], set(chosen))
         if extra:
             result.update(extra)
         return result
 
     def batch_selection(self, *, task=None, category='high', mode='manual', include_inherited=True,
-                        query='', scope='', risk='all', cursor=None, limit=500, expected=None,
+                        query='', scope='', risk='all', kind='all', cursor=None, limit=500, expected=None,
                         expected_selection_revision=None):
         """Read the full filtered task, returning logical category roots in bounded batches."""
         if category == 'skip':
@@ -301,7 +317,7 @@ class FileCatalog:
             raise AppError('自动选择需要当前分析任务。', 'task_scope_required')
         with self.state.lock:
             rows = self._selection_rows(task)
-            filtered = self._filter_rows(rows, query, scope, risk)
+            filtered = self._filter_rows(rows, query, scope, risk, kind)
             matching = [row for row in filtered if self._rating_matches(row, category)]
             index, children, roots, outside = self._selection_tree(rows)
             eligible, reasons = set(), Counter()
@@ -347,7 +363,7 @@ class FileCatalog:
                 counts=dict(scope_rows=len(rows), filtered_rows=len(filtered), matched_rows=len(matching), eligible_rows=len(eligible),
                             expanded_directories=expanded, blocked_reasons=dict(reasons)), groups=self._groups(filtered),
                 fingerprint=dict(kind='category', category=category, mode=mode, include_inherited=include_inherited,
-                                 ordering='direct-rating-size-v1' if mode == 'automatic' else 'tree-v1', query=query, scope=scope, risk=risk),
+                                 ordering='direct-rating-size-v1' if mode == 'automatic' else 'tree-v1', query=query, scope=scope, risk=risk, object_kind=kind),
                 limit=limit, cursor=cursor, expected=expected, expected_selection_revision=expected_selection_revision)
 
     def compile_selection(self, selected_ids, excluded_ids=(), *, snapshots, expected, task=None,
@@ -371,11 +387,15 @@ class FileCatalog:
                 raise AppError('选中或排除的内容已变化，请重新核对。', 'selection_changed', 409)
             rules = {}
             for ident in [*selected_ids, *excluded_ids]:
+                if index[ident]['kind'] not in FILE_KINDS:
+                    continue
                 path, choice = canonical(index[ident]['path']), ident in selected_ids
                 if path in rules and rules[path] != choice:
                     raise AppError('同一位置有相互冲突的选择，请重新勾选。')
                 rules[path] = choice
             def decision(row):
+                if row['kind'] not in FILE_KINDS:
+                    return row['id'] in selected_ids
                 path = canonical(row['path'])
                 while path:
                     if path in rules:
@@ -442,7 +462,7 @@ class FileCatalog:
         return [index[ident] for ident in ids]
 
     def page(self, *, offset=0, limit=50, query='', scope='', risk='all', expected=None,
-             view='all', parent_id='', rating='all', task=None):
+             view='all', parent_id='', rating='all', kind='all', task=None):
         if type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 100:
             raise AppError('每页显示1到100项，请使用有效页码。')
         if not isinstance(query, str) or len(query) > 200 or not isinstance(scope, str) or len(scope) > 2000:
@@ -456,13 +476,16 @@ class FileCatalog:
         with self.state.lock:
             token, _ = self._index()
             rows = self._selection_rows(task)
+            if view == 'tree' and task and task.get('scope_kind') == 'applications':
+                raise AppError('后台和软件对象按身份列出，请使用建议或全部对象视图。', 'invalid_catalog_view')
             if expected and expected != token:
                 raise AppError('检查清单已有更新，将重新载入第一页。', 'catalog_changed', 409)
-            base_filtered = self._filter_rows(rows, query, scope, risk)
+            base_filtered = self._filter_rows(rows, query, scope, risk, kind)
             filtered = [row for row in base_filtered if self._rating_matches(row, rating)]
             breadcrumbs = []
             if view == 'suggestions':
-                filtered = [i for i in filtered if i['assessment']['state'] in ('explicit', 'skipped', 'no_advice')]
+                filtered = [i for i in filtered if i['assessment']['state'] in ('explicit', 'skipped', 'no_advice')
+                            and (task is None or i['assessment'].get('from_current_task'))]
             elif view == 'tree':
                 if parent_id and (parent_id not in self._nodes or self._nodes[parent_id]['kind'] != 'directory'):
                     raise AppError('目录已更新，请返回已扫描范围。', 'catalog_changed', 409)
@@ -491,8 +514,9 @@ class FileCatalog:
                     current = row.get('tree_parent_id')
             return dict(revision=token, offset=offset, limit=limit, total=len(filtered), catalog_total=len(rows),
                         items=copy.deepcopy(filtered[offset:offset + limit]),
-                        has_more=offset + limit < len(filtered), view=view, parent_id=parent_id, breadcrumbs=breadcrumbs,
+                        has_more=offset + limit < len(filtered), view=view, parent_id=parent_id, breadcrumbs=breadcrumbs, kind=kind,
                         task_id=task['id'] if task else None, selection_revision=self.selection_revision(task), groups=self._groups(base_filtered),
                         assessment_revision=self.assessments.revision() if self.assessments else None,
                         coverage=dict(known_items=len(rows), observed_only=True,
-                            note='仅展示已扫描并保存的内容；展开目录不会新增扫描，未扫描部分不代表为空。'))
+                            note=('仅展示本任务已读取的注册和运行元数据，不代表全机全部自启动机制。' if task and task.get('scope_kind') == 'applications' else
+                                  '仅展示已扫描并保存的内容；展开目录不会新增扫描，未扫描部分不代表为空。')))

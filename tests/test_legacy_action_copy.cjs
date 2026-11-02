@@ -44,13 +44,13 @@ function fixture(items=[]){
 
 const item=(action,kind='file',name='fixture')=>({id:action+'-'+kind,action,kind,name});
 
-test('legacy confirmation names every concrete action and retains simulation boundary',()=>{
-  for(const [action,kind,label] of [['delete','file','删除'],['delete','directory','删除'],['disable_startup','startup','关闭'],
+test('confirmation names concrete actions without creating a separate simulation flow',()=>{
+  for(const [action,kind,label] of [['delete','file','删除'],['delete','directory','删除'],['disable_startup','startup','禁用'],
     ['stop_service','service','停止'],['stop_process','process','结束'],['uninstall','software','卸载']]){
     const f=fixture([item(action,kind)]);f.subject.renderPlan(f.state.plan);
-    assert.match(f.nodes.get('plan-execute').textContent,new RegExp('模拟'+label));
+    assert.match(f.nodes.get('plan-execute').textContent,new RegExp(label));
     const text=f.text(f.nodes.get('plan-content'));
-    assert.ok(text.includes('仅记录模拟'));assert.ok(text.includes('不会实际删除文件或改动系统'));
+    assert.ok(text.includes('请核对所选项目、具体操作与影响。'));assert.ok(!text.includes('模拟'));
     assert.ok(!text.includes('确认处理'));assert.ok(!f.nodes.get('plan-execute').disabled);
   }
 });
@@ -58,16 +58,16 @@ test('legacy confirmation names every concrete action and retains simulation bou
 test('mixed actions count selected items and show separate action counts',()=>{
   const f=fixture([item('delete'),item('delete','directory'),item('stop_service','service'),item('uninstall','software')]);
   f.subject.renderPlan(f.state.plan);
-  assert.equal(f.nodes.get('plan-execute').textContent,'确认模拟 4 项');
+  assert.equal(f.nodes.get('plan-execute').textContent,'确认执行 4 项');
   const text=f.text(f.nodes.get('plan-content'));
   for(const part of ['删除 1 个文件','删除 1 个文件夹','停止 1 个服务','卸载 1 个软件'])assert.ok(text.includes(part));
 });
 
 test('empty plans never retain a previous actionable confirmation label',()=>{
   const f=fixture([item('delete')]);f.subject.renderPlan(f.state.plan);f.subject.renderPlan({items:[]});
-  assert.equal(f.nodes.get('plan-execute').textContent,'没有可模拟的操作');
+  assert.equal(f.nodes.get('plan-execute').textContent,'没有可用操作');
   assert.equal(f.nodes.get('plan-execute').disabled,true);
-  assert.equal(f.nodes.get('plan-title').textContent,'没有可模拟的操作');
+  assert.equal(f.nodes.get('plan-title').textContent,'没有可用操作');
 });
 
 test('execution rejection preserves plan and restores the precise action button',async()=>{
@@ -75,24 +75,25 @@ test('execution rejection preserves plan and restores the precise action button'
   await f.subject.executePlan();
   assert.equal(f.calls[0].path,'/api/execute');assert.equal(f.calls[0].payload.plan_id,'plan-fixture');
   assert.equal(f.state.plan.id,'plan-fixture');assert.equal(f.nodes.get('plan-execute').disabled,false);
-  assert.equal(f.nodes.get('plan-execute').textContent,'模拟停止 1 个服务');
+  assert.equal(f.nodes.get('plan-execute').textContent,'停止 1 个服务');
   assert.ok(f.text(f.nodes.get('plan-content')).includes('fixture rejection'));
   assert.equal(f.toasts.length,0);
 });
 
-test('history describes simulation and undo without claiming actual deletion or file recovery',()=>{
+test('history presents ordinary receipts and undo without inventing actual deletion',()=>{
   const f=fixture(),root=new Element('main');
   f.state.history=[{id:'batch',status:'simulated',created_at:'2026-11-02',items:[item('delete')]}];
   f.subject.renderHistory(root);
   const text=f.text(root);
-  assert.ok(text.includes('1 项模拟操作'));assert.ok(text.includes('实际释放空间为 0 B'));
-  assert.ok(text.includes('不会恢复文件或系统设置'));assert.ok(root.all().some(node=>node.tag==='button'&&node.textContent==='撤销模拟'));
+  assert.ok(text.includes('1 项操作'));assert.ok(!text.includes('模拟'));
+  assert.ok(text.includes('撤销后可重新选择相关项目'));assert.ok(root.all().some(node=>node.tag==='button'&&node.textContent==='撤销'));
   assert.ok(!text.includes('处理了'));assert.ok(!text.includes('已删除'));assert.ok(!text.includes('删除成功'));
 });
 
-test('static confirmation defaults and reset copy match the simulation-only runtime',()=>{
+test('one global mode notice covers ordinary confirmation and no simulation-only reset control',()=>{
   const html=readFileSync(join(__dirname,'..','web','index.html'),'utf8');
   assert.ok(html.includes('模拟模式：'));assert.ok(html.includes('不会实际改动文件或系统'));
-  assert.ok(html.includes('撤销模拟状态'));assert.ok(html.includes('历史记录仍保留'));
+  assert.equal((html.match(/模拟/g)||[]).length,1);assert.ok(!html.includes('id="reset-demo"'));
+  assert.ok(html.includes('确认所选操作'));assert.ok(!html.includes('确认模拟'));
   assert.ok(!html.includes('确认处理'));
 });

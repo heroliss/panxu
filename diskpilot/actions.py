@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections import Counter
 from contextlib import nullcontext
 import json
 from datetime import datetime, timezone
@@ -136,7 +137,7 @@ class ActionRuntime:
                     data['batch_id'] = batch['id']
                     injected = self.fault(entry, 'after') if self.fault else None
                     verified = not injected and self.backend.verify(entry, batch)
-                    data.update(verified=verified, message='已核对处理结果。' if verified else '已尝试处理，但结果尚未确认。')
+                    data.update(verified=verified, message='操作结果已记录并核验。' if verified else '已尝试记录操作，但结果尚未确认。')
                     status = 'succeeded' if verified else 'unverified'
                 self._save(operation_id, task_id, version, status, data)
             except Exception as exc:
@@ -154,7 +155,7 @@ class ActionRuntime:
         result = self.result(task_id, version)
         if control:
             control.finish(result)
-            emit('这一批已结束，实际文件和系统未改动。')
+            emit('这一批已结束，操作记录已核对。')
         return result
 
     def result(self, task_id, version):
@@ -176,8 +177,20 @@ class ActionRuntime:
             status = 'unverified'
         if items and all(x['status'] == 'cancelled' for x in items):
             status = 'cancelled'
+        action_results = {}
+        for item in items:
+            group = action_results.setdefault(item['action'], dict(total=0, succeeded=0, failed=0, cancelled=0, unverified=0, undone=0))
+            group['total'] += 1
+            outcome = 'unverified' if item['status'] == 'running' else item['status']
+            if outcome in group:
+                group[outcome] += 1
+            group['undone'] += item['current_state'] == 'undone'
         return dict(plan_version=version, backend=self.backend.name, status=status, items=items,
                     succeeded=succeeded, total=len(items), actual_reclaimed_bytes=0,
                     failed=sum(x['status'] == 'failed' for x in items),
                     unverified=sum(x['status'] in ('unverified', 'running') for x in items),
-                    cancelled=sum(x['status'] == 'cancelled' for x in items))
+                    cancelled=sum(x['status'] == 'cancelled' for x in items),
+                    undone=sum(x['current_state'] == 'undone' for x in items),
+                    action_results=action_results,
+                    actions=dict(Counter(item['action'] for item in items)),
+                    undone_actions=dict(Counter(item['action'] for item in items if item['current_state'] == 'undone')))

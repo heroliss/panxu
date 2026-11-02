@@ -222,9 +222,12 @@ class TaskTests(unittest.TestCase):
 
     def test_application_decision_can_use_model_judgment_without_recipe_allow_flag(self):
         from diskpilot.windows import _item
-        app = _item('software', 'fixture-only-app', '测试用编辑器', 'Test Publisher', '已安装软件', 'uninstall', {'synthetic': True})
+        app = _item('software', 'fixture-only-app', '测试用编辑器', 'Test Publisher', '已安装软件', 'uninstall', {'synthetic': False})
         with patch('diskpilot.tasks.inventory', return_value={'items': [app], 'warnings': []}):
             self.tool('collect_apps', {'section': 'software'})
+        # Software collected to explain a file task remains context. Make the
+        # intended software analysis explicit before proposing its uninstall.
+        self.task_id = self.harness.create_analysis({'section': 'software', 'ids': [app['id']]})['id']
         self.tool('propose_plan', {'summary': '结合需求提出软件整理方案。', 'items': [{
             'id': app['id'], 'action': 'uninstall', 'reason': '这项仅是待用户确认的软件建议。',
             'impact': '卸载可能移除配置，实际处理前需要确认。'}]})

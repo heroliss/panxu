@@ -9,11 +9,11 @@ const tasks=readFileSync(join(__dirname,'..','web','tasks.js'),'utf8');
 const flush=()=>new Promise(setImmediate);
 const plain=value=>JSON.parse(JSON.stringify(value));
 function row(id,relative,rating=4,kind='file',state='explicit'){
-  return {id,name:id,path:'E:/fixture/'+relative,kind,signature:'sig-'+id,size_bytes:10,actions:['delete'],risk:'review',can_logical_select:true,has_children:kind==='directory',details:{complete:true,subtree_complete:true},assessment:{state,rating}};
+  return {id,name:id,path:'E:/fixture/'+relative,kind,signature:'sig-'+id,size_bytes:10,action:'delete',actions:['delete'],risk:'review',can_logical_select:true,has_children:kind==='directory',details:{complete:true,subtree_complete:true},assessment:{state,rating,purpose:'用途-'+id,reason:'原因-'+id,impact:'影响-'+id}};
 }
 const parent=row('parent','P',5,'directory'),folder=row('folder','P/D',2,'directory'),leaf=row('leaf','P/D/F',1),high=row('high','P/G',4),neutral=row('neutral','P/N',3),skip=row('skip','P/U',null,'file','skipped');
 
-async function fixture({auto=[high],autoFour=true,rows=[parent,folder,leaf,high,neutral,skip],selectionHasMore=false,planRows=[high]}={}){
+async function fixture({auto=[high],autoFour=true,rows=[parent,folder,leaf,high,neutral,skip],selectionHasMore=false,planRows=[high],scopeKind='filesystem'}={}){
   let root,timerId=0;const timers=new Map(),calls=[],events=[],preferences=[];
   class Element{
     constructor(tag){this.tag=tag;this.children=[];this.className='';this.dataset={};this.attrs={};this.parent=null;this._text='';this.open=false;this.handlers=new Map();this.disabled=false;}
@@ -30,31 +30,35 @@ async function fixture({auto=[high],autoFour=true,rows=[parent,folder,leaf,high,
     matches(selector){if(selector.startsWith('.'))return this.className.split(' ').includes(selector.slice(1));if(selector.startsWith('[data-')){const key=selector.slice(6,-1).replace(/-([a-z])/g,(_,letter)=>letter.toUpperCase());return Object.hasOwn(this.dataset,key);}return this.tag===selector;}
     querySelectorAll(selector){return this.all().filter(child=>child.matches(selector));}querySelector(selector){return this.querySelectorAll(selector)[0] || null;}
     async fire(name){if(this.disabled)return;for(const handler of this.handlers.get(name)||[])await handler({preventDefault(){}});await flush();}
-    showModal(){this.open=true;events.push('modal');}close(){this.open=false;for(const handler of this.handlers.get('close')||[])handler();}
-    focus(){}set innerHTML(_){throw new Error('HTML interpolation forbidden');}
+    showModal(){this.open=true;this.scrollTop=900;events.push('modal');}close(){this.open=false;for(const handler of this.handlers.get('close')||[])handler();}
+    focus(options){this.focusOptions=options;events.push(['focus',this.tag,this.textContent]);let owner=this;while(owner&&owner.tag!=='dialog')owner=owner.parent;if(owner&&!options?.preventScroll)owner.scrollTop=900;}
+    set innerHTML(_){throw new Error('HTML interpolation forbidden');}
   }
   root=new Element('main');const window={},document={createElement:tag=>new Element(tag),createElementNS:(_ns,tag)=>new Element(tag),getElementById:id=>root.all().find(item=>item.id===id),querySelector:selector=>root.querySelector(selector)};
   const environment={window,document,URLSearchParams,setTimeout:(run,delay)=>{timers.set(++timerId,{run,delay});return timerId;},clearTimeout:id=>timers.delete(id)};
   runInNewContext(tasks,environment);runInNewContext(source,environment);const subject=window.PanxuCleanupReview;
   let currentRows=rows,execution=null,controlNext=null,pollOverride=null;
-  const analysis={id:'analysis-one',status:'completed',scope_kind:'filesystem',summary:'测试分析结论',briefing:{highlights:['测试重点']},last_public_reply:{text:'原分析完整正文'}};
-  const meta=item=>({id:item.id,name:item.name,path:item.path,signature:item.signature,kind:item.kind,assessment:item.assessment,category:item.assessment.rating===null?'skipped':String(item.assessment.rating)});
-  const entries=planRows.map(item=>({...item,action:'delete',personal_choice_required:true,default_selected:false}));
-  const prepared={task:{id:'host-batch',cleanup_source_task_id:analysis.id,status:'awaiting_review',plan:{version:2,items:entries}},plan:{version:2,items:entries},picked_ids:entries.map(item=>item.id),selection:{counts:{returned:entries.length},has_more:false}};
+  const analysis={id:'analysis-one',status:'completed',scope_kind:scopeKind,...(scopeKind==='applications'?{analysis:{section:'background'}}:{}),summary:'测试分析结论',briefing:{highlights:['测试重点']},last_public_reply:{text:'原分析完整正文'}};
+  const meta=item=>({id:item.id,name:item.name,path:item.path,signature:item.signature,kind:item.kind,action:item.action,assessment:item.assessment,category:item.assessment.rating===null?'skipped':String(item.assessment.rating)});
+  const entries=planRows.map(item=>({...item,action:item.action || 'delete',impact:item.impact || item.assessment?.impact,personal_choice_required:true,default_selected:false}));
+  const prepared={task:{id:'host-batch',cleanup_source_task_id:analysis.id,scope_kind:scopeKind,status:'awaiting_review',plan:{version:2,items:entries}},plan:{version:2,items:entries},picked_ids:entries.map(item=>item.id),selection:{counts:{returned:entries.length},has_more:false}};
   async function api(path,payload){
     calls.push({path,payload:payload===undefined?undefined:plain(payload)});
     if(path.startsWith('/api/files?')){
       const url=new URL(path,'http://fixture');let values=currentRows;
+      if(url.searchParams.get('view')==='suggestions')values=values.filter(item=>item.assessment.state!=='unanalysed');
+      if(url.searchParams.get('kind')&&url.searchParams.get('kind')!=='all')values=values.filter(item=>item.kind===url.searchParams.get('kind'));
       if(url.searchParams.get('view')==='tree')values=url.searchParams.get('parent_id')==='parent'?[folder,high,neutral,skip]:url.searchParams.get('parent_id')==='folder'?[leaf]:[parent];
       const offset=Number(url.searchParams.get('offset'));return {revision:'r1',selection_revision:'s1',offset,total:values.length,items:values.slice(offset,offset+50),has_more:offset+50<values.length,breadcrumbs:[]};
     }
     if(path==='/api/assessments/select'){
-      const values=payload.mode==='automatic'?auto:payload.category==='all'?[parent]:currentRows.filter(item=>String(item.assessment.rating)===payload.category || payload.category==='skipped'&&item.assessment.state==='skipped');
+      const pool=payload.kind&&payload.kind!=='all'?currentRows.filter(item=>item.kind===payload.kind):currentRows;
+      const values=payload.mode==='automatic'?auto:payload.category==='all'?(scopeKind==='applications'?pool:[parent]):pool.filter(item=>String(item.assessment.rating)===payload.category || payload.category==='skipped'&&item.assessment.state==='skipped');
       return {revision:'r1',selection_revision:'s1',items:values.map(meta),ids:values.map(item=>item.id),snapshots:Object.fromEntries(values.map(item=>[item.id,item.signature])),has_more:selectionHasMore,requires_batches:selectionHasMore};
     }
     if(path==='/api/assessments/plan')return prepared;
     if(path==='/api/tasks/host-batch/approve'){
-      execution={status:'running',plan_version:2,revision:1,total:entries.length,processed:0,succeeded:0,failed:0,unverified:0,cancelled:0,current:{id:entries[0].id,name:entries[0].name,action:'delete'},items:[],can_pause:true,can_resume:false,can_cancel:true};
+      execution={status:'running',plan_version:2,revision:1,total:entries.length,processed:0,succeeded:0,failed:0,unverified:0,cancelled:0,current:{id:entries[0].id,name:entries[0].name,action:entries[0].action},items:[],can_pause:true,can_resume:false,can_cancel:true};
       return {task:{...prepared.task,status:'executing',execution}};
     }
     if(path==='/api/tasks/host-batch/execution'){
@@ -115,7 +119,7 @@ test('directory rules are tri-state and specific exclusions or re-inclusions sur
   const f=await fixture({auto:[]});await f.pick('parent',true);assert.equal(f.check('leaf').checked,true);
   await f.pick('folder',false);assert.equal(f.check('parent').indeterminate,true);assert.equal(f.check('leaf').checked,false);
   await f.pick('leaf',true);assert.equal(f.check('folder').indeterminate,true);assert.equal(f.check('leaf').checked,true);
-  await f.button('模拟删除勾选项').fire('click');const compile=f.calls.find(call=>call.path==='/api/assessments/plan').payload;
+  await f.button('删除勾选项').fire('click');const compile=f.calls.find(call=>call.path==='/api/assessments/plan').payload;
   assert.deepEqual(compile.selected_ids,['parent','leaf']);assert.deepEqual(compile.excluded_ids,['folder']);
   assert.equal(compile.snapshots.folder,'sig-folder');assert.equal(compile.task_id,'analysis-one');
   assert.equal(f.root.querySelector('dialog').open,true);assert.equal(f.calls.filter(call=>call.path.endsWith('/approve')).length,0);
@@ -130,18 +134,20 @@ test('category cancellation changes only matching descendants and leaves other s
 });
 
 test('confirmation approves only frozen actual IDs, preserves original scope, and pause waits for host acknowledgement before cancellation',async()=>{
-  const f=await fixture();await f.button('模拟删除勾选项').fire('click');
-  assert.ok(f.root.querySelector('dialog').textContent.includes('本批包含 1 个文件、0 个文件夹'));
-  await f.button('开始模拟删除').fire('click');await flush();
+  const f=await fixture();await f.button('删除勾选项').fire('click');
+  assert.ok(f.root.querySelector('dialog').textContent.includes('删除 1 个文件'));
+  const dialog=f.root.querySelector('dialog');assert.equal(dialog.scrollTop,0,'showModal automatic focus scrolling is reset before the first paint');assert.equal(dialog.tabIndex,-1);assert.equal(dialog.focusOptions.preventScroll,true);assert.equal(dialog.attrs['aria-labelledby'],dialog.querySelector('h2').id);
+  assert.equal(f.events.filter(event=>Array.isArray(event)&&event[0]==='focus').at(-1)[1],'dialog','initial focus stays on the labelled dialog rather than either bottom action');
+  await f.button('删除 1 个文件').fire('click');await flush();
   const approval=f.calls.find(call=>call.path.endsWith('/approve'));assert.deepEqual(approval,{path:'/api/tasks/host-batch/approve',payload:{version:2,ids:['high']}});
-  assert.ok(f.root.textContent.includes('正在模拟删除'));assert.equal(f.helpers.task.cleanup_source_task_id,'analysis-one');
+  assert.ok(f.root.textContent.includes('正在执行所选操作'));assert.equal(f.helpers.task.cleanup_source_task_id,'analysis-one');
   const pause=f.button('暂停');await f.tick();assert.equal(f.button('暂停'),pause,'progress polling keeps the pressed/focused control in the DOM');
   await f.button('暂停').fire('click');assert.ok(f.root.textContent.includes('正在暂停'));assert.equal(f.button('取消剩余项'),undefined);
   await f.tick();assert.ok(f.root.textContent.includes('已暂停'));
   f.staleExecution();await f.tick();assert.ok(f.root.textContent.includes('已暂停'),'an older poll cannot roll back the host pause acknowledgement');
-  await f.button('继续本批').fire('click');assert.ok(f.root.textContent.includes('正在模拟删除'));assert.equal(f.button('暂停'),pause,'resume reuses the same pause control');
+  await f.button('继续本批').fire('click');assert.ok(f.root.textContent.includes('正在执行所选操作'));assert.equal(f.button('暂停'),pause,'resume reuses the same pause control');
   await f.button('暂停').fire('click');await f.tick();await f.button('取消剩余项').fire('click');assert.ok(f.root.textContent.includes('正在取消'));
-  await f.tick();assert.ok(f.root.textContent.includes('剩余操作已取消'));assert.ok(f.root.textContent.includes('模拟完成 0'));assert.ok(f.root.textContent.includes('取消 1'));
+  await f.tick();assert.ok(f.root.textContent.includes('剩余操作已取消'));assert.ok(f.root.textContent.includes('已记录 0'));assert.ok(f.root.textContent.includes('取消 1'));
   await f.button('返回清理清单').fire('click');await flush();
   assert.ok(f.calls.filter(call=>call.path.startsWith('/api/files?')).every(call=>new URL(call.path,'http://fixture').searchParams.get('task_id')==='analysis-one'));
   assert.equal(f.calls.filter(call=>call.path.includes('/continue')).length,0,'finishing does not restart the LLM');
@@ -157,20 +163,20 @@ test('batch limits and nonselectable rows are visible rather than described as a
 test('returning after a partial batch removes verified successful rules and recompiles only the remaining choices',async()=>{
   const f=await fixture({auto:[high,neutral,skip,leaf],planRows:[high,neutral,skip,leaf]});
   await f.pick('folder',false);await f.pick('leaf',true);
-  await f.button('模拟删除勾选项').fire('click');await f.button('开始模拟删除').fire('click');
+  await f.button('删除勾选项').fire('click');await f.button('删除 4 个文件').fire('click');
   f.finishExecution([{id:high.id,status:'succeeded',verified:true},{id:neutral.id,status:'cancelled',verified:false},{id:skip.id,status:'failed',verified:false},{id:leaf.id,status:'unverified',verified:false}],'cancelled');
   await f.tick();await f.button('返回清理清单').fire('click');await flush();
   assert.equal(f.check('high').checked,false);assert.equal(f.check('neutral').checked,true);assert.equal(f.check('skip').checked,true);assert.equal(f.check('leaf').checked,true);
-  await f.button('模拟删除勾选项').fire('click');
+  await f.button('删除勾选项').fire('click');
   const second=f.calls.filter(call=>call.path==='/api/assessments/plan').at(-1).payload;
   assert.deepEqual(second.selected_ids,['neutral','skip','leaf']);assert.deepEqual(second.excluded_ids,['folder']);assert.equal(second.snapshots.folder,'sig-folder');assert.equal(Object.hasOwn(second.snapshots,'high'),false);assert.equal(second.task_id,'analysis-one');
 });
 
 test('a verified completed directory removes its covered draft rules while an unfinished logical ancestor remains selected',async()=>{
   const f=await fixture({auto:[],planRows:[folder]});await f.pick('parent',true);await f.pick('folder',true);await f.pick('leaf',true);
-  await f.button('模拟删除勾选项').fire('click');await f.button('开始模拟删除').fire('click');
+  await f.button('删除勾选项').fire('click');await f.button('删除 1 个文件夹').fire('click');
   f.finishExecution([{id:folder.id,status:'succeeded',verified:true}]);await f.tick();await f.button('返回清理清单').fire('click');await flush();
-  await f.button('模拟删除勾选项').fire('click');const second=f.calls.filter(call=>call.path==='/api/assessments/plan').at(-1).payload;
+  await f.button('删除勾选项').fire('click');const second=f.calls.filter(call=>call.path==='/api/assessments/plan').at(-1).payload;
   assert.deepEqual(second.selected_ids,['parent']);assert.equal(Object.hasOwn(second.snapshots,'folder'),false);assert.equal(Object.hasOwn(second.snapshots,'leaf'),false);
 });
 
@@ -195,7 +201,7 @@ test('task navigation keeps the review draft while explanation and adjustment us
 
 test('completed execution publishes the contextual top-left return without a duplicate bottom return button',async()=>{
   const f=await fixture();let back=null;f.helpers.setContextBack=(label,run)=>{back={label,run};};
-  await f.button('模拟删除勾选项').fire('click');await f.button('开始模拟删除').fire('click');f.finishExecution([{id:high.id,status:'succeeded',verified:true}]);await f.tick();
+  await f.button('删除勾选项').fire('click');await f.button('删除 1 个文件').fire('click');f.finishExecution([{id:high.id,status:'succeeded',verified:true}]);await f.tick();
   assert.equal(back.label,'返回清理清单');assert.equal(f.button('返回清理清单'),undefined);back.run();await flush();assert.equal(f.check('high').checked,false);
 });
 
@@ -204,4 +210,32 @@ test('submitting adjusted requirements returns to the results list when the next
   assert.equal(ui.currentTask().status,'investigating');assert.deepEqual(f.calls.find(call=>call.path.endsWith('/feedback')).payload,{message:'请继续核对'});
   ui.accept({...f.helpers.task,status:'completed',summary:'核对完成'});f.redrawTaskUI();await flush();
   assert.ok(f.root.querySelector('.cleanup-page-list'));assert.equal(f.root.querySelector('form'),null);assert.equal(f.topBack.label,'返回常用任务');
+});
+
+test('background tasks share the review flow with flat per-ID selection, explicit action groups and direct explanations',async()=>{
+  const app=(id,kind,action,rating=4,state='explicit')=>({...row(id,'shared.exe',rating,kind,state),action,actions:[action]});
+  const startup=app('startup','startup','disable_startup'),service=app('service','service','stop_service',5),process=app('process-1','process','stop_process'),second=app('process-2','process','stop_process',1),unknown=app('unknown-service','service','stop_service',null,'unanalysed');
+  service.details={state:'Running',state_label:'正在运行',start_mode:'Auto'};process.details={pid:2001};second.details={pid:2002};
+  const stopped={...app('stopped-service','service','stop_service',null,'unanalysed'),can_logical_select:false,action_unavailable_reason:'当前服务已停止，无需再次停止。',details:{state:'Stopped',state_label:'已停止',start_mode:'Manual'}};
+  service.assessment.impact='只停止当前服务，不禁用下次启动。';
+  const f=await fixture({scopeKind:'applications',rows:[startup,service,process,second,unknown,stopped],auto:[startup,service,process],planRows:[startup,service,process]});
+  await f.activateTaskUI();assert.ok(f.button('全部项目'));assert.equal(f.button('目录结构（已扫描）'),undefined);assert.equal(f.check(unknown.id),undefined);
+  assert.equal(f.root.querySelector('h1').textContent,'优化清单');assert.equal(f.root.querySelector('.search-input').attrs['aria-label'],'搜索本轮项目');assert.equal(f.check(process.id).attrs['aria-label'],'勾选操作：进程 · '+process.name+' · PID 2001');assert.notEqual(f.check(process.id).attrs['aria-label'],f.check(second.id).attrs['aria-label']);assert.ok(f.root.textContent.includes('PID 2001'));assert.ok(f.root.textContent.includes('启动方式：自动'));
+  assert.ok(f.root.querySelector('.cleanup-page-list').querySelectorAll('.advice-explanation-grid').every(node=>node.children.length===4));
+  await f.pick(service.id,false);assert.equal(f.check(startup.id).checked,true);assert.equal(f.check(process.id).checked,true);assert.equal(f.check(second.id).checked,false,'another process with the same executable stays independently unselected');
+  await f.pick(service.id,true);await f.button('全部项目').fire('click');assert.ok(f.check(unknown.id));assert.equal(f.check(unknown.id).checked,false);assert.equal(f.check(service.id).indeterminate,false);
+  assert.equal(f.check(stopped.id).disabled,true);assert.equal(f.check(stopped.id).title,stopped.action_unavailable_reason);assert.ok(f.root.textContent.includes('当前状态：已停止'));assert.ok(f.root.textContent.includes('启动方式：手动'));
+  const unknownRow=f.root.all().find(item=>item.dataset.cleanupId===unknown.id);assert.equal(unknownRow.querySelector('.advice-explanation-grid'),null);assert.ok(unknownRow.querySelector('.inventory-advice-pending'));
+  await f.button('执行勾选项').fire('click');const dialog=f.root.querySelector('dialog');assert.ok(dialog.textContent.includes('禁用 1 个开机启动项'));assert.ok(dialog.textContent.includes('停止 1 个服务'));assert.ok(dialog.textContent.includes('结束 1 个进程'));assert.ok(dialog.textContent.includes(service.assessment.impact));assert.ok(dialog.textContent.includes('PID 2001'));assert.ok(!dialog.textContent.includes('PID 2002'));assert.equal(dialog.querySelectorAll('details').length,0);
+  const logical=f.calls.find(call=>call.path==='/api/assessments/plan').payload;assert.deepEqual([...logical.selected_ids].sort(),[startup.id,service.id,process.id].sort());
+  await f.button('确认执行 3 项').fire('click');const approval=f.calls.find(call=>call.path.endsWith('/approve'));assert.deepEqual(approval.payload.ids,[startup.id,service.id,process.id]);assert.equal(approval.payload.version,2);assert.ok(f.root.textContent.includes('禁用开机启动'));
+});
+
+test('background category selection binds kind across pages without erasing selections in another type',async()=>{
+  const startup={...row('startup','same.exe',4,'startup'),action:'disable_startup',actions:['disable_startup']},service={...row('service','same.exe',5,'service'),action:'stop_service',actions:['stop_service']},process={...row('process','same.exe',4,'process'),action:'stop_process',actions:['stop_process']};
+  const f=await fixture({scopeKind:'applications',rows:[startup,service,process],auto:[startup,service,process],planRows:[startup,process]});
+  await f.button('全部项目').fire('click');const kind=f.root.querySelectorAll('select').find(node=>node.attrs['aria-label']==='筛选项目类型');kind.value='service';await kind.fire('change');assert.ok(f.check(service.id));assert.equal(f.check(startup.id),undefined);
+  await f.category('5',false);assert.equal(f.calls.filter(call=>call.path==='/api/assessments/select').at(-1).payload.kind,'service');
+  kind.value='all';await kind.fire('change');assert.equal(f.check(startup.id).checked,true);assert.equal(f.check(process.id).checked,true);assert.equal(f.check(service.id).checked,false);
+  await f.button('执行勾选项').fire('click');const payload=f.calls.filter(call=>call.path==='/api/assessments/plan').at(-1).payload;assert.deepEqual([...payload.selected_ids].sort(),[startup.id,process.id].sort());assert.deepEqual(payload.excluded_ids,[service.id]);
 });

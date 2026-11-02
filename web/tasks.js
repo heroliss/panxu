@@ -2,17 +2,17 @@
 
 // Shared, pure action wording. It describes intent without granting permission.
 window.PanxuActionCopy = (() => {
-  const names = {disable_startup:'关闭开机启动', stop_service:'停止服务', stop_process:'结束应用', uninstall:'卸载软件'};
+  const names = {disable_startup:'禁用开机启动', stop_service:'停止服务', stop_process:'结束进程', uninstall:'卸载软件'};
   function label(action, kind) {
     if(action === 'delete')return kind === 'directory' ? '删除文件夹' : kind === 'file' ? '删除文件' : '删除文件或文件夹';
     return Object.hasOwn(names, action) ? names[action] : '未知操作';
   }
   function counted(action, kind, count) {
     if(action === 'delete')return `删除 ${count} ${kind === 'directory' ? '个文件夹' : kind === 'file' ? '个文件' : '项'}`;
-    return ({disable_startup:`关闭 ${count} 个开机启动项`, stop_service:`停止 ${count} 个服务`,
-      stop_process:`结束 ${count} 个应用`, uninstall:`卸载 ${count} 个软件`})[action] || `未知操作 ${count} 项`;
+    return ({disable_startup:`禁用 ${count} 个开机启动项`, stop_service:`停止 ${count} 个服务`,
+      stop_process:`结束 ${count} 个进程`, uninstall:`卸载 ${count} 个软件`})[action] || `未知操作 ${count} 项`;
   }
-  function summary(items, {simulation = true} = {}) {
+  function summary(items) {
     const groups = new Map();
     for(const item of Array.isArray(items) ? items : []){
       if(!item || typeof item !== 'object')continue;
@@ -27,18 +27,52 @@ window.PanxuActionCopy = (() => {
     const actions = new Set(rows.map(group => group.action));
     const deletion = actions.size === 1 && actions.has('delete');
     const kinds = new Set(rows.map(group => group.kind));
-    const emptyButton = deletion ? `选择要删除的${kinds.size === 1 && kinds.has('directory') ? '文件夹' : kinds.size === 1 && kinds.has('file') ? '文件' : '文件或文件夹'}` : simulation ? '选择要模拟的操作' : '选择要执行的操作';
+    const emptyButton = deletion ? `选择要删除的${kinds.size === 1 && kinds.has('directory') ? '文件夹' : kinds.size === 1 && kinds.has('file') ? '文件' : '文件或文件夹'}` : '选择要执行的操作';
     let button = emptyButton;
     if(count){
-      if(rows.length === 1 && rows[0].action)button = `${simulation ? '模拟' : ''}${rows[0].text}`;
-      else if(deletion)button = `${simulation ? '模拟' : ''}删除 ${count} 项`;
-      else button = `确认${simulation ? '模拟' : '执行'} ${count} 项`;
+      if(rows.length === 1 && rows[0].action)button = rows[0].text;
+      else if(deletion)button = `删除 ${count} 项`;
+      else button = `确认执行 ${count} 项`;
     }
     const folderNote = rows.some(group=>group.action === 'delete' && group.kind === 'directory') ? '删除文件夹的范围包含内部文件。' : '';
-    return {count,groups:rows,breakdown:rows.map(group=>group.text).join('、'),button,emptyButton,
-      effect:(simulation ? '仅记录模拟，不会实际删除文件或改动系统。' : '确认后将执行所列操作。') + folderNote};
+    const selectedButton=actions.size===1?({delete:'删除勾选项',disable_startup:'禁用勾选的启动项',stop_service:'停止勾选的服务',stop_process:'结束勾选的进程',uninstall:'卸载勾选的软件'})[[...actions][0]] || '执行勾选项':'执行勾选项';
+    return {count,groups:rows,breakdown:rows.map(group=>group.text).join('、'),button,emptyButton,selectedButton,
+      effect:'请核对所选项目、具体操作与影响。'+folderNote};
   }
   return {label,summary};
+})();
+
+// Shared, readable explanations. Capabilities and source text stay distinct
+// from model judgement; missing evidence is never filled with a guessed score.
+window.PanxuAdvicePresentation = (() => {
+  const text=value=>typeof value==='string'?value.trim():'';
+  function render(record={}, {direct=false,suggestion='',compactUnknown=false}={}){
+    const value=window.PanxuAssessment.read(record,{direct}),assessment=record.assessment&&typeof record.assessment==='object'?record.assessment:record;
+    const analysed=value.state!=='unanalysed',operation=record.action,action=operation?window.PanxuActionCopy.label(operation,record.kind):'';
+    const operationAdvice=Boolean(text(suggestion))||record.origin==='user_direct'||record.provenance?.source==='llm'&&Boolean(operation);
+    if(compactUnknown&&!analysed&&!operationAdvice){const pending=document.createElement('p');pending.className='inventory-advice-pending field-help';pending.textContent='尚未分析；取得建议后会直接显示用途、建议、原因和影响。';return pending;}
+    const local=body=>body?'本机说明：'+body:'';
+    const purpose=text(assessment.purpose)||text(record.purpose),reason=text(assessment.reason)||text(record.reason),impact=text(assessment.impact)||text(record.impact);
+    let advice=text(suggestion);
+    if(!advice){
+      if(value.stale)advice='已有建议需要重新核对。';
+      else if(value.state==='skipped')advice='本轮已跳过，未给出处理建议。';
+      else if(value.state==='no_advice')advice='暂未形成操作建议。';
+      else if(value.state==='unanalysed')advice=action&&operationAdvice?`已有操作建议：${action}；尚未评分。`:'尚未分析，未形成操作建议。';
+      else if(value.conclusion==='keep'||[1,2].includes(value.rating))advice=value.rating===2?'倾向保留。':'建议保留。';
+      else if(value.conclusion==='recommend')advice=action?`建议${action}。`:['file','directory'].includes(record.kind)?'建议清理。':'倾向调整，具体操作待确认。';
+      else if(action&&[4,5].includes(value.rating))advice=`倾向${action}，是否执行由你决定。`;
+      else if(value.rating===3)advice='清理与保留各有理由，由你决定。';
+      else if(value.rating===null)advice='已分析，尚未给出倾向分；由你决定。';
+      else advice=['file','directory'].includes(record.kind)?'倾向清理，是否执行由你决定。':'倾向调整，具体操作待确认。';
+    }
+    const fields=[['purpose','用途',purpose?(analysed?purpose:local(purpose)):'暂未说明用途。'],['suggestion','建议',advice],
+      ['reason','原因',reason?(analysed||operationAdvice?reason:local(reason)):'暂无分析依据。'],['impact','影响',impact || text(record.action_effect) || '影响尚未说明，执行前需要核对。']];
+    const group=document.createElement('section');group.className='advice-explanation-grid';group.setAttribute('aria-label','用途、建议、原因与影响');
+    for(const [key,label,body] of fields){const block=document.createElement('div'),heading=document.createElement('span'),content=document.createElement('p');block.className='advice-explanation-part';block.dataset.advicePart=key;heading.className='advice-explanation-label';heading.textContent=label;content.textContent=body;block.append(heading,content);group.append(block);}
+    return group;
+  }
+  return {render};
 })();
 
 // A score is advisory; it never changes action permission or user consent.
@@ -616,7 +650,7 @@ window.PanxuTasks = (() => {
   }
   function directControls(card,entry,taskId) {
     if(entry.stale || entry.user_kept)return;
-    const box=detail('选择要模拟的操作'), body=node('div','task-direct-options');box.classList.add('task-direct');let loaded=false;
+    const box=detail('选择要执行的操作'),body=node('div','task-direct-options');box.classList.add('task-direct');let loaded=false;
     box.addEventListener('toggle',async()=>{
       if(!box.open || loaded)return;loaded=true;body.replaceChildren(node('p','field-help','正在核对可用操作…'));
       try {
@@ -627,16 +661,14 @@ window.PanxuTasks = (() => {
         const available=(item.actions || []).filter(name=>['delete','disable_startup','stop_service','stop_process','uninstall'].includes(name));
         add(body,add(node('div','item-title-line'),window.PanxuIcons?.create(item),node('strong','',item.name)),node('p','task-path',item.path),node('p','field-help',entry.impact),
           node('p','field-help',window.PanxuActionCopy.summary(available.map(operation=>({action:operation,kind:item.kind}))).effect));
-        available.forEach(operation=>add(body,action(`模拟${window.PanxuActionCopy.label(operation,item.kind)}`,()=>directAction(taskId,item,operation),'button')));
-        if(!available.length)add(body,node('p','field-help','这项内容暂时没有可用的模拟操作。'));
+        available.forEach(operation=>add(body,action(window.PanxuActionCopy.label(operation,item.kind),()=>directAction(taskId,item,operation),'button')));
+        if(!available.length)add(body,node('p','field-help','这项内容暂时没有可用操作。'));
       } catch(error) {body.replaceChildren(node('p','field-error',error.message));loaded=false;}
     });add(box,body);add(card,box);
   }
   function plan(root) {
     const cards = node('div', 'task-plan');
-    const additional=current.plan.items.length>3?detail(`其余 ${current.plan.items.length-3} 项`):null;
-    if(additional){additional.className+=' task-plan-more';add(additional.querySelector('summary'),node('span','task-plan-more-selected'));}
-    current.plan.items.forEach((item,index) => {
+    current.plan.items.forEach(item => {
       const card = node('article', 'task-plan-item');
       const check = node('input'); check.type = 'checkbox'; check.checked = selected.has(item.id);
       check.disabled = pending; check.setAttribute('aria-label', '选择' + item.name);
@@ -652,16 +684,12 @@ window.PanxuTasks = (() => {
       add(copy, titleLine, add(node('div', 'task-plan-meta'),
         semanticTag(window.PanxuActionCopy.label(item.action,item.kind), 'info', 'task-action-label'),
         item.personal_choice_required && window.PanxuAssessment.read(item).rating!==3 ? semanticTag('由你选择', 'warning', 'task-choice-note') : null),
-        node('p','task-item-reason',previewText(item.reason)));
-      const info = detail('原因与影响', explanation('建议原因',item.reason),explanation('影响', item.impact), node('p', 'task-path', item.path),
-        window.PanxuProvenance.details({...item,provenance:item.provenance || current.plan.provenance},{presets:context.providerPresets,origin:current.plan.origin,plan:true}),
-        action('保留这项', () => request('/api/tasks/' + current.id + '/feedback', {keep_ids: [item.id]}), 'plain-button'));
-      add(copy, info);
+        window.PanxuAdvicePresentation.render(item,{direct:true,suggestion:window.PanxuActionCopy.label(item.action,item.kind)+'，待你确认。'}));
+      add(copy,node('p','task-path',item.path),window.PanxuProvenance.details({...item,provenance:item.provenance || current.plan.provenance},{presets:context.providerPresets,origin:current.plan.origin,plan:true}),action('保留这项',()=>request('/api/tasks/'+current.id+'/feedback',{keep_ids:[item.id]}),'plain-button'));
       add(card, check, window.PanxuAssessment.render(item,{direct:true,primary:true,cls:'task-plan-rating'}),copy,
         node('span', 'task-item-size', item.kind === 'file' || item.kind === 'directory' ? '约 ' + context.bytes(item.size_bytes) : ''));
-      add(index<3?cards:additional, card);
+      add(cards,card);
     });
-    if(additional)add(cards,additional);
     add(root, cards);
     const confirm = action(window.PanxuActionCopy.summary(current.plan.items).emptyButton, () => {
       if (!selected.size) return;
@@ -685,16 +713,14 @@ window.PanxuTasks = (() => {
     if (count) count.textContent = selected.size ? copy.breakdown : '个人文件不会默认选中';
     const effect = document.getElementById('task-simulation-effect');
     if (effect) effect.textContent = (selected.size ? copy : window.PanxuActionCopy.summary(current.plan.items)).effect;
-    const additional=document.querySelector('.task-plan-more-selected');
-    if(additional)additional.textContent=` · 其中已选 ${current.plan.items.slice(3).filter(item=>selected.has(item.id)).length} 项`;
   }
   function results(root) {
     if (!current.last_result) return;
     const result = current.last_result;
-    const labels = {succeeded: '模拟完成', failed: '未完成', unverified: '待核实', cancelled: '已停止', running: '待核实'};
+    const labels={succeeded:'已记录',failed:'未完成',unverified:'待核实',cancelled:'已停止',running:'待核实'};
     const pendingCount=Math.max(0,result.total-result.succeeded);
-    const box = detail(`本轮结果：${result.succeeded} 项模拟完成${pendingCount?`，${pendingCount} 项未完成或待核实`:''}`,
-      node('p', 'result-protection-note', '仅完成模拟，实际文件和系统未改动。'));
+    const box=detail(`本轮结果：${result.succeeded} 项已记录${pendingCount?`，${pendingCount} 项未完成或待核实`:''}`,node('p','result-protection-note','实际释放空间：0 B。'));
+    box.dataset.backend=result.backend || current.backend || '';
     box.className += ' task-results';
     const tones = {succeeded:'info', failed:'danger', unverified:'warning', cancelled:'neutral', running:'warning'};
     result.items.forEach((item) => {
@@ -702,8 +728,8 @@ window.PanxuTasks = (() => {
       const row = node('article', 'task-result-item');
       const heading = add(node('div', 'task-result-heading'),
         add(node('div', 'item-title-line'), window.PanxuIcons?.create(item), node('strong', 'task-result-name', item.name)),
-        semanticTag(undone ? '已撤销模拟' : labels[item.status] || '待核实', undone ? 'neutral' : tones[item.status] || 'warning', 'task-result-state'));
-      add(row, heading, node('p', 'task-result-message', undone ? '已撤销这次模拟，实际文件和系统没有被改动。' : item.message));
+        semanticTag(undone?'记录已撤销':labels[item.status] || '待核实',undone?'neutral':tones[item.status] || 'warning','task-result-state'));
+      add(row,heading,node('p','task-result-message',undone?'这次处理记录已撤销。':item.message));
       add(box, row);
     });
     add(root, box);
@@ -743,12 +769,9 @@ window.PanxuTasks = (() => {
   function adviceCard(entry,taskId) {
     const card=node('article','task-advice-item'),copy=node('div','task-advice-copy');
     add(copy,add(node('div','item-title-line task-advice-title-line'),window.PanxuIcons?.create(entry),node('strong','task-advice-title',entry.name)),
-      entry.user_kept?semanticTag('你已选择保留','neutral','task-advice-state'):null,
-      node('p','task-item-reason',previewText(entry.reason)));
-    const info=detail('原因与影响',explanation('用途',entry.purpose),explanation('建议原因',entry.reason),
-      explanation('影响',entry.impact),window.PanxuProvenance.details(entry,{presets:context.providerPresets}));
-    if(!busy())directControls(info,entry,taskId);
-    add(copy,info);add(card,window.PanxuAssessment.render(entry,{direct:true,primary:true,cls:'task-advice-rating'}),copy);
+      entry.user_kept?semanticTag('你已选择保留','neutral','task-advice-state'):null,window.PanxuAdvicePresentation.render(entry,{direct:true}),window.PanxuProvenance.details(entry,{presets:context.providerPresets}));
+    if(!busy())directControls(copy,entry,taskId);
+    add(card,window.PanxuAssessment.render(entry,{direct:true,primary:true,cls:'task-advice-rating'}),copy);
     return card;
   }
   function advicePreview(root) {
@@ -760,8 +783,7 @@ window.PanxuTasks = (() => {
   }
   function taskView(root) {
     context.setContextBack?.('返回常用任务',returnHome);
-    const filesystem=current.scope_kind!=='applications'&&!['background','software'].includes(current.analysis?.section);
-    if(window.PanxuCleanupReview&&filesystem&&!current.question&&(current.status==='executing'||!busy()&&['awaiting_review','completed','paused','budget_exhausted','error'].includes(current.status))){reviewView(root);return;}
+    if(window.PanxuCleanupReview&&!current.question&&(current.status==='executing'||!busy()&&['awaiting_review','completed','paused','budget_exhausted','error'].includes(current.status))){reviewView(root);return;}
     add(root, context.heading(intents[current.preset]?.[0] || '整理助手', current.preset && current.preset !== 'custom' ? '按需调查，先给出最值得关注的建议。' : current.goal));
     const panel = node('section', 'panel task-session');
     const summary = node('div', 'task-summary'); summary.setAttribute('role', 'status');
@@ -803,8 +825,10 @@ window.PanxuTasks = (() => {
   function reviewView(root) {
     const sourceId=current.cleanup_source_task_id || current.id,pane=reviewPanes.get(sourceId) || '';
     const knownSource=window.PanxuCleanupReview.sourceFor(current);
+    const sourceTask=knownSource || current,appTask=sourceTask.scope_kind==='applications'||['background','software'].includes(sourceTask.analysis?.section);
+    const listTitle=appTask?(sourceTask.analysis?.section==='software'?'软件整理清单':'优化清单'):'清理清单';
     if(pane&&knownSource){
-      const returnLabel=pane==='process'?'返回分析详情':'返回清理清单',returnPane=pane==='process'?'analysis':'';
+      const returnLabel=pane==='process'?'返回分析详情':'返回'+listTitle,returnPane=pane==='process'?'analysis':'';
       context.setContextBack?.(returnLabel,()=>reviewPane(returnPane));
       const title={analysis:'分析详情',adjust:'调整整理要求',process:'调查过程'}[pane] || '分析详情';
       add(root,context.heading(title,pane==='adjust'?'说明要保留的内容，或让助手继续核对。':'查看本轮结论、依据和调查记录。'));
@@ -819,7 +843,7 @@ window.PanxuTasks = (() => {
       if(!context.setContextBack)add(root,action(returnLabel,()=>reviewPane(returnPane),'plain-button task-new'));
       return;
     }
-    add(root,context.heading('清理清单','按评分查看，勾选决定要清理的内容。'));
+    add(root,context.heading(listTitle,'按评分查看用途、建议与影响，勾选后核对具体操作。'));
     const summary=node('div','cleanup-task-summary');add(root,summary);
     const list=node('div','cleanup-task-list');add(root,list);
     const explanation=node('div','cleanup-task-explanation');add(root,explanation);

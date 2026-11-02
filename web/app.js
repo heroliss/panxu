@@ -180,7 +180,7 @@ function initializePanxu() {
   const $ = (id) => document.getElementById(id);
   const names = { overview: '整理助手', files: '我的文件', background: '后台与软件', software: '后台与软件', history: '操作记录', model: '设置', duplicates: '查找重复文件' };
   const kindNames = { file: '文件', directory: '目录汇总', startup: '启动项', service: '服务', process: '进程', software: '软件' };
-  const state = { csrf: '', version: '', view: 'overview', items: [], summary: {}, settings: {}, history: [], disks: [], source: 'demo', warnings: [], selected: new Set(), focused: null, query: '', risk: 'all', origin: 'all', subtype: 'all', limit: 300, busy: false, job: null, plan: null, scanPath: '', inspector: false, assistant: null, recommendations: [], checked: false, analyzing: false, filesExpanded: false, backgroundExpanded: false, inventoryTarget: 'startup', checkDestination: 'overview', showAllCards: new Set() };
+  const state = { csrf: '', version: '', view: 'overview', items: [], summary: {}, settings: {}, history: [], disks: [], source: 'demo', warnings: [], selected: new Set(), focused: null, query: '', risk: 'all', origin: 'all', subtype: 'all', limit: 50, busy: false, job: null, plan: null, scanPath: '', inspector: false, assistant: null, recommendations: [], checked: false, analyzing: false, filesExpanded: false, backgroundExpanded: false, inventoryTarget: 'startup', checkDestination: 'overview', showAllCards: new Set() };
   let toastTimer;
   let developerCleanup=null;
   let developerController=null,developerDockOpen=false,developerReturnFocus=null;
@@ -271,10 +271,10 @@ function initializePanxu() {
   }
   function selectionReason(item) {
     if (item.risk === 'protected') return '已保护，保持原样。';
-    if (item.simulated) return '已经记录模拟操作，可在操作记录中撤销模拟。';
+    if (item.simulated) return '此项已有操作记录，可到操作记录查看或撤销。';
     if (item.kind === 'directory' && !canSelect(item)) return '这个文件夹还没有完整检查，请选择里面的具体文件。';
-    if (!item.actions?.length) return '暂不提供可模拟的操作。';
-    return `可以查看${window.PanxuActionCopy.label(item.actions[0],item.kind)}的模拟清单。`;
+    if (!item.actions?.length) return '此项暂时没有可用操作。';
+    return `可以查看${window.PanxuActionCopy.label(item.actions[0],item.kind)}清单。`;
   }
   function verifiedCache(item) { const rec = advice(item); return canSelect(item) && rec.auto_select === true && rec.group === 'recommended' && rec.needs_user_choice !== true; }
   function advice(item) { return adviceMap.get(item.id)?.advice || item.advice || {}; }
@@ -284,7 +284,7 @@ function initializePanxu() {
     if (rec.group === 'personal' && item.risk !== 'protected') return 'personal';
     return 'keep';
   }
-  function cleanCopy(value) { return text(value).replaceAll('可模拟清理', '可模拟删除').replaceAll('只读采集', '检查').replaceAll('只读盘点', '检查'); }
+  function cleanCopy(value) { return text(value).replaceAll('可模拟清理', '可删除').replaceAll('可模拟删除', '可删除').replaceAll('只读采集', '检查').replaceAll('只读盘点', '检查'); }
   function itemPurpose(item) {
     const rec = advice(item); if (rec.purpose) return rec.purpose;
     if (/cache|缓存/i.test(item.category || '')) return `${item.owner || '应用'}保存的中间结果，用来减少重复下载或处理，让下次使用更快。`;
@@ -392,7 +392,7 @@ function initializePanxu() {
       navigationStack.push({view:state.view,query:state.query,risk:state.risk,origin:state.origin,subtype:state.subtype,limit:state.limit});
       if(navigationStack.length>12)navigationStack.shift();
     }
-    state.view = view; state.query = snapshot?.query || ''; state.risk = snapshot?.risk || 'all'; state.origin = snapshot?.origin || 'all'; state.subtype = snapshot?.subtype || 'all'; state.limit = snapshot?.limit || 300;
+    state.view = view; state.query = snapshot?.query || ''; state.risk = snapshot?.risk || 'all'; state.origin = snapshot?.origin || 'all'; state.subtype = snapshot?.subtype || 'all'; state.limit = snapshot?.limit || 50;
     const current = view === 'software' ? 'background' : view === 'duplicates' ? 'overview' : view;
     document.querySelectorAll('[data-view]').forEach((b) => { const active = b.dataset.view === current; b.classList.toggle('active', active); if (active) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current'); });
     $('breadcrumb-current').textContent = names[view];
@@ -479,7 +479,7 @@ function initializePanxu() {
   function makeSelect(options, value, callback, label) { const select = el('select'); select.setAttribute('aria-label', label); options.forEach(([v, l]) => { const option = el('option', '', l); option.value = v; select.append(option); }); select.value = value; select.addEventListener('change', () => callback(select.value)); return select; }
   function listToolbar(root) {
     const tools = el('div', 'toolbar'); const search = el('input', 'search-input'); search.type = 'search'; search.placeholder = '搜索文件或软件名称'; search.setAttribute('aria-label', '搜索当前结果'); search.value = state.query;
-    search.addEventListener('input', () => { state.query = search.value; state.limit = 300; renderResults(); renderSelection(); });
+    search.addEventListener('input', () => { state.query = search.value; state.limit = 50; renderResults(); renderSelection(); });
     append(tools, search, makeSelect([['all', '全部内容'], ['low', '可处理'], ['review', '需要决定'], ['protected', '已保留']], state.risk, (value) => { state.risk = value; renderResults(); renderSelection(); }, '筛选内容')); append(root, tools);
   }
   function locationPicker(root) {
@@ -542,6 +542,12 @@ function initializePanxu() {
     checkbox.addEventListener('change', () => { allowed.forEach((item) => toggleAnalysis(item, checkbox.checked)); renderResults(); renderSelection(); });
     return checkbox;
   }
+  function renderInventoryAdvice(host,item,entry) {
+    host.replaceChildren();
+    const assessed=item.assessment && item.assessment.state!=='unanalysed';
+    if(!assessed&&!entry){append(host,el('p','inventory-advice-pending field-help','尚未分析。取得建议后，这里会直接显示用途、建议、原因和影响。'));return;}
+    append(host,window.PanxuAdvicePresentation.render(assessed?item:{...item,...entry,assessment:undefined},{direct:!assessed}));
+  }
   function renderResults() {
     if (state.view === 'files') { window.PanxuFiles?.selectionChanged(); return; }
     const host = $('results-container'); if (!host) return;
@@ -561,21 +567,25 @@ function initializePanxu() {
     const renderedItems=items.slice(0,state.limit);
     renderedItems.forEach((item) => {
       const row = el('tr', 'item-row'); row.dataset.adviceId=item.id; const checkCell = el('td', 'check-cell'); const check = el('input'); check.type = 'checkbox'; check.checked = analysisSelected(item);
-      check.setAttribute('aria-label', '选择分析' + item.name); check.addEventListener('change', () => { toggleAnalysis(item, check.checked); renderResults(); renderSelection(); }); append(checkCell, check);
-      const copy = el('td', 'name-cell'); append(copy, itemTitle(item, button(item.name, () => showItem(item), 'file-name-button')), el('div', 'item-path item-secondary', item.owner || kindNames[item.kind]));
+      const identity=item.kind==='process'&&Number.isInteger(item.details?.pid)?`PID ${item.details.pid}`:item.kind==='service'?item.details?.service_name:'';
+      check.setAttribute('aria-label', '选择分析：' + item.name + (identity?' · '+identity:'')); check.addEventListener('change', () => { toggleAnalysis(item, check.checked); renderResults(); renderSelection(); }); append(checkCell, check);
+      const copy = el('td', 'name-cell'); append(copy, itemTitle(item, button(item.name, () => showItem(item), 'file-name-button')), el('div', 'item-path item-secondary', [identity,item.owner || kindNames[item.kind]].filter(Boolean).join(' · ')));
       const size = el('td', 'size-cell', ['service','startup'].includes(item.kind) ? '—' : bytes(itemSize(item)));
       const result = window.PanxuTasks.adviceFor(item.id, item.signature);
       const status = el('td', 'kind-label result-rating-cell');status.dataset.adviceState='1';showRating(status,item,result);
       const known=result || item.assessment && item.assessment.state!=='unanalysed';
       const action = el('td'); const analyze=button(known ? '查看建议' : '分析', () => showAdvice(item), 'button small');analyze.dataset.rowAdvice='1';append(action,analyze);
       append(row, checkCell, status,copy,size,action); append(body, row);
+      const explanationRow=el('tr','inventory-explanation-row'),explanationCell=el('td'),explanation=el('div','inventory-item-advice');
+      explanationCell.colSpan=5;explanationRow.dataset.adviceDetailsId=item.id;
+      renderInventoryAdvice(explanation,item,result);append(explanationCell,explanation);append(explanationRow,explanationCell);append(body,explanationRow);
     });
     append(table, body); append(scroll, table); append(panel, scroll, el('p', 'result-note', '勾选仅用于分析。助手提出建议后，才决定是否处理。'));
-    if (items.length > state.limit) append(panel, button(`继续显示 ${Math.min(300, items.length-state.limit)} 项`, () => { state.limit += 300; renderResults(); }, 'plain-button'));
+    if (items.length > state.limit) append(panel, button(`继续显示 ${Math.min(50, items.length-state.limit)} 项`, () => { state.limit += 50; renderResults(); }, 'plain-button'));
     const adviceNote=el('p','result-note');adviceNote.hidden=true;append(panel,adviceNote);append(host, panel);
     window.PanxuTasks.lookupAdvice(renderedItems,api).then(()=>{
       if(!panel.isConnected || host.firstChild!==panel) return;
-      renderedItems.forEach(item=>{const row=[...body.children].find(r=>r.dataset.adviceId===item.id);if(!row)return;const entry=window.PanxuTasks.adviceFor(item.id,item.signature);showRating(row.querySelector('[data-advice-state]'),item,entry);row.querySelector('[data-row-advice]').textContent=entry || item.assessment && item.assessment.state!=='unanalysed'?'查看建议':'分析';});
+      renderedItems.forEach(item=>{const row=[...body.children].find(r=>r.dataset.adviceId===item.id);if(!row)return;const entry=window.PanxuTasks.adviceFor(item.id,item.signature);showRating(row.querySelector('[data-advice-state]'),item,entry);row.querySelector('[data-row-advice]').textContent=entry || item.assessment && item.assessment.state!=='unanalysed'?'查看建议':'分析';const details=[...body.children].find(r=>r.dataset.adviceDetailsId===item.id);if(details)renderInventoryAdvice(details.querySelector('.inventory-item-advice'),item,entry);});
     }).catch(()=>{if(panel.isConnected){adviceNote.hidden=false;adviceNote.textContent='已有建议暂时无法读取；点击分析时会先重试读取。';}});
   }
   function renderSelection() {
@@ -594,14 +604,15 @@ function initializePanxu() {
     const head = el('div', 'inspector-heading'); append(head, el('h2', '', '项目说明'), button('关闭', () => toggleInspector(false), 'icon-button')); append(host, head);
     const item = state.focused;
     if (!item) { append(host, el('h3', '', '选一项，看看原因'), el('p', '', '这里会说明用途、操作建议和可能的影响。')); return; }
-    const assessment=item.assessment?window.PanxuAssessment.read(item):null;
+    const assessment=item.assessment&&item.assessment.state!=='unanalysed'?window.PanxuAssessment.read(item):null;
     const modelAdvice = assessment?null:window.PanxuTasks.adviceFor(item.id, item.signature);
     const rec = assessment?{...assessment,assessment}:modelAdvice || advice(item);
     if(assessment || modelAdvice)append(host,window.PanxuAssessment.render(assessment?item:modelAdvice,{direct:Boolean(modelAdvice),primary:true,cls:'inspector-primary-rating'}));
     append(host, itemTitle(item, el('h3', '', rec.title || item.name)));
     if(assessment?.state==='inherited')append(host,el('p','field-help',`继承自${assessment.inherited_from_name || '上级目录'}，此项未单独分析。`));
     const blocked=assessment?window.PanxuAssessment.blocked(item):'';if(blocked)append(host,el('p','field-help',blocked));
-    append(host, el('h4', '', '它是做什么的'), el('p', '', cleanCopy(rec.purpose || itemPurpose(item))), el('h4', '', '为什么建议'), el('p', '', cleanCopy(rec.reason || item.reason || '尚未取得 AI 建议，可以先分析用途。')), el('h4', '', '建议操作的影响'), el('p', '', cleanCopy(rec.impact || item.impact || '影响尚不明确，建议先保留。')));
+    const description={...item,...rec,assessment:modelAdvice?undefined:item.assessment,purpose:rec.purpose || itemPurpose(item),impact:rec.impact || item.impact};
+    append(host,window.PanxuAdvicePresentation.render(description,{direct:Boolean(modelAdvice)}));
     const sourceTaskId=assessment?.source_ref?.task_id || assessment?.inherited_from?.task_id;
     if(sourceTaskId)append(host,button('查看来源任务',()=>task(async()=>{const data=await api('/api/tasks/'+encodeURIComponent(sourceTaskId));window.PanxuTasks.accept(data.task);setView('overview');}),'button primary'));
     else if (modelAdvice) append(host,button(window.PanxuTasks.currentTask()?.plan?.items.some(entry=>entry.id===item.id)?'查看操作方案':'返回整理任务',()=>setView('overview'),'button primary'));
@@ -622,7 +633,7 @@ function initializePanxu() {
     if (item.kind === 'directory') { append(data, el('dt', '', '路径累计'), el('dd', '', bytes(item.details?.logical_bytes_all_paths ?? item.size_bytes)), el('dt', '', '唯一实体量'), el('dd', '', bytes(item.details?.unique_logical_bytes ?? item.size_bytes))); append(detail, el('p', '', '同一个文件可能有多个硬链接。这里的体积估计不等于实际可释放空间。')); }
     append(detail, data,window.PanxuProvenance.details(rec,{presets:state.providers}));
     if((assessment && assessment.state!=='unanalysed' || modelAdvice)&&canAnalyze(item))append(detail,button('重新分析此项',()=>analyzeList(item),'plain-button'));
-    if (canSelect(item)) { const manual = el('details', 'manual-actions'); append(manual, el('summary', '', '手动选择操作'), el('p', 'field-help', '这项操作不依赖 AI 建议。确认前会列出具体内容与影响，保护规则继续生效；当前只记录模拟，不改动文件或系统。'), button(`查看${window.PanxuActionCopy.label(item.actions[0],item.kind)}清单`, () => manualSelected(item))); append(detail, manual); }
+    if (canSelect(item)) { const manual = el('details', 'manual-actions'); append(manual, el('summary', '', '手动选择操作'), el('p', 'field-help', '这项操作不依赖 AI 建议。确认前会列出具体内容与影响，保护规则继续生效。'), button(`查看${window.PanxuActionCopy.label(item.actions[0],item.kind)}清单`, () => manualSelected(item))); append(detail, manual); }
     if ($('show-evidence').checked) { const evidence = el('ul', 'evidence-list'); (Array.isArray(item.evidence) ? item.evidence : []).forEach((entry) => append(evidence, el('li', '', text(entry)))); append(detail, evidence, el('pre', 'assistant-trace', text(item.details || {}))); }
     if(!(modelAdvice || assessment && assessment.state!=='unanalysed')){
       const more = el('details', 'additional-analysis'); append(more, el('summary', '', '进一步分析这项'));
@@ -696,7 +707,7 @@ function initializePanxu() {
     return window.PanxuActionCopy.summary(entries.map(entry=>{const item=entry.item || state.items.find(i=>i.id===(entry.id || entry.item_id)) || entry;return {action:entry.action || item.actions?.[0],kind:item.kind};}));
   }
   function renderPlan(plan) {
-    const copy=planActionCopy(plan),host = $('plan-content'); host.replaceChildren(); $('plan-execute').hidden = false; $('plan-execute').disabled = false; $('plan-execute').textContent=copy.button;$('plan-title').textContent = !copy.count?'没有可模拟的操作':copy.groups.length===1?`模拟${copy.groups[0].label}前确认`:'确认模拟操作';
+    const copy=planActionCopy(plan),host = $('plan-content'); host.replaceChildren(); $('plan-execute').hidden = false; $('plan-execute').disabled = false; $('plan-execute').textContent=copy.button;$('plan-title').textContent = !copy.count?'没有可用操作':copy.groups.length===1?`${copy.groups[0].label}前确认`:'确认所选操作';
     const entries = Array.isArray(plan.items) ? plan.items : [];
     append(host, append(el('div', 'plan-summary'), el('strong', '', copy.breakdown || '尚未选择操作'), el('span', '', copy.effect)));
     const list = el('div', 'plan-list'); entries.forEach((entry) => {
@@ -705,32 +716,31 @@ function initializePanxu() {
       const detail = el('details'); append(detail, el('summary', '', '查看位置与建议来源'), el('p', '', item.path || entry.path || '无文件位置'),
         window.PanxuProvenance.details({provenance:entry.provenance || entry.advice?.provenance || rec.provenance},{presets:state.providers})); append(row, detail); append(list, row);
     }); append(host, list);
-    const warnings = plan.warnings || []; if (warnings.length) { const detail = el('details', 'plan-additional'); append(detail, el('summary', '', '更多操作说明'), el('pre', '', warnings.map(cleanCopy).join('\n'))); append(host, detail); }
-    if (!entries.length) { append(host, el('p', 'field-error', '没有可模拟的操作，请返回重新选择。')); $('plan-execute').textContent='没有可模拟的操作';$('plan-execute').disabled = true; }
+    const warnings = (plan.warnings || []).filter(value=>value!=='此批次仅写入模拟记录，不删除文件、不修改启动项、不停止服务或进程、不卸载软件。'); if (warnings.length) { const detail = el('details', 'plan-additional'); append(detail, el('summary', '', '更多操作说明'), el('pre', '', warnings.map(cleanCopy).join('\n'))); append(host, detail); }
+    if (!entries.length) { append(host, el('p', 'field-error', '没有可用操作，请返回重新选择。')); $('plan-execute').textContent='没有可用操作';$('plan-execute').disabled = true; }
   }
   async function executePlan() {
-    if (!state.plan) return; const copy=planActionCopy(state.plan),target = $('plan-execute'); target.disabled = true; target.textContent = copy.groups.length===1?`正在模拟${copy.groups[0].label}…`:'正在记录模拟操作…';
+    if (!state.plan) return; const copy=planActionCopy(state.plan),target = $('plan-execute'); target.disabled = true; target.textContent = copy.groups.length===1?`正在${copy.groups[0].label}…`:'正在执行所选操作…';
     await task(async () => {
       try {
         const data = await api('/api/execute', { plan_id: state.plan.id }); accept(data); state.selected.clear(); state.plan = null; state.focused = null; $('plan-dialog').close();
-        setView('history'); toast('模拟操作已记录，文件和系统均未改动。');
+        setView('history'); toast('操作结果已记录。');
       } catch (error) { const prior = $('plan-content').querySelector('.field-error'); if (prior) prior.remove(); append($('plan-content'), el('p', 'field-error', `${cleanCopy(error.message)} 请返回调整。`)); throw error; }
     }); target.disabled = false; target.textContent = copy.button;
   }
   function renderHistory(root) {
-    append(root, heading('操作记录', '查看模拟删除、关闭启动项等操作的记录，也可以撤销模拟状态。'));
+    append(root, heading('操作记录', '查看已确认的操作及其结果。'));
     window.PanxuTasks?.renderHistory(root);
-    if (!state.history.length) { append(root, empty('还没有模拟操作记录', '确认模拟操作后，记录会显示在这里。')); return; }
-    append(root, el('div', 'result-protection-note', '这里只记录了模拟操作，文件和系统均未改动。实际释放空间为 0 B。'));
+    if (!state.history.length) { append(root, empty('还没有操作记录', '确认操作后，结果会显示在这里。')); return; }
     const list = el('div', 'history-list'); state.history.forEach((batch) => {
       const card = el('article', 'history-card'); const top = el('div', 'history-top'); const date = new Date(batch.created_at); const when = Number.isNaN(date.getTime()) ? text(batch.created_at) : date.toLocaleString('zh-CN', { hour12: false });
-      append(top, el('h3', '', `已记录 ${batch.item_count ?? batch.items?.length ?? 0} 项模拟操作`), badge(batch.status === 'undone' ? '模拟已撤销' : '模拟已记录')); append(card, top, el('p', '', when));
+      append(top, el('h3', '', `已记录 ${batch.item_count ?? batch.items?.length ?? 0} 项操作`), badge(batch.status === 'undone' ? '已撤销' : '已记录')); append(card, top, el('p', '', when));
       const detail = el('details', 'history-details'); append(detail, el('summary', '', '查看具体操作')); const entries = el('ul'); (batch.items || []).forEach((item) => append(entries, append(el('li'), itemTitle(item, el('span', '', `${window.PanxuActionCopy.label(item.action,item.kind)} · ${item.name || item.id}`))))); append(detail, entries); append(card, detail);
-      const footer = el('div', 'history-footer'); append(footer, el('span', '', '撤销后可重新选择相关项目；不会恢复文件或系统设置。')); const restore = button('撤销模拟', () => undoBatch(batch.id), 'button small'); restore.disabled = batch.status === 'undone'; append(footer, restore); append(card, footer); append(list, card);
+      const footer = el('div', 'history-footer'); append(footer, el('span', '', '撤销后可重新选择相关项目。')); const restore = button('撤销', () => undoBatch(batch.id), 'button small'); restore.disabled = batch.status === 'undone'; append(footer, restore); append(card, footer); append(list, card);
     }); append(root, list);
   }
   async function undoBatch(id) {
-    await task(async () => { const batch = state.history.find((entry) => entry.id === id); accept(await api('/api/undo', { batch_id: id })); accept(await api('/api/bootstrap?compact=1')); state.selected = new Set((batch?.items || []).map((item) => item.id).filter((key) => canSelect(state.items.find((item) => item.id === key)))); state.checked = state.items.length > 0; render(); toast('模拟已撤销，相关项目可重新选择。实际文件和系统未发生变化。'); });
+    await task(async () => { const batch = state.history.find((entry) => entry.id === id); accept(await api('/api/undo', { batch_id: id })); accept(await api('/api/bootstrap?compact=1')); state.selected = new Set((batch?.items || []).map((item) => item.id).filter((key) => canSelect(state.items.find((item) => item.id === key)))); state.checked = state.items.length > 0; render(); toast('已撤销，相关项目可重新选择。'); });
   }
   function settingsPayload(overrides = {}) { return { provider: state.settings.provider || 'custom', protocol: state.settings.protocol || 'chat_completions', reasoning_effort: state.settings.reasoning_effort || 'default', base_url: state.settings.base_url || '', model: state.settings.model || '', stream: state.settings.stream !== false, send_paths: state.settings.send_paths === true, protect_patterns: Array.isArray(state.settings.protect_patterns) ? state.settings.protect_patterns : [], ...overrides }; }
   function renderModel(root) {
@@ -905,7 +915,6 @@ function initializePanxu() {
       if(repository)append(links,repository);append(links,license || el('span','field-help',info.license_name || '许可资料暂不可用'));
       append(resources,links,el('p','field-help',info.description || '面向磁盘整理的 LLM Harness，为模型提供信息、工具和用户协作界面。'),
         el('p','field-help','仓库访问权限与公开更新源分别管理。第三方材料保留各自许可。'));
-      if(info.simulation===true)append(resources,el('p','field-help','当前仅模拟操作，不会实际删除文件或改动系统。'));
     }
     function renderUpdate() {
       check.disabled=Boolean(updateCheckRequest);check.setAttribute('aria-busy',String(Boolean(updateCheckRequest)));release.replaceChildren();
@@ -1202,7 +1211,6 @@ function initializePanxu() {
   $('clear-selection').addEventListener('click', () => { analysisIds().clear(); if (state.view === 'overview') render(); else { renderResults(); renderInspector(); renderSelection(); } });
   $('preview-plan').addEventListener('click', () => analyzeList());
   $('plan-close').addEventListener('click', () => $('plan-dialog').close()); $('plan-cancel').addEventListener('click', () => $('plan-dialog').close()); $('plan-execute').addEventListener('click', executePlan);
-  $('reset-demo').addEventListener('click', () => task(async () => { const data = await api('/api/reset', {}); accept(data, false); state.selected.clear(); state.focused = null; state.assistant = null; $('advanced-drawer').hidden = true; $('advanced-toggle').setAttribute('aria-expanded', 'false'); render(); toast('模拟状态已撤销，历史记录仍保留。'); }));
   $('developer-dock-close')?.addEventListener('click',()=>toggleDeveloperDock(false));
   document.addEventListener('keydown',event=>{
     if(event.key!=='F12'&&event.code!=='F12')return;

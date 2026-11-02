@@ -28,6 +28,7 @@ from .windows import inventory
 from .presets import resolve_preset
 from .knowledge import SkillRegistry
 from .system_evidence import system_configuration, volume_snapshot, validate_volume_path
+from .action_semantics import APP_KINDS, FILE_KINDS, action_details, action_groups, in_task_scope, primary_action
 
 
 MAX_ROUNDS, MAX_CALLS = 6, 12
@@ -401,11 +402,16 @@ class TaskHarness:
         if not source_id or source_id == task['id']:
             return
         execution = execution or {}
+        if execution.get('plan_version') not in (None, result['plan_version']):
+            execution = {}  # A later plan cannot supply counts for an older undo.
         value = dict(execution_task_id=task['id'], plan_version=result['plan_version'],
             status=execution.get('status') or result['status'], result_status=result['status'],
             total=execution.get('total', result['total']), succeeded=result['succeeded'],
             failed=result.get('failed', 0), cancelled=result.get('cancelled', 0), unverified=result.get('unverified', 0),
-            pending=execution.get('pending', 0), actual_reclaimed_bytes=0, backend='simulation')
+            pending=execution.get('pending', 0), undone=result.get('undone', 0),
+            actions=copy.deepcopy(result.get('actions', {})), undone_actions=copy.deepcopy(result.get('undone_actions', {})),
+            action_results=copy.deepcopy(result.get('action_results', {})),
+            actual_reclaimed_bytes=0, backend='simulation')
         with self.state.lock:
             existing = self.state.db.execute('SELECT payload FROM cleanup_results WHERE execution_task_id=? AND plan_version=?',
                                             (task['id'], result['plan_version'])).fetchone()
@@ -424,6 +430,20 @@ class TaskHarness:
                                       (task['id'], result['plan_version']))
                 self.state.db.execute('INSERT INTO cleanup_results(source_task_id,execution_task_id,plan_version,payload) VALUES(?,?,?,?)',
                                       (source_id, task['id'], result['plan_version'], json.dumps(value, ensure_ascii=False)))
+
+    def refresh_operation_receipts(self, batch_id):
+        """After an undo, propagate the current overlay without another LLM turn."""
+        with self.state.lock:
+            affected = self.state.db.execute("SELECT DISTINCT task_id,plan_version FROM action_attempts WHERE json_extract(payload,'$.batch_id')=?",
+                                             (batch_id,)).fetchall()
+            for row in affected:
+                task = self._get(row['task_id'])
+                result = self.runtime.result(task['id'], row['plan_version'])
+                if (task.get('last_result') or {}).get('plan_version') == row['plan_version']:
+                    task['last_result'] = result
+                    self._save(task)
+                self._record_cleanup_result(task, result, task.get('execution'))
+                self._event(task, 'undo', f'已撤销本批 {result["undone"]} 项操作记录；历史结果仍保留。')
 
     def _save(self, task, *, commit=True):
         self._defaults(task)
@@ -698,8 +718,7 @@ class TaskHarness:
 
     @staticmethod
     def _action_target(task, item):
-        return not task.get('analysis') or item['id'] in task['target_ids'] or (
-            item['kind'] in ('file', 'directory') and any(within(item['path'], p) for p in task['action_directories']))
+        return in_task_scope(task, item)
 
     def _kept(self, task, item):
         return any(c['choice'] in ('keep', 'defer') and (key == item['id'] or
@@ -1119,6 +1138,8 @@ class TaskHarness:
             self._guard_directory(task, item, respect_advice=origin != 'user_direct')
             if row['action'] not in item.get('actions', []):
                 raise AppError('当前不支持这项操作，请选择工具实际提供的动作。')
+            if item['kind'] in APP_KINDS and primary_action(item) != row['action']:
+                raise AppError('对象当前状态不适合这项操作，请先刷新后核对。', 'unsupported_action')
             for field in ('reason', 'impact'):
                 if not isinstance(row[field], str) or not 1 <= len(row[field]) <= 400:
                     raise AppError('每项都需要简短的原因和影响说明。')
@@ -1130,6 +1151,13 @@ class TaskHarness:
                                 evidence_ids=self._evidence(task, row.get('evidence_ids')),
                                 provenance=copy.deepcopy(source),
                                 personal_choice_required=bool(personal), default_selected=not personal)
+            entry.update(action_details(row['action']))
+            entry['details'] = {key: copy.deepcopy(item.get('details', {})[key]) for key in
+                ('pid', 'create_time', 'state', 'start_mode', 'scope', 'registry_location', 'version')
+                if key in item.get('details', {})}
+            if item['kind'] == 'service':
+                entry['details']['state_label'] = {'Running': '正在运行', 'Stopped': '已停止',
+                    'Start Pending': '正在启动', 'Stop Pending': '正在停止', 'Paused': '已暂停'}.get(entry['details'].get('state'), '状态尚未确认')
             advice = task.get('advice', {}).get(item['id'])
             if advice and advice.get('signature') == item['signature']:
                 entry['advice_provenance'] = self._provenance(advice.get('provenance'))
@@ -1146,6 +1174,7 @@ class TaskHarness:
         self._clear_question(task)
         task['plan'] = dict(version=task['plan_version'], summary=self.clean(args['summary'], 600),
                             items=entries, origin=origin, provenance=copy.deepcopy(source),
+                            action_groups=action_groups(entries),
                             briefing=copy.deepcopy(briefing),
                             briefing_provenance=copy.deepcopy(source) if briefing else self._provenance())
         task.update(status='awaiting_review', summary=task['plan']['summary'])
@@ -1164,6 +1193,9 @@ class TaskHarness:
             raise AppError('这项内容现在受保护或已选择保留，不能继续。', 'protected_item', 409)
         if item.get('action') and item['action'] not in current.get('actions', []):
             raise AppError('这项操作现在不可用，请重新核对。', 'unsupported_action', 409)
+        if (item.get('action') and current['kind'] in APP_KINDS
+                and primary_action(current) != item['action']):
+            raise AppError('对象当前状态不适合这项操作，请刷新后核对。', 'unsupported_action', 409)
         if item.get('kind') != 'directory':
             return
         conflict = self.assessments.directory_conflicts(current, items, task)
@@ -1195,30 +1227,46 @@ class TaskHarness:
             if expected_revision is not None and expected_revision != self.assessments.revision():
                 raise AppError('建议已更新，请查看新评分后重新选择。', 'assessment_changed', 409)
             items = {item['id']: item for item in self.state.snapshot(self.assistant.public_settings()['protect_patterns'])['items']}
-            if any(ident not in items or items[ident]['kind'] not in ('file', 'directory')
+            if any(ident not in items
                    or items[ident]['simulated'] or items[ident]['risk'] == 'protected'
-                   or 'delete' not in items[ident].get('actions', []) for ident in ids):
-                raise AppError('选择中有已变化、受保护或不支持删除的内容，请重新核对。', 'selection_changed', 409)
+                   or not primary_action(items[ident]) for ident in ids):
+                raise AppError('选择中有已变化、受保护或当前不支持操作的内容，请重新核对。', 'selection_changed', 409)
+            if source_task_id is None and any(items[ident]['kind'] not in FILE_KINDS for ident in ids):
+                raise AppError('后台和软件操作必须来自当前任务的明确选择。', 'task_scope_required')
             if source_task_id is not None:
                 if not isinstance(source_task_id, str) or not 1 <= len(source_task_id) <= 160:
                     raise AppError('原分析任务无效，请重新查看原清单。', 'invalid_source_task')
                 source = self._get(source_task_id)
-                if any(not self._action_target(source, items[ident]) or not source.get('analysis')
-                       and not any(within(items[ident]['path'], root['path']) for root in source['roots']) for ident in ids):
+                if any(not self._action_target(source, items[ident]) for ident in ids):
                     raise AppError('所选内容超出原分析范围，请重新查看清单。', 'outside_scope')
             for ident in ids:
                 self._guard_directory({'choices': {}}, items[ident], respect_advice=False)
-            preflight = self.state.prepare(ids, self.assistant.public_settings()['protect_patterns'], 'delete')
-            self.state.plans.pop(preflight['id'], None)
-            task = self.create_analysis({'ids': ids, 'section': 'files', 'goal': '按我在文件列表中明确选择的项目，准备模拟删除清单；不调用模型、不自动执行。'}, reserve_intent=False)
+            selected = [items[ident] for ident in ids]
+            actions = {item['id']: primary_action(item) for item in selected}
+            self._preflight_actions(selected, actions)
+            kinds = {item['kind'] for item in selected}
+            section = ('files' if kinds <= FILE_KINDS else 'software' if kinds == {'software'} else
+                       'background' if kinds <= APP_KINDS - {'software'} else None)
+            if section is None:
+                raise AppError('请选择同一任务范围内的文件、后台对象或软件。', 'outside_scope')
+            task = self.create_analysis({'ids': ids, 'section': section,
+                'goal': '按我在任务清单中明确选择的对象准备操作清单；不调用模型、不自动执行。'}, reserve_intent=False)
             if source_task_id is not None:
                 original = self._get(task['id'])
                 original['cleanup_source_task_id'] = source_task_id
                 self._save(original)
-            prepared = self.direct_plan(task['id'], {'ids': ids, 'action': 'delete',
+            prepared = self.direct_plan(task['id'], {'ids': ids, 'actions': actions,
                 'snapshots': {ident: items[ident]['signature'] for ident in ids}})
             picked = [entry['id'] for entry in prepared['plan']['items']]
             return dict(prepared, picked_ids=picked, selection_origin='user')
+
+    def _preflight_actions(self, items, actions):
+        """Reuse the runtime backend's read-only identity validator and prepare."""
+        self.runtime.backend.validator([item for item in items if item['kind'] in APP_KINDS])
+        for action in dict.fromkeys(actions.values()):
+            ids = [item['id'] for item in items if actions[item['id']] == action]
+            preflight = self.state.prepare(ids, self.assistant.public_settings()['protect_patterns'], action)
+            self.state.plans.pop(preflight['id'], None)
 
     @staticmethod
     def _clear_question(task):
@@ -1265,12 +1313,16 @@ class TaskHarness:
         A catalog record collected as background evidence never expands this scope.
         This stages a reviewable plan; execution remains the separate approve API.
         """
-        self._args(payload, ['ids', 'action', 'snapshots'], ['ids', 'action'])
-        ids, action, snapshots = payload['ids'], payload['action'], payload.get('snapshots')
+        self._args(payload, ['ids', 'action', 'actions', 'snapshots'], ['ids'])
+        ids, action, snapshots = payload['ids'], payload.get('action'), payload.get('snapshots')
         if (not isinstance(ids, list) or not 1 <= len(ids) <= 500
                 or any(not isinstance(i, str) for i in ids) or len(set(ids)) != len(ids)):
             raise AppError('请明确选择1到500个不同项目。')
-        if not isinstance(action, str) or not action or len(action) > 160:
+        if ('action' in payload) == ('actions' in payload):
+            raise AppError('请指定一个操作，或按对象指定完整动作清单。')
+        actions = payload.get('actions') if 'actions' in payload else dict.fromkeys(ids, action)
+        if (not isinstance(actions, dict) or set(actions) != set(ids)
+                or any(not isinstance(value, str) or not value or len(value) > 160 for value in actions.values())):
             raise AppError('请选择项目实际提供的操作。')
         if snapshots is not None and (not isinstance(snapshots, dict) or set(snapshots) != set(ids)
                 or any(not isinstance(v, str) for v in snapshots.values())):
@@ -1286,12 +1338,7 @@ class TaskHarness:
                 item = current[ident]
                 if snapshots is not None and snapshots[ident] != item['signature']:
                     raise AppError('所选内容已更新，请重新查看后选择。', 'selection_changed', 409)
-                if task.get('analysis'):
-                    in_scope = self._action_target(task, item)
-                elif item['kind'] in ('file', 'directory'):
-                    in_scope = any(within(item['path'], root['path']) for root in task['roots'])
-                else:
-                    in_scope = task.get('scope_kind') == 'applications' and ident in task['known_ids']
+                in_scope = self._action_target(task, item)
                 if not in_scope:
                     raise AppError('此项目不属于当前任务的处理范围，请另行选择整理目标。', 'outside_scope')
                 if item['kind'] in ('file', 'directory'):
@@ -1307,21 +1354,20 @@ class TaskHarness:
                 item = current[ident]
                 advice = task.get('advice', {}).get(ident, {})
                 fresh = advice.get('signature') == item['signature']
-                rows.append(dict(id=ident, action=action,
+                rows.append(dict(id=ident, action=actions[ident],
                     reason=advice['reason'] if fresh and advice.get('reason') else '你在界面中明确选择了这项操作。',
-                    impact=advice['impact'] if fresh and advice.get('impact') else '本版本仅记录模拟结果，实际文件和系统设置不会改变。'))
+                    impact=advice['impact'] if fresh and advice.get('impact') else action_details(actions[ident])['action_effect']))
             # The helper can validate without saving; runtime.prepare adds live
             # snapshot and full descendant checks before a host plan is published.
             self._propose_plan(staged, dict(summary='按你的明确选择处理这些项目。', items=rows), current=current,
                                origin='user_direct', save=False,
                                provenance=dict(source='local', generated_at=now()))
-            prepared = self.state.prepare(ids, self.assistant.public_settings()['protect_patterns'], action)
-            self.state.plans.pop(prepared['id'], None)
-            staged['feedback'].append(dict(role='user', content='我在界面中明确选择了这些项目与操作，请记录结果后继续调查。',
-                direct_action=dict(ids=ids, action=action, plan_version=staged['plan_version'], at=now())))
+            self._preflight_actions([current[ident] for ident in ids], actions)
+            staged['feedback'].append(dict(role='user', content='我在界面中明确选择了这些项目与操作，请记录结果；是否继续调查由我决定。',
+                direct_action=dict(ids=ids, actions=actions, **({'action': action} if action else {}), plan_version=staged['plan_version'], at=now())))
             staged['feedback'] = staged['feedback'][-20:]
             self._save(staged)
-            self._event(staged, 'direct_plan', '已按你的选择建立方案，仍需确认该版本后才会模拟执行。')
+            self._event(staged, 'direct_plan', '已按你的选择建立方案，仍需确认该版本后才会执行并记录结果。')
             value = self.public(key)
             return dict(task=value, plan=value['plan'])
 
@@ -1521,8 +1567,8 @@ class TaskHarness:
                         actions=[dict(id=entry['id'], action=entry['action']) for entry in task.get('approved', [])],
                         plan_version=user_plan['version'], at=now(), result=copy.deepcopy(result))
                 stopped = result.get('cancelled', 0) > 0
-                summary = (f'已取消 {result["cancelled"]} 项未执行操作；模拟完成 {result["succeeded"]} 项。' if stopped else
-                           f'本批已结束：模拟完成 {result["succeeded"]} 项。')
+                summary = (f'已取消 {result["cancelled"]} 项未提交操作；{result["succeeded"]} 项操作结果已记录并核验。' if stopped else
+                           f'本批已结束：{result["succeeded"]} 项操作结果已记录并核验。')
                 if result.get('failed'):
                     summary += f' {result["failed"]} 项失败。'
                 if result.get('unverified'):
