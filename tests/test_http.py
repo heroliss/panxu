@@ -46,6 +46,14 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(value['mode'], 'simulation')
         self.assertFalse(value['live_executor_available'])
 
+    def test_specialist_assets_are_served_with_the_application(self):
+        for asset, mime in [('/cleanup-tools.js', 'text/javascript'), ('/specialist-links.js', 'text/javascript'),
+                            ('/cleanup-tools.css', 'text/css')]:
+            with self.subTest(asset=asset), urllib.request.urlopen(self.base + asset, timeout=10) as response:
+                self.assertEqual(response.status, 200)
+                self.assertTrue(response.headers['Content-Type'].startswith(mime))
+                self.assertGreater(len(response.read()), 100)
+
     def test_icon_endpoint_streams_an_image_with_pending_metadata(self):
         value = dict(body=b'\x89PNG\r\n\x1a\nfixture', mime='image/png',
                      etag='"fixture-hash"', status='pending', retry_after=1)

@@ -90,7 +90,7 @@ $arguments = @(
 )
 # Explicit application asset allowlist: never collect the project directory,
 # verification fixtures, model settings, API keys, databases, or user histories.
-foreach ($asset in @('index.html', 'style.css', 'app.js', 'tasks.js', 'files.js', 'icons.js', 'icons.css', 'hierarchy.css', 'stream-view.js', 'stream-channel.js', 'duplicates.js')) {
+foreach ($asset in @('index.html', 'style.css', 'app.js', 'tasks.js', 'files.js', 'icons.js', 'icons.css', 'hierarchy.css', 'stream-view.js', 'stream-channel.js', 'duplicates.js', 'cleanup-tools.js', 'cleanup-tools.css', 'specialist-links.js')) {
     $assetPath = Join-Path (Join-Path $projectRoot 'web') $asset
     if (-not (Test-Path -LiteralPath $assetPath -PathType Leaf)) { throw "Missing web asset: $assetPath" }
     if ((Get-Item -LiteralPath $assetPath -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
@@ -149,7 +149,7 @@ files = sorted(p for p in package.rglob('*') if p.is_file())
 linked = [str(p.relative_to(package)) for p in package.rglob('*') if p.is_symlink() or (hasattr(p, 'is_junction') and p.is_junction())]
 forbidden = [str(p.relative_to(package)) for p in files if any(part.casefold() in {'verification', 'tests', 'userdata', '.git', '.venv'} for part in p.relative_to(package).parts) or p.name.casefold() in {'.env', 'model_settings.json'} or p.name.casefold().startswith('.env.') or p.name.casefold().endswith(('.sqlite', '.sqlite3', '.db', '.sqlite3-wal', '.sqlite3-shm'))]
 assets = []
-for name in ('index.html', 'style.css', 'app.js', 'tasks.js', 'files.js', 'icons.js', 'icons.css', 'hierarchy.css', 'stream-view.js', 'stream-channel.js', 'duplicates.js'):
+for name in ('index.html', 'style.css', 'app.js', 'tasks.js', 'files.js', 'icons.js', 'icons.css', 'hierarchy.css', 'stream-view.js', 'stream-channel.js', 'duplicates.js', 'cleanup-tools.js', 'cleanup-tools.css', 'specialist-links.js'):
     source, target = root / 'web' / name, package / '_internal' / 'web' / name
     assets.append({'path': str(target.relative_to(package)), 'bytes': target.stat().st_size if target.exists() else None, 'sha256': sha256(target) if target.exists() else None, 'matches_source': target.exists() and sha256(source) == sha256(target)})
 skill_assets=[]
@@ -165,7 +165,7 @@ runtime_resources = {name: [str(p.relative_to(package)) for p in files if p.name
 archive = CArchiveReader(str(exe))
 pyz_name = next(name for name in archive.toc if name.endswith('.pyz'))
 modules = sorted(archive.open_embedded_archive(pyz_name).toc)
-required_modules = {name: name in modules for name in ('diskpilot.server', 'diskpilot.llm', 'diskpilot.knowledge', 'diskpilot.tasks', 'diskpilot.scan_index', 'diskpilot.icons', 'diskpilot.system_evidence', 'diskpilot.streaming', 'diskpilot.live_streams', 'psutil', 'webview', 'webview.platforms.winforms', 'webview.platforms.edgechromium')}
+required_modules = {name: name in modules for name in ('diskpilot.server', 'diskpilot.llm', 'diskpilot.knowledge', 'diskpilot.tasks', 'diskpilot.scan_index', 'diskpilot.icons', 'diskpilot.system_evidence', 'diskpilot.streaming', 'diskpilot.live_streams', 'diskpilot.cleanup_tools', 'psutil', 'webview', 'webview.platforms.winforms', 'webview.platforms.edgechromium')}
 forbidden_modules = [name for name in modules if name == 'tests' or name.startswith(('tests.', 'verification.'))]
 with exe.open('rb') as f:
     f.seek(0x3c)

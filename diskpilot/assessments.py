@@ -197,6 +197,11 @@ class AssessmentStore:
                       provenance=copy.deepcopy(record.get('provenance') or UNKNOWN_PROVENANCE),
                       source_ref=self._ref(record), stale=stale,
                       **{key: record.get(key) for key in ('purpose', 'reason', 'impact')})
+        for key in ('specialist', 'extra_suggestion_id'):
+            if key in record:
+                result[key] = copy.deepcopy(record[key])
+        if (record.get('specialist') or {}).get('mode') == 'replace' or record.get('extra_suggestion_id'):
+            result['blocked_reasons'].append('specialist_required')
         if stale:
             result['blocked_reasons'].append('stale_assessment')
         elif conclusion in ('skip', 'no_advice'):
@@ -290,6 +295,8 @@ class AssessmentStore:
             value = rating(record.get('cleanup_rating'))
             if not item or item['signature'] != record['signature']:
                 reason = 'stale_or_unknown_descendant'
+            elif (record.get('specialist') or {}).get('mode') == 'replace' or record.get('extra_suggestion_id'):
+                reason = 'specialist_descendant'
             elif record.get('conclusion') in ('keep', 'skip', 'no_advice'):
                 reason = 'explicit_' + record['conclusion']
             elif value is None:

@@ -200,7 +200,7 @@ class AssessmentTests(unittest.TestCase):
                 self.record(task, self.child, **kwargs)
         self.record(task, self.child, value=5, conclusion='review')
         self.assertEqual(self.resolved()[self.child['id']]['rating'], 5)
-        self.assertEqual(len(tool_specs()), 22)
+        self.assertEqual(len(tool_specs()), 25)
 
     def test_approval_rechecks_global_exception_after_proposal(self):
         task = self.positive_parent()

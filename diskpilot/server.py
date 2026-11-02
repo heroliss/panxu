@@ -11,6 +11,7 @@ import secrets
 import sys
 import threading
 import time
+import webbrowser
 from urllib.parse import urlsplit, parse_qs
 
 from . import __version__
@@ -64,6 +65,10 @@ class Application:
         self.skills = SkillRegistry()
         self.updates = UpdateChecker()
         self.harness = TaskHarness(self.state, self.assistant, trace=self.trace, scan_index=self.scan_index, skill_registry=self.skills)
+        self.cleanup_tools = self.harness.cleanup_tools
+        for plan in self.cleanup_tools.history():
+            if plan.get('result'):
+                self.harness.record_specialist_result(plan)
         self.catalog = FileCatalog(self.state, self.patterns, self.harness.assessments)
         self.icons = IconService(self.icon_item)
         self.recommendation_cache = None
@@ -77,6 +82,41 @@ class Application:
 
     def patterns(self):
         return self.assistant.public_settings().get('protect_patterns', [])
+
+    def _cleanup_source(self, value):
+        return self.harness.validate_specialist_source(value)
+
+    def _cleanup_feedback(self, plan, result):
+        return self.harness.record_specialist_result(self.cleanup_tools.get_plan(plan['id']))
+
+    def _open_cleanup_settings(self, payload):
+        source = self._cleanup_source(payload.get('source'))
+        tool = self.cleanup_tools.detail(payload.get('tool_id'))
+        index = payload.get('index', 0)
+        entries = tool.get('settings') or []
+        if type(index) is not int or not 0 <= index < len(entries):
+            raise AppError('这个设置入口暂不可用，请查看工具说明。')
+        entry = entries[index]
+        target = entry.get('target', '')
+        if not isinstance(target, str):
+            raise AppError('工具未提供可用入口。')
+        # Only the host registry supplies a destination. No supplied command,
+        # executable argument, browser script or model-generated URL is opened.
+        try:
+            if target.startswith('https://'):
+                if not webbrowser.open(target):
+                    raise OSError('browser unavailable')
+            elif os.name == 'nt' and target.startswith('ms-settings:'):
+                os.startfile(target)
+            else:
+                raise OSError('unsupported entry')
+        except OSError:
+            raise AppError('未能打开此入口。请按照工具中的官方方法手动打开。', 'settings_unavailable') from None
+        result = {'status': 'opened', 'applied': False, 'tool_id': tool['id'], 'label': entry.get('label'),
+                  'message': '已打开入口，尚未核实是否修改或完成清理。'}
+        if source.get('task_id'):
+            self.harness._record_fact(source['task_id'], 'specialist_settings_opened', result)
+        return result
 
     def selection_task(self, key, *, required=False):
         if key in (None, '') and not required:
@@ -297,6 +337,17 @@ class Application:
             raise AppError('图标对应的内容不存在。', 'not_found', 404) from None
 
     def get(self, path, query):
+        if path == '/api/cleanup-tools':
+            return self.cleanup_tools.list(query=query.get('query', [''])[0], category=query.get('category', ['all'])[0])
+        if path == '/api/cleanup-tools/history':
+            return {'history': self.cleanup_tools.history()}
+        if path.startswith('/api/cleanup-tools/') and len(path.split('/')) == 4:
+            return self.cleanup_tools.detail(path.split('/')[3])
+        if path.startswith('/api/cleanup-plans/') and len(path.split('/')) == 4:
+            return self.cleanup_tools.get_plan(path.split('/')[3])
+        if path == '/api/specialist':
+            return self.harness.specialist_for(query.get('item_id', [''])[0],
+                signature=query.get('signature', [None])[0], task_id=query.get('task_id', [None])[0])
         if path == '/api/about':
             return about()
         if path.startswith('/api/tasks/') and path.endswith('/stream'):
@@ -404,6 +455,38 @@ class Application:
         raise AppError('接口不存在。', 'not_found', 404)
 
     def post(self, path, payload):
+        if path.startswith('/api/cleanup-tools/'):
+            allowed = {
+                'inspect': {'tool_id', 'parameters'}, 'prepare': {'tool_id', 'parameters', 'source'},
+                'execute': {'plan_id', 'version'}, 'open-settings': {'tool_id', 'index', 'source'},
+                'prepare-many': {'items', 'source'}, 'control': {'plan_id', 'action'},
+                'cancel': {'plan_id', 'version'}, 'undo': {'plan_id'},
+            }
+            operation = path.rsplit('/', 1)[-1]
+            if operation not in allowed or not isinstance(payload, dict) or set(payload) - allowed[operation]:
+                raise AppError('专项操作信息无效，请重新打开工具。')
+            if operation == 'inspect':
+                return self.cleanup_tools.inspect(payload.get('tool_id'), payload.get('parameters'))
+            if operation in ('prepare', 'prepare-many'):
+                source = self._cleanup_source(payload.get('source'))
+                if operation == 'prepare-many':
+                    return self.cleanup_tools.prepare_many(payload.get('items'), source=source)
+                return self.cleanup_tools.prepare(payload.get('tool_id'), payload.get('parameters'), source=source)
+            if operation == 'execute':
+                plan = self.cleanup_tools.get_plan(payload.get('plan_id'))
+                self._cleanup_source(plan.get('source'))
+                result = self.cleanup_tools.execute(payload.get('plan_id'), payload.get('version'))
+                self._cleanup_feedback(plan, result)
+                return result
+            if operation == 'control':
+                return {'execution': self.cleanup_tools.control(payload.get('plan_id'), payload.get('action'))}
+            if operation == 'cancel':
+                return self.cleanup_tools.cancel_plan(payload.get('plan_id'), payload.get('version'))
+            if operation == 'undo':
+                plan = self.cleanup_tools.undo(payload.get('plan_id'))
+                self._cleanup_feedback(plan, plan.get('result'))
+                return plan
+            return self._open_cleanup_settings(payload)
         if path == '/api/assessments/select':
             allowed = {'task_id', 'category', 'mode', 'include_inherited', 'query', 'scope', 'risk', 'kind', 'cursor', 'limit', 'revision', 'selection_revision', 'view', 'parent_id', 'representation'}
             if not isinstance(payload, dict) or set(payload) - allowed:
@@ -480,6 +563,11 @@ class Application:
             return dict(job, task=self.harness.public(task['id']))
         if path.startswith('/api/tasks/'):
             parts = path.split('/')
+            if len(parts) == 5 and parts[4] == 'specialist-answer':
+                if not isinstance(payload, dict) or set(payload) - {'suggestion_id', 'option_id', 'version'}:
+                    raise AppError('请选择当前专项建议中的选项。')
+                return self.harness.answer_specialist(parts[3], payload.get('suggestion_id'),
+                    payload.get('option_id'), version=payload.get('version'))
             if len(parts) == 6 and parts[4] == 'execution' and parts[5] in ('pause', 'resume', 'cancel'):
                 if not isinstance(payload, dict) or set(payload) != {'version'} or type(payload['version']) is not int:
                     raise AppError('请从当前清理进度操作，执行版本无效。', 'stale_execution', 409)
@@ -667,6 +755,10 @@ def create_server(data_dir, port=0, *, developer_fixtures=False):
                 names = {'/': ('index.html', 'text/html; charset=utf-8'), '/index.html': ('index.html', 'text/html; charset=utf-8'),
                          '/app.js': ('app.js', 'text/javascript; charset=utf-8'), '/tasks.js': ('tasks.js', 'text/javascript; charset=utf-8'), '/files.js': ('files.js', 'text/javascript; charset=utf-8'), '/style.css': ('style.css', 'text/css; charset=utf-8'),
                          '/duplicates.js': ('duplicates.js', 'text/javascript; charset=utf-8'), '/stream-view.js': ('stream-view.js', 'text/javascript; charset=utf-8'), '/stream-channel.js': ('stream-channel.js', 'text/javascript; charset=utf-8'), '/icons.js': ('icons.js', 'text/javascript; charset=utf-8'), '/icons.css': ('icons.css', 'text/css; charset=utf-8'), '/hierarchy.css': ('hierarchy.css', 'text/css; charset=utf-8')}
+                if parsed.path not in names:
+                    names.update({'/cleanup-tools.js': ('cleanup-tools.js', 'text/javascript; charset=utf-8'),
+                                  '/specialist-links.js': ('specialist-links.js', 'text/javascript; charset=utf-8'),
+                                  '/cleanup-tools.css': ('cleanup-tools.css', 'text/css; charset=utf-8')})
                 if parsed.path not in names:
                     raise AppError('页面不存在。', 'not_found', 404)
                 name, mime = names[parsed.path]

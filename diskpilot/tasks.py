@@ -46,7 +46,7 @@ SYSTEM = '''你是盘序的Windows整理智能体。理解用户目标，按需�
 record_advice保存稀疏判断：明确倾向尽量评分1–5（1偏保留、3已分析中立、5偏清理），分数不表示安全概率或授权；未知/旧缺分不填3，skip本轮跳过，no_advice调查后无法建议，两者不评分。
 impact_rating独立表示所述操作的后果程度：1很小、2轻微、3明显、4较大、5重大或难逆；不表示发生概率或清理倾向。证据不足填null，不由cleanup_rating推算，不影响操作权限或勾选。
 目录默认只针对自身，仅inheritance=subtree才让未独立分析的已观察后代沿用倾向/解释；不继承动作或许可。具体子项、保留、跳过、未知及失效记录优先，有冲突改选具体项。
-按需用list_skills/read_skill取得经验与来源；指导不是本机事实或额外权限。系统占用用collect_system_configuration/inspect_volume核查已有范围的有限配置统计，不能据此证明可恢复、健康或扩大范围。工具用法可discover_tools。
+按需用list_skills/read_skill取得经验与来源；指导不是本机事实或额外权限。系统占用用collect_system_configuration/inspect_volume核查已有范围的有限配置统计，不能据此证明可恢复、健康或扩大范围。工具用法可discover_tools。需要专项清理时按需discover_cleanup_tools/inspect_cleanup_tool，建议正文直接说明；record_advice可附specialist入口，mode=replace表示用专项替代普通动作，不能再把高分目录提议整删。特殊情况用record_specialist_suggestions提供可读说明及选项；用户回答不等于执行授权。
 先读已有目标、用户选择、事实和结果，避免重复调查。read_facts核对历史来源，checkpoint_task保存下一步与缺口；有关键偏好用ask_user一次问一个易懂问题。
 输出先给约80字的一句结论，最值得处理的3–5项用propose_plan；需要补充或本轮无更多建议用present_findings。有多方面信息时用briefing分模块，只填相关类：highlights最多3条重点，cautions最多2条关键影响/待确认，coverage最多2条已查范围/缺口，每条约40–80字。不要重复摘要、逐项建议或调查流水账。
 每项purpose用短用途，reason一句主要依据，impact一句主要后果；通常40–80字，必要事实仍要说清。评分是最直观的倾向，理由负责解释它，避免在各字段重复介绍软件。建议和方案每次最多6项，可分批保存。
@@ -56,6 +56,9 @@ impact_rating独立表示所述操作的后果程度：1很小、2轻微、3明�
 def tool_specs():
     ident = {'type': 'string', 'maxLength': 160}
     ids = {'type': 'array', 'items': ident, 'minItems': 1, 'maxItems': 20}
+    specialist = {'type': 'object', 'properties': {'tool_id': ident, 'parameters': {'type': 'object', 'maxProperties': 12},
+        'mode': {'type': 'string', 'enum': ['supplement', 'replace']}, 'label': {'type': 'string', 'maxLength': 80}},
+        'required': ['tool_id'], 'additionalProperties': False}
     briefing = {'type': 'object', 'properties': {
         name: {'type': 'array', 'items': {'type': 'string', 'minLength': 1, 'maxLength': 160},
                'minItems': 1, 'maxItems': count}
@@ -73,6 +76,23 @@ def tool_specs():
          {'section': {'type': 'string', 'enum': ['memory_power']}}, []),
         ('inspect_volume', '只读取得任务中已有位置所在卷的容量及当前用户回收站统计；不是可恢复性或磁盘健康证明。',
          {'scope_id': ident}, ['scope_id']),
+        ('discover_cleanup_tools', '按需查找系统、缓存和隐私专项工具；返回紧凑目录，不执行或打开设置。',
+         {'query': {'type': 'string', 'maxLength': 160}, 'category': {'type': 'string', 'maxLength': 80}}, []),
+        ('inspect_cleanup_tool', '读取一项专项工具的参数、影响和有限只读事实；不执行清理。',
+         {'tool_id': ident, 'parameters': {'type': 'object', 'maxProperties': 12}}, ['tool_id']),
+        ('record_specialist_suggestions', '保存内置清理之外的专项说明和选项，供用户选择；不执行命令、不批准操作。',
+         {'items': {'type': 'array', 'minItems': 1, 'maxItems': MODEL_ADVICE_BATCH, 'items': {'type': 'object',
+            'properties': {'id': {'type': 'string', 'maxLength': 80}, 'title': {'type': 'string', 'maxLength': 120},
+                'explanation': {'type': 'string', 'maxLength': 1200}, 'impact': {'type': 'string', 'maxLength': 600},
+                'cleanup_rating': {'type': ['integer', 'null'], 'minimum': 1, 'maximum': 5}, 'item_ids': ids,
+                'options': {'type': 'array', 'minItems': 2, 'maxItems': 5, 'items': {'type': 'object',
+                    'properties': {'id': {'type': 'string', 'maxLength': 80}, 'label': {'type': 'string', 'maxLength': 100},
+                        'description': {'type': 'string', 'maxLength': 240},
+                        'kind': {'type': 'string', 'enum': ['answer', 'tool', 'instructions']},
+                        'tool_id': ident, 'parameters': {'type': 'object', 'maxProperties': 12},
+                        'instructions': {'type': 'string', 'maxLength': 1200}},
+                    'required': ['id', 'label', 'kind'], 'additionalProperties': False}}},
+            'required': ['id', 'title', 'explanation', 'impact', 'options'], 'additionalProperties': False}}}, ['items']),
         ('ask_user', '就影响调查方向的偏好提出一个问题与2到5个选项，可自由补充；不构成处理授权。',
          {'question': {'type': 'string', 'minLength': 1, 'maxLength': 600},
           'options': {'type': 'array', 'minItems': 2, 'maxItems': 5, 'items': {'type': 'object',
@@ -116,6 +136,7 @@ def tool_specs():
             'cleanup_rating': {'type': ['integer', 'null'], 'minimum': 1, 'maximum': 5},
             'impact_rating': {'type': ['integer', 'null'], 'minimum': 1, 'maximum': 5},
             'inheritance': {'type': 'string', 'enum': ['none', 'subtree']},
+            'specialist': specialist, 'extra_suggestion_id': {'type': 'string', 'maxLength': 80},
             **{field: {'type': 'string', 'maxLength': 400} for field in ('purpose', 'reason', 'impact')},
             'evidence_ids': {'type': 'array', 'items': ident, 'maxItems': 12}},
           'required': ['id', 'conclusion', 'purpose', 'reason', 'impact'], 'additionalProperties': False}}}, ['items']),
@@ -182,6 +203,275 @@ class TaskHarness:
         for task in completed_cleanup:
             self._record_cleanup_result(task, task['last_result'], task.get('execution'))
 
+    @property
+    def cleanup_tools(self):
+        # The same registry is used by the UI and the model, never a shell.
+        if not hasattr(self, '_cleanup_tools'):
+            from .cleanup_tools import CleanupToolkit
+            self._cleanup_tools = CleanupToolkit(self.state)
+        return self._cleanup_tools
+
+    def _specialist_link(self, task, row, item):
+        if 'specialist' in row and 'extra_suggestion_id' in row:
+            raise AppError('每项建议请选择工具入口或专项对话之一。')
+        if 'specialist' in row:
+            ref = row['specialist']
+            self._args(ref, ['tool_id', 'parameters', 'mode', 'label'], ['tool_id'])
+            mode, label = ref.get('mode', 'supplement'), ref.get('label')
+            if mode not in ('supplement', 'replace') or label is not None and (
+                    not isinstance(label, str) or not label.strip() or len(label) > 80):
+                raise AppError('专项入口模式或名称无效。')
+            checked = self.cleanup_tools.validate_reference({key: ref[key] for key in ('tool_id', 'parameters') if key in ref})
+            return {'specialist': dict(checked, mode=mode, **({'label': self.clean(label, 80)} if label else {}))}
+        if 'extra_suggestion_id' in row:
+            ident = row['extra_suggestion_id']
+            suggestion = next((value for value in task.get('extra_suggestions', []) if value['id'] == ident), None)
+            if not isinstance(ident, str) or suggestion is None:
+                raise AppError('请先保存当前任务中的专项建议，再关联该建议ID。')
+            targets = suggestion.get('target_snapshots', {})
+            if targets and item['id'] not in targets:
+                raise AppError('专项建议不包含此对象，请核对后重新关联。', 'outside_scope')
+            return {'extra_suggestion_id': ident}
+        return {}
+
+    @staticmethod
+    def _specialist_id(value):
+        return isinstance(value, str) and bool(re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,79}', value))
+
+    def _record_specialist_suggestions(self, task, args, provenance):
+        self._args(args, ['items'], ['items'])
+        rows = args['items']
+        if not isinstance(rows, list) or not 1 <= len(rows) <= MODEL_ADVICE_BATCH:
+            raise AppError('每次请保存1到6个专项建议。')
+        current = {item['id']: item for item in self._items(task)}
+        previous = {row['id']: row for row in task.get('extra_suggestions', [])}
+        additions, seen = {}, set()
+        for row in rows:
+            self._args(row, ['id', 'title', 'explanation', 'impact', 'cleanup_rating', 'item_ids', 'options'],
+                       ['id', 'title', 'explanation', 'impact', 'options'])
+            ident = row['id']
+            if not self._specialist_id(ident) or ident in seen:
+                raise AppError('专项建议ID须是不同的简短字母、数字、下划线或连字符。')
+            seen.add(ident)
+            text = {}
+            for field, limit in (('title', 120), ('explanation', 1200), ('impact', 600)):
+                value = row[field]
+                if not isinstance(value, str) or not value.strip() or len(value) > limit:
+                    raise AppError('专项建议需要简短标题、说明和影响。')
+                text[field] = self.clean(value, limit)
+            score = row.get('cleanup_rating')
+            if score is not None and rating(score) is None:
+                raise AppError('清理倾向只能是1到5的整数或未知。')
+            targets = row.get('item_ids', [])
+            if (not isinstance(targets, list) or len(targets) > 20 or any(not isinstance(target, str) for target in targets)
+                    or len(set(targets)) != len(targets)):
+                raise AppError('每个专项建议最多关联20个不同已观察对象。')
+            if any(target not in current or not self._action_target(task, current[target]) for target in targets):
+                raise AppError('专项建议只能关联当前任务范围内的已观察对象。', 'outside_scope')
+            options = row['options']
+            if not isinstance(options, list) or not 2 <= len(options) <= 5:
+                raise AppError('专项建议需要2到5个选项。')
+            checked, option_ids = [], set()
+            for option in options:
+                self._args(option, ['id', 'label', 'description', 'kind', 'tool_id', 'parameters', 'instructions'],
+                           ['id', 'label', 'kind'])
+                if not self._specialist_id(option['id']) or option['id'] in option_ids:
+                    raise AppError('选项ID须是不同的简短字母、数字、下划线或连字符。')
+                option_ids.add(option['id'])
+                kind = option['kind']
+                if kind not in ('answer', 'tool', 'instructions'):
+                    raise AppError('专项选项只能回答、进入已注册工具或查看人工步骤；不能执行模型命令。')
+                label, description = option['label'], option.get('description', '')
+                if (not isinstance(label, str) or not label.strip() or len(label) > 100
+                        or not isinstance(description, str) or len(description) > 240):
+                    raise AppError('请用简短白话说明选项。')
+                value = dict(id=option['id'], label=self.clean(label, 100), kind=kind,
+                             description=self.clean(description, 240))
+                if kind == 'tool':
+                    if 'instructions' in option:
+                        raise AppError('工具选项不能混入额外执行步骤。')
+                    checked_ref = self.cleanup_tools.validate_reference({key: option[key] for key in ('tool_id', 'parameters') if key in option})
+                    value.update(checked_ref)
+                elif 'tool_id' in option or 'parameters' in option:
+                    raise AppError('只有工具选项可以携带工具参数。')
+                if kind == 'instructions':
+                    instructions = option.get('instructions')
+                    if not isinstance(instructions, str) or not instructions.strip() or len(instructions) > 1200:
+                        raise AppError('人工步骤需要1到1200字说明；此项不会自动执行。')
+                    value['instructions'] = self.clean(instructions, 1200)
+                elif kind != 'tool' and 'instructions' in option:
+                    raise AppError('回答选项不执行或携带人工步骤。')
+                checked.append(value)
+            additions[ident] = dict(id=ident, version=previous.get(ident, {}).get('version', 0) + 1,
+                **text, cleanup_rating=score, options=checked, selection=None, at=now(),
+                provenance=self._provenance(provenance), source=dict(task_id=task['id'], suggestion_id=ident),
+                target_snapshots={target: current[target]['signature'] for target in targets})
+        previous.update(additions)
+        if len(previous) > 30:
+            raise AppError('当前任务已有30项专项建议，请更新已有建议或缩小任务。', 'specialist_limit')
+        task['extra_suggestions'] = list(previous.values())
+        self._save(task)
+        fact_id = self._record_fact(task['id'], 'record_specialist_suggestions', {'items': list(additions.values())})
+        return {'recorded_count': len(additions), 'suggestion_ids': list(additions), 'fact_id': fact_id, 'execution_authorized': False,
+                'note': '专项建议已保存；用户选择后仍需预览确认，没有执行任何操作。'}
+
+    def specialist_for(self, item_id, signature=None, task_id=None):
+        if not isinstance(item_id, str) or not item_id or len(item_id) > 160:
+            raise AppError('专项建议对象无效。')
+        items = self.state.snapshot(self.assistant.public_settings()['protect_patterns'])['items']
+        current = {item['id']: item for item in items}
+        item = current.get(item_id)
+        if item is None or signature is not None and signature != item['signature']:
+            raise AppError('内容已变化，请重新查看该条目。', 'selection_changed', 409)
+        task = self._get(task_id) if task_id is not None else None
+        assessment = self.assessments.resolve(items, task=task).get(item_id, {})
+        if assessment.get('stale') or assessment.get('state') not in ('explicit', 'inherited'):
+            raise AppError('该条目暂无有效专项建议，请重新分析。', 'specialist_unavailable', 409)
+        source_ref = assessment.get('inherited_from') or assessment.get('source_ref') or {}
+        original = current.get(source_ref.get('item_id'))
+        source_task = self._get(source_ref.get('task_id'))
+        advice = source_task.get('advice', {}).get(source_ref.get('item_id'), {})
+        if original is None or advice.get('signature') != original['signature']:
+            raise AppError('原专项建议的对象已变化，请重新分析。', 'specialist_stale', 409)
+        if task and not self._action_target(task, item) and not (
+                assessment.get('state') == 'inherited' and self._action_target(task, original)
+                and within(item['path'], original['path'])):
+            raise AppError('此条目不属于原任务范围。', 'outside_scope')
+        source = dict(task_id=source_task['id'], item_id=original['id'], signature=original['signature'],
+                      advice_version=advice.get('record_revision') or source_task.get('advice_revision', 0))
+        result = dict(source=source, inherited=assessment.get('state') == 'inherited', requested_item_id=item_id)
+        if advice.get('specialist'):
+            ref = advice['specialist']
+            checked = self.cleanup_tools.validate_reference({key: ref[key] for key in ('tool_id', 'parameters') if key in ref})
+            result['specialist'] = dict(checked, mode=ref.get('mode', 'supplement'),
+                                        **({'label': ref['label']} if ref.get('label') else {}))
+        elif advice.get('extra_suggestion_id'):
+            ident = advice['extra_suggestion_id']
+            extra = next((row for row in source_task['extra_suggestions'] if row['id'] == ident), None)
+            if extra is None:
+                raise AppError('专项建议已更新，请返回任务重新查看。', 'specialist_stale', 409)
+            result['extra_suggestion'] = copy.deepcopy(extra)
+            result['source']['suggestion_id'] = ident
+        else:
+            raise AppError('这项建议没有专项入口。', 'specialist_unavailable', 404)
+        return result
+
+    def _specialist_replaces(self, task, item):
+        items = self.state.snapshot(self.assistant.public_settings()['protect_patterns'])['items']
+        value = self.assessments.resolve(items, task=task).get(item['id'], {})
+        return not value.get('stale') and ((value.get('specialist') or {}).get('mode') == 'replace' or bool(value.get('extra_suggestion_id')))
+
+    def answer_specialist(self, key, suggestion_id, option_id, *, version=None):
+        with self.state.lock:
+            task = self._get(key)
+            if key in self.running or task['status'] in BUSY:
+                raise AppError('请先等待当前调查结束，再选择专项方案。', 'task_busy', 409)
+            suggestion = next((row for row in task['extra_suggestions'] if row['id'] == suggestion_id), None)
+            if suggestion is None or version is not None and (type(version) is not int or version != suggestion['version']):
+                raise AppError('专项建议已更新，请重新查看当前选项。', 'specialist_stale', 409)
+            option = next((row for row in suggestion['options'] if row['id'] == option_id), None)
+            if option is None:
+                raise AppError('请选择当前专项建议提供的选项。', 'invalid_option')
+            current = {item['id']: item for item in self.state.snapshot(self.assistant.public_settings()['protect_patterns'])['items']}
+            if any(ident not in current or current[ident]['signature'] != snapshot
+                   for ident, snapshot in suggestion.get('target_snapshots', {}).items()):
+                raise AppError('专项建议涉及的对象已变化，请重新分析。', 'specialist_stale', 409)
+            selected = dict(option_id=option_id, label=option['label'], kind=option['kind'], version=suggestion['version'],
+                            at=now(), execution_authorized=False)
+            suggestion['selection'] = selected
+            task['feedback'].append(dict(role='user', content='专项建议选择：' + option['label'],
+                specialist_selection=dict(suggestion_id=suggestion_id, **selected)))
+            task['feedback'] = task['feedback'][-20:]
+            self._save(task)
+            self._record_fact(key, 'specialist_answer', dict(suggestion_id=suggestion_id, **selected))
+            self._event(task, 'specialist_answer', '已记录专项选择；没有批准或执行清理。')
+            result = dict(task_id=key, suggestion_id=suggestion_id, selection=selected,
+                          execution_authorized=False, extra_suggestion=copy.deepcopy(suggestion))
+            if option['kind'] == 'tool':
+                result['specialist'] = self.cleanup_tools.validate_reference({key: option[key] for key in ('tool_id', 'parameters') if key in option})
+                result['source'] = dict(task_id=key, suggestion_id=suggestion_id)
+            return result
+
+    def validate_specialist_source(self, source):
+        """Check continuation identity, not permission to execute a new action."""
+        if source is None:
+            return {}
+        if not isinstance(source, dict) or len(json.dumps(source, ensure_ascii=False)) > 12000:
+            raise AppError('来源信息无效，请从原建议重新打开。', 'invalid_tool_source')
+        checked = copy.deepcopy(source)
+        for field in ('task_id', 'item_id', 'signature', 'suggestion_id'):
+            if field in source and (not isinstance(source[field], str) or not source[field]
+                    or len(source[field]) > 200 or any(ord(c) < 32 for c in source[field])):
+                raise AppError('来源引用无效，请从原清单重新打开。', 'invalid_tool_source')
+        if ('signature' in source or 'advice_version' in source) and 'item_id' not in source:
+            raise AppError('建议版本和签名必须绑定具体来源对象。', 'invalid_tool_source')
+        if 'suggestion_id' in source and 'task_id' not in source:
+            raise AppError('专项建议必须关联原任务。', 'invalid_tool_source')
+        with self.state.lock:
+            task = self._get(source['task_id']) if 'task_id' in source else None
+            if 'item_id' in source:
+                items = self.state.snapshot(self.assistant.public_settings()['protect_patterns'])['items']
+                item = next((row for row in items if row['id'] == source['item_id']), None)
+                if item is None or not source.get('signature') or source['signature'] != item['signature']:
+                    raise AppError('来源对象已有变化，请返回清单重新核对。', 'target_changed', 409)
+                if task is not None and not self._action_target(task, item):
+                    raise AppError('来源对象不属于原任务范围。', 'outside_scope')
+                if 'advice_version' in source:
+                    advice = (task or {}).get('advice', {}).get(item['id'])
+                    expected = None
+                    if advice:
+                        expected = advice.get('record_revision') or task.get('advice_revision', 0)
+                    if type(source['advice_version']) is not int or source['advice_version'] != expected:
+                        raise AppError('来源建议已更新，请重新查看当前入口。', 'specialist_stale', 409)
+            if 'suggestion_id' in source:
+                suggestion = next((row for row in task['extra_suggestions'] if row['id'] == source['suggestion_id']), None)
+                if suggestion is None:
+                    raise AppError('专项建议已更新或不属于此任务。', 'specialist_stale', 409)
+                current = {item['id']: item for item in self.state.snapshot(self.assistant.public_settings()['protect_patterns'])['items']}
+                if any(ident not in current or current[ident]['signature'] != stamp
+                       for ident, stamp in suggestion.get('target_snapshots', {}).items()):
+                    raise AppError('专项建议涉及的对象已变化，请重新分析。', 'specialist_stale', 409)
+        return checked
+
+    def record_specialist_result(self, plan, result=None):
+        """Link a durable toolkit receipt back to its original task, once.
+
+        Re-read the host registry plan; caller payloads and model text cannot
+        become an operation receipt. No model call or file invalidation occurs.
+        """
+        ident = plan.get('id') if isinstance(plan, dict) else plan
+        saved = self.cleanup_tools.get_plan(ident)
+        source, receipt = saved.get('source', {}), saved.get('result')
+        key = source.get('task_id')
+        if not key or not isinstance(receipt, dict):
+            return None
+        with self.state.lock:
+            try:
+                task = self._get(key)
+            except AppError:
+                return None
+            value = dict(plan_id=saved['id'], plan_version=saved['version'], status=receipt.get('status'),
+                plan_status=saved['status'], tool_ids=[row['tool_id'] for row in saved['entries']],
+                items=copy.deepcopy(receipt.get('items', [])), succeeded=receipt.get('succeeded', 0),
+                total=receipt.get('total', 0), failed=receipt.get('failed', 0),
+                cancelled=receipt.get('cancelled', 0), unverified=receipt.get('unverified', 0),
+                undone=receipt.get('undone', 0), source=copy.deepcopy(source),
+                simulation_only=True, windows_changed=False, actual_reclaimed_bytes=0,
+                note='专项操作已记入本工具的模拟记录；没有修改Windows、文件或真实占用。')
+            fingerprint = hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+            recorded = task.setdefault('specialist_receipts', {})
+            if recorded.get(saved['id']) == fingerprint:
+                return copy.deepcopy(task.get('last_specialist_result'))
+            recorded[saved['id']] = fingerprint
+            task['specialist_receipts'] = dict(list(recorded.items())[-100:])
+            value['at'] = now()
+            task['last_specialist_result'] = value
+            with self.state.db:
+                self._record_fact(key, 'specialist_result', value)
+                self._save(task, commit=False)
+            self._event(task, 'specialist_result', '专项结果已返回原任务；文件与系统未实际改变。')
+            return copy.deepcopy(value)
+
     def clean(self, text, limit=1000):
         return self.assistant.clean_text(text, limit=limit)
 
@@ -206,6 +496,8 @@ class TaskHarness:
         task.setdefault('last_public_reply', None)
         task.setdefault('execution', None)
         task.setdefault('last_cleanup_result', None)
+        task.setdefault('extra_suggestions', [])
+        task.setdefault('last_specialist_result', None)
         return task
 
     def _model(self):
@@ -480,6 +772,8 @@ class TaskHarness:
         value['last_public_reply'] = copy.deepcopy(task.get('last_public_reply'))
         value['cleanup_source_task_id'] = task.get('cleanup_source_task_id')
         value['last_cleanup_result'] = copy.deepcopy(task.get('last_cleanup_result'))
+        value['extra_suggestions'] = copy.deepcopy(task.get('extra_suggestions', []))
+        value['last_specialist_result'] = copy.deepcopy(task.get('last_specialist_result'))
         value['investigation_notice'] = copy.deepcopy(task.get('investigation_notice'))
         with self._execution_lock:
             control = self._executions.get(key)
@@ -868,6 +1162,20 @@ class TaskHarness:
 
     def tool(self, key, name, args, *, cancel, provenance=None):
         task = self._get(key)
+        if name == 'discover_cleanup_tools':
+            self._args(args, ['query', 'category'])
+            result = self.cleanup_tools.list(query=args.get('query', ''), category=args.get('category', 'all'))
+            task['specialist_tools_requested'] = True
+            self._save(task)
+            return result
+        if name == 'inspect_cleanup_tool':
+            self._args(args, ['tool_id', 'parameters'], ['tool_id'])
+            result = self.cleanup_tools.inspect(args['tool_id'], args.get('parameters', {}))
+            task['specialist_tools_requested'] = True
+            self._save(task)
+            return result
+        if name == 'record_specialist_suggestions':
+            return self._record_specialist_suggestions(task, args, provenance)
         if name == 'collect_system_configuration':
             self._args(args, ['section'])
             try:
@@ -1060,7 +1368,7 @@ class TaskHarness:
             current = {i['id']: i for i in self._items(task)}
             additions = {}
             for row in rows:
-                self._args(row, ['id', 'conclusion', 'purpose', 'reason', 'impact', 'impact_rating', 'evidence_ids', 'cleanup_rating', 'inheritance'], ['id', 'conclusion', 'purpose', 'reason', 'impact'])
+                self._args(row, ['id', 'conclusion', 'purpose', 'reason', 'impact', 'impact_rating', 'evidence_ids', 'cleanup_rating', 'inheritance', 'specialist', 'extra_suggestion_id'], ['id', 'conclusion', 'purpose', 'reason', 'impact'])
                 if not isinstance(row['id'], str) or row['id'] not in current or row['id'] in additions:
                     raise AppError('建议包含未知或重复对象。')
                 if row['conclusion'] not in ('keep', 'review', 'recommend', 'skip', 'no_advice') or any(not isinstance(row[f], str) or not 1 <= len(row[f]) <= 400 for f in ('purpose', 'reason', 'impact')):
@@ -1088,6 +1396,7 @@ class TaskHarness:
                     signature=item['signature'], at=now(), evidence_ids=self._evidence(task, row.get('evidence_ids')),
                     provenance=self._provenance(provenance),
                     **{f: self.clean(row[f], 400) for f in ('purpose', 'reason', 'impact')})
+                additions[item['id']].update(self._specialist_link(task, row, item))
             task.setdefault('advice', {}).update(additions)
             task['advice_revision'] = task.get('advice_revision', 0) + 1
             with self.state.lock, self.state.db:
@@ -1132,6 +1441,8 @@ class TaskHarness:
                 raise AppError('方案包含未知、重复或已处理项目，请更新。')
             seen.add(row['id'])
             item = current[row['id']]
+            if origin != 'user_direct' and self._specialist_replaces(task, item):
+                raise AppError('这项建议应进入专项工具，不能按普通文件或后台动作处理。', 'specialist_required', 409)
             if not self._action_target(task, item):
                 raise AppError('此对象仅用于了解背景，不属于用户选择的处理范围。', 'outside_scope')
             if item['risk'] == 'protected' or origin != 'user_direct' and self._kept(task, item):
@@ -1466,7 +1777,8 @@ class TaskHarness:
     def _prompt_observations(self, task):
         rows = []
         bookkeeping = {'selection_snapshot', 'record_advice', 'checkpoint_task',
-                       'read_advice', 'list_skills', 'read_skill', 'discover_tools', 'list_scopes'}
+                       'read_advice', 'list_skills', 'read_skill', 'discover_tools', 'list_scopes',
+                       'discover_cleanup_tools', 'record_specialist_suggestions'}
         with self.state.lock:
             retained = {row[0] for row in self.state.db.execute('SELECT id FROM task_facts WHERE task_id=?', (task['id'],))}
         for row in task['observations'][-6:]:
@@ -1667,7 +1979,8 @@ class TaskHarness:
                       'list_items': '正在筛选相关内容', 'inspect_items': '正在核对用途线索',
                       'collect_apps': '正在了解相关软件', 'compare_files': '正在核对文件是否重复',
                       'cache_experience': '正在参考缓存经验', 'propose_plan': '正在整理建议方案', 'present_findings': '正在整理调查结论',
-                      'record_advice': '正在保存用途与建议', 'discover_tools': '正在了解可用调查工具',
+                      'record_advice': '正在保存用途与建议', 'discover_cleanup_tools': '正在查找专项工具',
+                      'inspect_cleanup_tool': '正在核对专项工具与影响', 'record_specialist_suggestions': '正在保存专项方案', 'discover_tools': '正在了解可用调查工具',
                       'read_facts': '正在核对已保存的事实', 'checkpoint_task': '正在保存调查进展',
                       'list_skills': '正在查找相关经验', 'read_skill': '正在按需读取经验指南', 'ask_user': '需要了解你的偏好',
                       'collect_system_configuration': '正在只读核对分页与休眠配置', 'inspect_volume': '正在核对所选位置所在卷的容量与回收站统计',
@@ -1694,6 +2007,13 @@ class TaskHarness:
                 finalizing = force_finalization or round_index >= MAX_ROUNDS - 2 or calls_used >= MAX_CALLS - 2
                 finish_only = round_index == MAX_ROUNDS - 1 or calls_used >= MAX_CALLS - 1
                 allowed = FINISH_TOOLS if finish_only else FINAL_TOOLS if finalizing else None
+                # Ordinary investigations retain the small scoring/conclusion
+                # contract. Specialist recording is relevant only after this
+                # task requested that capability or already has related work.
+                if finalizing and not finish_only and (task.get('specialist_tools_requested')
+                        or task.get('extra_suggestions') or any(advice.get('specialist') or advice.get('extra_suggestion_id')
+                            for advice in task.get('advice', {}).values())):
+                    allowed = allowed | {'record_specialist_suggestions'}
                 specs = [spec for spec in tool_specs() if allowed is None or spec['function']['name'] in allowed]
                 # Reserve one tool for a real conclusion, not just another
                 # collection result. Rejected calls still get paired native
@@ -1795,7 +2115,7 @@ class TaskHarness:
                     task = self._get(key)
                     if 'error' in result:
                         task['usage']['tool_failures'] += 1
-                    elif name in ('survey_scope', 'inspect_directory', 'validate_directory', 'list_items', 'inspect_items', 'collect_apps', 'compare_files', 'cache_experience', 'continue_scan', 'read_scan', 'read_skill', 'collect_system_configuration', 'inspect_volume'):
+                    elif name in ('survey_scope', 'inspect_directory', 'validate_directory', 'list_items', 'inspect_items', 'collect_apps', 'compare_files', 'cache_experience', 'continue_scan', 'read_scan', 'read_skill', 'collect_system_configuration', 'inspect_volume', 'inspect_cleanup_tool'):
                         result['fact_id'] = self._record_fact(key, name, result)
                         if name in ('survey_scope', 'inspect_directory', 'validate_directory', 'continue_scan'):
                             task['usage']['scan_pages'] += 1

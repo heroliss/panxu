@@ -103,6 +103,8 @@ window.PanxuAdvicePresentation = (() => {
     let advice=text(suggestion);
     if(!advice){
       if(value.stale)advice='已有建议需要重新核对。';
+      else if((assessment.specialist || record.specialist)?.mode==='replace')advice='建议通过专项方案处理，保留目录或程序主体。';
+      else if(assessment.extra_suggestion_id || record.extra_suggestion_id)advice='建议先查看专项方案，再选择处理方式。';
       else if(value.state==='skipped')advice='本轮已跳过，未给出处理建议。';
       else if(value.state==='no_advice')advice='暂未形成操作建议。';
       else if(value.state==='unanalysed')advice=action&&operationAdvice?`已有操作建议：${action}；尚未评分。`:'尚未分析，未形成操作建议。';
@@ -118,7 +120,7 @@ window.PanxuAdvicePresentation = (() => {
     const group=document.createElement('section');group.className='advice-explanation-grid';group.dataset.rating=value.rating===null?'':String(value.rating);group.dataset.assessmentState=value.state;if(value.stale)group.dataset.stale='true';group.setAttribute('aria-label','用途、建议、原因与影响');
     for(const [key,label,body] of fields){const block=document.createElement('div'),heading=document.createElement('span'),content=document.createElement('p');block.className='advice-explanation-part';block.dataset.advicePart=key;
       if(key==='impact'){block.dataset.impactRating=impactRating===null?'':String(impactRating);block.dataset.impactState=value.stale?'stale':impactRating===null?'unknown':'rated';block.setAttribute('role','group');block.setAttribute('aria-label','影响；'+impactDescription);block.title=impactDescription;}
-      heading.className='advice-explanation-label';heading.textContent=label;content.textContent=body;block.append(heading,content);group.append(block);}
+      heading.className='advice-explanation-label';heading.textContent=label;content.textContent=body;block.append(heading,content);if(key==='suggestion'){const link=window.PanxuSpecialistLinks?.create(record);if(link)block.append(link);}group.append(block);}
     return group;
   }
   return {render};
@@ -814,10 +816,18 @@ window.PanxuTasks = (() => {
   function adviceCard(entry,taskId) {
     const card=node('article','task-advice-item'),copy=node('div','task-advice-copy');
     add(copy,add(node('div','item-title-line task-advice-title-line'),window.PanxuIcons?.create(entry),node('strong','task-advice-title',entry.name)),
-      entry.user_kept?semanticTag('你已选择保留','neutral','task-advice-state'):null,window.PanxuAdvicePresentation.render(entry,{direct:true}),window.PanxuProvenance.details(entry,{presets:context.providerPresets}));
+      entry.user_kept?semanticTag('你已选择保留','neutral','task-advice-state'):null,window.PanxuAdvicePresentation.render({...entry,task_id:taskId},{direct:true}),window.PanxuProvenance.details(entry,{presets:context.providerPresets}));
     if(!busy())directControls(copy,entry,taskId);
     add(card,window.PanxuAssessment.render(entry,{direct:true,primary:true,cls:'task-advice-rating'}),copy);
     return card;
+  }
+  function specialistSuggestions(root) {
+    if(!current.extra_suggestions?.length || !context.openSpecialist)return;
+    const section=node('section','task-specialist-suggestions');
+    add(section,node('h2','','专项建议'),node('p','field-help',current.extra_suggestions.map(item=>item.title).join('、')),
+      action('查看专项建议',()=>context.openSpecialist({extra_suggestions:current.extra_suggestions,source:{task_id:current.id}}),'button'));
+    if(current.last_specialist_result)add(section,node('p','field-help','最近一次专项操作结果已记录，可在操作记录中查看。'));
+    add(root,section);
   }
   function advicePreview(root) {
     if(current.plan || busy())return;
@@ -863,7 +873,7 @@ window.PanxuTasks = (() => {
       add(panel, action('继续调查', () => request('/api/tasks/' + current.id + '/continue', {}), 'button primary task-primary'));
       feedbackForm(panel, '补充或改变整理要求');
     }
-    briefing(panel);renderLivePreview(panel);results(panel); renderAdvice(panel); processDetails(panel);
+    briefing(panel);renderLivePreview(panel);results(panel); renderAdvice(panel); specialistSuggestions(panel);processDetails(panel);
     add(root, panel);
     if(!context.setContextBack&&!busy())add(root,action('返回常用任务',returnHome,'plain-button task-new'));
   }
@@ -904,6 +914,7 @@ window.PanxuTasks = (() => {
       setContextBack:context.setContextBack,openFiles:context.openFiles,onSource:showContext,acceptTask:accept,redraw,
       renderTools:tools=>add(tools,action('分析详情',()=>reviewPane('analysis'),'plain-button'),action('调整要求',()=>reviewPane('adjust'),'plain-button'))
     });
+    specialistSuggestions(root);
     if(!context.setContextBack&&!busy())add(root,action('返回常用任务',returnHome,'plain-button task-new'));
   }
   function render(root, helpers) {

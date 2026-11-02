@@ -22,6 +22,9 @@ class SimulationBackend:
     def __init__(self, state, *, validator=validate_system_items):
         self.state, self.validator = state, validator
 
+    def accepts(self, entry):
+        return entry.get('kind') != 'cleanup_tool'
+
     def apply(self, entry, operation_id, patterns):
         receipt = self.state.receipt(operation_id)
         if receipt:
@@ -68,7 +71,10 @@ class ActionRuntime:
             rows = self.state.db.execute("SELECT * FROM action_attempts WHERE status='running'").fetchall()
         for row in rows:
             data = json.loads(row['payload'])
-            batch = self.state.receipt(row['id'])
+            if hasattr(self.backend, 'accepts') and not self.backend.accepts(data['entry']):
+                continue
+            batch = (self.backend.receipt(row['id']) if hasattr(self.backend, 'receipt')
+                     else self.state.receipt(row['id']))
             verified = bool(batch and self.backend.verify(data['entry'], batch))
             data.update(batch_id=batch['id'] if batch else None, verified=verified,
                         message='已从处理记录核实上次结果。' if verified else '上次处理被中断，未确认完成；不会自动重复。')
@@ -165,12 +171,16 @@ class ActionRuntime:
         items = []
         for row in rows:
             data = json.loads(row['payload'])
-            with self.state.lock:
-                batch = self.state.db.execute('SELECT status FROM batches WHERE id=?', (data.get('batch_id'),)).fetchone()
+            if hasattr(self.backend, 'current_state'):
+                current_state = self.backend.current_state(data.get('batch_id'))
+            else:
+                with self.state.lock:
+                    batch = self.state.db.execute('SELECT status FROM batches WHERE id=?', (data.get('batch_id'),)).fetchone()
+                current_state = 'undone' if batch and batch['status'] == 'undone' else 'recorded'
             items.append(dict(id=data['entry']['id'], name=data['entry']['name'], status=row['status'],
                               message=data.get('message', ''), verified=data['verified'], backend=data['backend'],
                               batch_id=data.get('batch_id'), action=data['entry']['action'],
-                              current_state='undone' if batch and batch['status'] == 'undone' else 'recorded'))
+                              current_state=current_state))
         succeeded = sum(x['status'] == 'succeeded' for x in items)
         status = 'succeeded' if items and succeeded == len(items) else 'partial' if succeeded else 'failed'
         if not succeeded and any(x['status'] in ('running', 'unverified') for x in items):

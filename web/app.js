@@ -179,7 +179,7 @@ window.PanxuDeveloperView = (() => {
 
 function initializePanxu() {
   const $ = (id) => document.getElementById(id);
-  const names = { overview: '整理助手', files: '我的文件', background: '后台与软件', software: '后台与软件', history: '操作记录', model: '设置', duplicates: '查找重复文件' };
+  const names = { overview: '整理助手', files: '我的文件', background: '后台与软件', software: '后台与软件', history: '操作记录', model: '设置', duplicates: '查找重复文件', cleanup: '清理工具' };
   const kindNames = { file: '文件', directory: '目录汇总', startup: '启动项', service: '服务', process: '进程', software: '软件' };
   const state = { csrf: '', version: '', view: 'overview', items: [], summary: {}, settings: {}, history: [], disks: [], source: 'demo', warnings: [], selected: new Set(), focused: null, query: '', risk: 'all', origin: 'all', subtype: 'all', limit: 50, busy: false, job: null, plan: null, scanPath: '', inspector: false, assistant: null, recommendations: [], checked: false, analyzing: false, filesExpanded: false, backgroundExpanded: false, inventoryTarget: 'startup', checkDestination: 'overview', showAllCards: new Set() };
   let toastTimer;
@@ -373,6 +373,46 @@ function initializePanxu() {
   function chosen() { return state.items.filter((item) => state.selected.has(item.id)); }
 
   const navigationStack=[];
+  let cleanupReference=null,cleanupReturn=null;
+  const locationSnapshot=()=>({view:state.view,query:state.query,risk:state.risk,origin:state.origin,subtype:state.subtype,limit:state.limit,scroll_y:window.scrollY || 0});
+  async function openSpecialist(value) {
+    try {
+      const origin=locationSnapshot();
+      let ref=value;
+      if(value.item_id){
+        const query=new URLSearchParams({item_id:value.item_id});
+        if(value.signature)query.set('signature',value.signature);
+        if(value.task_id)query.set('task_id',value.task_id);
+        const resolved=await api('/api/specialist?'+query);
+        if(!resolved.specialist&&!resolved.extra_suggestion)throw new Error('此建议当前没有可用的专项入口，请重新核对。');
+        ref={...(resolved.specialist || {}),...(resolved.extra_suggestion?{extra_suggestion:resolved.extra_suggestion}:{}),source:resolved.source};
+      }
+      cleanupReturn=ref.source?.return_context || origin;
+      cleanupReference={...ref,source:{...(ref.source || {}),return_context:cleanupReturn}};
+      setView('cleanup',false);
+    }catch(error){notify(error.message,true);}
+  }
+  window.PanxuSpecialistLinks?.setOpener(openSpecialist);
+  function returnFromCleanup() {
+    const previous=cleanupReturn;
+    cleanupReference=null;cleanupReturn=null;
+    setView(previous&&names[previous.view]?previous.view:'overview',false,previous);
+    if(previous)requestAnimationFrame(()=>window.scrollTo({top:previous.scroll_y || 0,behavior:'instant'}));
+  }
+  function renderCleanupTools(root) {
+    const context={api,source:cleanupReference?.source || {},onReturn:returnFromCleanup,toast,setContextBack,
+      onOpenSettings:async(tool_id,entry,index)=>{
+        const result=await api('/api/cleanup-tools/open-settings',{tool_id,index,source:cleanupReference?.source || {}});
+        toast(result.message);
+        return result;
+      },
+      onAnswer:async()=>{const key=cleanupReference?.source?.task_id;if(key){const value=await api('/api/tasks/'+encodeURIComponent(key));window.PanxuTasks.accept(value.task);}},
+      onResult:async()=>{const key=cleanupReference?.source?.task_id;if(key){const value=await api('/api/tasks/'+encodeURIComponent(key));window.PanxuTasks.accept(value.task);}}
+    };
+    if(cleanupReturn)setContextBack('返回清单',returnFromCleanup);
+    const render=cleanupReference?window.PanxuCleanupTools.open(root,cleanupReference,context):window.PanxuCleanupTools.mount(root,context);
+    Promise.resolve(render).catch(error=>notify(error.message,true));
+  }
   let contextBack=null;
   function setContextBack(label,handler) {
     const back=$('navigation-back');contextBack=typeof handler==='function'?handler:null;
@@ -400,12 +440,13 @@ function initializePanxu() {
     toggleInspector(false); render();
   }
   function render() {
+    window.PanxuCleanupTools?.unmount?.();
     window.PanxuFiles?.unmount();
     window.PanxuTasks?.unmountLive?.();
     window.PanxuDuplicates?.unmount();
     defaultBack();
     const root = $('workspace'); root.replaceChildren();
-    const renderers = { overview: renderOverview, files: renderFiles, background: renderBackground, software: renderSoftware, history: renderHistory, model: renderModel, duplicates: renderDuplicates };
+    const renderers = { overview: renderOverview, files: renderFiles, background: renderBackground, software: renderSoftware, history: renderHistory, model: renderModel, duplicates: renderDuplicates, cleanup: renderCleanupTools };
     renderers[state.view](root);
     renderInspector(); renderSelection();
     $('connection-status').textContent = '本机检查 · 文件正文不会发送';
@@ -428,7 +469,7 @@ function initializePanxu() {
       openSettings: () => setView('model'), openFiles: () => setView('files'),
       openAssistant: () => setView('overview'),
       openDuplicates:()=>setView('duplicates'),setContextBack,
-      showItem,
+      showItem,openSpecialist,
       autoSelectFour:window.PanxuAppearance.get().cleanup_auto_select_four,
       refreshCatalog: async () => { accept(await api('/api/bootstrap?compact=1')); }
     });
@@ -733,7 +774,22 @@ function initializePanxu() {
   function renderHistory(root) {
     append(root, heading('操作记录', '查看已确认的操作及其结果。'));
     window.PanxuTasks?.renderHistory(root);
-    if (!state.history.length) { append(root, empty('还没有操作记录', '确认操作后，结果会显示在这里。')); return; }
+    const emptyHistory=state.history.length?null:empty('还没有操作记录','确认操作后，结果会显示在这里。');
+    if(emptyHistory)emptyHistory.hidden=true;
+    const specialist=el('section','specialist-history');root.append(specialist);
+    api('/api/cleanup-tools/history').then(({history})=>{
+      if(!specialist.isConnected)return;
+      if(!history?.length){if(emptyHistory)emptyHistory.hidden=false;return;}
+      specialist.append(section('专项操作','查看工具方案、选择和核验结果。'));
+      const labels={awaiting_review:'待确认',completed:'已记录',cancelled:'已取消',interrupted:'中断待核实',undone:'已撤销记录',executing:'进行中'};
+      history.forEach(plan=>{
+        const line=el('article','history-card');append(line,el('h3','',plan.title),el('p','field-help',labels[plan.status] || '待核实'),
+          button('查看方案与结果',()=>openSpecialist({plan_id:plan.id,source:plan.source}),'button small'));
+        if(plan.result&&plan.status!=='undone')line.append(button('撤销记录',()=>task(async()=>{await api('/api/cleanup-tools/undo',{plan_id:plan.id});render();}),'plain-button'));
+        specialist.append(line);
+      });
+    }).catch(error=>{if(specialist.isConnected)specialist.append(el('p','field-error',error.message));});
+    if (!state.history.length) { append(root,emptyHistory); return; }
     const list = el('div', 'history-list'); state.history.forEach((batch) => {
       const card = el('article', 'history-card'); const top = el('div', 'history-top'); const date = new Date(batch.created_at); const when = Number.isNaN(date.getTime()) ? text(batch.created_at) : date.toLocaleString('zh-CN', { hour12: false });
       append(top, el('h3', '', `已记录 ${batch.item_count ?? batch.items?.length ?? 0} 项操作`), badge(batch.status === 'undone' ? '已撤销' : '已记录')); append(card, top, el('p', '', when));
@@ -1224,7 +1280,7 @@ function initializePanxu() {
     await task(async () => { const result = await api('/api/duplicates', { ids }); state.plan = null; $('plan-title').textContent = '重复文件校验'; $('plan-execute').hidden = true; const host = $('plan-content'); host.replaceChildren(); append(host, el('p', 'muted', '重复结果只供检查，不会自动选择或删除文件。')); (result.warnings || []).forEach((warning) => append(host, el('div', 'plan-warning', text(warning)))); const groups = result.groups || []; if (!groups.length) append(host, empty('没有确认的重复组', '所选文件内容不同，或尚未完成校验。')); groups.forEach((group, index) => { const box = el('div', 'duplicate-group'); append(box, el('strong', '', `重复组 ${index + 1}`)); (group.items || group.files || []).forEach((entry) => { const item = typeof entry === 'string' ? state.items.find((i) => i.id === entry) || { name: entry } : entry; append(box, el('p', '', item.path || item.name || text(item))); }); append(host, box); }); $('plan-dialog').showModal(); });
   }
 
-  $('navigation').addEventListener('click', (e) => { const buttonNode = e.target.closest('[data-view]'); if (buttonNode) { setView(buttonNode.dataset.view); } });
+  $('navigation').addEventListener('click', (e) => { const buttonNode = e.target.closest('[data-view]'); if (buttonNode) { if(buttonNode.dataset.view==='cleanup'){cleanupReference=null;cleanupReturn=null;}setView(buttonNode.dataset.view); } });
   $('navigation-back')?.addEventListener('click',()=>contextBack?.());
   document.querySelector('.sidebar-bottom [data-view]').addEventListener('click', () => setView('model'));
   document.querySelector('.brand').addEventListener('click', (e) => { e.preventDefault(); setView('overview'); });

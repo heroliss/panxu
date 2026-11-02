@@ -1,6 +1,6 @@
 {
   "product": "盘序",
-  "version": "0.18.0",
+  "version": "0.19.0",
   "mode": "simulation",
   "root": "E:\\GPT-Projects\\win11-disk-assistant",
   "safety": "This build has NO real executor. All apply/undo/reset operations modify only SQLite simulation records. Never unlink/move/kill/control services/edit startup outside app-owned data.",
@@ -96,7 +96,21 @@
     "GET /api/tasks/{id}/execution": "{} -> {execution:null|execution_state}; bounded current simulation batch status and per-item results, not task investigation progress",
     "POST /api/tasks/{id}/execution/pause": "{version:int} -> {execution}; cooperative pause between item commits, currently admitted atomic commit may finish; stale version409",
     "POST /api/tasks/{id}/execution/resume": "{version:int} -> {execution}; continue current paused simulation batch, not investigation reanalysis or replay after restart",
-    "POST /api/tasks/{id}/execution/cancel": "{version:int} -> {execution}; stop uncommitted remaining items, retain committed receipts; cancellation is not undo"
+    "POST /api/tasks/{id}/execution/cancel": "{version:int} -> {execution}; stop uncommitted remaining items, retain committed receipts; cancellation is not undo",
+    "GET /api/cleanup-tools": "{items,categories}; compact shared tool registry; 25 simulation adapters; never proof installed or executable",
+    "GET /api/cleanup-tools/{id}": "detail, parameter fields, impact, recovery, registered settings/method entries and implementation capabilities",
+    "POST /api/cleanup-tools/inspect": "{tool_id,parameters?}; fixed read-only memory/power/volume observations or explicitly unavailable",
+    "POST /api/cleanup-tools/prepare": "{tool_id,parameters?,source?}; persist frozen simulation plan; navigation and feedback not approval",
+    "POST /api/cleanup-tools/prepare-many": "{items:[{tool_id,parameters?}],source?}; deduplicate identical tools, reject conflicting variants; freeze one plan",
+    "GET /api/cleanup-plans/{id}": "durable frozen plan and result; interrupted work is not replayed",
+    "POST /api/cleanup-tools/execute": "{plan_id,version}; exact version confirmation, shared ActionRuntime, virtual receipt verification; real reclaimed bytes 0",
+    "POST /api/cleanup-tools/cancel": "{plan_id,version}; cancel review or request safe-stage cancellation",
+    "POST /api/cleanup-tools/control": "{plan_id,action:pause|resume|cancel}; shared execution control",
+    "POST /api/cleanup-tools/undo": "{plan_id}; undo only virtual receipts, append truthful feedback",
+    "GET /api/cleanup-tools/history": "{history}; durable specialist plans and verified results shown with existing operation records",
+    "POST /api/cleanup-tools/open-settings": "{tool_id,index,source?}; host re-reads registered entry; may open settings or official documentation, status opened/applied false; never model-supplied URL/command",
+    "GET /api/specialist": "?item_id&signature?&task_id? -> host-resolved current tool/extra suggestion link and original parent source; no execution",
+    "POST /api/tasks/{id}/specialist-answer": "{suggestion_id,option_id,version?}; persist versioned answer, return validated optional tool reference; never execute or request model"
   },
   "mutations": "Require X-CSRF-Token from bootstrap. Errors are JSON {error,code}. Relative same-origin fetch only. Input limits apply.",
   "summary": "{total_items,visible_items,simulated_items,logical_bytes,simulated_bytes,process_memory_bytes,by_kind,source,mode}. Real disks separate; no simulated_bytes shown as actual freed space.",
@@ -108,7 +122,7 @@
   "agent_task": "statuses ready/investigating/awaiting_review/executing/needs_input/needs_model/paused/budget_exhausted/error/completed. Up to6 model requests and12 executed tools per user turn; normally4 investigation+2 reserved scoring/conclusion rounds, earlier finalization near budget. Model record_advice/propose_plan schemas cap6 items; host historical30 and manual500 remain separate. High-rating initialization is an editable draft, never approval; final selection determines targets. Protected/out-of-scope/unsupported identities and stale plans cannot bypass factual checks. Unknown score is not3 or permission. Tool text is untrusted.",
   "action_runtime": "simulation backend only. Per-item durable intent plus atomic overlay/receipt, status succeeded/failed/partial/cancelled/unverified. Recovery verifies receipts without blind replay. User undo is separately visible as current_state=undone. Actual reclaimed bytes always zero.",
   "release_status": "verified_portable_native_scoped_acceptance_passed",
-  "installed_release": "0.18.0_original_profile_restored",
+  "installed_release": "0.19.0_rebuilt_profile_restored_awaiting_runtime",
   "review_selection": "Version0.18 removes score-selection panel and per-score buttons from review/myfiles. Exact rating plus one tri-state select-current-filter control uses shared view,parent,query,rating,scope,risk,kind filters across complete rows. Tree is current parent level, navigation-only not selectable. Fetch cursor pages<=500 serially, candidate cap5000 and total logical-rule cap5000; incomplete/oversize/version-error collection leaves old selection atomically unchanged. Tri-state derives from complete candidates and nearest rules; selected roots with child exceptions remain checked+mixed so next click can deselect. Preserve outside-filter explicit rules and child exclusions. Plans freeze<=500 physical targets; remaining draft retained and stale catalog requires recheck. cleanup_auto_select_four lives in Settings cleanup preferences, existing UI-pref API auto-saves/rolls back error independently of model/text settings; eligible5 preselect stays, only new analysis initial drafts change. Current manual choices untouched. Explicit confirmation and simulation-only boundaries unchanged.",
   "dark_surface_refinement": "Version0.17.1 only dims dark canvas/card/soft/input/sidebar/interaction and rating/impact background tokens; canvas#090e16,panel#151f2d,soft#1d2b3d. Preserve surface separation, ink/muted/rating foregrounds, typography/layout/text-selection, scoring/action/model/backend semantics and simulation-only boundaries; light/non-dark declarations verified identical to0.17 baseline. Strict Python590,Node165,7JSsyntax passed, detector empty. Actual source dark1280x720/light960x680 no horizontal overflow, sampled explanation/label/rating minimum contrast8.01/5.21. Final EXE scoped native dark review/myfiles inspected and recorded, no UI LLM request or processing action. Original four durable files restored byte-for-byte; normal launch verified with 8 tasks,12 prior advice,18 model requests and identical model settings, not an all-module native claim; version0.17 evidence remains historical.",
   "task_memory": "Durable goal, choices, versioned plan, simulation receipts, up to300 historical facts/task with32MiB global fact-payload retention. Separate last_public_reply stores accepted public text<=8000 chars with completed_at,protocol,host provenance,truncated; not private continuation, model context or partial-stream success. Model connection change reconstructs fresh context. Request attempts/tools/work counted; missing provider token usage is unknown.",
@@ -148,5 +162,24 @@
   "product_mode_copy": "Natural concrete action names in controls/confirmations/progress/history, without repeated simulation prefix; one global visible mode notice explains current simulation-only backend. Machine mode/receipt/protection/version rules unchanged, actual reclaimed bytes0. Product results describe internal recorded/verified/failed/cancelled/unverified state, never claim real stop/kill/uninstall/delete success. Never strip words from user filenames/program names, public model prose or raw receipts; no hidden real-execution switch.",
   "operation_feedback": "Results preserve historical succeeded plus separate current_state=undone and undone count. actions/undone_actions/action_results aggregate by frozen action; action_results has total,succeeded,failed,cancelled,unverified,undone. POST undo refreshes corresponding execution result and source cleanup_results/last_cleanup_result by execution_task_id+plan_version, without another model request. Older execution versions cannot borrow counts from a newer plan. Actual reclaimed bytes remain zero.",
   "review_plan_handoff": "Version0.18 requests use host api/CSRF rather than bypass fetch. Actual returned plan and picked_ids open one frozen confirmation without another compile/model/approval; legacy picked_ids subsets do not broaden to full plan. Returning to files retains draft. Fresh state can recover awaiting_review user_direct persistent plan only with no execution/cleanup_source, no invented assessment; cancelling does not reopen every redraw. Prune rules only with known execution task/version verified-success receipts; unexpected versions preserve stale draft and block confirmation pending recheck.",
-  "review_selection_verification": "598 strict Python,180 Node,7 JS syntax,36 resume/local checks passed; detector empty. Actual source120-row filter selection crosses pages and deselection preserves outside4; auto4 save leaves current manual4. Source dark current inherited5 page sampled min8.49/light960 min5.21, no horizontal overflow; not a universal all-rating sample. Final EXE native exact4 single-item header selection -> only expected frozen delete1 confirmation -> return retains1; settings false save confirmed, current manual1 preserved. Native cross-page not repeated. No UI model request/approval/execution. Four original durable files byte-identical restored,8 task states/counts,12 original advice,18 model requests and model settings unchanged; reopened final0.18."
+  "review_selection_verification": "598 strict Python,180 Node,7 JS syntax,36 resume/local checks passed; detector empty. Actual source120-row filter selection crosses pages and deselection preserves outside4; auto4 save leaves current manual4. Source dark current inherited5 page sampled min8.49/light960 min5.21, no horizontal overflow; not a universal all-rating sample. Final EXE native exact4 single-item header selection -> only expected frozen delete1 confirmation -> return retains1; settings false save confirmed, current manual1 preserved. Native cross-page not repeated. No UI model request/approval/execution. Four original durable files byte-identical restored,8 task states/counts,12 original advice,18 model requests and model settings unchanged; reopened final0.18.",
+  "specialist_cleanup": {
+    "model_tools": [
+      "discover_cleanup_tools",
+      "inspect_cleanup_tool",
+      "record_specialist_suggestions"
+    ],
+    "advice_optional_fields": [
+      "specialist",
+      "extra_suggestion_id"
+    ],
+    "specialist_modes": [
+      "supplement",
+      "replace"
+    ],
+    "replace_semantics": "No automatic ordinary delete/action from a replacement recommendation; explicit user_direct choices retain existing review rules. Inherited links retain original parent source and do not expand tool scope.",
+    "navigation": "One optional inline entry; preserve source task, list filters, selection and return context.",
+    "live_execution": false,
+    "console_execution": false
+  }
 }
