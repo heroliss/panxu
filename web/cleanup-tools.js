@@ -62,6 +62,7 @@ window.PanxuCleanupTools = (() => {
       const data = await t.context.api('/api/cleanup-tools?query=' + encodeURIComponent(listing.query) + '&category=' + encodeURIComponent(listing.category));
       if (!alive(t) || route !== t.route) return; listing.data = data; t.root.replaceChildren();
       heading(t.root, '清理工具', '按用途分组，常用工具靠前；选择一项查看详情。');
+      if(t.context.onOpenUserTools){const own=node('div','cleanup-toolbar');append(own,button('我的工具',()=>t.context.onOpenUserTools({}),'button'),button('新建工具',()=>t.context.onOpenUserTools({new:true}),'plain-button'));t.root.append(own);}
       const toolbar = node('div', 'cleanup-toolbar'), search = node('input'); search.type = 'search'; search.value = listing.query; search.placeholder = '搜索工具，例如缓存、休眠'; search.setAttribute('aria-label', '搜索清理工具');
       let timer; search.addEventListener('input', () => {listing.query = search.value; clearTimeout(timer); timer = setTimeout(() => {if (alive(t)) renderList(t);}, 280);});
       const category = node('select'); category.setAttribute('aria-label', '工具分类');
@@ -170,6 +171,7 @@ window.PanxuCleanupTools = (() => {
       });open.disabled=t.busy===true;actions.append(open);
     });
     if(actions.childNodes.length)t.root.append(actions);
+    if(t.context.onSaveTool&&tool.id!=='batch')t.root.append(button('保存为我的工具',()=>t.context.onSaveTool({new:true,definition:{type:'preset',title:tool.title,builtin:{tool_id:tool.id,parameters:{...values(t)}}},source:t.source?.task_id?{task_id:t.source.task_id}:{}}),'plain-button'));
     if(t.opened)message(t,'已打开对应入口；需要时可刷新状态。');
     if(emptyReason(t))message(t,emptyReason(t));
     if(t.plan)renderPlan(t);
@@ -344,6 +346,8 @@ window.PanxuCleanupTools = (() => {
     t.busy = true; t.error = ''; t.answerMessage = ''; renderExtra(t, suggestion); const route = t.route;
     try {const response = await t.context.api('/api/tasks/' + encodeURIComponent(taskId) + '/specialist-answer', {suggestion_id: suggestion.id, option_id: option.id, version:suggestion.version}); if (!alive(t) || route !== t.route) return;
       t.extra = response.extra_suggestion || {...suggestion, selection: response.selection}; await t.context.onAnswer?.(response);
+      if(!alive(t)||route!==t.route)return;
+      if(response.user_tool){if(!t.context.onOpenUserTools)throw new Error('当前页面无法打开自定义工具，请返回工具列表重试。');t.busy=false;await t.context.onOpenUserTools({...response.user_tool,source:response.source || {task_id:taskId}});return;}
       if (response.specialist?.tool_id) {t.busy = false; t.toolVariant = [suggestion.id,suggestion.version,option.id].join(':'); await loadDetail(t, response.specialist.tool_id, response.specialist.parameters); return;}
       t.answerMessage = '你的选择已记录。'; t.instructions = option.kind === 'instructions' ? option.instructions || '' : ''; t.busy = false; renderExtra(t, t.extra);
     } catch (error) {if (alive(t) && route === t.route) {t.error = error.message; t.busy = false; renderExtra(t, t.extra || suggestion);}}

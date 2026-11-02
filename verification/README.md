@@ -96,3 +96,12 @@
 `python verification/check_streaming.py --base-url <应用回环地址> --scope <启动输出的临时范围> --report verification/<私有报告>.json` 验证先有公开增量、后有成功终态，完整参数但终态前不执行，以及取消/EOF断流无工具事实。它只接受明确的custom/local-acceptance-fixture且无密钥的回环配置，禁止对用户真实模型运行。四种协议的真实HTTP成功与逐字节分块另由 `tests/test_streaming.py` 覆盖；不能把共用传输或Chat失败验收写成四协议分别完成了全部失败场景。
 
 若锁屏等条件阻挡原生点击，可记录已通过的源码/最终EXE页面与HTTP范围，并保留候选产物；不得生成原生UI通过判定、冒用浏览器截图为原生截图，或跳过正式finalize的要求。
+
+
+## 0.23 工具协作与用户规则
+
+`serve_v0230_fixture.py --data-dir verification/<新目录>/source --native-profile verification/<新目录>/native` 创建4个可丢弃文件、离线SSE peer及分开的源码/原生资料目录；首次启动前为native种下3个任务。该peer只核验协议，不评估模型智能。
+
+用最终EXE的`--data-dir`指向该native目录，在隔离端口启动后，运行 `check_v0230_release.py --base-url <应用回环地址> --metadata verification/<新目录>/fixture-meta.json --output verification/agent-ui-acceptance.json --artifact dist/PanXu/PanXu.exe`。关闭并以同一资料目录重开后，加`--recovery-only`核对已保存版本、事实、收据和来源回流。只接受命名的无密钥离线peer和自有小夹具；不会接触真实云配置。
+
+HTTP与原生窗口证据分别记录。活动后台取消的竞态/事务由单元测试覆盖，HTTP只验证完成取消幂等和跨任务边界；不把二者写成真实长任务或系统操作通过。500项内部投影测试保持30秒限制，并核对执行不复制完整库存，单次Windows调用仍不保证硬截止。

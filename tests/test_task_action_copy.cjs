@@ -213,6 +213,43 @@ test('host and durable complete-reply recovery is task scoped and does not leak 
   assert.equal(f.root.querySelector('.task-last-complete').hidden,false);assert.ok(!f.root.textContent.includes('任务甲持久正文'));
 });
 
+function installPublicTransport(f){
+ const connections=[],timers=new Map();let timerId=0;
+ class EventSource{constructor(url){this.url=url;this.closed=false;connections.push(this);}close(){this.closed=true;}message(value){this.onmessage?.({data:JSON.stringify(value)});}error(){this.onerror?.({});}}
+ Object.assign(f.environment.window,{EventSource,setTimeout:(fn,delay)=>{timers.set(++timerId,{fn,delay});return timerId;},clearTimeout:id=>timers.delete(id)});
+ Object.assign(f.environment.document,{hidden:false,addEventListener(){},removeEventListener(){}});
+ runInNewContext(readFileSync(join(__dirname,'..','web','stream-channel.js'),'utf8'),f.environment);
+ runInNewContext(readFileSync(join(__dirname,'..','web','stream-view.js'),'utf8'),f.environment);
+ return {connections,timers};
+}
+
+test('historical completed and waiting tasks show saved public text without opening a live transport that can falsely reconnect',async()=>{
+ for(const status of ['completed','awaiting_review','paused','budget_exhausted','error','executing']){
+  const f=fixture(task([],{status,plan:null,last_public_reply:{text:'从历史记录恢复的完整说明',completed_at:'2026-11-02T04:00:00Z'}})),transport=installPublicTransport(f);
+  f.helpers.redraw();await flush();assert.equal(transport.connections.length,0,status);assert.equal(f.ui.streamTaskId(),null,status);assert.match(f.root.querySelector('.task-complete-body').textContent,/历史记录恢复/);assert.equal(f.root.textContent.includes('正在重连'),false);f.ui.unmountLive();
+ }
+});
+
+test('finishing a model task closes its SSE and retains received tool activity without treating the server close as a disconnect',async()=>{
+ const f=fixture(task([],{status:'investigating',plan:null})),transport=installPublicTransport(f);f.helpers.redraw();await flush();const source=transport.connections[0];assert.equal(transport.connections.length,1);
+ source.message({stream:{epoch:'current',sequence:1,turn_id:'reply',text:'本轮已完成的公开说明',status:'completed',tool_pending:false,updated_at:'2026-11-02T04:00:00Z'}});
+ source.message({stream:{epoch:'current',sequence:2,turn_id:'tools',text:'',status:'completed',tool_pending:true}});assert.match(f.root.querySelector('.task-stream-activity').textContent,/工具请求已接收/);
+ f.ui.accept(task([],{status:'completed',plan:null,updated_at:'done',last_public_reply:{text:'本轮已完成的公开说明',completed_at:'2026-11-02T04:00:00Z'}}));f.helpers.redraw();await flush();
+ assert.equal(source.closed,true);assert.equal(transport.connections.length,1);assert.equal(f.ui.streamTaskId(),null);assert.match(f.root.querySelector('.task-stream-activity').textContent,/工具请求已接收/);assert.equal(f.root.querySelector('.task-complete-body').textContent,'本轮已完成的公开说明');
+ source.error();assert.equal(transport.connections.length,1);assert.equal(f.root.textContent.includes('正在重连'),false);f.ui.unmountLive();
+});
+
+test('a genuine active transport failure stays visible and preserves the received incomplete public reply',async()=>{
+ const f=fixture(task([],{status:'investigating',plan:null})),transport=installPublicTransport(f);f.helpers.redraw();await flush();const source=transport.connections[0];
+ source.message({stream:{epoch:'active',sequence:1,turn_id:'reply',text:'连接断开前已经收到的内容',status:'streaming',tool_pending:false}});source.error();
+ assert.match(f.root.querySelector('.task-stream-activity').textContent,/暂时断开.*正在重连/);assert.match(f.root.querySelector('.task-current-reply').textContent,/连接断开前已经收到的内容/);assert.match(f.root.querySelector('.task-current-reply').textContent,/不完整/);assert.equal(f.ui.streamTaskId(),'copy-task');assert.ok([...transport.timers.values()].some(timer=>timer.delay===250));f.ui.unmountLive();
+});
+
+test('file execution source references do not invent a live model channel and a resumed model uses its actual task identity',()=>{
+ const f=fixture(task([],{status:'executing',cleanup_source_task_id:'original-model',user_tool_source_task_id:'original-tool-task'}));assert.equal(f.ui.streamTaskId(),null);
+ f.ui.accept(task([],{status:'investigating',id:'actual-model-task',cleanup_source_task_id:'old-source'}));assert.equal(f.ui.streamTaskId(),'actual-model-task');
+});
+
 test('software table leads with the saved global rating and viewing it does not start another model analysis',async()=>{
   const entry=item('software','uninstall','software',{assessment:{state:'explicit',rating:4,reason:'全局新建议'},owner:'测试发布者'});
   const older={...entry,assessment:undefined,cleanup_rating:1,conclusion:'keep'};
@@ -371,4 +408,30 @@ test('actual API notifies retained previous advice without relabeling it as new 
   const env={state:{csrf:'fixture'},AbortController,setTimeout:()=>1,clearTimeout:()=>{},text:value=>String(value),toast:value=>toasts.push(value),fetch:async()=>({ok:true,json:async()=>result})};
   runInNewContext(app.slice(start,end)+';this.request=api;',env);const data=await env.request('/api/recommendations',{use_model:true});
   assert.deepEqual(toasts,['本次未取得新建议，保留上次建议。']);assert.deepEqual(data.items[0].advice.provenance,provenanceA);
+});
+
+test('model specialist choices are visible in the task and user tools open only after a versioned answer receipt',async()=>{
+ const suggestion={id:'custom-option',version:3,title:'保存临时文件规则',explanation:'以后可直接运行。',impact:'每次先核对实际匹配项。',options:[{id:'draft',label:'查看草稿',kind:'user_tool',draft_id:'tool-draft'}]},opened=[];
+ const f=fixture(task([],{status:'paused',plan:null,extra_suggestions:[suggestion]}),async()=>({user_tool:{draft_id:'tool-draft'},source:{task_id:'copy-task',suggestion_id:'custom-option'}}));
+ f.helpers.openSpecialist=async()=>{};f.helpers.openUserTools=ref=>opened.push(plain(ref));f.helpers.redraw();
+ assert.match(f.root.textContent,/保存临时文件规则/);assert.match(f.root.textContent,/每次先核对/);const choice=f.root.all().find(n=>n.tag==='button'&&n.textContent==='查看草稿');assert.ok(choice);await choice.fire('click');
+ assert.deepEqual(f.requests,[{path:'/api/tasks/copy-task/specialist-answer',payload:{suggestion_id:'custom-option',option_id:'draft',version:3}}]);assert.deepEqual(opened,[{draft_id:'tool-draft',source:{task_id:'copy-task',suggestion_id:'custom-option'}}]);
+});
+
+test('task instruction choices stay literal and selection does not request another model turn',async()=>{
+ const suggestion={id:'manual',version:2,title:'手动方案',options:[{id:'steps',label:'查看操作方法',kind:'instructions',instructions:'<script>example</script>'}]};
+ const f=fixture(task([],{status:'paused',plan:null,extra_suggestions:[suggestion]}),async()=>({selection:{option_id:'steps'}}));f.helpers.openSpecialist=async()=>{};f.helpers.redraw();await f.root.all().find(n=>n.tag==='button'&&n.textContent==='查看操作方法').fire('click');
+ assert.match(f.root.textContent,/<script>example<\/script>/);assert.equal(f.root.all().some(n=>n.tag==='script'),false);assert.equal(f.requests.length,1);assert.ok(f.requests[0].path.endsWith('/specialist-answer'));
+});
+
+test('a late specialist selection belonging to another task cannot navigate the current workspace',async()=>{
+ let resolve;const response=new Promise(done=>{resolve=done;}),opened=[],s={id:'late',version:1,title:'旧任务选项',options:[{id:'tool',label:'打开旧工具',kind:'tool',tool_id:'browser_cache'}]};
+ const f=fixture(task([],{status:'paused',plan:null,extra_suggestions:[s]}),async()=>response);f.helpers.openSpecialist=ref=>opened.push(ref);f.helpers.redraw();const pending=f.root.all().find(n=>n.tag==='button'&&n.textContent==='打开旧工具').fire('click');await flush();
+ f.ui.accept(task([],{id:'different-task',status:'paused',plan:null,extra_suggestions:[]}));f.helpers.redraw();resolve({specialist:{tool_id:'browser_cache'}});await pending;assert.equal(opened.length,0);assert.equal(f.ui.currentTask().id,'different-task');
+});
+
+test('task rendering attaches diagnostic work to the public task and releases it when the workspace leaves',()=>{
+ const f=fixture(task([],{status:'paused',plan:null,diagnostics:{snapshot_id:'diagnostic-1'},background_work:[{id:'work-1',status:'running'}]})),calls=[];
+ f.environment.window.PanxuOrchestration={render:(root,helpers)=>calls.push(['render',root,helpers]),unmount:()=>calls.push(['unmount'])};f.helpers.redraw();const rendered=calls.find(row=>row[0]==='render');assert.equal(rendered[2].task.id,'copy-task');assert.equal(rendered[2].task.diagnostics.snapshot_id,'diagnostic-1');assert.equal(rendered[2].api,f.helpers.api);
+ f.ui.unmountLive();assert.equal(calls.at(-1)[0],'unmount');assert.equal(f.requests.length,0);
 });

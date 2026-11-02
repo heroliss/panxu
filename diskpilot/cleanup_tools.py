@@ -12,6 +12,7 @@ import ntpath
 import re
 import secrets
 import threading
+from contextlib import contextmanager
 
 from .actions import ActionRuntime, now
 from .execution_control import ExecutionControl
@@ -375,6 +376,36 @@ class CleanupToolkit:
                               for entry in result['settings']]
         return result
 
+    def describe(self, tool_id):
+        """The complete callable parameter contract, without probing programs.
+
+        Discovery stays small. A model can request this only for the capability
+        it is considering, and uses the same field definitions as the UI.
+        """
+        if not isinstance(tool_id, str) or tool_id not in REGISTRY:
+            raise AppError('此专项工具不可用，请重新选择。', 'unknown_cleanup_tool', 404)
+        tool = REGISTRY[tool_id]
+        properties, required = {}, []
+        for field in tool['parameters']:
+            schema = {key: copy.deepcopy(field[key]) for key in
+                      ('type', 'enum', 'default', 'minimum', 'maximum', 'maxLength', 'format') if key in field}
+            schema['description'] = field['label']
+            properties[field['name']] = schema
+            if field.get('required'):
+                required.append(field['name'])
+        return dict(tool_id=tool_id, version=tool['version'], registry_version=REGISTRY_VERSION,
+            title=tool['title'], description=tool['description'], category=tool['category'],
+            parameters=copy.deepcopy(tool['parameters']),
+            input_schema=dict(type='object', properties=properties, required=required, additionalProperties=False),
+            capabilities=copy.deepcopy(tool['capabilities']), impact=tool['impact'], recovery=tool['recovery'],
+            implementation=tool['implementation'], simulation_only=True,
+            result_contract=dict(read_only_inspect=True,
+                states=['observed', 'partial', 'unknown', 'not_found', 'needs_input'],
+                metrics='value及unit；partial为已观察下界，unknown不是0。',
+                action_availability='只有完整确认无目标时available=false；true不是执行授权。',
+                parameters='返回已规范化参数；缺少必填参数使用missing_parameters字段名。',
+                execution='prepare只冻结计划；当前执行仅产生模拟收据，实际释放0。'))
+
     def entrypoint(self, tool_id, index=0, parameters=None):
         reference = self.validate_reference(dict(tool_id=tool_id, parameters={} if parameters is None else parameters), allow_missing=True)
         entries = REGISTRY[reference['tool_id']]['settings']
@@ -422,9 +453,12 @@ class CleanupToolkit:
     def inspect(self, tool_id, parameters=None):
         ref = self.validate_reference(dict(tool_id=tool_id, parameters={} if parameters is None else parameters), allow_missing=True)
         tool = self.detail(tool_id)
-        missing = [field['label'] for field in tool['parameters'] if field.get('required') and field['name'] not in ref['parameters']]
+        missing_fields = [field for field in tool['parameters'] if field.get('required') and field['name'] not in ref['parameters']]
+        missing = [field['label'] for field in missing_fields]
         if missing:
             return dict(tool_id=tool_id, read_only=True, at=now(), parameters=ref['parameters'],
+                missing_parameters=[field['name'] for field in missing_fields],
+                parameter_schema=self.describe(tool_id)['input_schema'],
                 evidence=dict(status='needs_input'), simulation_only=True,
                 presentation=dict(kind='status', status='needs_input', complete=False,
                     summary='请先选择' + '、'.join(missing), metrics=[], items=[], warnings=[]))
@@ -492,7 +526,7 @@ class CleanupToolkit:
 
     @staticmethod
     def _frozen(plan):
-        return {key: plan[key] for key in ('id', 'version', 'registry_version', 'entries', 'source')}
+        return {key: plan[key] for key in ('id', 'version', 'registry_version', 'entries', 'source', 'user_tool') if key in plan}
 
     def _save(self, plan):
         with self.state.lock, self.state.db:
@@ -580,13 +614,22 @@ class CleanupToolkit:
                 raise AppError('这一批专项操作正在进行。', 'cleanup_running', 409)
             if plan['status'] != 'awaiting_review':
                 return copy.deepcopy(plan.get('result') or self.runtime.result(plan_id, version))
+            if plan.get('user_tool'):
+                self.user_origin_validator(plan['user_tool'])
             plan['status'] = 'executing'
             self._save(plan)
             control = ExecutionControl(plan_id, version, plan['entries'])
             self._controls[plan_id] = control
         try:
+            @contextmanager
+            def execution_scope(entry):
+                with self.state.lock:
+                    if plan.get('user_tool'):
+                        self.user_origin_validator(plan['user_tool'])
+                    self._validate_entry(entry)
+                    yield ()
             result = self.runtime.run(plan_id, version, plan['entries'], cancel=cancel, progress=progress,
-                guard=self._validate_entry, control=control)
+                guard=self._validate_entry, control=control, apply_context=execution_scope)
             result.update(plan_id=plan_id, source=plan['source'], simulation_only=True)
             plan.update(status='completed', result=result, completed_at=now(), execution=control.snapshot())
             self._save(plan)

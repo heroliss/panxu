@@ -179,7 +179,7 @@ window.PanxuDeveloperView = (() => {
 
 function initializePanxu() {
   const $ = (id) => document.getElementById(id);
-  const names = { overview: '首页', current: '当前任务', files: '文件清理', recovery: '已删除文件', background: '后台与软件', software: '后台与软件', history: '操作记录', model: '设置', duplicates: '查找重复文件', cleanup: '清理工具' };
+  const names = { overview: '首页', current: '当前任务', files: '文件清理', recovery: '已删除文件', background: '后台与软件', software: '后台与软件', history: '操作记录', model: '设置', duplicates: '查找重复文件', cleanup: '清理工具', user_tools:'我的工具' };
   const kindNames = { file: '文件', directory: '目录汇总', startup: '启动项', service: '服务', process: '进程', software: '软件' };
   const state = { csrf: '', version: '', view: 'overview', items: [], summary: {}, settings: {}, history: [], disks: [], source: 'demo', warnings: [], selected: new Set(), focused: null, query: '', risk: 'all', origin: 'all', subtype: 'all', limit: 50, busy: false, job: null, plan: null, scanPath: '', inspector: false, assistant: null, recommendations: [], checked: false, analyzing: false, filesExpanded: false, backgroundExpanded: false, inventoryTarget: 'startup', checkDestination: 'overview', showAllCards: new Set() };
   let toastTimer;
@@ -401,6 +401,7 @@ function initializePanxu() {
   const navigationStack=[];
   const navigationSnapshots=new Map();let fileTaskId=null,backgroundTaskId=null;
   let cleanupReference=null,cleanupReturn=null;
+  let userToolReference=null,userToolReturn=null;
   const locationSnapshot=()=>({view:state.view,query:state.query,risk:state.risk,origin:state.origin,subtype:state.subtype,limit:state.limit,inventoryOffset:state.inventoryOffset || 0,scroll_y:$('workspace')?.scrollTop || 0});
   async function openSpecialist(value) {
     try {
@@ -419,6 +420,42 @@ function initializePanxu() {
       setView('cleanup',false);
     }catch(error){notify(error.message,true);}
   }
+  function openUserTools(ref={}) {
+    userToolReturn=locationSnapshot();userToolReference=ref;
+    setView('user_tools',false);
+  }
+  function returnFromUserTools() {
+    const previous=userToolReturn;userToolReference=null;userToolReturn=null;
+    setView(previous&&names[previous.view]?previous.view:'cleanup',false,previous);
+  }
+  function saveFileTool(item,taskId) {
+    if(!item?.path||!['file','directory'].includes(item.kind))return;
+    const path=item.path.replace(/\//g,'\\'),directory=item.kind==='directory',last=path.lastIndexOf('\\');
+    if(!directory&&last<0)return;
+    const root=directory?path:path.slice(0,last+1),name=path.slice(last+1);
+    // Escape glob characters when seeding one exact file. The editor always
+    // exposes the resulting scope and rule before anything can be saved.
+    const exact=name.replace(/[\[?*]/g,char=>char==='['?'[[]':char==='?'?'[?]':'[*]');
+    openUserTools({new:true,definition:{type:'files',title:(item.name || '目录')+'清理规则',rules:{roots:[root],recursive:directory,includes:[directory?'*':exact],excludes:[],min_age_days:7}},source:taskId?{task_id:taskId}:{}});
+  }
+  function renderUserTools(root) {
+    const reference=userToolReference;userToolReference=null;
+    const helpers={api,bytes,disks:state.disks,defaultPath:state.scanPath,setContextBack,source:reference?.source,onReturn:returnFromUserTools,returnLabel:'返回'+(names[userToolReturn?.view] || '清理工具'),
+      askAssistant:async(goal,roots)=>{
+        const path=Array.isArray(roots)?roots.find(value=>typeof value==='string'&&value.trim()):null;
+        if(!path)throw new Error('请先选择要清理的目录，再让助手创建工具。');
+        const data=await api('/api/tasks',{preset:'custom',path,goal:'请协助创建可重复使用的清理工具草稿，使用 draft_user_tool 提供草稿；不执行清理。用户要求：'+goal});
+        window.PanxuTasks.accept(data.task);setView('current',false);
+      },
+      onPrepared:async data=>{
+        if(data.specialist_plan){await openSpecialist({plan_id:data.specialist_plan.id,source:data.specialist_plan.source || reference?.source || {}});return;}
+        if(!window.PanxuTasks.acceptPickedPlan(data))throw new Error('返回的操作清单不完整，请刷新匹配结果后重试。');
+        openTaskResults(data.task);
+      }
+    };
+    const result=reference?window.PanxuUserTools.open(root,reference,helpers):window.PanxuUserTools.render(root,helpers);
+    Promise.resolve(result).catch(error=>notify(error.message,true));
+  }
   window.PanxuSpecialistLinks?.setOpener(openSpecialist);
   function returnFromCleanup() {
     const previous=cleanupReturn;
@@ -428,6 +465,7 @@ function initializePanxu() {
   }
   function renderCleanupTools(root) {
     const context={api,source:cleanupReference?.source || {},onReturn:returnFromCleanup,toast,setContextBack,
+      onOpenUserTools:openUserTools,onSaveTool:ref=>openUserTools(ref),
       onOpenSettings:async(tool_id,entry,index,parameters)=>{
         const result=await api('/api/cleanup-tools/open-settings',{tool_id,index,parameters,source:cleanupReference?.source || {}});
         toast(result.message);
@@ -463,7 +501,7 @@ function initializePanxu() {
       if(navigationStack.length>12)navigationStack.shift();
     }
     state.view = view; state.query = snapshot?.query || ''; state.risk = snapshot?.risk || 'all'; state.origin = snapshot?.origin || 'all'; state.subtype = snapshot?.subtype || 'all'; state.limit = snapshot?.limit || 50;state.inventoryOffset=snapshot?.inventoryOffset || 0;
-    const current = view === 'software' ? 'background' : view === 'duplicates' ? 'overview' : view;
+    const current = view === 'software' ? 'background' : view === 'duplicates' ? 'overview' : view==='user_tools'?'cleanup':view;
     document.querySelectorAll('[data-view]').forEach((b) => { const active = b.dataset.view === current; b.classList.toggle('active', active); if (active) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current'); });
     $('breadcrumb-current').textContent = names[view];
     toggleInspector(false); render();$('workspace').scrollTop=snapshot?.scroll_y || 0;
@@ -472,12 +510,14 @@ function initializePanxu() {
     window.PanxuRecovery?.unmount?.();
     window.PanxuFileWorkspace?.unmount?.();
     window.PanxuCleanupTools?.unmount?.();
+    window.PanxuUserTools?.unmount?.();
+    window.PanxuOrchestration?.unmount?.();
     window.PanxuFiles?.unmount();
     window.PanxuTasks?.unmountLive?.();
     window.PanxuDuplicates?.unmount();
     defaultBack();
     const root = $('workspace'); root.replaceChildren();
-    const renderers = { overview: renderOverview, current: renderCurrentTask, files: renderFiles, recovery:renderRecovery, background: renderBackground, software: renderSoftware, history: renderHistory, model: renderModel, duplicates: renderDuplicates, cleanup: renderCleanupTools };
+    const renderers = { overview: renderOverview, current: renderCurrentTask, files: renderFiles, recovery:renderRecovery, background: renderBackground, software: renderSoftware, history: renderHistory, model: renderModel, duplicates: renderDuplicates, cleanup: renderCleanupTools, user_tools:renderUserTools };
     renderers[state.view](root);
     renderInspector(); renderSelection();
     $('connection-status').textContent = '本机检查 · 文件正文不会发送';
@@ -509,7 +549,7 @@ function initializePanxu() {
       onTaskCreated:()=>setView('current',false),onTaskReady:task=>{if(state.view==='current')openTaskResults(task);},openResults:openTaskResults,
       openDuplicates:()=>setView('duplicates'),setContextBack,
       openCleanupTools:()=>{cleanupReference=null;cleanupReturn=null;setView('cleanup');},
-      showItem,openSpecialist,
+      showItem,openSpecialist,openUserTools,saveAsTool:saveFileTool,
       autoSelectFour:window.PanxuAppearance.get().cleanup_auto_select_four,
       refreshCatalog: async () => { accept(await api('/api/bootstrap?compact=1')); }
     };
@@ -735,6 +775,7 @@ function initializePanxu() {
     }
     if (item.kind === 'directory') { append(data, el('dt', '', '路径累计'), el('dd', '', bytes(item.details?.logical_bytes_all_paths ?? item.size_bytes)), el('dt', '', '唯一实体量'), el('dd', '', bytes(item.details?.unique_logical_bytes ?? item.size_bytes))); append(detail, el('p', '', '同一个文件可能有多个硬链接。这里的体积估计不等于实际可释放空间。')); }
     append(detail, data,window.PanxuProvenance.details(rec,{presets:state.providers}));
+    if(['file','directory'].includes(item.kind)&&item.path)append(detail,button('保存为清理工具',()=>saveFileTool(item,sourceTaskId || (modelAdvice?window.PanxuTasks.currentTask()?.id:null)),'plain-button'));
     if((assessment && assessment.state!=='unanalysed' || modelAdvice)&&canAnalyze(item))append(detail,button('重新分析此项',()=>analyzeList(item,null,true),'plain-button'));
     if ($('show-evidence').checked) { const evidence = el('ul', 'evidence-list'); (Array.isArray(item.evidence) ? item.evidence : []).forEach((entry) => append(evidence, el('li', '', text(entry)))); append(detail, evidence, el('pre', 'assistant-trace', text(item.details || {}))); }
     if(!(modelAdvice || assessment && assessment.state!=='unanalysed')){
@@ -833,12 +874,38 @@ function initializePanxu() {
   function renderHistory(root) {
     append(root, heading('操作记录', '查看已确认的操作及其结果。'));
     window.PanxuTasks?.renderHistory(root);
-    const emptyHistory=state.history.length?null:empty('还没有操作记录','确认操作后，结果会显示在这里。');
-    if(emptyHistory)emptyHistory.hidden=true;
+    const emptyHistory=empty('还没有操作记录','确认操作后，结果会显示在这里。');emptyHistory.hidden=true;
+    const ordinary=el('section','ordinary-history'),reading=el('p','field-help','正在读取最新操作记录…');
+    const status=el('div','history-read-status');reading.setAttribute?.('role','status');status.append(reading);root.append(status,ordinary);
+    let ordinaryReady=false,specialistReady=false,specialistCount=0,ordinaryRequest=0;
+    const updateEmpty=()=>{emptyHistory.hidden=!(ordinaryReady&&specialistReady&&!state.history.length&&!specialistCount);};
+    function paintOrdinary(history){
+      ordinary.replaceChildren();if(!history.length)return;
+      const list = el('div', 'history-list'); history.forEach((batch) => {
+        const card = el('article', 'history-card'); const top = el('div', 'history-top'); const date = new Date(batch.created_at); const when = Number.isNaN(date.getTime()) ? text(batch.created_at) : date.toLocaleString('zh-CN', { hour12: false });
+        append(top, el('h3', '', `已记录 ${batch.item_count ?? batch.items?.length ?? 0} 项操作`), badge(batch.status === 'undone' ? '已撤销' : batch.status==='partially_undone'?'部分记录已更新':'已记录')); append(card, top, el('p', '', when));
+        const detail = el('details', 'history-details'); append(detail, el('summary', '', '查看具体操作')); const entries = el('ul'); (batch.items || []).forEach((item) => append(entries, append(el('li'), itemTitle(item, el('span', '', `${window.PanxuActionCopy.label(item.action,item.kind)} · ${item.name || item.id}`))))); append(detail, entries); append(card, detail);
+        const footer = el('div', 'history-footer'); append(footer, el('span', '', batch.recovery_counts?.purged?'永久删除的项目无法还原，其余可恢复项仍可撤销。':'撤销后可重新选择相关项目。')); const restore = button('撤销', () => undoBatch(batch.id), 'button small'); restore.disabled = batch.status === 'undone'; append(footer, restore); if((batch.items || []).some(item=>item.action==='delete'&&['file','directory'].includes(item.kind)))footer.append(button('查看已删除文件',()=>setView('recovery'),'plain-button'));append(card, footer); append(list, card);
+      });ordinary.append(list);
+    }
+    function loadOrdinary(){
+      const request=++ordinaryRequest;ordinaryReady=false;updateEmpty();reading.textContent='正在读取最新操作记录…';status.replaceChildren(reading);paintOrdinary(state.history);
+      api('/api/history').then(data=>{
+        if(!ordinary.isConnected||request!==ordinaryRequest)return;
+        if(!Array.isArray(data.history))throw new Error('操作记录未完整读取，请重试。');
+        state.history=data.history;ordinaryReady=true;paintOrdinary(data.history);status.replaceChildren();updateEmpty();
+      }).catch(error=>{
+        if(!ordinary.isConnected||request!==ordinaryRequest)return;
+        status.replaceChildren(el('p','field-error',error.message),button('重新读取操作记录',loadOrdinary,'plain-button'));updateEmpty();
+      });
+    }
     const specialist=el('section','specialist-history');root.append(specialist);
+    loadOrdinary();
     api('/api/cleanup-tools/history').then(({history})=>{
       if(!specialist.isConnected)return;
-      if(!history?.length){if(emptyHistory)emptyHistory.hidden=false;return;}
+      if(!Array.isArray(history))throw new Error('专项操作记录未完整读取，请重试。');
+      specialistReady=true;specialistCount=history.length;updateEmpty();
+      if(!history.length)return;
       specialist.append(section('专项操作','查看工具方案、选择和核验结果。'));
       const labels={awaiting_review:'待确认',completed:'已记录',cancelled:'已取消',interrupted:'中断待核实',undone:'已撤销记录',executing:'进行中'};
       history.forEach(plan=>{
@@ -848,13 +915,7 @@ function initializePanxu() {
         specialist.append(line);
       });
     }).catch(error=>{if(specialist.isConnected)specialist.append(el('p','field-error',error.message));});
-    if (!state.history.length) { append(root,emptyHistory); return; }
-    const list = el('div', 'history-list'); state.history.forEach((batch) => {
-      const card = el('article', 'history-card'); const top = el('div', 'history-top'); const date = new Date(batch.created_at); const when = Number.isNaN(date.getTime()) ? text(batch.created_at) : date.toLocaleString('zh-CN', { hour12: false });
-      append(top, el('h3', '', `已记录 ${batch.item_count ?? batch.items?.length ?? 0} 项操作`), badge(batch.status === 'undone' ? '已撤销' : batch.status==='partially_undone'?'部分记录已更新':'已记录')); append(card, top, el('p', '', when));
-      const detail = el('details', 'history-details'); append(detail, el('summary', '', '查看具体操作')); const entries = el('ul'); (batch.items || []).forEach((item) => append(entries, append(el('li'), itemTitle(item, el('span', '', `${window.PanxuActionCopy.label(item.action,item.kind)} · ${item.name || item.id}`))))); append(detail, entries); append(card, detail);
-      const footer = el('div', 'history-footer'); append(footer, el('span', '', batch.recovery_counts?.purged?'永久删除的项目无法还原，其余可恢复项仍可撤销。':'撤销后可重新选择相关项目。')); const restore = button('撤销', () => undoBatch(batch.id), 'button small'); restore.disabled = batch.status === 'undone'; append(footer, restore); if((batch.items || []).some(item=>item.action==='delete'&&['file','directory'].includes(item.kind)))footer.append(button('查看已删除文件',()=>setView('recovery'),'plain-button'));append(card, footer); append(list, card);
-    }); append(root, list);
+    root.append(emptyHistory);
   }
   async function undoBatch(id) {
     await task(async () => { const batch = state.history.find((entry) => entry.id === id); accept(await api('/api/undo', { batch_id: id })); accept(await api('/api/bootstrap?compact=1')); state.selected = new Set((batch?.items || []).map((item) => item.id).filter((key) => canSelect(state.items.find((item) => item.id === key)))); state.checked = state.items.length > 0; render(); toast(state.history.find(entry=>entry.id===id)?.status==='partially_undone'?'已撤销可恢复项；其余项目保留原状态，请查看已删除文件。':'已撤销，相关项目可重新选择。'); });
@@ -937,6 +998,7 @@ function initializePanxu() {
     append(form,grid,note,advanced,el('p','field-help field-description','连接测试只发送固定测试数据。正式分析按需提供所选对象的属性和可取得的部分应用启动记录；完整路径默认隐藏，不发送文件正文。官方文档支持不代表当前账号已通过实测。'),append(el('div','form-actions'),save,onlySave),status); append(panel,form); append(root,panel);
     renderOrganizingPreferences(root);
     renderAppearance(root);
+    window.PanxuOrchestration?.renderBudget(root,{api});
     const preserve=el('section','panel simple-setting');append(preserve,el('h2','','保留的位置'),el('p','setting-intro','这些位置不会加入推荐处理。'));
     const keep=el('details','setting-details');append(keep,el('summary','','管理保留清单'));
     const lab=el('label','field-label','每行一个文件夹或匹配规则');lab.htmlFor='protect-patterns';

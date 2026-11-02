@@ -52,7 +52,14 @@ class SystemToolWorkflowTests(unittest.TestCase):
                     kind='filesystem', paths=[(str(self.scope), '自有测试目录')], priority=[])
         with patch('diskpilot.tasks.resolve_preset', return_value=spec), patch(
                 'diskpilot.tasks.system_tool_suggestions', return_value=system_tool_suggestions('R:\\')):
-            return self.harness.create(preset=preset)
+            task = self.harness.create(preset=preset)
+        # Retained old task fixtures still support historical host choices.
+        saved = self.harness._get(task['id'])
+        saved['extra_suggestions'] = [dict(row, version=1, created_at=saved['created_at'], updated_at=saved['updated_at'],
+            item_ids=[], target_snapshots={}, provenance=self.harness._provenance(dict(source='local', generated_at=saved['created_at'])))
+            for row in system_tool_suggestions('R:\\')]
+        self.harness._save(saved)
+        return self.harness.public(task['id'])
 
     def suggestion(self, task, tool_id='windows_temp'):
         return next(s for s in task['extra_suggestions']
@@ -71,7 +78,7 @@ class SystemToolWorkflowTests(unittest.TestCase):
         rows = self.harness.tool_activity.recent(limit=20)
         return [row for row in rows if status is None or row['status'] == status]
 
-    def test_system_preset_and_old_alias_supply_fixed_tools_without_a_model(self):
+    def test_legacy_host_suggestions_keep_their_original_model_free_continuation(self):
         for preset in ('system_cleanup', 'c_cleanup'):
             with self.subTest(preset=preset):
                 task = self.create_system(preset)

@@ -199,7 +199,7 @@ class FindingsTests(unittest.TestCase):
         listed = self.tool('list_items', {'limit': 40})
         self.assertEqual({item['id'] for item in listed['items']}, {item['id'] for item in self.files if item['id'] != self.files[10]['id']})
         self.assertEqual(set(self.harness._get(self.key)['target_ids']), {item['id'] for item in self.files})
-        self.assertEqual(len(tool_specs()), 26)
+        self.assertEqual(len(tool_specs()), 38)
         self.assertTrue(all((self.scope / row['name']).is_file() for row in self.files))
 
     def test_empty_optional_sections_are_absent_but_scope_and_known_zero_remain(self):

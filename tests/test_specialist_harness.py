@@ -74,9 +74,9 @@ class SpecialistHarnessTests(unittest.TestCase):
             names = {row['function']['name'] for row in payload['tools']}
             if index == 4:
                 self.assertIn('record_specialist_suggestions', names)
-                self.assertNotIn('discover_cleanup_tools', names)
+                self.assertIn('discover_cleanup_tools', names)
             if index == 5:
-                self.assertEqual(names, {'present_findings', 'ask_user'})
+                self.assertTrue({'present_findings', 'ask_user', 'inspect_cleanup_tool'} <= names)
             self.assertLess(index, 6)
             name, args = commands[index]
             return {'choices': [{'message': {'role': 'assistant', 'content': None, 'tool_calls': [

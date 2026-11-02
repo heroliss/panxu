@@ -246,3 +246,19 @@ test('category filtering renders only matching groups and does not inspect or ex
  await f.subject.mount(f.root,f.context);const select=f.all().find(n=>n.tag==='select'&&n.attrs['aria-label']==='工具分类');select.value='privacy';await select.fire('change');
  const groups=f.all().filter(n=>n.className==='cleanup-tool-group');assert.equal(groups.length,1);assert.equal(groups[0].all().find(n=>n.tag==='h2').textContent,'浏览器与隐私');assert.equal(f.requests.length,2);assert.ok(f.requests.every(r=>r.path.startsWith('/api/cleanup-tools?')));
 });
+
+test('the manual catalog opens saved tools and seeds a builtin preset from its current parameters without execution',async()=>{
+ const f=fixture(),refs=[];f.context.onOpenUserTools=ref=>refs.push(plain(ref));f.context.onSaveTool=ref=>refs.push(plain(ref));
+ await f.subject.mount(f.root,f.context);await f.find('我的工具').fire();await f.find('新建工具').fire();assert.deepEqual(refs,[{},{new:true}]);
+ await f.subject.open(f.root,{tool_id:'browser_cache',parameters:{browser:'chrome',profile:'Work'},source:{task_id:'owned-task',item_id:'owned-item'}},f.context);
+ await f.find('保存为我的工具').fire();assert.deepEqual(refs.at(-1),{new:true,definition:{type:'preset',title:'浏览器文件缓存',builtin:{tool_id:'browser_cache',parameters:{browser:'chrome',profile:'Work'}}},source:{task_id:'owned-task'}});
+ assert.equal(f.requests.some(r=>/prepare|execute|approve/.test(r.path)),false);
+});
+
+test('a user-tool specialist choice records its versioned answer before opening the returned tool reference',async()=>{
+ const suggestion={id:'recipe-suggestion',version:9,title:'保存规则',options:[{id:'use',kind:'user_tool',label:'查看规则',draft_id:'owned-draft'}]},refs=[];
+ const f=fixture(path=>path.endsWith('/specialist-answer')?{user_tool:{draft_id:'owned-draft'},source:{task_id:'owned-task',suggestion_id:'recipe-suggestion'}}:undefined);f.context.onOpenUserTools=ref=>refs.push(plain(ref));
+ await f.subject.open(f.root,{extra_suggestion:suggestion,source:{task_id:'owned-task'}},f.context);await f.find('查看规则').fire();
+ assert.deepEqual(f.requests[0],{path:'/api/tasks/owned-task/specialist-answer',body:{suggestion_id:'recipe-suggestion',option_id:'use',version:9}});
+ assert.deepEqual(refs,[{draft_id:'owned-draft',source:{task_id:'owned-task',suggestion_id:'recipe-suggestion'}}]);assert.equal(f.answers.length,1);assert.equal(f.requests.some(r=>/prepare|execute|approve/.test(r.path)),false);
+});

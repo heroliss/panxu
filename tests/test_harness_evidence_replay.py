@@ -162,12 +162,12 @@ class EvidenceReplayTests(unittest.TestCase):
         def score(payload):
             self.assert_evidence(payload)
             self.assertIn('read_facts', self.tools(payload), 'Scoring may still need the persisted evidence body.')
-            self.assertNotIn('collect_apps', self.tools(payload), 'Finalization cannot silently recollect.')
+            self.assertIn('collect_apps', self.tools(payload), 'Resource hints must not remove normal collection capabilities.')
             return call('record_advice', self.ratings(), 'score')
 
         def finish(payload):
             self.assert_evidence(payload)
-            self.assertEqual(self.tools(payload), {'present_findings', 'ask_user'})
+            self.assertTrue({'present_findings', 'ask_user'} <= self.tools(payload))
             return call('present_findings', self.findings(), 'finish')
 
         self.queue += [inspect, read, read_again, score, finish]

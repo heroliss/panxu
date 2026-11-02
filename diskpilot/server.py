@@ -14,9 +14,9 @@ import time
 from urllib.parse import urlsplit, parse_qs
 
 from . import __version__
+from .actions import now
 from .duplicates import verify_duplicates
 from .dedup import validate_duplicate_request, run_duplicate_scan
-from .catalog import FileCatalog
 from .file_browser import DirectoryBrowser
 from .recovery import RecoveryStore
 from .tool_launch import open_entry
@@ -72,7 +72,10 @@ class Application:
         for plan in self.cleanup_tools.history():
             if plan.get('result'):
                 self.harness.record_specialist_result(plan)
-        self.catalog = FileCatalog(self.state, self.patterns, self.harness.assessments)
+        self.catalog = self.harness.catalog
+        self.user_tools = self.harness.user_tools
+        self.diagnostics = self.harness.diagnostics
+        self.agent_budget = self.harness.agent_budget
         self.file_browser = DirectoryBrowser(self.state, self.catalog, self.patterns)
         self.recovery = RecoveryStore(self.state)
         self.recovery.assessment_resolver = self.harness.assessments.resolve
@@ -94,6 +97,27 @@ class Application:
 
     def _cleanup_feedback(self, plan, result):
         return self.harness.record_specialist_result(self.cleanup_tools.get_plan(plan['id']))
+
+    def _user_tool_feedback(self, action, result, source=None):
+        """Independent facts cannot overwrite a busy task's model snapshot."""
+        source = source or result.get('source') or {}
+        task_id = source.get('task_id') if isinstance(source, dict) else None
+        if task_id:
+            event = dict(user_action=action, tool_id=result.get('tool_id') or result.get('recipe_id'),
+                         version=result.get('version') or result.get('tool_version'),
+                         draft_id=result.get('draft_id'), run_id=result.get('run_id'), applied=False)
+            if result.get('status') == 'saved':
+                event['tool_id'] = result['id']
+            if action == 'inspected':
+                event.update(read_only=True, matched_count=result.get('matched_count'),
+                             complete=result.get('complete'), status=result.get('status'))
+            try:
+                self.harness._record_fact(task_id, 'user_tool_user_action', event)
+                result['source_feedback'] = dict(recorded=True)
+            except AppError:
+                # Saving a tool is durable even if its old source was removed.
+                result['source_feedback'] = dict(recorded=False, reason='source_unavailable')
+        return result
 
     def _open_cleanup_settings(self, payload):
         source = self._cleanup_source(payload.get('source'))
@@ -329,10 +353,47 @@ class Application:
         query_contract = {'/api/file-browser/drives': set(),
                           '/api/file-browser': {'path', 'cursor', 'limit', 'refresh', 'task_id'},
                           '/api/recovery/summary': set(),
-                          '/api/recovery': {'page', 'limit', 'status', 'volume'}}
+                          '/api/recovery': {'page', 'limit', 'status', 'volume'},
+                          '/api/agent-budget': set(), '/api/user-tools': {'query'},
+                          '/api/user-tools/schema': set()}
+        parts = path.split('/')
+        if path.startswith('/api/user-tools/') and len(parts) == 4 and parts[3] != 'schema':
+            query_contract[path] = {'version'}
+        if path.startswith('/api/user-tool-runs/') and len(parts) == 4:
+            query_contract[path] = {'offset', 'limit'}
+        if path.startswith('/api/tasks/') and len(parts) == 6 and parts[4] in ('diagnostics', 'work'):
+            query_contract[path] = {'offset', 'limit', 'tool_ids'} if parts[4] == 'diagnostics' else set()
         if path in query_contract and (set(query) - query_contract[path]
                 or any(not isinstance(v, list) or len(v) != 1 for v in query.values())):
             raise AppError('查询参数无效，请刷新后重试。')
+        if path == '/api/agent-budget':
+            return self.agent_budget.get()
+        if path == '/api/user-tools':
+            return self.user_tools.list(query=query.get('query', [''])[0])
+        if path == '/api/user-tools/schema':
+            return self.user_tools.schema()
+        if path.startswith('/api/user-tools/') and len(parts) == 4:
+            try:
+                version = int(query['version'][0]) if 'version' in query else None
+            except (TypeError, ValueError):
+                raise AppError('请选择有效的工具版本。', 'invalid_user_tool') from None
+            return self.user_tools.get(parts[3], version)
+        if path.startswith('/api/user-tool-runs/') and len(parts) == 4:
+            try:
+                offset, limit = int(query.get('offset', ['0'])[0]), int(query.get('limit', ['50'])[0])
+            except (TypeError, ValueError):
+                raise AppError('检查分页无效。', 'invalid_user_tool') from None
+            return self.user_tools.read_run(parts[3], offset=offset, limit=limit)
+        if path.startswith('/api/tasks/') and len(parts) == 6 and parts[4] in ('diagnostics', 'work'):
+            self.harness._get(parts[3])
+            if parts[4] == 'work':
+                return self.harness.task_jobs.read(parts[3], parts[5])
+            try:
+                offset, limit = int(query.get('offset', ['0'])[0]), int(query.get('limit', ['12'])[0])
+            except (TypeError, ValueError):
+                raise AppError('诊断分页参数无效。', 'invalid_diagnostic_page') from None
+            tool_ids = query['tool_ids'][0].split(',') if 'tool_ids' in query else None
+            return self.diagnostics.read(parts[5], task_id=parts[3], offset=offset, limit=limit, tool_ids=tool_ids)
         if path == '/api/recovery/summary':
             return self.recovery.summary()
         if path == '/api/recovery':
@@ -475,6 +536,41 @@ class Application:
         raise AppError('接口不存在。', 'not_found', 404)
 
     def post(self, path, payload):
+        if path == '/api/agent-budget':
+            return self.agent_budget.save(payload)
+        if path.startswith('/api/user-tools/'):
+            contracts = {'draft': ({'definition'}, {'definition', 'recipe_id', 'base_version', 'source'}),
+                         'save': ({'draft_id'}, {'draft_id'}),
+                         'prepare': ({'run_id'}, {'run_id', 'ids', 'excluded_ids'}),
+                         'archive': ({'tool_id', 'version'}, {'tool_id', 'version'})}
+            action = path.rsplit('/', 1)[-1]
+            if path == '/api/user-tools/inspect':
+                if not isinstance(payload, dict) or set(payload) not in ({'draft_id'}, {'tool_id', 'version'}):
+                    raise AppError('请选择一个草案或明确版本的工具。', 'invalid_user_tool')
+                if 'version' in payload and (type(payload['version']) is not int or payload['version'] < 1):
+                    raise AppError('请选择有效的工具版本。', 'invalid_user_tool')
+                return self._user_tool_feedback('inspected', self.user_tools.inspect(**payload))
+            if path != '/api/user-tools/' + action or action not in contracts:
+                raise AppError('自定义工具接口不存在。', 'not_found', 404)
+            required, allowed = contracts[action]
+            if not isinstance(payload, dict) or not required <= set(payload) or set(payload) - allowed:
+                raise AppError('自定义工具参数无效。', 'invalid_user_tool')
+            if action == 'draft':
+                result = self.user_tools.create_draft(**payload, provenance=dict(source='user', generated_at=now()))
+                return self._user_tool_feedback('drafted', result)
+            if action == 'save':
+                return self._user_tool_feedback('saved', self.user_tools.save(payload['draft_id']))
+            if action == 'prepare':
+                source = self.user_tools._run(payload['run_id']).get('source')
+                return self._user_tool_feedback('prepared', self.user_tools.prepare(**payload), source)
+            result = self.user_tools.archive(payload['tool_id'], payload['version'])
+            return self._user_tool_feedback('archived', result, self.user_tools.get(payload['tool_id']).get('source'))
+        parts = path.split('/')
+        if path.startswith('/api/tasks/') and len(parts) == 7 and parts[4] == 'work' and parts[6] == 'cancel':
+            if not isinstance(payload, dict) or payload:
+                raise AppError('取消检查参数无效。', 'invalid_work_control')
+            self.harness._get(parts[3])
+            return self.harness.task_jobs.cancel(parts[3], parts[5])
         if path == '/api/item-dispositions':
             if not isinstance(payload, dict) or set(payload) != {'id', 'disposition', 'snapshot'} or not isinstance(payload['id'], str):
                 raise AppError('请从项目列表选择清理偏好。', 'invalid_disposition')
@@ -735,6 +831,7 @@ class Application:
                 except AppError:
                     pass
         self.pool.shutdown(wait=True, cancel_futures=True)
+        self.harness.task_jobs.close()
         self.icons.close()
         self.file_browser.close()
         self.scan_index.close()
@@ -824,7 +921,8 @@ def create_server(data_dir, port=0, *, developer_fixtures=False):
                                   '/cleanup-tools.css': ('cleanup-tools.css', 'text/css; charset=utf-8')})
                 if parsed.path not in names:
                     names.update({f'/{name}': (name, 'text/javascript; charset=utf-8' if name.endswith('.js') else 'text/css; charset=utf-8')
-                                  for name in ('file-workspace.js', 'file-workspace.css', 'recovery.js', 'recovery.css')})
+                                  for name in ('file-workspace.js', 'file-workspace.css', 'recovery.js', 'recovery.css',
+                                               'user-tools.js', 'user-tools.css', 'orchestration-ui.js', 'orchestration-ui.css')})
                 if parsed.path not in names:
                     raise AppError('页面不存在。', 'not_found', 404)
                 name, mime = names[parsed.path]

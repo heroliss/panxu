@@ -83,18 +83,18 @@ class InvestigationCompletionTests(unittest.TestCase):
     def tools(self, payload):
         return {row['function']['name'] for row in payload['tools']}
 
-    def test_background_collects_then_reserves_scoring_and_findings_within_existing_budget(self):
+    def test_background_collects_then_scores_and_concludes_with_soft_budget_guidance(self):
         self.queue = [call('collect_apps', {'section': 'background'}, 'inventory'),
             call('list_items', {'kind': 'startup'}, 'list'),
             call('inspect_items', {'ids': [row['id'] for row in self.rows[:6]]}, 'inspect'),
             call('read_facts', {'limit': 1}, 'saved-evidence')]
 
         def score(payload):
-            self.assertEqual(self.tools(payload), {'record_advice', 'propose_plan', 'present_findings', 'ask_user', 'read_facts'})
+            self.assertTrue({'record_advice', 'present_findings', 'collect_apps', 'read_facts'} <= self.tools(payload))
             return call('record_advice', self.ratings(), 'scores')
 
         def finish(payload):
-            self.assertEqual(self.tools(payload), {'present_findings', 'ask_user'})
+            self.assertTrue({'present_findings', 'ask_user'} <= self.tools(payload))
             return call('present_findings', self.findings(), 'findings')
 
         self.queue += [score, finish]
@@ -136,21 +136,27 @@ class InvestigationCompletionTests(unittest.TestCase):
         self.assertEqual(restored['briefing_provenance'], source)
         self.assertFalse(self.state.history())
 
-    def test_collection_call_ceiling_leaves_real_conclusion_capacity_and_pairs_all_rejections(self):
+    def test_tool_ceiling_pairs_unexecuted_calls_and_saves_resumable_checkpoint(self):
         self.queue = [response(('collect', 'collect_apps', {'section': 'background'}),
             *[(f'first-{n}', 'list_items', {}) for n in range(7)]),
-            response(*[(f'second-{n}', 'list_items', {}) for n in range(8)]),
-            call('record_advice', self.ratings(), 'rating'),
-            call('present_findings', self.findings(), 'finish')]
+            response(*[(f'second-{n}', 'list_items', {}) for n in range(8)])]
         result = self.run_turn()
-        self.assertEqual(result['status'], 'completed')
-        self.assertEqual(result['usage']['model_requests'], 4)
+        self.assertEqual(result['status'], 'budget_exhausted')
+        self.assertEqual(result['usage']['model_requests'], 2)
         self.assertEqual(result['usage']['tool_calls'], 12)
-        rejected = [message for message in self.requests[2]['messages'] if message['role'] == 'tool'
-                    and '此调用未执行' in message['content']]
-        self.assertEqual(len(rejected), 6)
-        self.assertEqual(result['advice_total'], 6)
+        self.assertEqual(len(self.requests), 2)
+        self.assertGreater(result['facts']['total'], 0)
+        self.assertEqual(result['advice_total'], 0)
         self.assertFalse(self.state.history())
+        # Continue through the normal checkpoint path; completed collection
+        # is retained and conclusion does not require recollecting inventory.
+        self.queue = [call('record_advice', self.ratings(), 'rating'),
+                      call('present_findings', self.findings(), 'finish')]
+        resumed = self.run_turn()
+        self.assertEqual(resumed['status'], 'completed')
+        self.assertEqual(resumed['advice_total'], 6)
+        self.assertEqual(resumed['usage']['tool_calls'], 14)
+        self.assertEqual(self.inventory_mock.call_count, 1)
 
     def test_response_budget_recovery_uses_saved_evidence_and_never_replays_partial_tool(self):
         def overflow(_payload):
@@ -252,15 +258,15 @@ class InvestigationCompletionTests(unittest.TestCase):
         self.harness.tool(self.task['id'], 'record_advice', self.ratings(7), cancel=threading.Event())
         self.assertEqual(self.harness.advice_page(self.task['id'])['total'], 7)
 
-    def test_finalization_rejects_new_collection_instead_of_silently_exceeding_budget(self):
+    def test_late_collection_is_allowed_within_configured_budget(self):
         self.queue = [call('collect_apps', {'section': 'background'}, 'inventory')]
         self.queue += [call('list_items', {}, f'list-{n}') for n in range(3)]
-        self.queue += [call('collect_apps', {'section': 'background'}, 'forbidden-repeat'),
+        self.queue += [call('collect_apps', {'section': 'background'}, 'allowed-late-check'),
                        call('present_findings', self.findings(), 'finish')]
         result = self.run_turn()
         self.assertEqual(result['status'], 'completed')
-        self.assertEqual(result['usage']['tool_failures'], 1)
-        self.assertEqual(self.inventory_mock.call_count, 1)
+        self.assertEqual(result['usage']['tool_failures'], 0)
+        self.assertEqual(self.inventory_mock.call_count, 2)
 
     def test_last_round_budget_failure_preserves_scored_advice_and_last_complete_reply(self):
         first = call('collect_apps', {'section': 'background'}, 'inventory')

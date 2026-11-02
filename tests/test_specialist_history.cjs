@@ -13,7 +13,7 @@ assert.ok(start >= 0 && end > start, 'exercise the production renderHistory func
 const production = app.slice(start, end) + '\nrenderHistory;';
 const flush = async () => {await new Promise(setImmediate); await new Promise(setImmediate);};
 
-function fixture(history = []) {
+function fixture(history = [],{deferOrdinary=false}={}) {
   class Element {
     constructor(tag, cls = '', value = '') {this.tag = tag; this.className = cls; this.children = []; this.parent = null; this.hidden = false; this.disabled = false; this.textContent = String(value);}
     get isConnected() {return this === root || Boolean(this.parent?.isConnected);}
@@ -26,6 +26,8 @@ function fixture(history = []) {
   const root = new Element('main'), calls = [], opened = [];
   let resolve, reject;
   const response = new Promise((done, fail) => {resolve = done; reject = fail;});
+  let resolveOrdinary,rejectOrdinary;
+  const ordinaryResponse=deferOrdinary?new Promise((done,fail)=>{resolveOrdinary=done;rejectOrdinary=fail;}):Promise.resolve({history});
   const el = (tag, cls = '', value = '') => new Element(tag, cls, value);
   const append = (parent, ...children) => {parent.append(...children); return parent;};
   const context = {
@@ -39,7 +41,7 @@ function fixture(history = []) {
     badge: label => el('span', 'badge', label),
     itemTitle: (_, title) => title,
     text: value => String(value),
-    api: (path, body) => {calls.push({path, body}); return response;},
+    api: (path, body) => {calls.push({path, body}); return path==='/api/history'?ordinaryResponse:response;},
     openSpecialist: ref => opened.push(ref),
     undoBatch() {},
     task: fn => fn(),
@@ -47,7 +49,7 @@ function fixture(history = []) {
   };
   const renderHistory = runInNewContext(production, context);
   renderHistory(root);
-  return {root, calls, opened, resolve, reject, renderHistory,
+  return {root, calls, opened, resolve, reject, resolveOrdinary,rejectOrdinary, state:context.state, renderHistory,
     visible: () => root.visibleText(),
     empty: () => root.all().find(node => node.className === 'empty-state'),
     specialist: () => root.all().find(node => node.className === 'specialist-history'),
@@ -56,7 +58,7 @@ function fixture(history = []) {
 
 test('history keeps its empty state hidden until specialist history has actually been read', () => {
   const f = fixture();
-  assert.deepEqual(f.calls, [{path: '/api/cleanup-tools/history', body: undefined}]);
+  assert.deepEqual(f.calls, [{path:'/api/history',body:undefined},{path: '/api/cleanup-tools/history', body: undefined}]);
   assert.equal(f.empty().hidden, true);
   assert.equal(f.visible().includes('还没有操作记录'), false);
 });
@@ -115,7 +117,7 @@ test('existing ordinary history remains visible when the specialist history is e
   const f = fixture([{id: 'ordinary-batch', created_at: '2026-11-02T12:00:00Z', item_count: 2, items: [], status: 'simulated'}]);
   f.resolve({history: []}); await flush();
   assert.match(f.visible(), /已记录 2 项操作/);
-  assert.equal(f.empty(), undefined);
+  assert.equal(f.empty().hidden, true);
   assert.equal(f.visible().includes('还没有操作记录'), false);
 });
 
@@ -139,4 +141,20 @@ test('an ended specialist plan without a result does not offer an undo action', 
   f.resolve({history: ['completed', 'interrupted'].map(status => ({id: 'missing-' + status, title: status, status}))});
   await flush();
   assert.equal(f.root.all().some(node => node.tag === 'button' && node.textContent === '撤销记录'), false);
+});
+
+test('entering history reads current durable file-operation receipts even when the initial app cache was empty',async()=>{
+ const f=fixture([],{deferOrdinary:true});f.resolve({history:[]});await flush();assert.equal(f.empty().hidden,true);assert.match(f.visible(),/正在读取最新操作记录/);
+ const records=[{id:'custom-tool-batch',created_at:'2026-11-02T05:00:00Z',status:'simulated',items:[]},{id:'restored-batch',created_at:'2026-11-02T04:00:00Z',status:'undone',items:[]}];f.resolveOrdinary({history:records});await flush();
+ assert.equal(f.root.all().filter(node=>node.className==='history-card').length,2);assert.match(f.visible(),/已撤销/);assert.equal(f.visible().includes('还没有操作记录'),false);assert.equal(f.visible().includes('正在读取最新操作记录'),false);assert.equal(f.state.history,records);
+});
+
+test('a late ordinary-history response cannot update the next page or its cached state',async()=>{
+ const f=fixture([],{deferOrdinary:true}),previous=f.root.all().find(node=>node.className==='ordinary-history');f.root.replaceChildren();
+ f.resolveOrdinary({history:[{id:'late',created_at:'2026-11-02',status:'simulated',items:[]}]});f.resolve({history:[]});await flush();assert.equal(previous.children.length,0);assert.equal(f.root.children.length,0);assert.deepEqual(f.state.history,[]);
+});
+
+test('ordinary-history read failure keeps cached receipts and never claims an empty complete history',async()=>{
+ const cached=[{id:'existing',created_at:'2026-11-02',status:'undone',items:[]}],f=fixture(cached,{deferOrdinary:true});f.resolve({history:[]});f.rejectOrdinary(Error('操作记录暂时无法读取'));await flush();
+ assert.match(f.visible(),/操作记录暂时无法读取/);assert.match(f.visible(),/重新读取操作记录/);assert.match(f.visible(),/已撤销/);assert.equal(f.visible().includes('还没有操作记录'),false);assert.equal(f.state.history,cached);
 });

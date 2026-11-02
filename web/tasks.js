@@ -249,8 +249,23 @@ window.PanxuTasks = (() => {
   let intent = '';
   let homeVisible=false;
   const reviewPanes=new Map();
+  const specialistPending=new Set(),specialistErrors=new Map();
   let livePreview = null;
   const completedReplies=new Map();
+  const recentPublicState=new Map();
+  function rememberPublicState(taskId,packet){
+    const value=packet.stream,activity=packet.activity;
+    const stream=value&&typeof value.text==='string'?{epoch:String(value.epoch || '').slice(0,120),turn_id:String(value.turn_id || '').slice(0,120),
+      status:value.status,text:Array.from(value.text).slice(0,8000).join(''),tool_pending:value.tool_pending===true,delivery:value.delivery,
+      truncated:value.truncated===true}:recentPublicState.get(taskId)?.stream || null;
+    const events=(Array.isArray(activity?.events)?activity.events:[]).slice(-32).map(event=>({id:String(event.id || '').slice(0,240),
+      kind:String(event.kind || '').slice(0,40),label:String(event.label || '').slice(0,180),at:event.at}));
+    recentPublicState.delete(taskId);recentPublicState.set(taskId,{stream,activity:{events,omitted:Number.isFinite(activity?.omitted)?activity.omitted:0},incomplete:packet.incomplete===true});
+    if(recentPublicState.size>8)recentPublicState.delete(recentPublicState.keys().next().value);
+  }
+  // A model turn owns a live channel. Completed, waiting and file-execution
+  // tasks retain their public records without opening a new SSE connection.
+  function liveModelTask(task){return task?.status==='investigating'&&typeof task.id==='string';}
   function completeReply(value,taskId) {
     if(!value || typeof value.text!=='string' || !value.text.trim() || value.text.length>16000
       || value.task_id && value.task_id!==taskId)return null;
@@ -330,6 +345,7 @@ window.PanxuTasks = (() => {
     const activityHost=node('div','task-stream-activity'),activity=window.PanxuStreamView.createActivity?.(activityHost);
     add(receiving,caption,body);add(section,complete,receiving,activityHost);add(panel,section);
     const token = {id: sourceTask.id,ownerId:current.id,view:window.PanxuStreamView.create(body),activity,off:null,turn:'',partialText:''};
+    const isLive=liveModelTask(sourceTask)&&sourceTask.id===current?.id;
     livePreview = token;
     function paintComplete(){
       const last=completedReplies.get(token.id);complete.hidden=!last;
@@ -338,10 +354,9 @@ window.PanxuTasks = (() => {
     }
     if(sourceTask.last_public_reply)rememberReply(token.id,sourceTask.last_public_reply,'durable');
     paintComplete();
-    Promise.resolve().then(() => {
-      if (livePreview !== token || !section.isConnected) return;
-      token.off = window.PanxuStreamChannel.subscribe(token.id, packet => {
-        if (livePreview !== token || current?.id !== token.ownerId || !section.isConnected) return;
+    function paintPacket(packet,{remember=true}={}){
+        if (livePreview !== token || current?.id !== token.ownerId || remember&&!section.isConnected) return;
+        if(remember)rememberPublicState(token.id,packet);
         if(packet.activity)activity?.update(packet.activity);
         const value = packet.stream;
         if (!value) {
@@ -351,12 +366,13 @@ window.PanxuTasks = (() => {
           paintComplete();
           return;
         }
-        if(value.last_complete)rememberReply(token.id,value.last_complete);
-        if(value.status==='completed'&&value.text?.trim())rememberReply(token.id,value);
+        if(remember&&value.last_complete)rememberReply(token.id,value.last_complete);
+        if(remember&&value.status==='completed'&&value.text?.trim())rememberReply(token.id,value);
         paintComplete();
         const turn = `${value.epoch}:${value.turn_id}`;
         if (token.turn !== turn) {token.view.reset(); token.turn = turn;token.partialText='';}
-        const interrupted = packet.incomplete || value.status === 'error' || value.status==='cancelled';
+        const interrupted = packet.incomplete || value.status === 'error' || value.status==='cancelled'
+          || !isLive&&value.status==='streaming'&&['error','paused','budget_exhausted'].includes(sourceTask.status);
         const partialText=interrupted&&!value.text?token.partialText:value.text || '';
         token.partialText=partialText;
         let phase = value.status === 'completed' ? '本轮回复已接收' : '正在接收公开回复';
@@ -366,10 +382,15 @@ window.PanxuTasks = (() => {
         if (interrupted) phase = value.status==='cancelled'?'本轮回复已停止，以下内容可能不完整':'回复中断，以下内容可能不完整';
         if (value.truncated) phase += ' · 仅展示最近一轮的前 8000 字';
         caption.textContent = phase;
-        receiving.hidden=value.status==='completed' || !partialText.trim()&&!value.tool_pending&&!interrupted;
+        receiving.hidden=value.status==='completed' || !isLive&&value.status==='streaming'&&!interrupted || !partialText.trim()&&!value.tool_pending&&!interrupted;
         section.hidden=complete.hidden&&receiving.hidden&&(!activity||activityHost.hidden);
         token.view.update({text: partialText, phase: value.tool_pending ? 'tool_pending' : '', status: interrupted ? 'incomplete' : value.status});
-      });
+    }
+    const cached=recentPublicState.get(token.id);if(cached)paintPacket(cached,{remember:false});
+    if(!isLive)return;
+    Promise.resolve().then(() => {
+      if (livePreview !== token || !section.isConnected || !liveModelTask(current)) return;
+      token.off = window.PanxuStreamChannel.subscribe(token.id, paintPacket);
     });
   }
 
@@ -828,6 +849,7 @@ window.PanxuTasks = (() => {
     add(copy,add(node('div','item-title-line task-advice-title-line'),window.PanxuIcons?.create(entry),node('strong','task-advice-title',entry.name)),
       entry.user_kept?semanticTag('你已选择保留','neutral','task-advice-state'):null,window.PanxuAdvicePresentation.render({...entry,task_id:taskId},{direct:true}),window.PanxuProvenance.details(entry,{presets:context.providerPresets}));
     if(!busy())directControls(copy,entry,taskId);
+    if(context.saveAsTool&&['file','directory'].includes(entry.kind)&&entry.path)add(copy,action('保存为清理工具',()=>context.saveAsTool(entry,taskId),'plain-button'));
     add(card,window.PanxuAssessment.render(entry,{direct:true,primary:true,cls:'task-advice-rating'}),copy);
     return card;
   }
@@ -835,17 +857,54 @@ window.PanxuTasks = (() => {
     if(!current.extra_suggestions?.length || !context.openSpecialist)return;
     const isHost=item=>item.origin==='host'&&item.provenance?.source==='local';
     const host=current.extra_suggestions.filter(isHost),other=current.extra_suggestions.filter(item=>!isHost(item));
-    const groups=[{items:host,title:'系统工具（无需 AI）',label:'查看系统工具'},
-      {items:other,title:host.length?'其他专项建议':'专项建议',label:'查看专项建议'}];
     const taskId=current.id;
-    for(const group of groups){
-      if(!group.items.length)continue;
+    if(host.length){
       const section=node('section','task-specialist-suggestions');
-      add(section,node('h2','',group.title));
-      if(group.items===other)add(section,node('p','field-help',group.items.map(item=>item.title).join('、')));
-      add(section,action(group.label,()=>context.openSpecialist({extra_suggestions:group.items,source:{task_id:taskId}}),'button'));add(root,section);
+      add(section,node('h2','','系统工具（无需 AI）'),action('查看系统工具',()=>context.openSpecialist({extra_suggestions:host,source:{task_id:taskId}}),'button'));add(root,section);
+    }
+    if(other.length){
+      const section=node('section','task-specialist-suggestions');add(section,node('h2','',host.length?'其他专项建议':'专项建议'));
+      for(const suggestion of other){
+        const key=taskId+':'+suggestion.id,card=node('article','cleanup-explanation'),choice=suggestion.selection?.option_id || suggestion.selection?.id;
+        add(card,node('h3','',suggestion.title || '专项建议'),suggestion.explanation?node('p','',suggestion.explanation):null,
+          suggestion.impact?explanation('操作影响',suggestion.impact):null);
+        const options=node('div','cleanup-options');
+        for(const option of suggestion.options || []){
+          const row=node('section','cleanup-option'),pick=action((choice===option.id?'已选择：':'')+option.label,()=>answerSpecialist(suggestion,option,taskId),'button');
+          pick.disabled=pending||busy()||specialistPending.has(key);add(row,pick,option.description?node('p','',option.description):null);
+          if(choice===option.id&&option.kind==='instructions'&&option.instructions)add(row,explanation('操作步骤',option.instructions));
+          options.append(row);
+        }
+        add(card,options,specialistErrors.has(key)?node('p','field-error',specialistErrors.get(key)):null,
+          window.PanxuProvenance?.details(suggestion,{presets:context.providerPresets}));section.append(card);
+      }
+      if(other.some(suggestion=>!suggestion.options?.length))add(section,action('查看专项建议',()=>context.openSpecialist({extra_suggestions:other,source:{task_id:taskId}}),'plain-button'));
+      add(root,section);
     }
     if(current.last_specialist_result)add(root,node('p','field-help','最近一次专项操作结果已记录，可在操作记录中查看。'));
+  }
+  async function answerSpecialist(suggestion,option,taskId){
+    const key=taskId+':'+suggestion.id;if(pending||busy()||specialistPending.has(key))return;
+    const helpers=context;specialistPending.add(key);specialistErrors.delete(key);redraw();
+    try{
+      const response=await helpers.api('/api/tasks/'+encodeURIComponent(taskId)+'/specialist-answer',{suggestion_id:suggestion.id,option_id:option.id,version:suggestion.version});
+      if(current?.id!==taskId)return;
+      const updated=response.extra_suggestion || {...suggestion,selection:response.selection};
+      current.extra_suggestions=(current.extra_suggestions || []).map(row=>row.id===suggestion.id?updated:row);
+      if(!helpers.isActive?.())return;
+      if(response.user_tool){if(!helpers.openUserTools)throw new Error('暂时无法打开我的工具，请从清理工具中重试。');helpers.openUserTools({...response.user_tool,source:response.source || {task_id:taskId}});}
+      else if(response.specialist?.tool_id)await helpers.openSpecialist({...response.specialist,source:response.source || {task_id:taskId}});
+    }catch(error){if(current?.id===taskId){if(specialistErrors.size>=30)specialistErrors.delete(specialistErrors.keys().next().value);specialistErrors.set(key,error.message || '选择暂未保存，请重试。');}}
+    finally{specialistPending.delete(key);if(current?.id===taskId)redraw();}
+  }
+  function orchestration(root,source=current){
+    if(!source?.id||!window.PanxuOrchestration)return;
+    const id=source.id,helpers=context,host=node('div','task-orchestration');root.append(host);
+    window.PanxuOrchestration.render(host,{task:source,api:helpers.api,onChange:async()=>{
+      if(current?.id!==id||!helpers.isActive?.())return;
+      const data=await helpers.api('/api/tasks/'+encodeURIComponent(id));
+      if(current?.id===id&&helpers.isActive?.()){accept(data.task);redraw();}
+    }});
   }
   function advicePreview(root) {
     if(current.plan || busy())return;
@@ -858,11 +917,13 @@ window.PanxuTasks = (() => {
     context.setContextBack?.(context.page==='task'?'':'返回常用任务',context.page==='task'?null:returnHome);
     if(context.page==='task'&&context.openResults&&!busy()&&!current.question&&(current.advice_total || current.advice?.length || current.plan)){
       add(root,context.heading('当前任务',current.goal));
+      orchestration(root);
       const panel=node('section','panel task-session');add(panel,node('p','task-summary-original',current.summary || '建议已保存，可以查看清单并调整选择。'),action('查看建议与操作清单',()=>context.openResults(current),'button primary'));
       briefing(panel);renderLivePreview(panel);specialistSuggestions(panel);add(root,panel);return;
     }
     if(context.page!=='task'&&window.PanxuCleanupReview&&!current.question&&(current.status==='executing'||!busy()&&['awaiting_review','completed','paused','budget_exhausted','error'].includes(current.status))){reviewView(root);return;}
     add(root, context.heading(intents[current.preset]?.[0] || '整理助手', current.preset && current.preset !== 'custom' ? '按需调查，先给出最值得关注的建议。' : current.goal));
+    orchestration(root);
     const panel = node('section', 'panel task-session');
     const summary = node('div', 'task-summary'); summary.setAttribute('role', 'status');
     if (busy()) add(summary, node('span', 'spinner'));
@@ -922,6 +983,7 @@ window.PanxuTasks = (() => {
       return;
     }
     if(!context.embeddedResult){const heading=context.heading(listTitle,'按评分查看用途、建议与影响，勾选后核对具体操作。');heading.classList?.add('cleanup-page-heading');add(root,heading);}
+    orchestration(root,sourceTask);
     const summary=node('div','cleanup-task-summary');add(root,summary);
     const list=node('div','cleanup-task-list');add(root,list);
     const explanation=node('div','cleanup-task-explanation');add(root,explanation);
@@ -943,6 +1005,7 @@ window.PanxuTasks = (() => {
   }
   function render(root, helpers) {
     stopLivePreview();
+    window.PanxuOrchestration?.unmount();
     window.PanxuCleanupReview?.unmount();
     context = helpers;
     if (lastError) add(root, node('p', 'global-message error task-error', lastError));
@@ -971,6 +1034,6 @@ window.PanxuTasks = (() => {
     });
     add(root, panel);
   }
-  function renderResultWorkspace(root,helpers){stopLivePreview();window.PanxuCleanupReview?.unmount();context=helpers;if(!current)return;reviewView(root);if(busy())schedule();}
-  return {render,renderResultWorkspace, accept, acceptPickedPlan, renderHistory, adviceFor, adviceKnown, lookupAdvice, currentTask: () => current, streamTaskId: () => current?.cleanup_source_task_id || current?.id || null, unmountLive:()=>{stopLivePreview();window.PanxuCleanupReview?.unmount();}};
+  function renderResultWorkspace(root,helpers){stopLivePreview();window.PanxuCleanupReview?.unmount();window.PanxuOrchestration?.unmount();context=helpers;if(!current)return;reviewView(root);if(busy())schedule();}
+  return {render,renderResultWorkspace, accept, acceptPickedPlan, renderHistory, adviceFor, adviceKnown, lookupAdvice, currentTask: () => current, streamTaskId: () => liveModelTask(current)?current.id:null, unmountLive:()=>{stopLivePreview();window.PanxuCleanupReview?.unmount();window.PanxuOrchestration?.unmount();}};
 })();

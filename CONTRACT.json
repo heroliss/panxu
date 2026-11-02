@@ -1,6 +1,6 @@
 {
   "product": "盘序",
-  "version": "0.22.1",
+  "version": "0.23.0",
   "mode": "simulation",
   "root": "E:\\GPT-Projects\\win11-disk-assistant",
   "safety": "This build has NO real executor. All apply/undo/reset operations modify only SQLite simulation records. Never unlink/move/kill/control services/edit startup outside app-owned data.",
@@ -117,7 +117,20 @@
     "GET /api/recovery": "{page?,limit?:1..100,status?:retained|restored|purged|all,volume?}; bounded dedicated retention records; no automatic expiry or real file movement",
     "GET /api/recovery/plans/{id}": "durable frozen restore/purge plan; simulation only",
     "POST /api/recovery/prepare": "{ids,action:restore|purge}; freeze exact currently eligible dedicated retention records; no operation approval or real I/O",
-    "POST /api/recovery/execute": "{plan_id,confirmation}; separate exact confirmation for restore or permanent purge intent; simulation records only. Purged records cannot be resurrected by legacy undo/reset"
+    "POST /api/recovery/execute": "{plan_id,confirmation}; separate exact confirmation for restore or permanent purge intent; simulation records only. Purged records cannot be resurrected by legacy undo/reset",
+    "GET /api/agent-budget": "{model_requests,tool_calls}; per-turn hard limits, soft model hints",
+    "POST /api/agent-budget": "partial {model_requests?,tool_calls?} -> saved flat budget; strict integer bounds",
+    "GET /api/user-tools": "?query= -> {items,total,truncated}; saved versions and drafts",
+    "GET /api/user-tools/{id}": "?version=N optional exact saved definition version",
+    "POST /api/user-tools/draft": "{definition,recipe_id?,base_version?,source?:{task_id}} -> draft; host user provenance",
+    "POST /api/user-tools/save": "{draft_id} -> immutable saved version",
+    "POST /api/user-tools/inspect": "{tool_id,version?}|{draft_id} -> bounded read-only run with first50 matches",
+    "GET /api/user-tool-runs/{id}": "?offset=0&limit=50 -> exact stored run page",
+    "POST /api/user-tools/prepare": "{run_id,ids?,excluded_ids?} -> existing frozen file plan or specialist_plan; not approval",
+    "POST /api/user-tools/archive": "{tool_id,version} -> archived definition; no file deletion",
+    "GET /api/tasks/{id}/work/{job_id}": "task-owned durable read-only background work; paths/results not dumped",
+    "POST /api/tasks/{id}/work/{job_id}/cancel": "{} -> cancel remaining read-only work, keep existing results",
+    "GET /api/tasks/{id}/diagnostics/{snapshot_id}": "paged diagnostic detail with original time, status, coverage and evidence refs"
   },
   "mutations": "Require X-CSRF-Token from bootstrap. Errors are JSON {error,code}. Relative same-origin fetch only. Input limits apply.",
   "summary": "{total_items,visible_items,simulated_items,logical_bytes,simulated_bytes,process_memory_bytes,by_kind,source,mode}. Real disks separate; no simulated_bytes shown as actual freed space.",
@@ -126,10 +139,10 @@
   "history": "list batches {id,created_at,status:'simulated'|'partially_undone'|'undone',item_count,estimated_bytes,items:[{id,name,path,kind,action,status}],mode}; recovery_counts separates retained/restored/purged; original success history is not rewritten",
   "plans": "Risk protected cannot queue. Every entry freezes ID/signature/action; explicit kind/action allowlist and availability, never score/name/actions[0] inference. stop_service requires Running and changes no startup mode. Incomplete dirs disallowed; application entities never path-deduped. Existing simulated skip. Planned catalog revision bound, current identities/actions checked before execute. Plan action_groups count only its frozen batch. No arbitrary path actions or real executor.",
   "privacy": "No user file body read for LLM. Metadata only; send_paths false by default. Independent duplicate scan reads candidate bytes locally for SHA-256 but never sends them to a model. No real provider key expected in tests. LLM cannot execute or approve plans.",
-  "agent_task": "statuses ready/investigating/awaiting_review/executing/needs_input/needs_model/paused/budget_exhausted/error/completed. Up to6 model requests and12 executed tools per user turn; normally4 investigation+2 reserved scoring/conclusion rounds, earlier finalization near budget. Model record_advice/propose_plan schemas cap6 items; host historical30 and manual500 remain separate. High-rating initialization is an editable draft, never approval; final selection determines targets. Protected/out-of-scope/unsupported identities and stale plans cannot bypass factual checks. Unknown score is not3 or permission. Tool text is untrusted.",
+  "agent_task": "statuses ready/investigating/awaiting_review/executing/needs_input/needs_model/paused/budget_exhausted/error/completed. Configurable per-turn model_requests4..32 and tool_calls6..128 (defaults6/12). Soft remaining-resource guidance retains normal tools until the hard ceiling; checkpoints preserve work for continuation. Output-error recovery alone narrows tools to durable evidence/conclusion. Model record_advice/propose_plan schemas cap6 items; host historical30 and manual500 remain separate. High-rating initialization is an editable draft, never approval; final selection determines targets. Protected/out-of-scope/unsupported identities and stale plans cannot bypass factual checks. Unknown score is not3 or permission. Tool text is untrusted.",
   "action_runtime": "simulation backend only. Per-item durable intent plus atomic overlay/receipt, status succeeded/failed/partial/cancelled/unverified. Recovery verifies receipts without blind replay. User undo is separately visible as current_state=undone. Actual reclaimed bytes always zero.",
   "release_status": "verified_portable_native_scoped_acceptance_passed",
-  "installed_release": "0.21.0",
+  "installed_release": "0.23.0",
   "review_selection": "Version0.18 removes score-selection panel and per-score buttons from review/myfiles. Exact rating plus one tri-state select-current-filter control uses shared view,parent,query,rating,scope,risk,kind filters across complete rows. Tree is current parent level, navigation-only not selectable. Fetch cursor pages<=500 serially, candidate cap5000 and total logical-rule cap5000; incomplete/oversize/version-error collection leaves old selection atomically unchanged. Tri-state derives from complete candidates and nearest rules; selected roots with child exceptions remain checked+mixed so next click can deselect. Preserve outside-filter explicit rules and child exclusions. Plans freeze<=500 physical targets; remaining draft retained and stale catalog requires recheck. cleanup_auto_select_four lives in Settings cleanup preferences, existing UI-pref API auto-saves/rolls back error independently of model/text settings; eligible5 preselect stays, only new analysis initial drafts change. Current manual choices untouched. Explicit confirmation and simulation-only boundaries unchanged.",
   "dark_surface_refinement": "Version0.17.1 only dims dark canvas/card/soft/input/sidebar/interaction and rating/impact background tokens; canvas#090e16,panel#151f2d,soft#1d2b3d. Preserve surface separation, ink/muted/rating foregrounds, typography/layout/text-selection, scoring/action/model/backend semantics and simulation-only boundaries; light/non-dark declarations verified identical to0.17 baseline. Strict Python590,Node165,7JSsyntax passed, detector empty. Actual source dark1280x720/light960x680 no horizontal overflow, sampled explanation/label/rating minimum contrast8.01/5.21. Final EXE scoped native dark review/myfiles inspected and recorded, no UI LLM request or processing action. Original four durable files restored byte-for-byte; normal launch verified with 8 tasks,12 prior advice,18 model requests and identical model settings, not an all-module native claim; version0.17 evidence remains historical.",
   "task_memory": "Durable goal, choices, versioned plan, simulation receipts, up to300 historical facts/task with32MiB global fact-payload retention. Separate last_public_reply stores accepted public text<=8000 chars with completed_at,protocol,host provenance,truncated; not private continuation, model context or partial-stream success. Model connection change reconstructs fresh context. Request attempts/tools/work counted; missing provider token usage is unknown.",
@@ -224,5 +237,45 @@
   "item_dispositions": "POST /api/item-dispositions {id,disposition:lean_clean|lean_keep|direct_clean|direct_keep|null,snapshot}; returns current item+catalog revision. Model-independent user intent, nearest observed ancestor inheritance; direct_clean never executes automatically. Direct_keep blocks current target and ancestor plans, persists ordinary edits only with stable file identity. Replacement becomes stale. Preferences and source/time/staleness projected separately from model scores.",
   "direct_inventory_actions": "POST /api/actions/plan {ids,snapshots,revision},1..500 exact current IDs. Frozen user_direct task uses existing action guard, approval, simulation journal, progress and recovery. No model request. Default /api/tasks/analyze skips valid existing analyses and strong choices; reanalyze:true overrides prior-analysis skip only.",
   "tool_detail_interaction": "All48 tools listed; actual-volume select; automatic read-only inspect+refresh; impact/recovery visible. Action prepares a frozen confirmation without preview page. Explicit complete-empty disables; unknown/partial does not become0. Progress polls revision-aware; cancel stops remaining commits. Current execution simulation only.",
-  "tool_catalog_presentation": "All48 tools remain expanded in6 category sections with visible titles and counts. Ordered categories windows/applications/privacy/system/development/migration; host editorial order within each category, common fallback for new tools. Display priority is not cleanup score, safety judgment or permission. No additional model data field. Two-column at viewport>=1200px, single-column otherwise; search/category filtering retain matching category sections."
+  "tool_catalog_presentation": "All48 tools remain expanded in6 category sections with visible titles and counts. Ordered categories windows/applications/privacy/system/development/migration; host editorial order within each category, common fallback for new tools. Display priority is not cleanup score, safety judgment or permission. No additional model data field. Two-column at viewport>=1200px, single-column otherwise; search/category filtering retain matching category sections.",
+  "tool_orchestration": {
+    "model_tools": [
+      "describe_cleanup_tool",
+      "run_cleanup_diagnostics",
+      "read_cleanup_diagnostics",
+      "start_duplicate_scan",
+      "read_task_work",
+      "read_duplicate_groups",
+      "read_duplicate_members",
+      "cancel_task_work"
+    ],
+    "system_cleanup": "new tasks obtain scoped shared diagnostics at first investigation; model builds dynamic options; historical host suggestions remain usable",
+    "jobs": "task owned, max2 running, durable request/results, host waits without model polling; cooperative cancellation, interrupted work not rerun silently",
+    "scope": "task traversal/action roots only; exact {scope_id} path binding; no arbitrary parent expansion or file-byte upload",
+    "diagnostics": "48 applicability/status rows, shared configuration and bounded known-root observations; unknown != zero and partial != complete",
+    "native_message_lifecycle": "Only investigating tasks own live SSE; completed/history retain durable public reply and bounded received activity without reconnect. History page fetches durable current receipts, with retry and stale-page guards."
+  },
+  "user_tools": {
+    "types": [
+      "files",
+      "preset"
+    ],
+    "model_tools": [
+      "discover_user_tools",
+      "describe_user_tool",
+      "draft_user_tool",
+      "inspect_user_tool"
+    ],
+    "definition": "immutable id/version/content_hash plus provenance/source; roots resolved host-side from allowed scope refs for model drafts",
+    "files": "roots1..8, glob includes/excludes, modified-age and size; files only, protect/direct_keep/reparse/cloud checks, 10000 entries/5000 matches/depth32/3s cooperative limit, run paging50, frozen apply batch500 with explicit remaining count",
+    "execution": "same ActionRuntime/RecoveryStore; validate current definition/run/hash at prepare, approval and each action. Old history and restoration remain readable after definition edits/archival.",
+    "feedback": "choice/draft/save/inspect/prepare facts and simulation/restore receipts return to source task without extra model calls",
+    "not_implemented": [
+      "script adapters",
+      "real execution",
+      "persistent unattended trust",
+      "scheduling"
+    ]
+  },
+  "batch_projection": "Internal SimulationBackend consumes locked snapshots and batch-only receipts without copying full inventory/history per item; public execute keeps full independent view by default. Identity, policy, atomic journal/receipt and recovery checks unchanged."
 }

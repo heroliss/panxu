@@ -65,3 +65,8 @@
 - Microsoft ShouldProcess：WhatIf依赖命令/函数实现，调用链存在传递差异，不能代替宿主模拟路由。https://learn.microsoft.com/en-us/powershell/scripting/learn/deep-dives/everything-about-shouldprocess
 - Microsoft Job Objects：进程组及子进程管理，可用于结束相关进程，不提供已发生文件操作的回滚。https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects
 - Microsoft EnumerationOptions：枚举深度、递归、属性和访问失败的可配置选项；当前工程用Python，按原则复用现有扫描器，不因此改用.NET重写。https://learn.microsoft.com/en-us/dotnet/api/system.io.enumerationoptions
+
+
+## 0.23第一阶段实现
+
+已接入共享轻量诊断、工具参数发现、持久查重工作、可调软指导额度和用户工具定义/版本/试查/模拟运行。范围、限制及实现取舍见D064；最终验收状态以发布记录为准。进阶脚本适配器、真实执行、持久无人值守授权和定时任务继续为后续工作。
