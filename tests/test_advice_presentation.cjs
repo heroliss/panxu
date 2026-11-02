@@ -34,7 +34,7 @@ test('suggestion surfaces retain the score and stale state separately from opera
   assert.equal(f.render({assessment:{state:'skipped',rating:null}}).dataset.rating,'');
 });
 
-test('actual dark and light rating tokens contrast with their real surfaces and inactive scale outlines stay distinguishable',()=>{
+test('actual dark and light surfaces keep explanation, field, navigation and score text readable with distinguishable scale outlines',t=>{
   const css=readFileSync(join(__dirname,'..','web','hierarchy.css'),'utf8'),base=readFileSync(join(__dirname,'..','web','style.css'),'utf8');
   const block=(source,theme)=>{
     const match=source.match(theme==='dark'?/:root,\[data-theme="dark"\]\s*\{([^}]+)\}/:/\[data-theme="light"\]\s*\{([^}]+)\}/);assert.ok(match);
@@ -45,15 +45,20 @@ test('actual dark and light rating tokens contrast with their real surfaces and 
   const contrast=(foreground,background)=>{const a=luminance(foreground),b=luminance(background);return (Math.max(a,b)+.05)/(Math.min(a,b)+.05);};
   for(const theme of ['dark','light']){
     const colors=block(css,theme),surfaces={...block(base,theme),...colors};assert.equal(new Set([1,2,3,4,5].map(level=>colors['--rating-'+level])).size,5);
+    const ordinary=[];
+    for(const ink of ['--ink','--muted'])for(const background of ['--canvas','--panel','--surface-soft','--surface-hover','--surface-selected','--field']){
+      const ratio=contrast(rgb(surfaces[ink]),rgb(surfaces[background]));ordinary.push(ratio);assert.ok(ratio>=4.5,`${theme} ${ink} on ${background}, including placeholder and secondary labels`);
+    }
     for(let level=1;level<=5;level++){
       for(const background of [colors[`--rating-${level}-bg`],surfaces['--panel'],surfaces['--surface-soft'],surfaces['--canvas']])assert.ok(contrast(rgb(colors['--rating-'+level]),rgb(background))>=4.5,`${theme} score ${level} must remain readable`);
       for(const ink of ['--ink','--muted'])for(const background of [colors[`--rating-${level}-bg`],colors[`--impact-${level}-bg`]])assert.ok(contrast(rgb(surfaces[ink]),rgb(background))>=4.5,`${theme} neutral explanation text on score and impact surface ${level}`);
     }
     for(const name of ['--panel','--surface-soft'])assert.ok(contrast(rgb(surfaces['--border-strong']),rgb(surfaces[name]))>=3,`${theme} unfilled segment boundary`);
     assert.ok(contrast(rgb(surfaces['--amber']),rgb(surfaces['--warning-bg']))>=4.5);assert.ok(contrast(rgb(surfaces['--ink']),rgb(surfaces['--warning-bg']))>=4.5);
-    for(const [foreground,background] of [['--blue','--blue-tint'],['--green','--success-bg'],['--red','--danger-bg'],['--on-accent','--accent']])assert.ok(contrast(rgb(surfaces[foreground]),rgb(surfaces[background]))>=4.5,`${theme} semantic text remains readable`);
+    for(const [foreground,background] of [['--blue','--blue-tint'],['--green','--success-bg'],['--red','--danger-bg'],['--on-accent','--accent'],['--on-accent','--accent-hover'],['--sidebar-ink','--sidebar-bg'],['--sidebar-muted','--sidebar-bg'],['--sidebar-current','--sidebar-selected'],['--selection-ink','--selection-bg']])assert.ok(contrast(rgb(surfaces[foreground]),rgb(surfaces[background]))>=4.5,`${theme} ${foreground} on ${background} remains readable`);
     const ratio=Number(css.match(/\[data-advice-part="reason"\][^{]*\{[^}]*var\(--surface-soft\) (\d+)%/)[1])/100;
     const reason=rgb(surfaces['--surface-soft']).map((value,index)=>value*ratio+rgb(surfaces['--panel'])[index]*(1-ratio));assert.ok(contrast(rgb(surfaces['--muted']),reason)>=4.5);
+    t.diagnostic(`${theme}: body/secondary on actual base surfaces >= ${Math.min(...ordinary).toFixed(2)}:1; outline on panel ${contrast(rgb(surfaces['--border-strong']),rgb(surfaces['--panel'])).toFixed(2)}:1`);
   }
   assert.match(css,/\[data-stale="true"\][^{]*\{\s*--rating-ink:var\(--rating-3\);\s*--rating-bg:var\(--rating-3-bg\)/);
   assert.match(css,/\.cleanup-rating-segment\[data-active="true"\]\s*\{background:currentColor;border-color:currentColor\}/);

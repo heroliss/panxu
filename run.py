@@ -27,7 +27,7 @@ def main():
             try:
                 import webview
                 webview.create_window('盘序', html='<div style="font:16px Segoe UI,Microsoft YaHei;padding:36px;line-height:2">'
-                                      '<h2>盘序已经打开</h2>' + escape(str(exc)) + '</div>', width=520, height=230)
+                                      '<h2>盘序已经打开</h2>' + escape(str(exc)) + '</div>', width=520, height=230, text_select=True)
                 webview.start(gui='edgechromium' if os.name == 'nt' else None)
             except ImportError:
                 pass
@@ -52,7 +52,7 @@ def main():
         else:
             try:
                 import webview
-                webview.create_window('盘序', url, width=1420, height=920, min_size=(960, 680))
+                webview.create_window('盘序', url, width=1420, height=920, min_size=(960, 680), text_select=True)
                 webview.start(gui='edgechromium' if os.name == 'nt' else None)
             except ImportError:
                 webbrowser.open(url)

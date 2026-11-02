@@ -1,5 +1,47 @@
 'use strict';
 
+// Text can also be a navigation target or a label. A drag on that same
+// target must finish selecting text, without activating its click/default.
+// Existing selections elsewhere and keyboard activations remain untouched.
+window.PanxuTextSelection = (() => {
+  const installed=new WeakSet();
+  function snapshot(selection) {
+    if(!selection || selection.isCollapsed || !selection.toString())return null;
+    return {anchor:selection.anchorNode,anchorOffset:selection.anchorOffset,
+      focus:selection.focusNode,focusOffset:selection.focusOffset};
+  }
+  function same(left,right) {
+    return Boolean(left&&right&&left.anchor===right.anchor&&left.anchorOffset===right.anchorOffset&&
+      left.focus===right.focus&&left.focusOffset===right.focusOffset);
+  }
+  function target(event) {
+    const element=event.target?.closest?event.target:event.target?.parentElement;
+    if(element?.closest?.('input,textarea,select,option'))return null;
+    return element?.closest?.('button.file-name-button,label,summary') || null;
+  }
+  function install(doc) {
+    if(!doc?.addEventListener || installed.has(doc))return;
+    installed.add(doc);
+    let gesture=null;
+    const current=()=>snapshot(doc.getSelection?.());
+    doc.addEventListener('pointerdown',event=>{
+      const control=event.button===0?target(event):null;
+      gesture=control?{control,before:current()}:null;
+    },true);
+    doc.addEventListener('pointercancel',()=>{gesture=null;},true);
+    doc.addEventListener('click',event=>{
+      const active=gesture;gesture=null;
+      if(!active || event.detail===0 || target(event)!==active.control)return;
+      const selected=current();
+      if(!selected || !(active.control.contains?.(selected.anchor)||active.control.contains?.(selected.focus)))return;
+      if(same(active.before,selected))return;
+      event.preventDefault();event.stopImmediatePropagation();
+    },true);
+  }
+  install(typeof document==='undefined'?null:document);
+  return {install};
+})();
+
 // Shared, pure action wording. It describes intent without granting permission.
 window.PanxuActionCopy = (() => {
   const names = {disable_startup:'禁用开机启动', stop_service:'停止服务', stop_process:'结束进程', uninstall:'卸载软件'};
