@@ -13,7 +13,7 @@ function row(id,relative,rating=4,kind='file',state='explicit'){
 }
 const parent=row('parent','P',5,'directory'),folder=row('folder','P/D',2,'directory'),leaf=row('leaf','P/D/F',1),high=row('high','P/G',4),neutral=row('neutral','P/N',3),skip=row('skip','P/U',null,'file','skipped');
 
-async function fixture({auto=[high],autoFour=true,rows=[parent,folder,leaf,high,neutral,skip],selectionHasMore=false,planRows=[high],scopeKind='filesystem',intercept}={}){
+async function fixture({auto=[high],autoFour=true,rows=[parent,folder,leaf,high,neutral,skip],selectionHasMore=false,planRows=[high],scopeKind='filesystem',status='completed',intercept}={}){
   let root,timerId=0;const timers=new Map(),calls=[],events=[],preferences=[];
   class Element{
     constructor(tag){this.tag=tag;this.children=[];this.className='';this.dataset={};this.attrs={};this.parent=null;this._text='';this.open=false;this.handlers=new Map();this.disabled=false;}
@@ -22,6 +22,7 @@ async function fixture({auto=[high],autoFour=true,rows=[parent,folder,leaf,high,
     get classList(){return {add:token=>{this.className+=' '+token;}};}
     append(...children){for(const child of children){child.parent=this;this.children.push(child);}}
     appendChild(child){this.append(child);return child;}
+    insertBefore(child,before){child.remove();const index=this.children.indexOf(before);child.parent=this;if(index<0)this.children.push(child);else this.children.splice(index,0,child);return child;}
     replaceChildren(...children){this.children.forEach(child=>child.parent=null);this.children=[];this._text='';this.append(...children);}
     remove(){if(this.parent)this.parent.children=this.parent.children.filter(child=>child!==this);this.parent=null;}
     setAttribute(key,value){this.attrs[key]=String(value);}
@@ -38,8 +39,8 @@ async function fixture({auto=[high],autoFour=true,rows=[parent,folder,leaf,high,
   root=new Element('main');const window={},document={createElement:tag=>new Element(tag),createElementNS:(_ns,tag)=>new Element(tag),getElementById:id=>root.all().find(item=>item.id===id),querySelector:selector=>root.querySelector(selector)};
   const environment={window,document,URLSearchParams,AbortController,setTimeout:(run,delay)=>{timers.set(++timerId,{run,delay});return timerId;},clearTimeout:id=>timers.delete(id)};
   runInNewContext(tasks,environment);runInNewContext(source,environment);const subject=window.PanxuCleanupReview;
-  let currentRows=rows,execution=null,controlNext=null,pollOverride=null;
-  const analysis={id:'analysis-one',status:'completed',scope_kind:scopeKind,...(scopeKind==='applications'?{analysis:{section:'background'}}:{}),summary:'测试分析结论',briefing:{highlights:['测试重点']},last_public_reply:{text:'原分析完整正文'}};
+  let currentRows=rows,execution=null,controlNext=null,pollOverride=null,selectionRevision='s1',selectionVersion=1;
+  const analysis={id:'analysis-one',status,scope_kind:scopeKind,...(scopeKind==='applications'?{analysis:{section:'background'}}:{}),summary:'测试分析结论',briefing:{highlights:['测试重点']},last_public_reply:{text:'原分析完整正文'}};
   const meta=item=>({id:item.id,name:item.name,path:item.path,signature:item.signature,kind:item.kind,action:item.action,assessment:item.assessment,category:item.assessment.rating===null?'skipped':String(item.assessment.rating)});
   const entries=planRows.map(item=>({...item,action:item.action || 'delete',impact:item.impact || item.assessment?.impact,personal_choice_required:true,default_selected:false}));
   const prepared={task:{id:'host-batch',cleanup_source_task_id:analysis.id,scope_kind:scopeKind,status:'awaiting_review',plan:{version:2,items:entries}},plan:{version:2,items:entries},picked_ids:entries.map(item=>item.id),selection:{counts:{returned:entries.length},has_more:false}};
@@ -60,13 +61,13 @@ async function fixture({auto=[high],autoFour=true,rows=[parent,folder,leaf,high,
     const replacement=await intercept?.(path,payload,calls);if(replacement!==undefined)return replacement;
     if(path.startsWith('/api/files?')){
       const url=new URL(path,'http://fixture'),values=filtered({...Object.fromEntries(url.searchParams),category:url.searchParams.get('rating') || 'all'});
-      const offset=Number(url.searchParams.get('offset'));return {revision:'r1',selection_revision:'s1',offset,total:values.length,items:values.slice(offset,offset+50),has_more:offset+50<values.length,breadcrumbs:[]};
+      const offset=Number(url.searchParams.get('offset'));return {revision:'r1',selection_revision:selectionRevision,offset,total:values.length,items:values.slice(offset,offset+50),has_more:offset+50<values.length,breadcrumbs:[]};
     }
     if(path==='/api/assessments/select'){
       const pool=payload.kind&&payload.kind!=='all'?currentRows.filter(item=>item.kind===payload.kind):currentRows;
       const values=payload.mode==='automatic'?auto:payload.representation==='rows'?filtered(payload).filter(item=>item.can_logical_select!==false&&item.risk!=='protected'):payload.category==='all'?(scopeKind==='applications'?pool:[parent]):pool.filter(item=>String(item.assessment.rating)===payload.category);
       const offset=Number(payload.cursor || 0),chosen=values.slice(offset,offset+payload.limit),more=selectionHasMore||offset+payload.limit<values.length;
-      return {revision:'r1',selection_revision:'s1',items:chosen.map(meta),ids:chosen.map(item=>item.id),snapshots:Object.fromEntries(chosen.map(item=>[item.id,item.signature])),has_more:more,requires_batches:more,...(!selectionHasMore&&more?{next_cursor:String(offset+payload.limit)}:{}),counts:{returned:chosen.length,total_targets:values.length}};
+      return {revision:'r1',selection_revision:selectionRevision,items:chosen.map(meta),ids:chosen.map(item=>item.id),snapshots:Object.fromEntries(chosen.map(item=>[item.id,item.signature])),has_more:more,requires_batches:more,...(!selectionHasMore&&more?{next_cursor:String(offset+payload.limit)}:{}),counts:{returned:chosen.length,total_targets:values.length}};
     }
     if(path==='/api/assessments/plan')return prepared;
     if(path==='/api/tasks/host-batch/approve'){
@@ -90,7 +91,7 @@ async function fixture({auto=[high],autoFour=true,rows=[parent,folder,leaf,high,
   const helpers={task:analysis,api,bytes:n=>n+' B',autoSelectFour:autoFour,saveAutoSelectFour:async value=>preferences.push(value),showItem:item=>events.push(['show',item.id]),onSource:value=>events.push(['source',value.id]),acceptTask(value){helpers.task=value;},redraw(){root.replaceChildren();subject.render(root,helpers);}};
   let navigation=null,taskHelpers=null;
   subject.render(root,helpers);await flush();await flush();
-  return {root,subject,helpers,environment,calls,events,preferences,timers,setRows(value){currentRows=value;},
+  return {root,subject,helpers,environment,calls,events,preferences,timers,setRows(value){currentRows=value;selectionRevision='s'+(++selectionVersion);},setAuto(value){auto=value;},
     async activateTaskUI(){
       const ui=window.PanxuTasks;taskHelpers={...helpers,heading(title,subtitle){const header=new Element('header');header.append(Object.assign(new Element('h1'),{textContent:title}),Object.assign(new Element('p'),{textContent:subtitle || ''}));return header;},disks:[],defaultPath:'E:/fixture',isActive:()=>true,refreshCatalog:async()=>{},setContextBack(label,run){navigation=label?{label,run}:null;},openFiles:()=>events.push('files'),openDuplicates:()=>events.push('duplicates'),redraw(){root.replaceChildren();ui.render(root,taskHelpers);}};
       ui.accept(helpers.task);taskHelpers.redraw();await flush();await flush();return ui;
@@ -396,4 +397,84 @@ test('a superseded task-list page cannot reveal over a newer filter',async()=>{
  const f=await fixture({rows,auto:[],intercept(path){if(path.startsWith('/api/files?')&&new URL(path,'http://fixture').searchParams.get('offset')==='50')return pending;}});
  await f.button('下一页').fire('click');await f.filter('5');finish({revision:'r1',selection_revision:'s1',offset:50,total:rows.length,items:rows.slice(50),has_more:false});await flush();await flush();
  assert.equal(f.events.some(event=>Array.isArray(event)&&event[0]==='list-reveal'),false);assert.equal(f.check('page-50'),undefined);
+});
+
+
+test('an investigating review starts on all selected objects and live advice updates the existing row and controls',async()=>{
+ const pending={...row('app-a','app-a',null,'startup','unanalysed'),action:'disable_startup',actions:['disable_startup']},other={...row('app-b','app-b',null,'startup','unanalysed'),action:'disable_startup',actions:['disable_startup']};
+ const f=await fixture({rows:[pending,other],auto:[],scopeKind:'applications',status:'investigating'});
+ assert.equal(new URL(f.calls[0].path,'http://fixture').searchParams.get('view'),'all');
+ const check=f.check('app-a'),otherCheck=f.check('app-b'),name=f.root.all().find(node=>node.tag==='button'&&node.textContent==='app-a'),search=f.root.all().find(node=>node.tag==='input'&&node.type==='search');
+ check.focus({preventScroll:true});const focused=f.environment.document.activeElement,reveals=f.events.filter(event=>event[0]==='list-reveal').length;
+ const advised={...pending,assessment:{state:'explicit',rating:4,purpose:'New owned purpose',reason:'New owned reason',impact:'New owned effect'}};f.setRows([advised,other]);f.setAuto([advised]);
+ const changed=await f.subject.updateTask({...f.helpers.task,advice_revision:1,advice_total:1});await flush();
+ assert.equal(changed,true);assert.equal(f.check('app-a'),check);assert.equal(f.check('app-b'),otherCheck);assert.equal(f.root.all().find(node=>node.tag==='button'&&node.textContent==='app-a'),name);assert.equal(f.root.all().find(node=>node.tag==='input'&&node.type==='search'),search);
+ assert.equal(f.environment.document.activeElement,focused);assert.match(f.root.textContent,/New owned reason/);assert.equal(check.checked,true);assert.equal(f.check('app-b').checked,false);assert.equal(f.events.filter(event=>event[0]==='list-reveal').length,reveals);
+});
+
+test('new high advice is preselected once and a manual cancellation wins over subsequent model updates',async()=>{
+ const a=row('live-a','live-a',null,'file','unanalysed'),b=row('live-b','live-b',null,'file','unanalysed');const f=await fixture({rows:[a,b],auto:[],status:'investigating'});
+ const first={...a,assessment:{...a.assessment,state:'explicit',rating:4}};f.setRows([first,b]);f.setAuto([first]);await f.subject.updateTask({...f.helpers.task,advice_revision:1,advice_total:1});await flush();assert.equal(f.check(a.id).checked,true);
+ await f.pick(a.id,false);const second={...b,assessment:{...b.assessment,state:'explicit',rating:5}};f.setRows([first,second]);f.setAuto([first,second]);await f.subject.updateTask({...f.helpers.task,advice_revision:2,advice_total:2});await flush();assert.equal(f.check(a.id).checked,false);assert.equal(f.check(b.id).checked,true);
+ const automatic=f.calls.filter(call=>call.payload?.mode==='automatic').length;await f.subject.updateTask({...f.helpers.task,advice_revision:2,advice_total:2});await flush();assert.equal(f.calls.filter(call=>call.payload?.mode==='automatic').length,automatic);assert.equal(f.check(a.id).checked,false);
+});
+
+test('live parent recommendations preserve explicit child exceptions and do not override an excluded ancestor',async()=>{
+ const f=await fixture({rows:[parent,folder,leaf,high],auto:[],status:'investigating'});await f.pick('folder',false);f.setRows([parent,folder,leaf,high]);f.setAuto([parent,high]);await f.subject.updateTask({...f.helpers.task,advice_revision:1,advice_total:4});await flush();
+ assert.equal(f.check('parent').indeterminate,true);assert.equal(f.check('folder').checked,false);assert.equal(f.check('leaf').checked,false);assert.equal(f.check('high').checked,true);
+ await f.pick('parent',false);f.setAuto([parent,high]);await f.subject.updateTask({...f.helpers.task,advice_revision:2,advice_total:4});await flush();assert.equal(f.check('parent').checked,false);assert.equal(f.check('high').checked,false);assert.equal(f.check('leaf').checked,false);
+});
+
+test('a withdrawn automatic recommendation is removed while a deliberate user choice is retained',async()=>{
+ const a=row('auto-a','auto-a',4),b=row('manual-b','manual-b',4),f=await fixture({rows:[a,b],auto:[a],status:'investigating'});await f.pick(b.id,true);
+ const lowA={...a,assessment:{...a.assessment,rating:1}},lowB={...b,assessment:{...b.assessment,rating:1}};f.setRows([lowA,lowB]);f.setAuto([]);await f.subject.updateTask({...f.helpers.task,advice_revision:1,advice_total:2});await flush();
+ assert.equal(f.check(a.id).checked,false);assert.equal(f.check(b.id).checked,true);
+});
+
+test('same-count revised advice refreshes in place and unrelated task snapshots cannot touch the workspace',async()=>{
+ const first=row('same','same',4),f=await fixture({rows:[first],auto:[],status:'investigating'});const check=f.check('same');
+ const next={...first,assessment:{...first.assessment,rating:1,reason:'Revised exact-count reason'}};f.setRows([next]);const before=f.calls.length;
+ assert.equal(await f.subject.updateTask({id:'foreign-task',status:'investigating',advice_revision:20}),false);assert.equal(f.calls.length,before);
+ await f.subject.updateTask({...f.helpers.task,advice_revision:8,advice_total:1});await flush();assert.equal(f.check('same'),check);assert.match(f.root.textContent,/Revised exact-count reason/);
+});
+
+test('live refresh keeps query, kind, score, page and paging controls without scrolling the reader',async()=>{
+ const rows=Array.from({length:75},(_,i)=>({...row('page-'+i,'page-'+i,4,'startup'),action:'disable_startup',actions:['disable_startup']}));
+ const f=await fixture({rows,auto:[],scopeKind:'applications',status:'investigating'});await f.filter('4');
+ const kind=f.root.all().find(node=>node.tag==='select'&&node.attrs['aria-label']==='筛选项目类型');kind.value='startup';await kind.fire('change');await flush();
+ const search=f.root.all().find(node=>node.tag==='input'&&node.type==='search');search.value='page-';await search.fire('change');await flush();
+ await f.button('下一页').fire('click');await flush();const pagerButton=f.button('上一页'),current=f.check('page-50');pagerButton.focus({preventScroll:true});const revealCount=f.events.filter(event=>event[0]==='list-reveal').length;
+ f.setRows(rows.map((entry,i)=>i===51?{...entry,assessment:{...entry.assessment,reason:'Updated page51 reason'}}:entry));await f.subject.updateTask({...f.helpers.task,advice_revision:1,advice_total:75});await flush();
+ const query=new URL(f.calls.filter(call=>call.path.startsWith('/api/files?')).at(-1).path,'http://fixture').searchParams;assert.equal(query.get('offset'),'50');assert.equal(query.get('rating'),'4');assert.equal(query.get('kind'),'startup');assert.equal(query.get('query'),'page-');assert.equal(query.get('view'),'all');
+ assert.equal(f.check('page-50'),current);assert.equal(f.button('上一页'),pagerButton);assert.equal(f.environment.document.activeElement,pagerButton);assert.equal(f.events.filter(event=>event[0]==='list-reveal').length,revealCount);assert.match(f.root.textContent,/Updated page51 reason/);
+});
+
+test('an in-flight live read keeps prior rows usable until the new advice snapshot arrives',async()=>{
+ let finish,hold=false;const pending=new Promise(resolve=>{finish=resolve;}),item=row('loading','loading',3),f=await fixture({rows:[item],auto:[],status:'investigating',intercept(path){if(hold&&path.startsWith('/api/files?'))return pending;}});
+ const check=f.check(item.id);check.focus({preventScroll:true});hold=true;const updating=f.subject.updateTask({...f.helpers.task,advice_revision:1,advice_total:1});await flush();assert.equal(f.check(item.id),check);assert.equal(check.disabled,false);assert.equal(f.environment.document.activeElement,check);
+ finish({revision:'r1',selection_revision:'s2',offset:0,total:1,items:[{...item,assessment:{...item.assessment,reason:'Arrived after pending read'}}],has_more:false,breadcrumbs:[]});await updating;await flush();assert.equal(f.check(item.id),check);assert.match(f.root.textContent,/Arrived after pending read/);
+});
+
+test('live updates from an execution child retain the original source and do not replace the analysis list',async()=>{
+ const f=await fixture({rows:[high],auto:[],status:'investigating'}),check=f.check(high.id),before=f.calls.length;
+ assert.equal(await f.subject.updateTask({id:'execution-child',cleanup_source_task_id:'analysis-one',status:'executing',execution:{status:'running',plan_version:1,revision:1,items:[]}}),false);
+ assert.equal(f.calls.length,before);assert.equal(f.check(high.id),check);assert.equal(f.subject.sourceFor({id:'execution-child',cleanup_source_task_id:'analysis-one'}).id,'analysis-one');
+});
+
+
+test('late older task revisions and timestamps cannot roll back the live review source',async()=>{
+ const f=await fixture({rows:[high],auto:[],status:'investigating'}),newer={...f.helpers.task,advice_revision:2,advice_total:1,updated_at:'2026-11-03T00:02:00Z'};
+ await f.subject.updateTask(newer);await flush();const before=f.calls.length;
+ assert.equal(await f.subject.updateTask({...newer,advice_revision:1,updated_at:'2026-11-03T00:03:00Z'}),false);
+ assert.equal(await f.subject.updateTask({...newer,advice_revision:3,updated_at:'2026-11-03T00:01:00Z'}),false);
+ assert.equal(f.calls.length,before);assert.equal(f.subject.sourceFor(newer).advice_revision,2);
+});
+
+test('a user filter superseding a live read is preserved and the newest advice is reseeded afterward',async()=>{
+ let finish,hold=false,held=false;const pending=new Promise(resolve=>{finish=resolve;}),item=row('queued','queued',null,'file','unanalysed');
+ const f=await fixture({rows:[item],auto:[],status:'investigating',intercept(path){if(hold&&!held&&path.startsWith('/api/files?')){held=true;return pending;}}});
+ const advised={...item,assessment:{...item.assessment,state:'explicit',rating:4,reason:'Newest advice after filter change'}};f.setRows([advised]);f.setAuto([advised]);hold=true;
+ const updating=f.subject.updateTask({...f.helpers.task,advice_revision:1,advice_total:1});await flush();await f.filter('4');
+ finish({revision:'r1',selection_revision:'s2',offset:0,total:1,items:[advised],has_more:false,breadcrumbs:[]});await updating;await flush();await flush();await flush();
+ const latest=new URL(f.calls.filter(call=>call.path.startsWith('/api/files?')).at(-1).path,'http://fixture');assert.equal(latest.searchParams.get('rating'),'4');assert.equal(f.check(item.id).checked,true);assert.match(f.root.textContent,/Newest advice after filter change/);assert.equal(f.calls.some(call=>call.path.endsWith('/approve')),false);
 });

@@ -1,6 +1,6 @@
 {
   "product": "盘序",
-  "version": "0.25.0",
+  "version": "0.26.0",
   "mode": "simulation",
   "root": "E:\\GPT-Projects\\win11-disk-assistant",
   "safety": "This build has NO real executor. All apply/undo/reset operations modify only SQLite simulation records. Never unlink/move/kill/control services/edit startup outside app-owned data.",
@@ -293,5 +293,25 @@
   },
   "page_chrome": "Sidebar and page heading identify the current page. No duplicate brand/page breadcrumb or top local-status. Context toolbar collapses when all controls are hidden; return and inspector close remain usable, including narrow layouts. Settings advanced proxy ID retained.",
   "system_review": "0.24: direct operation objects/results, distinct historical outcome/current effect/verification, bounded history rendering; source task identity survives execution child handoff; navigation generation and request sequence guard inventory reads; current file page usable before full-filter candidates; versioned candidate cache and prefix-index aggregate preserve selection semantics.",
-  "investigation_identity": "Read-only authorized directory metadata investigation is independent of delete protection; credential/user protections remain. Nested publication preserves ancestor ID but invalidates aggregate signature, size, derived subtree facts and whole-delete actions until fresh validation. Model tool action enums reflect task capabilities. New findings.needs_input=true requires ask_user instead; selection/confirmation is a host checklist, not a missing-information question. Specialist startup reconciliation uses durable event time and does not create fresh UI activity."
+  "investigation_identity": "Read-only authorized directory metadata investigation is independent of delete protection; credential/user protections remain. Nested publication preserves ancestor ID but invalidates aggregate signature, size, derived subtree facts and whole-delete actions until fresh validation. Model tool action enums reflect task capabilities. New findings.needs_input=true requires ask_user instead; selection/confirmation is a host checklist, not a missing-information question. Specialist startup reconciliation uses durable event time and does not create fresh UI activity.",
+  "analysis_progress": {
+    "scope": "read-only public task projection, full valid advice not public page cap",
+    "fields": [
+      "phase",
+      "target_count",
+      "saved_count",
+      "rated_count",
+      "skipped_count",
+      "no_advice_count",
+      "remaining_count",
+      "rating_counts",
+      "budget",
+      "stale_count"
+    ],
+    "unknown": "target_count and remaining_count remain null for open-ended tasks; legacy round usage is null without evidence",
+    "budget": "model_requests/tool_calls have used/limit; limits measure requests and calls, never number of analyzed objects; normal default6/12 remains bounded with soft early-save guidance",
+    "completion": "finite frozen application/tool analysis targets require score or explicit skip/no_advice before completed; file auto may retain sparse/inherited assessment",
+    "ui": "same task accept/poll pipeline broadcasts advice_revision updates; list-local progress/pause/resume; keyed list refresh preserves filters, focus, scroll and user selection",
+    "historical_tools": "Completed frozen-tool advice remains in saved/rated counts after cache TTL or restart; stale_count, row badges and prepare validation independently require a fresh check before execution."
+  }
 }

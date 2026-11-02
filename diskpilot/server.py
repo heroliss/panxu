@@ -947,7 +947,8 @@ def create_server(data_dir, port=0, *, developer_fixtures=False):
                     names.update({f'/{name}': (name, 'text/javascript; charset=utf-8' if name.endswith('.js') else 'text/css; charset=utf-8')
                                   for name in ('file-workspace.js', 'file-workspace.css', 'recovery.js', 'recovery.css',
                                                'user-tools.js', 'user-tools.css', 'orchestration-ui.js', 'orchestration-ui.css',
-                                               'history-presentation.js', 'history.css')})
+                                               'history-presentation.js', 'history.css', 'analysis-progress.js', 'analysis-progress.css',
+                                               'background-workspace.js', 'background-workspace.css')})
                 if parsed.path not in names:
                     raise AppError('页面不存在。', 'not_found', 404)
                 name, mime = names[parsed.path]

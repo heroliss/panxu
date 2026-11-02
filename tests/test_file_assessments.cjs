@@ -183,7 +183,7 @@ test('app file callbacks send distinct analysis/prepare requests and never appro
   assert.equal(wired.advanced.className,'file-advanced-controls');assert.ok(!f.root.children.includes(wired.advanced),'advanced controls are handed to the closed options section rather than the page');
   await wired.analyzeItems([entry]);assert.deepEqual(requests[0],{path:'/api/tasks/analyze',payload:{section:'files',depth:'auto',reanalyze:false,ids:['personal']}});
   const payload={ids:['personal'],snapshots:{personal:'sig-personal'},revision:'catalog-1',action:'delete'};await wired.prepare(payload);
-  assert.deepEqual(requests[1],{path:'/api/assessments/plan',payload});assert.equal(requests.length,2);assert.equal(f.window.PanxuTasks.currentTask().id,'host-picked');assert.deepEqual(views,['current','files']);
+  assert.deepEqual(requests[1],{path:'/api/assessments/plan',payload});assert.equal(requests.length,2);assert.equal(f.window.PanxuTasks.currentTask().id,'host-picked');assert.deepEqual(views,['files','files']);
 });
 
 test('My files selects a complete multi-page score filter and preserves other filters on deselect',async()=>{

@@ -269,6 +269,8 @@ input:not([type="checkbox"]):not([type="radio"]),select,textarea { background: v
 .file-tree-expand:hover { color: var(--blue); background: var(--surface-soft); }
 .tree-chevron { width: 7px; height: 7px; border-right: 1.6px solid currentColor; border-top: 1.6px solid currentColor; transform: rotate(45deg); margin-right: 3px; }
 .file-inheritance-note { color: var(--muted); font-size: var(--type-meta); }
+.cleanup-row-header > .file-location { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.cleanup-row-notes > small { display:block; line-height:1.75; }
 .file-page-panel { container-type: inline-size; display: grid; gap: 12px; background: transparent; border: 0; overflow: visible; }
 .file-page-panel > .file-page-actions { border: 1px solid var(--line); border-radius: var(--radius); }
 .paged-file-row { display: grid; grid-template-columns: 16px 104px minmax(0,1fr) minmax(54px,auto) auto; gap: 16px; min-height: 94px; padding: 16px 18px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); }

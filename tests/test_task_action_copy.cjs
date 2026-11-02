@@ -256,7 +256,7 @@ test('software table leads with the saved global rating and viewing it does not 
   const f=fixture(task([],{status:'paused',plan:null,advice:[older]}));
   const host=f.environment.document.createElement('div');f.root.append(host);const calls=[];
   const create=(tag,cls='',text)=>{const n=f.environment.document.createElement(tag);n.className=cls;if(text!==undefined)n.textContent=text;return n;};
-  Object.assign(f.environment,{state:{view:'software',limit:300},$:id=>id==='results-container'?host:null,
+  Object.assign(f.environment,{inventoryRatingControls:null,state:{view:'software',limit:300},$:id=>id==='results-container'?host:null,
     visibleItems:()=>[entry],sectionItems:()=>[entry],canAnalyze:()=>true,analysisIds:()=>new Set(),analysisSelected:()=>false,
     selectionBox:()=>create('input'),append:(parent,...children)=>{parent.append(...children);return parent;},el:create,
     button:(label,run,cls)=>{const b=create('button',cls,label);b.addEventListener('click',run);return b;},

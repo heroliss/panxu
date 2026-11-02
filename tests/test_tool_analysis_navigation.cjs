@@ -20,8 +20,8 @@ test('file and application task result destinations retain existing behavior',()
   assert.deepEqual(calls[0],['background',false]);assert.equal(calls.at(-1)[0],'files');
 });
 test('tool analysis callback preserves navigation if user leaves while creation is pending',async()=>{
-  let resolve;const wait=new Promise(r=>resolve=r),calls=[],root={};
-  const e={state:{view:'cleanup',navigationRevision:4},cleanupReference:null,cleanupReturn:null,names:{},returnFromCleanup(){},toast(){},setContextBack(){},openUserTools(){},
+  let resolve;const wait=new Promise(r=>resolve=r),calls=[],root={append(){}};
+  const e={state:{view:'cleanup',navigationRevision:4},cleanupReference:null,cleanupReturn:null,names:{},el:()=>({}),returnFromCleanup(){},toast(){},setContextBack(){},openUserTools(){},
     api:()=>wait,notify:m=>calls.push(['notice',m]),setView:(...args)=>calls.push(['view',...args]),
     window:{PanxuAppearance:{get:()=>({cleanup_auto_select_four:false})},PanxuTasks:{accept:t=>calls.push(['accepted',t.id])},PanxuCleanupTools:{mount:(host,context)=>{e.context=context;}}}};
   runInNewContext(extract('  function renderCleanupTools(','  let contextBack=')+';this.renderTools=renderCleanupTools;',e);

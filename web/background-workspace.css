@@ -1,0 +1,26 @@
+/* Shared assessment colors, compact inventory controls; no task lifecycle UI. */
+.inventory-rating-controls{margin:18px 0 14px;min-width:0}
+.inventory-rating-control-line{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap}
+.inventory-view-tabs{margin:0}
+.inventory-rating-filter{min-width:176px;max-width:100%;font-size:var(--type-label)}
+.inventory-rating-distribution{max-width:760px;margin-top:17px}
+.inventory-rating-bar{display:flex;gap:3px;height:9px;overflow:hidden;border-radius:5px;background:var(--surface-soft)}
+.inventory-rating-segment{flex-basis:0;min-width:0;background:var(--muted);transition:flex-grow .2s ease-out}
+.inventory-rating-segment[hidden]{display:none}
+.inventory-rating-segment[data-rating="1"]{background:var(--rating-1)}
+.inventory-rating-segment[data-rating="2"]{background:var(--rating-2)}
+.inventory-rating-segment[data-rating="3"]{background:var(--rating-3)}
+.inventory-rating-segment[data-rating="4"]{background:var(--rating-4)}
+.inventory-rating-segment[data-rating="5"]{background:var(--rating-5)}
+.inventory-rating-segment[data-rating="unrated"]{background:var(--line)}
+.inventory-rating-segment[data-rating="skipped"],.inventory-rating-segment[data-rating="no_advice"]{background:var(--muted);opacity:.55}
+.inventory-rating-legend{display:flex;gap:7px 18px;flex-wrap:wrap;margin-top:9px;font-size:var(--type-meta);line-height:1.7;color:var(--muted);user-select:text}
+.inventory-rating-key{display:inline-flex;align-items:center;gap:6px;white-space:nowrap;font-variant-numeric:tabular-nums}
+.inventory-rating-key:before{content:"";width:6px;height:6px;border-radius:2px;background:var(--rating-3)}
+.inventory-rating-key[data-rating="1"]:before{background:var(--rating-1)}
+.inventory-rating-key[data-rating="2"]:before{background:var(--rating-2)}
+.inventory-rating-key[data-rating="4"]:before{background:var(--rating-4)}
+.inventory-rating-key[data-rating="5"]:before{background:var(--rating-5)}
+.inventory-rating-status{margin:8px 0 0;min-height:1.7em;user-select:text}
+@media(max-width:650px){.inventory-rating-control-line{align-items:stretch}.inventory-rating-filter{flex:1 1 165px}.inventory-rating-distribution{margin-top:13px}.inventory-rating-legend{column-gap:13px}}
+@media(prefers-reduced-motion:reduce){.inventory-rating-segment{transition:none}}

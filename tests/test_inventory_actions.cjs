@@ -30,7 +30,7 @@ test('late prepared inventory action cannot navigate away from the user new page
 });
 test('explicit reanalysis flag is passed only on deliberate request; ordinary analysis leaves skip logic to host',async()=>{
   const calls=[],environment={state:{view:'background',query:'',risk:'all',subtype:'startup'},analysisDepth:'auto',analysisReanalyze:false,
-    analysisIds:()=>new Set(['selected']),task:async callback=>callback(),api:async(path,body)=>{calls.push([path,plain(body)]);return {task:{id:'analysis'}};},window:{PanxuTasks:{accept(){}}},setView(){}};
+    analysisIds:()=>new Set(['selected']),task:async callback=>callback(),api:async(path,body)=>{calls.push([path,plain(body)]);return {task:{id:'analysis'}};},window:{PanxuTasks:{accept(){}}},openTaskResults(){},setView(){}};
   runInNewContext(extract('  async function analyzeList(','  async function showAdvice(')+'this.run=analyzeList;',environment);
   await environment.run();await environment.run(entry('single'),null,true);
   assert.equal(calls[0][1].reanalyze,false);assert.equal(calls[1][1].reanalyze,true);assert.deepEqual(calls[0][1].ids,['selected']);
@@ -59,7 +59,7 @@ test('full filter selection over500 items is atomic and leaves previous picks in
 test('large inventory replaces fixed50-row pages instead of accumulating DOM and keeps off-page selections',async()=>{
   const host=new Element('section'),rows=Array.from({length:1200},(_,i)=>entry('app-'+i)),selected=new Set(['app-0']),reveals=[];
   const create=(tag,cls='',value)=>{const node=new Element(tag);node.className=cls;if(value!=null)node.textContent=value;return node;};
-  const environment={state:{view:'background',inventoryOffset:0,limit:50000},$:()=>host,visibleItems:()=>rows,sectionItems:()=>rows,canAnalyze:()=>true,
+  const environment={inventoryRatingControls:null,state:{view:'background',inventoryOffset:0,limit:50000},$:()=>host,visibleItems:()=>rows,sectionItems:()=>rows,canAnalyze:()=>true,
     analysisIds:()=>selected,analysisSelected:item=>selected.has(item.id),selectionBox:()=>create('input'),append:(parent,...children)=>{parent.append(...children);return parent;},el:create,
     button:(label,callback,cls)=>{const node=create('button',cls,label);node.addEventListener('click',callback);return node;},
     itemTitle:(_,node)=>node,kindNames:{startup:'启动项'},bytes:value=>value,itemSize:()=>0,api(){},showAdvice(){},showItem(){},analyzeList(){},

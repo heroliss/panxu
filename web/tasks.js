@@ -253,6 +253,12 @@ window.PanxuTasks = (() => {
   let livePreview = null;
   const completedReplies=new Map();
   const recentPublicState=new Map();
+  const taskListeners=new Set();
+  function subscribe(listener){
+    if(typeof listener!=='function')return ()=>{};
+    taskListeners.add(listener);return ()=>taskListeners.delete(listener);
+  }
+  function configure(helpers){context=helpers;if(busy())schedule();}
   function rememberPublicState(taskId,packet){
     const value=packet.stream,activity=packet.activity;
     const stream=value&&typeof value.text==='string'?{epoch:String(value.epoch || '').slice(0,120),turn_id:String(value.turn_id || '').slice(0,120),
@@ -477,6 +483,7 @@ window.PanxuTasks = (() => {
       }
     }
     if (busy()) schedule();
+    for(const listener of [...taskListeners]){try{listener(task);}catch(_){/* One detached view must not stop task polling. */}}
   }
   function acceptPickedPlan(response) {
     const task=response?.task,plan=response?.plan || task?.plan;
@@ -490,12 +497,14 @@ window.PanxuTasks = (() => {
   async function request(path, payload) {
     if (pending) return;
     pending = true; lastError = ''; redraw();
+    const originContext=context;
     try {
       const data = await context.api(path, payload);
       if (data.task) accept(data.task);
-      if(data.task&&path==='/api/tasks'){intent='';context.onTaskCreated?.(data.task);}
+      if(data.task&&path==='/api/tasks'){intent='';if(context===originContext&&originContext.isActive())originContext.onTaskCreated?.(data.task);}
+      else if(data.task?.status==='investigating'&&originContext.page==='task'&&context===originContext&&originContext.isActive()&&/^\/api\/tasks\/[^/]+\/(continue|answer|feedback)$/.test(path))originContext.openResults?.(data.task);
       feedbackDraft = '';
-      if (!busy()) await context.refreshCatalog();
+      if (!busy() && (current?.task_kind==='operation'||!['workspace','results'].includes(context.page))) await context.refreshCatalog();
     } catch (error) { lastError = error.message || '操作暂时未完成，请重试。'; }
     finally { pending = false; redraw(); }
   }
@@ -512,10 +521,10 @@ window.PanxuTasks = (() => {
       const data = await context.api('/api/tasks/' + id);
       if (current?.id !== id) return;
       accept(data.task);
-      if (!busy()) await context.refreshCatalog();
+      if (!busy() && (current?.task_kind==='operation'||!['workspace','results'].includes(context.page))) await context.refreshCatalog();
       if(current?.id!==id)return;
       if(['completed','awaiting_review'].includes(current.status)&&!current.question&&hasTaskResults(current))context.onTaskReady?.(current);
-      if (before !== current.status + ':' + current.summary) redraw();
+      if (before !== current.status + ':' + current.summary && !['workspace','results'].includes(context.page)) redraw();
     } catch (error) { lastError = '暂时连不上本机服务。重新打开程序后可以继续这个任务。'; redraw(); }
     if (busy()) schedule();
   }
@@ -1066,9 +1075,10 @@ window.PanxuTasks = (() => {
     const explanation=node('div','cleanup-task-explanation');add(root,explanation);
     function showContext(source){
       if(!summary.isConnected)return;summary.replaceChildren();explanation.replaceChildren();
-      if(source.summary)add(summary,node('p','task-summary-text',previewText(source.summary,160)));
+      if(source.summary&&!context.inlineProgress)add(summary,node('p','task-summary-text',previewText(source.summary,160)));
       const caution=Array.isArray(source.briefing?.cautions)?source.briefing.cautions.find(point=>typeof point==='string'&&point.trim()):null;
       if(caution)add(summary,add(node('div','cleanup-task-caution'),semanticTag('留意','warning'),node('p','',caution)));
+      summary.hidden=!summary.childNodes.length;
       stopLivePreview();renderLivePreview(explanation,source);
     }
     window.PanxuCleanupReview.render(list,{
@@ -1113,5 +1123,5 @@ window.PanxuTasks = (() => {
     add(root, panel);
   }
   function renderResultWorkspace(root,helpers){stopLivePreview();window.PanxuCleanupReview?.unmount();window.PanxuOrchestration?.unmount();context=helpers;if(!current)return;reviewView(root);if(busy())schedule();}
-  return {render,renderResultWorkspace, accept, acceptPickedPlan, renderHistory, adviceFor, adviceKnown, lookupAdvice, currentTask: () => current, streamTaskId: () => liveModelTask(current)?current.id:null, unmountLive:()=>{stopLivePreview();window.PanxuCleanupReview?.unmount();window.PanxuOrchestration?.unmount();}};
+  return {render,renderResultWorkspace, accept, subscribe, configure, acceptPickedPlan, renderHistory, adviceFor, adviceKnown, lookupAdvice, currentTask: () => current, streamTaskId: () => liveModelTask(current)?current.id:null, unmountLive:()=>{stopLivePreview();window.PanxuCleanupReview?.unmount();window.PanxuOrchestration?.unmount();}};
 })();

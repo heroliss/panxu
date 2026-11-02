@@ -108,6 +108,7 @@ window.PanxuCleanupTools = (() => {
   function renderCatalog(t){
     if(!alive(t))return;t.root.replaceChildren();t.rowViews=new Map();
     heading(t.root,'清理工具','先看本机检查与内置建议，勾选后清理；需要综合判断时再交给 AI 分析。');
+    t.context.renderAnalysisProgress?.(t.root);
     const top=node('div','cleanup-catalog-top'),tabs=node('div','cleanup-view-tabs');tabs.setAttribute('role','group');tabs.setAttribute('aria-label','工具视图');
     for(const [id,label] of [['recommended','建议工具'],['all','全部工具']]){const b=button(label,()=>{listing.view=id;renderCatalog(t);},'button small');b.setAttribute('aria-pressed',String(listing.view===id));tabs.append(b);}
     top.append(tabs);if(t.context.onOpenUserTools){const own=node('div','cleanup-own-tools');append(own,button('我的工具',()=>t.context.onOpenUserTools({}),'plain-button'),button('新建工具',()=>t.context.onOpenUserTools({new:true}),'plain-button'));top.append(own);}t.root.append(top);
@@ -477,5 +478,15 @@ window.PanxuCleanupTools = (() => {
     }catch(error){if(alive(t)&&route===t.route){t.error=error.message+` 已保存 ${saved} 项选择，尚未执行任何操作；需要补充参数时请单独查看方案。`;t.busy=false;renderExtraList(t,suggestions);}}
     finally{t.busy=false;}
   }
-  return {mount, open, unmount, createLink};
+  function updateTask(task){
+    const t=mounted;if(!t||!alive(t)||!t.catalogVisible||t.analysisTaskId!==task?.id)return false;
+    mergeTaskAssessments(task);
+    for(const row of listing.data?.items || []){
+      const key=refKey(toolRef(row));seedSelection(t,row);
+      if(listing.selected.has(key))listing.selected.set(key,toolRef(row));
+      const view=t.rowViews?.get(key);if(view)updateAssessmentRow(view,row);
+    }
+    updateCatalogProgress(t);updateCatalogSelection(t);return true;
+  }
+  return {mount, open, unmount, createLink, updateTask};
 })();

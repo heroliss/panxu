@@ -1,0 +1,36 @@
+/* List-local task state. Keep updates inside this region so the working list,
+   scroll position and user selection remain stable as advice arrives. */
+.analysis-progress{padding:18px 20px;margin:0 0 20px;border:1px solid var(--line);border-radius:12px;background:var(--panel);color:var(--ink);user-select:text}
+.analysis-progress-header{display:flex;align-items:center;gap:10px 20px;flex-wrap:wrap;min-height:36px}
+.analysis-progress-identity{display:flex;align-items:center;gap:10px;min-width:0}
+.analysis-progress-title{margin:0;font-size:var(--type-lead,1.125rem);font-weight:650;line-height:1.6}
+.analysis-progress-indicator{width:8px;height:8px;flex:none;border-radius:50%;background:var(--muted)}
+.analysis-progress[data-busy="true"] .analysis-progress-indicator{background:var(--accent)}
+.analysis-progress[data-phase="completed"] .analysis-progress-indicator{background:var(--green)}
+.analysis-progress-count{margin:0;font-size:var(--type-label,.875rem);line-height:1.7;font-variant-numeric:tabular-nums;color:var(--muted)}
+.analysis-progress-actions{display:flex;gap:10px;align-items:center;margin-left:auto;flex-wrap:wrap}
+.analysis-progress-actions button{min-width:86px;white-space:nowrap}
+.analysis-progress-meter{display:block;width:100%;height:8px;margin:12px 0 9px;accent-color:var(--accent);color:var(--accent);border:0;border-radius:4px;background:var(--surface-soft)}
+.analysis-progress-meter::-webkit-progress-bar{background:var(--surface-soft);border-radius:4px}
+.analysis-progress-meter::-webkit-progress-value{background:var(--accent);border-radius:4px}
+.analysis-progress-meter::-moz-progress-bar{background:var(--accent);border-radius:4px}
+.analysis-progress-note{margin:9px 0 0;min-height:1.7em;max-width:75ch;color:var(--muted);font-size:var(--type-label,.875rem);line-height:1.75;overflow-wrap:anywhere}
+.analysis-progress-distribution{margin-top:12px}
+.analysis-progress-scorebar{display:flex;width:100%;height:7px;gap:3px;border-radius:3px;overflow:hidden;background:var(--surface-soft)}
+.analysis-progress-score{min-width:3px;flex-basis:0;background:var(--rating-3);border-radius:2px}
+.analysis-progress-score[data-rating="1"]{background:var(--rating-1)}
+.analysis-progress-score[data-rating="2"]{background:var(--rating-2)}
+.analysis-progress-score[data-rating="4"]{background:var(--rating-4)}
+.analysis-progress-score[data-rating="5"]{background:var(--rating-5)}
+.analysis-progress-scorelegend{display:flex;gap:6px 16px;flex-wrap:wrap;margin-top:7px;color:var(--muted);font-size:var(--type-meta,.8125rem);line-height:1.7;font-variant-numeric:tabular-nums}
+.analysis-progress-score-label::before{content:"";display:inline-block;width:7px;height:7px;margin-right:6px;border-radius:2px;background:var(--rating-3)}
+.analysis-progress-score-label[data-rating="1"]::before{background:var(--rating-1)}
+.analysis-progress-score-label[data-rating="2"]::before{background:var(--rating-2)}
+.analysis-progress-score-label[data-rating="4"]::before{background:var(--rating-4)}
+.analysis-progress-score-label[data-rating="5"]::before{background:var(--rating-5)}
+.analysis-progress-budget{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:11px;color:var(--muted);font-size:var(--type-meta,.8125rem);line-height:1.7;font-variant-numeric:tabular-nums}
+.analysis-progress-budget-meter{width:130px;height:6px;accent-color:var(--muted)}
+.analysis-progress-error{margin:10px 0 0;max-width:75ch;overflow-wrap:anywhere;line-height:1.75}
+.analysis-progress [hidden],.analysis-progress[hidden]{display:none!important}
+@media(max-width:700px){.analysis-progress{padding:16px}.analysis-progress-header{gap:8px 14px}.analysis-progress-actions{margin-left:0}.analysis-progress-count{flex-basis:100%;order:3}.analysis-progress-actions{margin-left:auto}}
+@media(forced-colors:active){.analysis-progress-indicator,.analysis-progress-score,.analysis-progress-score-label::before{forced-color-adjust:none;background:CanvasText}.analysis-progress{border-color:CanvasText}}
