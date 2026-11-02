@@ -300,7 +300,9 @@ class SimulationState:
         if not isinstance(ids, list) or not ids or len(ids) > 500 or any(not isinstance(x, str) for x in ids):
             raise AppError('请选择 1–500 个项目。')
         with self.lock:
-            data = self.view(patterns)
+            # Internal reads stay on the locked snapshot; selected objects are
+            # copied below before they become a mutable review plan.
+            data = self.snapshot(patterns)
             catalog = {x['id']: x for x in data['items']}
             selected, warnings = [], []
             for key in dict.fromkeys(ids):
@@ -349,14 +351,20 @@ class SimulationState:
                 return None
             return dict(json.loads(row['payload']), id=row['id'], created_at=row['created_at'], status=row['status'], mode='simulation')
 
-    def execute(self, plan_id, patterns=(), system_validator=None, *, operation_id=None):
+    def execute(self, plan_id, patterns=(), system_validator=None, *, operation_id=None, include_view=True):
+        """Commit one journal transaction, optionally returning only its batch.
+
+        Public callers retain the independent full view. The action runtime
+        consumes just the receipt and must not copy the whole inventory for
+        every item in a batch; identity and transaction checks are shared.
+        """
         with self.lock:
             if operation_id is not None:
                 if not isinstance(operation_id, str) or not 1 <= len(operation_id) <= 80:
                     raise AppError('操作标识无效。')
                 previous = self.receipt(operation_id)
                 if previous:
-                    return dict(self.view(patterns), batch=previous)
+                    return dict(self.view(patterns) if include_view else {}, batch=previous)
             plan = self.plans.get(plan_id)
             if not plan:
                 raise AppError('计划不存在、已执行或已失效，请重新预览。', 'stale_plan', 409)
@@ -383,7 +391,7 @@ class SimulationState:
                     self.db.execute('INSERT INTO operation_receipts VALUES(?,?)', (operation_id, batch_id))
             self.plans.pop(plan_id, None)
             self.revision += 1
-            view = self.view(patterns)
+            view = self.view(patterns) if include_view else {}
             view['batch'] = dict(payload, id=batch_id, created_at=now, status='simulated', mode='simulation')
             return view
 

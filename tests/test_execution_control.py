@@ -464,8 +464,10 @@ class ExecutionControlTests(unittest.TestCase):
         self.assertEqual(len(selected), 500)
         self.key = self.harness.create_analysis({'ids': [i['id'] for i in selected]})['id']
         source_id = self.stage_from_source(selected)
-        self.start()
-        final = self.finish(timeout=30)
+        with patch.object(self.state, 'view', wraps=self.state.view) as full_views:
+            self.start()
+            final = self.finish(timeout=30)
+        self.assertEqual(full_views.call_count, 0, 'Per-item execution must not copy the full inventory.')
         self.assertEqual(final['last_result']['succeeded'], 500)
         source_context = self.harness._context(self.harness._get(source_id))
         receipt = source_context['last_cleanup_result']

@@ -29,11 +29,12 @@ class SimulationBackend:
         receipt = self.state.receipt(operation_id)
         if receipt:
             return receipt
-        current = next((x for x in self.state.view(patterns)['items'] if x['id'] == entry['id']), None)
+        current = next((x for x in self.state.snapshot(patterns)['items'] if x['id'] == entry['id']), None)
         if not current or current['signature'] != entry['signature']:
             raise AppError('内容在你确认前后有了变化，请重新检查。', 'target_changed', 409)
         plan = self.state.prepare([entry['id']], patterns, entry['action'])
-        return self.state.execute(plan['id'], patterns, self.validator, operation_id=operation_id)['batch']
+        return self.state.execute(plan['id'], patterns, self.validator,
+                                  operation_id=operation_id, include_view=False)['batch']
 
     def verify(self, entry, batch):
         with self.state.lock:
