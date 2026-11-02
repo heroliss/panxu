@@ -75,6 +75,20 @@ class PromptTextTests(unittest.TestCase):
         self.assertEqual(parse_host_data({'output': render_host_text(value)}), value)
         self.assertEqual(parse_host_data(value), value)
 
+    def test_task_projection_is_root_marked_and_preserves_nonconstant_unknown_false(self):
+        nested = dict(_prompt_projection='task-v2', goal='user-provided dictionary',
+                      simulation_only=True, available_items=0, scopes=[], scope_count=0)
+        ordinary = dict(preferences=nested, goal='ordinary data')
+        self.assertEqual(parse_host_data(render_host_text(ordinary)), ordinary)
+        marked = dict(_prompt_projection='task-v2', goal='host task', simulation_only=False,
+                      available_items=None, scope_count=False, scopes=[],
+                      scope_boundary='Unknown scope remains unknown', scope_kind='unrecognized-kind',
+                      preferences=nested, facts=dict(total=False, has_more=False),
+                      metadata=dict(unknown=None, count=0, complete=False))
+        expected = copy.deepcopy(marked)
+        expected.pop('_prompt_projection')
+        self.assertEqual(parse_host_data(render_host_text(marked)), expected)
+
 
 if __name__ == '__main__':
     unittest.main()

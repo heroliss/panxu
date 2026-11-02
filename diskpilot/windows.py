@@ -10,6 +10,9 @@ import subprocess
 import time
 from datetime import datetime, timezone
 
+from .usage_evidence import (command_executable_digest, enrich_usage_evidence,
+                             executable_digest, registered_executable_digest)
+
 
 def digest(value):
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
@@ -71,6 +74,8 @@ def startup_items():
                                       'command_digest': digest(str(value)), 'synthetic': False}, protected=protected,
                                      reason='这是注册的启动命令；是否被任务管理器禁用尚未确认，不能据此认定正在自动启动。')
                         item['signature'] = digest([key_id, str(value)])
+                        item['details'].update(_usage_executable_digest=command_executable_digest(value),
+                                               _usage_match_type='startup_executable_reference')
                         rows.append(item)
             except FileNotFoundError:
                 pass
@@ -89,6 +94,8 @@ def startup_items():
                              {'state': '位于启动文件夹', 'synthetic': False}, path=str(p),
                              reason='只读取快捷方式/文件名，不跟随或运行目标。')
                 item['signature'] = digest([str(p), st.st_size, st.st_mtime_ns])
+                item['details'].update(_usage_executable_digest=executable_digest(str(p)),
+                                       _usage_match_type='startup_executable_reference')
                 rows.append(item)
         except OSError:
             warnings.append('部分启动文件夹无法读取。')
@@ -144,6 +151,8 @@ def process_items():
                          {'pid': pid, 'create_time': data.get('create_time'), 'memory_bytes': memory.rss if memory else 0,
                           'state': '正在运行', 'synthetic': False}, path=exe or f'进程 / PID {pid}', protected=protected,
                          reason='只读工作集快照。占用高不表示无用；没有采集命令行、环境变量或进程内容。')
+            item['details'].update(_usage_executable_digest=executable_digest(exe),
+                                   _usage_match_type='process_executable_reference')
             rows.append(item)
         except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
             continue
@@ -182,6 +191,8 @@ def software_items():
                                 details = {'version': version, 'scope': label, 'has_uninstaller': uninstall_present,
                                            'estimated_install_bytes': int(get('EstimatedSize', 0) or 0) * 1024,
                                            'state': '已注册安装', 'usage': '使用情况未知', 'synthetic': False}
+                                details.update(_usage_executable_digest=registered_executable_digest(get('DisplayIcon')),
+                                               _usage_match_type='registered_executable_reference')
                                 item = _item('software', json.dumps(identity), name, publisher or '发布者未知', '已安装软件', 'uninstall', details,
                                              path='已安装软件 / ' + label + ' / ' + name, protected=protected,
                                              reason='按桌面卸载注册信息采集，大小是安装器估计；没有读取卸载命令、账号信息或用户文件。')
@@ -198,7 +209,7 @@ def software_items():
     return rows[:500], warnings
 
 
-def inventory(section):
+def inventory(section, *, usage_reader=None):
     if section == 'software':
         items, warnings = software_items()
     else:
@@ -208,7 +219,11 @@ def inventory(section):
             items.extend(new_items)
             warnings.extend(notes)
         warnings.append('未枚举计划任务、驱动和所有自启动机制；本清单不是完整系统启动审计。')
-    return dict(items=items, warnings=warnings, summary={'source': section, 'count': len(items), 'read_only': True})
+    usage = enrich_usage_evidence(items, reader=usage_reader)
+    if usage['source_status'] not in ('available', 'not_queried') or usage['partial']:
+        warnings.append('当前用户的部分图形界面启动线索不可用或未完整读取；无记录不代表没有使用。')
+    return dict(items=items, warnings=warnings, summary={'source': section, 'count': len(items), 'read_only': True,
+                                                      'usage_evidence': usage})
 
 
 def validate_system_items(items):

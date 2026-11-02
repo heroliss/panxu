@@ -436,5 +436,83 @@ class AssessmentTests(unittest.TestCase):
         self.assertTrue((self.scope / 'a.txt').exists())
 
 
+    def test_impact_rating_is_independent_and_durable_without_changing_eligibility(self):
+        task = self.task(self.child)
+        baseline = None
+        for score in range(1, 6):
+            row = dict(id=self.child['id'], conclusion='review', cleanup_rating=4,
+                       impact_rating=score, purpose='资料副本', reason='按实际用途判断', impact='操作后需要重新取得副本')
+            self.harness.tool(task['id'], 'record_advice', {'items': [row]}, cancel=threading.Event(), provenance=self.host)
+            value = self.resolved()[self.child['id']]
+            self.assertEqual(value['impact_rating'], score)
+            decision = (value['rating'], value['state'], value['blocked_reasons'], value.get('eligible_direct'))
+            baseline = decision if baseline is None else baseline
+            self.assertEqual(decision, baseline)
+            reopened = TaskHarness(self.state, self.assistant)
+            self.assertEqual(reopened.public(task['id'])['advice'][0]['impact_rating'], score)
+
+    def test_invalid_impact_ratings_reject_whole_advice_batch(self):
+        task = self.task(self.child, self.sibling)
+        base = dict(conclusion='review', cleanup_rating=4, purpose='资料', reason='用途已看', impact='影响待核对')
+        revision = self.harness.assessments.revision()
+        for invalid in (True, False, 0, 6, 1.5, '4', [], {}):
+            with self.subTest(value=invalid), self.assertRaises(AppError):
+                self.harness.tool(task['id'], 'record_advice', {'items': [
+                    dict(base, id=self.child['id'], impact_rating=1),
+                    dict(base, id=self.sibling['id'], impact_rating=invalid)]}, cancel=threading.Event())
+            self.assertEqual(self.harness.public(task['id'])['advice_total'], 0)
+            self.assertEqual(self.harness.assessments.revision(), revision)
+
+    def test_impact_unknown_legacy_inheritance_and_stale_are_not_fabricated(self):
+        task = self.task(self.parent)
+        self.harness.tool(task['id'], 'inspect_directory', {'id': self.parent['id']}, cancel=threading.Event())
+        self.record(task, self.parent, value=5, inheritance='subtree')
+        self.assertIsNone(self.resolved()[self.child['id']]['impact_rating'])
+        row = dict(id=self.parent['id'], conclusion='review', cleanup_rating=5, impact_rating=2,
+                   inheritance='subtree', purpose='缓存', reason='可以重建', impact='下次使用需重新生成')
+        self.harness.tool(task['id'], 'record_advice', {'items': [row]}, cancel=threading.Event())
+        inherited = self.resolved()[self.child['id']]
+        self.assertEqual((inherited['state'], inherited['impact_rating']), ('inherited', 2))
+        changed = copy.deepcopy(self.parent)
+        changed['signature'] = 'new-identity'
+        stale = self.harness.assessments.resolve([changed])[changed['id']]
+        self.assertTrue(stale['stale'])
+        self.assertIsNone(stale['impact_rating'])
+        self.assertEqual(self.harness.public(task['id'])['advice'][0]['impact_rating'], 2)
+
+    def test_frozen_plan_keeps_impact_score_and_legacy_plans_stay_unknown(self):
+        task = self.task(self.child)
+        row = dict(id=self.child['id'], action='delete', reason='用户选择', impact='会失去副本', impact_rating=4)
+        self.harness.tool(task['id'], 'propose_plan', {'summary': '待审阅', 'items': [row]}, cancel=threading.Event())
+        self.assertEqual(self.harness.public(task['id'])['plan']['items'][0]['impact_rating'], 4)
+        row.pop('impact_rating')
+        self.harness.tool(task['id'], 'propose_plan', {'summary': '仍待审阅', 'items': [row]}, cancel=threading.Event())
+        self.assertIsNone(self.harness.public(task['id'])['plan']['items'][0]['impact_rating'])
+        row['impact_rating'] = True
+        before = self.harness.public(task['id'])['plan']
+        with self.assertRaises(AppError):
+            self.harness.tool(task['id'], 'propose_plan', {'summary': '不能接受', 'items': [row]}, cancel=threading.Event())
+        self.assertEqual(self.harness.public(task['id'])['plan'], before)
+
+    def test_impact_rating_schema_is_optional_independent_ordinal(self):
+        specs = {entry['function']['name']: entry['function']['parameters'] for entry in tool_specs()}
+        for name in ('record_advice', 'propose_plan'):
+            item = specs[name]['properties']['items']['items']
+            self.assertEqual(item['properties']['impact_rating'], {'type': ['integer', 'null'], 'minimum': 1, 'maximum': 5})
+            self.assertNotIn('impact_rating', item['required'])
+
+    def test_user_selected_plan_preserves_same_source_impact_text_and_rating(self):
+        task = self.task(self.child)
+        self.harness.tool(task['id'], 'record_advice', {'items': [dict(id=self.child['id'],
+            conclusion='review', cleanup_rating=4, impact_rating=2,
+            purpose='副本', reason='来源可以重新取得', impact='需要重新下载这份副本')]}, cancel=threading.Event())
+        result = self.harness.prepare_assessment_plan([self.child['id']], source_task_id=task['id'])
+        entry = result['plan']['items'][0]
+        self.assertEqual((entry['impact'], entry['impact_rating']), ('需要重新下载这份副本', 2))
+        self.assertEqual(entry['assessment']['impact_rating'], 2)
+        self.assertEqual(self.harness.public(task['id'])['advice_total'], 1)
+        self.assertIsNone(self.harness.public(task['id'])['last_result'])
+
+
 if __name__ == '__main__':
     unittest.main()

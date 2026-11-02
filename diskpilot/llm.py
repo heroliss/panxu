@@ -64,11 +64,14 @@ _ASSESSMENT_GUIDANCE = """
 不凭名称、年龄、大小或内存打分。明确判断尽量给cleanup_rating：1保留、2偏保留、3分析后中立、
 4偏清理、5明显偏清理；分数不是概率、安全/证据等级或授权。未分析/跳过/不给建议/旧缺分用null，
 不能补3；reason说明主要取舍。个人内容由用户决定，高分不覆盖保留、保护或目录完整性。
+impact_rating是独立后果程度1–5（1很小、2轻微、3明显、4较大、5重大或难逆），未知填null；
+不是发生概率，不由清理倾向推算，不改变权限和选择。impact仍须说明实际后果。
 timestamps不是最后使用：created_at仅birthtime，modified_at仅本条目；目录scope=entry_only不代表子树。
 accessed_at可能延迟/停用/受其他软件影响；复制/还原可保留或重置时间。observed_at是采集时间，
 不是建议生成时间；null未知，不能推断久未使用。program_facts是有限瞬时/注册快照：
 进程启动不是文件创建/安装，工作集可含共享内存；启动注册不等于启用，服务状态不同于启动模式。
-没有最后使用遥测，未列出不证明未运行，安装/维护日期不代表使用日期。
+usage_evidence如提供，仅为指定用户/来源的部分启动记录，累计次数没有时间窗时不能算近期频率；
+无记录/不匹配/不可用都不是从未使用，安装/维护日期不代表使用日期。
 """
 _SYSTEM += _ASSESSMENT_GUIDANCE
 
@@ -857,6 +860,9 @@ class ModelAssistant:
                 if type(value) is int and 0 <= value <= 2 ** 63 - 1:
                     facts[field] = value
             if kind == 'process':
+                pid = details.get('pid')
+                if type(pid) is int and 0 <= pid <= 2 ** 32 - 1:
+                    facts['pid'] = pid
                 started = details.get('create_time')
                 try:
                     facts['process_started_at'] = (
@@ -867,9 +873,33 @@ class ModelAssistant:
             if kind == 'software':
                 if type(details.get('has_uninstaller')) is bool:
                     facts['has_uninstaller'] = details['has_uninstaller']
-                # We do not collect app usage telemetry. Installation records
-                # and process start times cannot fill a last-used field.
+                for field, value in (('version', details.get('version')), ('publisher', item.get('owner')),
+                                     ('scope', details.get('scope'))):
+                    if isinstance(value, str) and value:
+                        facts[field] = self._privacy_text(value, settings, key, 120)
+                # Registration and partial shell-launch records never establish
+                # complete application-wide usage or a recent usage frequency.
                 facts['usage'] = 'unknown'
+            usage = details.get('usage_evidence')
+            if (isinstance(usage, dict) and usage.get('source') == 'windows_userassist'
+                    and usage.get('coverage') == 'current_user_shell_launches'):
+                from .usage_evidence import MATCH_TYPES, REASONS
+                status = usage.get('status')
+                match_type = usage.get('match_type')
+                if status not in ('matched', 'partial', 'unknown') or (status != 'unknown' and match_type not in MATCH_TYPES):
+                    status = 'unknown'
+                count = usage.get('cumulative_launch_count')
+                compact = dict(source='windows_userassist', status=status, coverage='current_user_shell_launches',
+                    last_recorded_launch_at=self._timestamp(usage.get('last_recorded_launch_at')) if status != 'unknown' else None,
+                    cumulative_launch_count=count if status != 'unknown' and type(count) is int and 0 <= count <= 2 ** 32 - 1 else None)
+                if status != 'unknown':
+                    compact['match_type'] = match_type
+                reason = usage.get('reason')
+                if isinstance(reason, str) and reason in REASONS:
+                    compact['reason'] = reason
+                elif status == 'unknown':
+                    compact['reason'] = 'invalid_record'
+                facts['usage_evidence'] = compact
             result['program_facts'] = facts
         return result
 
@@ -892,7 +922,8 @@ class ModelAssistant:
         if detailed:
             for field in ("reason", "impact", "recommendation"):
                 result[field] = self._privacy_text(item.get(field, "未提供"), settings, key)
-            # Never pass details/signatures/owner/command lines or raw evidence:
+            # Never pass raw details/signatures/owner/commands or raw evidence;
+            # only the explicitly bounded software publisher above is allowed.
             # collectors may put credentials or private paths in those fields.
             evidence = item.get("evidence", [])
             result["evidence_count"] = len(evidence) if isinstance(evidence, list) else 0
@@ -986,10 +1017,11 @@ class ModelAssistant:
 本次是结构化建议模式，不提供任何工具。只输出一个 JSON 对象，结构严格为：
 {"recommendations":[{"id":"库存ID","recommend":true,"suggested_action":"允许动作或null",
 "reason":"不超过280字符的一句白话原因","impact":"不超过280字符的一句影响说明",
-"cleanup_rating":4}]}。
+"cleanup_rating":4,"impact_rating":2}]}。
 每个ID最多出现一次；不能加入范围外ID或其他字段。suggested_action只能是该项
 allowed_action或null，recommend为true时必须提供allowed_action。
 cleanup_rating可省略或为null；若提供必须是1–5整数，不能用true或小数。
+impact_rating可省略或为null；若提供必须是1–5整数，仅表达所述操作的后果程度。
 recommend为true却评分1或2明显矛盾；评分3不是未分析的默认值。
 personal_content为true时，只能帮助解释用途与去留影响，不能替用户决定或声称可以默认选择。
 不要根据名称、年龄、内存高就认定无用；对于后台和软件，仅有明确decision_evidence

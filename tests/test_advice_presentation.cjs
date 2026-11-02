@@ -44,16 +44,49 @@ test('actual dark and light rating tokens contrast with their real surfaces and 
   const luminance=color=>color.map(value=>value/255).map(value=>value<=.04045?value/12.92:((value+.055)/1.055)**2.4).reduce((sum,value,index)=>sum+value*[.2126,.7152,.0722][index],0);
   const contrast=(foreground,background)=>{const a=luminance(foreground),b=luminance(background);return (Math.max(a,b)+.05)/(Math.min(a,b)+.05);};
   for(const theme of ['dark','light']){
-    const colors=block(css,theme),surfaces=block(base,theme);assert.equal(new Set([1,2,3,4,5].map(level=>colors['--rating-'+level])).size,5);
-    for(let level=1;level<=5;level++)for(const background of [colors[`--rating-${level}-bg`],surfaces['--panel'],surfaces['--surface-soft'],surfaces['--canvas']])assert.ok(contrast(rgb(colors['--rating-'+level]),rgb(background))>=4.5,`${theme} score ${level} must remain readable`);
+    const colors=block(css,theme),surfaces={...block(base,theme),...colors};assert.equal(new Set([1,2,3,4,5].map(level=>colors['--rating-'+level])).size,5);
+    for(let level=1;level<=5;level++){
+      for(const background of [colors[`--rating-${level}-bg`],surfaces['--panel'],surfaces['--surface-soft'],surfaces['--canvas']])assert.ok(contrast(rgb(colors['--rating-'+level]),rgb(background))>=4.5,`${theme} score ${level} must remain readable`);
+      for(const ink of ['--ink','--muted'])for(const background of [colors[`--rating-${level}-bg`],colors[`--impact-${level}-bg`]])assert.ok(contrast(rgb(surfaces[ink]),rgb(background))>=4.5,`${theme} neutral explanation text on score and impact surface ${level}`);
+    }
     for(const name of ['--panel','--surface-soft'])assert.ok(contrast(rgb(surfaces['--border-strong']),rgb(surfaces[name]))>=3,`${theme} unfilled segment boundary`);
     assert.ok(contrast(rgb(surfaces['--amber']),rgb(surfaces['--warning-bg']))>=4.5);assert.ok(contrast(rgb(surfaces['--ink']),rgb(surfaces['--warning-bg']))>=4.5);
+    for(const [foreground,background] of [['--blue','--blue-tint'],['--green','--success-bg'],['--red','--danger-bg'],['--on-accent','--accent']])assert.ok(contrast(rgb(surfaces[foreground]),rgb(surfaces[background]))>=4.5,`${theme} semantic text remains readable`);
     const ratio=Number(css.match(/\[data-advice-part="reason"\][^{]*\{[^}]*var\(--surface-soft\) (\d+)%/)[1])/100;
     const reason=rgb(surfaces['--surface-soft']).map((value,index)=>value*ratio+rgb(surfaces['--panel'])[index]*(1-ratio));assert.ok(contrast(rgb(surfaces['--muted']),reason)>=4.5);
   }
   assert.match(css,/\[data-stale="true"\][^{]*\{\s*--rating-ink:var\(--rating-3\);\s*--rating-bg:var\(--rating-3-bg\)/);
   assert.match(css,/\.cleanup-rating-segment\[data-active="true"\]\s*\{background:currentColor;border-color:currentColor\}/);
   assert.match(css,/@media \(forced-colors: active\)[\s\S]*\.cleanup-rating-segment\s*\{[^}]*forced-color-adjust:none;[^}]*background:Canvas;[^}]*\}[\s\S]*\.cleanup-rating-segment\[data-active="true"\]\s*\{[^}]*background:CanvasText;/);
+  assert.match(css,/\[data-advice-part="suggestion"\]\s*\{[^}]*color:var\(--ink\)/);
+  assert.match(css,/\[data-advice-part="impact"\]\[data-impact-rating=""\],[^{]+\[data-impact-state="stale"\]\s*\{\s*background:var\(--surface-soft\)/);
+});
+
+test('impact levels are independent from cleanup inclination and only annotate the existing complete impact block',()=>{
+  const f=fixture(),full='完整影响说明，不应被截断或替换。'.repeat(60);
+  for(const [cleanup,impact] of [[1,5],[5,1],[3,4],[4,2]]){
+    const node=f.render({assessment:{state:'explicit',rating:cleanup,impact_rating:impact,impact:full}}),field=node.children.find(child=>child.dataset.advicePart==='impact');
+    assert.equal(node.dataset.rating,String(cleanup));assert.equal(field.dataset.impactRating,String(impact));assert.equal(field.dataset.impactState,'rated');assert.equal(field.children.length,2);assert.equal(field.children[0].textContent,'影响');assert.equal(field.children[1].textContent,full);assert.match(field.attrs['aria-label'],new RegExp(impact+'/5'));assert.ok(!field.textContent.includes('/5'));assert.ok(!field.children.some(child=>['input','button','meter','progress'].includes(child.tag)));
+  }
+});
+
+test('missing invalid or stale impact remains unknown without deriving a middle or cleanup-based level',()=>{
+  const f=fixture();
+  for(const impact of [undefined,null,0,6,'3',true,false,2.5,NaN,Infinity]){
+    const field=f.render({assessment:{state:'explicit',rating:5,impact_rating:impact,impact:'原有影响正文'}}).children[3];
+    assert.equal(field.dataset.impactRating,'');assert.equal(field.dataset.impactState,'unknown');assert.match(field.title,/尚未提供/);assert.equal(field.children[1].textContent,'原有影响正文');
+  }
+  const stale=f.render({assessment:{state:'inherited',rating:1,impact_rating:5,stale:true,impact:'之前的影响说明'}}).children[3];assert.equal(stale.dataset.impactRating,'');assert.equal(stale.dataset.impactState,'stale');assert.match(stale.attrs['aria-label'],/需要重新核对/);assert.equal(stale.children[1].textContent,'之前的影响说明');
+  const independent=f.render({assessment:{state:'explicit',rating:null,impact_rating:3,impact:'已明确给出的中等影响'}});assert.equal(independent.dataset.rating,'');assert.equal(independent.children[3].dataset.impactRating,'3');
+});
+
+test('frozen plan impact text and rating use the same source and missing plan rating cannot borrow older assessment risk',()=>{
+  const f=fixture(),record={kind:'service',action:'stop_service',impact:'冻结操作影响',impact_rating:2,assessment:{state:'explicit',rating:4,impact:'旧用途建议影响',impact_rating:5}};
+  const plan=f.render(record,{direct:true,suggestion:'停止服务，待你确认。'}).children[3];assert.equal(plan.children[1].textContent,'冻结操作影响');assert.equal(plan.dataset.impactRating,'2');
+  const old=f.render(record).children[3];assert.equal(old.children[1].textContent,'旧用途建议影响');assert.equal(old.dataset.impactRating,'5');
+  const missing=f.render({...record,impact_rating:undefined},{direct:true}).children[3];assert.equal(missing.children[1].textContent,'冻结操作影响');assert.equal(missing.dataset.impactRating,'');
+  const explicitUnknown=f.render({...record,assessment:{...record.assessment,impact_rating:null}}).children[3];assert.equal(explicitUnknown.dataset.impactRating,'');
+  const direct=f.render({kind:'file',cleanup_rating:5,impact_rating:1,impact:'直接记录的影响'},{direct:true}).children[3];assert.equal(direct.dataset.impactRating,'1');assert.equal(direct.children[1].textContent,'直接记录的影响');
 });
 
 test('missing score, skipped judgement, absent advice and raw local explanation remain distinct',()=>{

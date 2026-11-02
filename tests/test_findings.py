@@ -185,13 +185,13 @@ class FindingsTests(unittest.TestCase):
             self.present(needs_input=False, briefing={'coverage': ['全部完成']})
         self.assertEqual(self.harness.public(self.key)['status'], 'ready')
 
-    def test_smaller_initial_sample_preserves_frozen_targets_preferences_and_choices(self):
+    def test_on_demand_context_preserves_frozen_targets_preferences_and_choices(self):
         preferences = '请保留项目与个人资料。' * 80
         self.assistant.save_settings({'custom_instructions': preferences})
         self.harness.feedback(self.key, keep_ids=[self.files[10]['id']])
         context = self.harness._context(self.harness._get(self.key))
-        self.assertEqual(len(context['initial_objects']), 4)
-        self.assertEqual(context['initial_objects_omitted'], 8)
+        self.assertNotIn('initial_objects', context)
+        self.assertNotIn('initial_objects_omitted', context)
         self.assertEqual(context['available_items'], 12)
         self.assertEqual(context['preferences'], preferences)
         self.assertEqual(context['user_choices'][0]['id'], self.files[10]['id'])
@@ -220,7 +220,7 @@ class FindingsTests(unittest.TestCase):
         self.assertEqual(public['usage']['model_requests'], 0)
         self.assertIsNone(public['usage']['input_tokens'])
 
-    def test_initial_samples_use_only_frozen_targets_without_extra_collection(self):
+    def test_on_demand_context_does_not_sample_targets_or_collect_background(self):
         related = copy.deepcopy(self.files[0])
         related.update(id='related-software', name='Background software', kind='software',
                        path='installed-app/fixture', actions=['uninstall'], signature='software-fixture')
@@ -235,12 +235,12 @@ class FindingsTests(unittest.TestCase):
              patch('diskpilot.tasks._checked_root', side_effect=AssertionError('context must not collect')), \
              patch('os.scandir', side_effect=AssertionError('context must not enumerate')):
             context = self.harness._context(self.harness._get(self.key))
-        self.assertEqual([row['id'] for row in context['initial_objects']], chosen)
-        self.assertEqual(context['initial_objects_omitted'], 0)
+        self.assertNotIn('initial_objects', context)
+        self.assertNotIn('initial_objects_omitted', context)
         self.assertEqual(context['analysis']['target_count'], 2)
         self.assertEqual(context['scopes'], [])  # Selected files do not authorize parent traversal.
         self.assertEqual(context['volume_scope_count'], 1)
-        self.assertNotIn(related['id'], [row['id'] for row in context['initial_objects']])
+        self.assertEqual([row['id'] for row in self.tool('inspect_items', {'ids': chosen})['items']], chosen)
 
     def test_projection_preserves_nested_unknown_and_partial_metadata(self):
         item = copy.deepcopy(self.files[0])
@@ -249,7 +249,8 @@ class FindingsTests(unittest.TestCase):
         self.state.publish([item], 'unknown-time')
         self.key = self.harness.create_analysis({'ids': [item['id']]})['id']
         context = self.harness._context(self.harness._get(self.key))
-        sample = context['initial_objects'][0]
+        self.assertNotIn('initial_objects', context)
+        sample = self.tool('inspect_items', {'ids': [item['id']]})['items'][0]
         self.assertIn('created_at', sample['timestamps'])
         self.assertIsNone(sample['timestamps']['created_at'])
         self.assertIs(sample['complete'], False)

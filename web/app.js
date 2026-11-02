@@ -81,6 +81,7 @@ window.PanxuDeveloperView = (() => {
       if(Array.isArray(args.items)){extra.items=args.items.slice(0,12).map(item=>{
         const value=Object.fromEntries(['id','name','conclusion','purpose','reason','impact'].filter(key=>typeof item?.[key]==='string').map(key=>[key,clip(item[key],1200)]));
         if(Number.isInteger(item?.cleanup_rating)&&item.cleanup_rating>=1&&item.cleanup_rating<=5)value.cleanup_rating=item.cleanup_rating;
+        if(Object.hasOwn(item || {},'impact_rating'))value.impact_rating=Number.isInteger(item.impact_rating)&&item.impact_rating>=1&&item.impact_rating<=5?item.impact_rating:null;
         return value;
       });extra.omittedItems=Math.max(0,args.items.length-12);}
       if(name==='checkpoint_task')extra.steps=[...(Array.isArray(args.next_steps)?args.next_steps:[]),...(Array.isArray(args.unresolved)?args.unresolved:[])].filter(item=>typeof item==='string').slice(0,12).map(item=>clip(item,1200));
@@ -817,7 +818,7 @@ function initializePanxu() {
       finally{save.disabled=false;onlySave.disabled=false;form.setAttribute('aria-busy','false');}
     }
     form.addEventListener('submit',(event)=>{event.preventDefault();saveConnection(true);});
-    append(form,grid,note,advanced,el('p','field-help field-description','连接测试只发送固定测试数据，不发送文件清单。官方文档支持不代表当前账号已通过实测。'),append(el('div','form-actions'),save,onlySave),status); append(panel,form); append(root,panel);
+    append(form,grid,note,advanced,el('p','field-help field-description','连接测试只发送固定测试数据。正式分析按需提供所选对象的属性和可取得的部分应用启动记录；完整路径默认隐藏，不发送文件正文。官方文档支持不代表当前账号已通过实测。'),append(el('div','form-actions'),save,onlySave),status); append(panel,form); append(root,panel);
     renderOrganizingPreferences(root);
     renderAppearance(root);
     const preserve=el('section','panel simple-setting');append(preserve,el('h2','','保留的位置'),el('p','setting-intro','这些位置不会加入推荐处理。'));
@@ -1034,7 +1035,7 @@ function initializePanxu() {
     function showError(message){error.textContent=message;error.hidden=false;}
     const viewModel=window.PanxuDeveloperView;
     function included(entry){return ({skills:skills.input.checked,tools:tools.input.checked,conversation:conversation.input.checked})[viewModel.category(entry)];}
-    const labels={goal:'目标',scopes:'检查范围',name:'名称',id:'标识',summary:'摘要',briefing:'本轮说明',highlights:'本轮重点',cautions:'需要留意',coverage:'检查范围',cleanup_rating:'清理倾向',purpose:'用途',reason:'原因',impact:'影响',conclusion:'建议',tool:'工具',at:'时间',total:'总数',items:'条目',facts:'历史事实',observations:'历史观察',user_feedback:'用户补充',user_choices:'用户选择',preferences:'整理偏好',usage:'累计工作量',handoff:'交接',version:'版本',content:'指导正文',content_fingerprint:'内容指纹',read_at:'读取时间',sources:'来源',provider:'服务商',protocol:'协议',endpoint:'地址',model:'模型',input_tokens:'输入 token',output_tokens:'输出 token',prompt_tokens:'输入 token',completion_tokens:'输出 token'};
+    const labels={goal:'目标',scopes:'检查范围',name:'名称',id:'标识',summary:'摘要',briefing:'本轮说明',highlights:'本轮重点',cautions:'需要留意',coverage:'检查范围',cleanup_rating:'清理倾向',impact_rating:'影响程度',purpose:'用途',reason:'原因',impact:'影响',conclusion:'建议',tool:'工具',at:'时间',total:'总数',items:'条目',facts:'历史事实',observations:'历史观察',user_feedback:'用户补充',user_choices:'用户选择',preferences:'整理偏好',usage:'累计工作量',handoff:'交接',version:'版本',content:'指导正文',content_fingerprint:'内容指纹',read_at:'读取时间',sources:'来源',provider:'服务商',protocol:'协议',endpoint:'地址',model:'模型',input_tokens:'输入 token',output_tokens:'输出 token',prompt_tokens:'输入 token',completion_tokens:'输出 token'};
     function readableData(value,parent,depth=0){
       value=viewModel.clean(value);
       if(value===null||value===undefined){append(parent,el('p','muted','未提供'));return;}
@@ -1069,6 +1070,7 @@ function initializePanxu() {
           const advice=el('div','developer-public-advice');advice.dataset.purpose='recommendation';
           if(item.name||item.id)append(advice,el('strong','developer-advice-name',item.name || item.id));
           if(Number.isInteger(item.cleanup_rating))append(advice,window.PanxuAssessment.render(item,{direct:true,cls:'developer-advice-rating'}));
+          if(Object.hasOwn(item,'impact_rating'))append(advice,el('p','developer-note developer-impact-level',item.impact_rating===null?'影响程度：未提供':`影响程度：${item.impact_rating}/5（${({1:'很小',2:'轻微',3:'明显',4:'较大',5:'重大'})[item.impact_rating]}）`));
           for(const key of ['purpose','conclusion','reason','impact'])if(item[key]){
             const field=el('p','developer-text developer-advice-field');field.dataset.field=key;
             const value=el('span','developer-field-value',({keep:'建议保留',review:'需要确认',recommend:'建议处理'})[item[key]] || item[key]);

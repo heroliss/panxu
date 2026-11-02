@@ -21,7 +21,7 @@ from .scanner import _checked_root, _identity, _is_reparse
 
 
 CHECKED_AT = '2026-11-02'
-SKILL_VERSION = '1.2.0'
+SKILL_VERSION = '1.3.0'
 MAX_RESOURCE_BYTES = 32768
 MAX_OUTPUT_TOKENS = 8000
 _ASSET_DIR = Path(__file__).absolute().parent.parent / 'skills'
@@ -85,10 +85,10 @@ def _skill(ident, name, purpose, when, risk, readonly, sources, tags):
 
 
 _SKILLS = [
-    _skill('cleanup-assessment', '综合判断与清理倾向评分', '结合用户目标、用途、价值、重建成本和时间证据形成1–5倾向，区分未知与中立。',
+    _skill('cleanup-assessment', '综合判断与清理倾向评分', '结合用途、价值、重建成本和时间证据形成清理倾向，独立说明操作影响，区分未知与中立。',
            ['需要判断哪些内容更值得清理或保留', '结合时间、空间、重复和程序状态解释建议'], 'advisory_only', 'partial_metadata',
            ['stat_times', 'file_times', 'access_times', 'copy_times', 'install_registration'],
-           ['评分', '倾向', 'rating', 'cleanup_rating', '时间', '创建', '修改', '访问', '用途', '价值', '综合', '保留']),
+           ['评分', '倾向', 'rating', 'cleanup_rating', 'impact_rating', '影响', '时间', '创建', '修改', '访问', '用途', '价值', '综合', '保留']),
     _skill('application-caches', '应用与开发工具缓存', '区分可重建缓存、安装环境和个人数据，解释重新下载或生成的代价。',
            ['发现较大缓存目录', '考虑清理 uv、pip、npm 或图形缓存'], 'review', 'partial_metadata', ['uv', 'pip', 'npm', 'adobe'],
            ['缓存', 'cache', 'uv', 'pip', 'npm', 'NVIDIA', 'DXCache', 'D3DSCache']),

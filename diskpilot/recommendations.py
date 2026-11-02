@@ -100,7 +100,7 @@ def _advice(group, reason, impact, action=None, *, origin="rule", auto=False):
     return {"group": group, "title": dict(_GROUPS)[group], "reason": reason,
             "impact": impact, "auto_select": bool(auto and group == "recommended"),
             "suggested_action": action, "origin": origin, "needs_user_choice": group == "personal",
-            "cleanup_rating": None}
+            "cleanup_rating": None, "impact_rating": None}
 
 
 def _provenance(value=None):
@@ -245,10 +245,13 @@ def _validated_suggestions(value, items):
     seen, accepted = set(), []
     for row in value:
         expected = {"id", "recommend", "suggested_action", "reason", "impact"}
-        if not isinstance(row, dict) or not expected.issubset(row) or set(row) - expected - {'cleanup_rating'}:
+        if not isinstance(row, dict) or not expected.issubset(row) or set(row) - expected - {'cleanup_rating', 'impact_rating'}:
             raise ValueError("invalid_recommendations")
         rating = row.get('cleanup_rating')
         if rating is not None and (type(rating) is not int or not 1 <= rating <= 5):
+            raise ValueError("invalid_recommendations")
+        impact_rating = row.get('impact_rating')
+        if impact_rating is not None and (type(impact_rating) is not int or not 1 <= impact_rating <= 5):
             raise ValueError("invalid_recommendations")
         if row.get('recommend') is True and rating in (1, 2):
             raise ValueError("invalid_recommendations")
@@ -267,7 +270,7 @@ def _validated_suggestions(value, items):
                     or any(ord(c) < 32 for c in text)
                     or re.search(r"已(?:经)?(?:成功)?(?:删除|卸载|停止|禁用|清理|移动)", text)):
                 raise ValueError("invalid_recommendations")
-        accepted.append(dict(copy.deepcopy(row), cleanup_rating=rating))
+        accepted.append(dict(copy.deepcopy(row), cleanup_rating=rating, impact_rating=impact_rating))
     return accepted
 
 
@@ -332,6 +335,7 @@ def build_recommendations(items, assistant=None, *, use_model=False):
                                                      row["suggested_action"], origin="model")
                         item["advice"]["provenance"] = copy.deepcopy(provenance)
                         item["advice"]["cleanup_rating"] = row['cleanup_rating']
+                        item["advice"]["impact_rating"] = row['impact_rating']
                 else:
                     warnings.append("模型未配置、请求失败或建议未通过校验，保留本地规则结果。")
             except Exception:

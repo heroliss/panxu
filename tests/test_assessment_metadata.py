@@ -175,7 +175,7 @@ class CleanupRatingTests(unittest.TestCase):
         self.assertEqual(rows[0]['cleanup_rating'], 1)
 
     def test_new_guide_is_fixed_versioned_and_bundled(self):
-        self.assertEqual(SKILL_VERSION, '1.2.0')
+        self.assertEqual(SKILL_VERSION, '1.3.0')
         self.assertIn('cleanup-assessment.md', BUNDLED_SKILL_FILES)
         registry = SkillRegistry()
         page = registry.load('cleanup-assessment')
@@ -183,7 +183,7 @@ class CleanupRatingTests(unittest.TestCase):
         while page['has_more']:
             page = registry.load('cleanup-assessment', cursor=page['next_cursor'])
             content += page['content']
-        self.assertEqual(page['version'], '1.2.0')
+        self.assertEqual(page['version'], '1.3.0')
         self.assertIn('不是概率、置信度、安全等级或操作授权', content)
         self.assertIn('不能用 3 假装已分析', content)
         self.assertIn('inheritance=subtree', content)

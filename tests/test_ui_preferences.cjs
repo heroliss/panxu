@@ -411,9 +411,9 @@ for (const protocol of ['chat_completions', 'responses', 'anthropic', 'gemini'])
   test(`${protocol}: tool details off retains public findings, questions, advice and handoff`, async () => {
     const calls = [
       ['present_findings', { summary: '公开结论', briefing:{highlights:['公开本轮重点'],cautions:['公开留意事项'],coverage:['公开检查范围']},needs_input: false, reasoning_content: 'private-opaque-canary' }],
-      ['propose_plan', { summary: '公开方案', items: [{ id: 'fixture', action: 'delete', reason: '公开原因', impact: '公开影响' }], auto_approve: true }],
+      ['propose_plan', { summary: '公开方案', items: [{ id: 'fixture', action: 'delete', reason: '公开原因', impact: '公开影响',impact_rating:null }], auto_approve: true }],
       ['ask_user', { question: '公开问题', options: [{ id: 'keep', label: '保留', description: '公开选项说明' }] }],
-      ['record_advice', { items: [{ id: 'fixture', conclusion: 'keep',cleanup_rating:1, purpose: '公开用途', reason: '公开保留依据', impact: '保持原样' }] }],
+      ['record_advice', { items: [{ id: 'fixture', conclusion: 'keep',cleanup_rating:1,impact_rating:5, purpose: '公开用途', reason: '公开保留依据', impact: '保持原样' }] }],
       ['checkpoint_task', { summary: '公开交接', next_steps: ['公开下一步'], unresolved: ['公开未决事项'] }],
       ['inspect_items', { ids: ['hidden-investigation-arguments'] }],
     ];
@@ -423,6 +423,7 @@ for (const protocol of ['chat_completions', 'responses', 'anthropic', 'gemini'])
     const text = entry.all().map((node) => node.textContent || '').join('\n');
     for (const value of ['公开结论', '公开本轮重点','公开留意事项','公开检查范围','建议保留','公开方案', '公开原因', '公开影响', '公开问题', '公开选项说明', '公开用途', '公开保留依据', '公开交接', '公开下一步', '公开未决事项']) assert.ok(text.includes(value), value);
     const rating = entry.querySelector('.developer-advice-rating');
+    assert.ok(text.includes('影响程度：5/5（重大）'));assert.ok(text.includes('影响程度：未提供'));assert.equal(rating.dataset.rating,'1','developer cleanup rating cannot be replaced by the independent impact level');
     assert.match(rating['aria-label'], /清理倾向 1\/5/);
     assert.equal(rating.querySelectorAll('.cleanup-rating-segment').filter(node => node.dataset.active === 'true').length, 1);
     assert.ok(!text.includes('1/5'), 'readable advice avoids a duplicate numeric fraction');

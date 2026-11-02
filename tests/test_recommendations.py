@@ -162,5 +162,26 @@ class RecommendationTests(unittest.TestCase):
         self.assertIn("1/150", " ".join(result["summary"]["warnings"]))
 
 
+    def test_model_impact_score_is_retained_without_changing_cleanup_choice(self):
+        for score in (1, 2, 3, 4, 5, None):
+            result = build_recommendations([cache()], StubAssistant([
+                dict(suggestion('a'), cleanup_rating=5, impact_rating=score)]), use_model=True)
+            advice = result['items'][0]['advice']
+            self.assertEqual(advice['impact_rating'], score)
+            self.assertEqual(advice['cleanup_rating'], 5)
+            self.assertTrue(advice['auto_select'])
+        legacy = build_recommendations([cache()], StubAssistant([suggestion('a')]), use_model=True)
+        self.assertIsNone(legacy['items'][0]['advice']['impact_rating'])
+
+    def test_invalid_impact_score_rejects_model_suggestions_without_losing_local_rules(self):
+        for invalid in (True, 0, 6, 2.5, '2'):
+            result = build_recommendations([cache()], StubAssistant([
+                dict(suggestion('a'), impact_rating=invalid)]), use_model=True)
+            advice = result['items'][0]['advice']
+            self.assertEqual(advice['origin'], 'rule')
+            self.assertIsNone(advice['impact_rating'])
+            self.assertTrue(result['summary']['warnings'])
+
+
 if __name__ == "__main__":
     unittest.main()

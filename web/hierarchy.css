@@ -20,18 +20,26 @@
   --tone-neutral-bg: var(--surface-soft);
 }
 :root,[data-theme="dark"] {
-  --rating-1:#8dceb0; --rating-1-bg:#1e332b;
-  --rating-2:#8acbd0; --rating-2-bg:#203337;
-  --rating-3:#bac5d3; --rating-3-bg:#28313d;
-  --rating-4:#e6bf7c; --rating-4-bg:#382f21;
-  --rating-5:#f1aaa0; --rating-5-bg:#3b292b;
+  --blue:#aac2df; --blue-tint:#263445; --accent:#adc4e1; --accent-hover:#bed0e7;
+  --green:#a9c8b8; --success-bg:#28352e; --amber:#c6bca8; --warning-bg:#302d27; --warning-line:#5c554a;
+  --red:#cbb1b8; --danger-bg:#332b30; --danger-line:#615159; --focus:#b2c9e3;
+  --rating-1:#a8c3b5; --rating-1-bg:#26302c;
+  --rating-2:#a7bec0; --rating-2-bg:#263033;
+  --rating-3:#b5becb; --rating-3-bg:#2a2e35;
+  --rating-4:#c4bbaa; --rating-4-bg:#2e2c28;
+  --rating-5:#c4b5bd; --rating-5-bg:#2c282f;
+  --impact-1-bg:#263034; --impact-2-bg:#283033; --impact-3-bg:#2b2f33; --impact-4-bg:#2e2e2f; --impact-5-bg:#312d2f;
 }
 [data-theme="light"] {
-  --rating-1:#256747; --rating-1-bg:#ebf5ef;
-  --rating-2:#1d666b; --rating-2-bg:#e8f4f4;
-  --rating-3:#556176; --rating-3-bg:#edf0f4;
-  --rating-4:#8c5a13; --rating-4-bg:#fcf2df;
-  --rating-5:#a24336; --rating-5-bg:#fcece7;
+  --blue:#426486; --blue-tint:#edf2f7; --accent:#456c96; --accent-hover:#385c83;
+  --green:#416e58; --success-bg:#eef4f0; --amber:#74664f; --warning-bg:#f6f3ed; --warning-line:#d3ccbd;
+  --red:#875762; --danger-bg:#f5eef0; --danger-line:#cdbac0; --focus:#456f9b;
+  --rating-1:#45685a; --rating-1-bg:#f0f4f1;
+  --rating-2:#43666b; --rating-2-bg:#eff4f4;
+  --rating-3:#596475; --rating-3-bg:#f1f3f6;
+  --rating-4:#6f6350; --rating-4-bg:#f5f3ee;
+  --rating-5:#6f5e6b; --rating-5-bg:#f4f0f3;
+  --impact-1-bg:#eff3f4; --impact-2-bg:#f0f3f3; --impact-3-bg:#f2f3f3; --impact-4-bg:#f4f2f0; --impact-5-bg:#f5f1ef;
 }
 :is(.cleanup-rating,.advice-explanation-grid) { --rating-ink:var(--rating-3); --rating-bg:var(--rating-3-bg); }
 :is(.cleanup-rating,.advice-explanation-grid)[data-rating="1"] { --rating-ink:var(--rating-1); --rating-bg:var(--rating-1-bg); }
@@ -158,11 +166,15 @@ body { line-height: 1.7; }
 .advice-explanation-part { padding: 8px 11px; min-width: 0; border-radius: 6px; background: var(--surface-soft); color: var(--ink); }
 .advice-explanation-label { display: block; margin-bottom: 5px; font-size: var(--type-meta); line-height: 1.5; font-weight: 600; color: var(--muted); }
 .advice-explanation-part > p { margin: 0; font-size: var(--type-body); line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
-.advice-explanation-part[data-advice-part="suggestion"] { background: var(--rating-bg);color:var(--rating-ink); }
-.advice-explanation-part[data-advice-part="suggestion"] > .advice-explanation-label { color: inherit; }
+.advice-explanation-part[data-advice-part="suggestion"] { background:var(--rating-bg);color:var(--ink); }
 .advice-explanation-part[data-advice-part="suggestion"] > p { font-weight:600; }
-.advice-explanation-part[data-advice-part="impact"] { background:var(--warning-bg); }
-.advice-explanation-part[data-advice-part="impact"] > .advice-explanation-label { color:var(--amber); }
+.advice-explanation-part[data-advice-part="impact"] { background:var(--surface-soft); }
+.advice-explanation-part[data-advice-part="impact"][data-impact-rating="1"] { background:var(--impact-1-bg); }
+.advice-explanation-part[data-advice-part="impact"][data-impact-rating="2"] { background:var(--impact-2-bg); }
+.advice-explanation-part[data-advice-part="impact"][data-impact-rating="3"] { background:var(--impact-3-bg); }
+.advice-explanation-part[data-advice-part="impact"][data-impact-rating="4"] { background:var(--impact-4-bg); }
+.advice-explanation-part[data-advice-part="impact"][data-impact-rating="5"] { background:var(--impact-5-bg); }
+.advice-explanation-part[data-advice-part="impact"][data-impact-rating=""],.advice-explanation-part[data-advice-part="impact"][data-impact-state="stale"] { background:var(--surface-soft); }
 .advice-explanation-part[data-advice-part="reason"] { background:color-mix(in srgb,var(--surface-soft) 65%,var(--panel)); }
 .advice-explanation-part[data-advice-part="reason"] > p { color:var(--muted); }
 .paged-file-copy { container-type: inline-size; }

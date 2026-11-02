@@ -44,6 +44,7 @@ SYSTEM = '''你是盘序的Windows整理智能体。理解用户目标，按需�
 文件任务先survey_scope了解分布，优先priority_scopes；后台先collect_apps。已冻结列表先list_items/inspect_items，背景对象不扩大处理范围。程序目录先核对正规卸载；残留仍区分个人资料和共享组件。
 大目录按需逐层调查，scan_id用continue_scan续采集、read_scan分页读；索引完成不等于整目录可删，整体操作前validate_directory。depth=overview只概览，auto按需展开，detailed分批逐项并诚实报告未覆盖范围。
 record_advice保存稀疏判断：明确倾向尽量评分1–5（1偏保留、3已分析中立、5偏清理），分数不表示安全概率或授权；未知/旧缺分不填3，skip本轮跳过，no_advice调查后无法建议，两者不评分。
+impact_rating独立表示所述操作的后果程度：1很小、2轻微、3明显、4较大、5重大或难逆；不表示发生概率或清理倾向。证据不足填null，不由cleanup_rating推算，不影响操作权限或勾选。
 目录默认只针对自身，仅inheritance=subtree才让未独立分析的已观察后代沿用倾向/解释；不继承动作或许可。具体子项、保留、跳过、未知及失效记录优先，有冲突改选具体项。
 按需用list_skills/read_skill取得经验与来源；指导不是本机事实或额外权限。系统占用用collect_system_configuration/inspect_volume核查已有范围的有限配置统计，不能据此证明可恢复、健康或扩大范围。工具用法可discover_tools。
 先读已有目标、用户选择、事实和结果，避免重复调查。read_facts核对历史来源，checkpoint_task保存下一步与缺口；有关键偏好用ask_user一次问一个易懂问题。
@@ -113,6 +114,7 @@ def tool_specs():
          {'items': {'type': 'array', 'minItems': 1, 'maxItems': MODEL_ADVICE_BATCH, 'items': {'type': 'object',
           'properties': {'id': ident, 'conclusion': {'type': 'string', 'enum': ['keep', 'review', 'recommend', 'skip', 'no_advice']},
             'cleanup_rating': {'type': ['integer', 'null'], 'minimum': 1, 'maximum': 5},
+            'impact_rating': {'type': ['integer', 'null'], 'minimum': 1, 'maximum': 5},
             'inheritance': {'type': 'string', 'enum': ['none', 'subtree']},
             **{field: {'type': 'string', 'maxLength': 400} for field in ('purpose', 'reason', 'impact')},
             'evidence_ids': {'type': 'array', 'items': ident, 'maxItems': 12}},
@@ -121,6 +123,7 @@ def tool_specs():
          {'summary': {'type': 'string', 'maxLength': 600}, 'briefing': briefing, 'items': {'type': 'array', 'minItems': 1, 'maxItems': MODEL_ADVICE_BATCH,
           'items': {'type': 'object', 'properties': {'id': ident, 'action': ident,
                     'reason': {'type': 'string', 'maxLength': 400}, 'impact': {'type': 'string', 'maxLength': 400},
+                    'impact_rating': {'type': ['integer', 'null'], 'minimum': 1, 'maximum': 5},
                     'evidence_ids': {'type': 'array', 'items': ident, 'maxItems': 12}},
                     'required': ['id', 'action', 'reason', 'impact'], 'additionalProperties': False}}}, ['summary', 'items']),
         ('present_findings', '说明调查结论或需要用户补充的问题，结束本轮而不是伪报处理成功。',
@@ -238,6 +241,7 @@ class TaskHarness:
         value = copy.deepcopy(advice)
         value['provenance'] = self._provenance(value.get('provenance'))
         value['cleanup_rating'] = rating(value.get('cleanup_rating'))
+        value['impact_rating'] = rating(value.get('impact_rating'))
         value.setdefault('inheritance', 'none')
         return value
 
@@ -250,6 +254,7 @@ class TaskHarness:
         value['briefing_provenance'] = self._provenance(value.get('briefing_provenance'))
         for entry in value['items']:
             entry['provenance'] = self._provenance(entry.get('provenance'))
+            entry['impact_rating'] = rating(entry.get('impact_rating'))
             if 'advice_provenance' in entry:
                 entry['advice_provenance'] = self._provenance(entry['advice_provenance'])
         return value
@@ -1055,7 +1060,7 @@ class TaskHarness:
             current = {i['id']: i for i in self._items(task)}
             additions = {}
             for row in rows:
-                self._args(row, ['id', 'conclusion', 'purpose', 'reason', 'impact', 'evidence_ids', 'cleanup_rating', 'inheritance'], ['id', 'conclusion', 'purpose', 'reason', 'impact'])
+                self._args(row, ['id', 'conclusion', 'purpose', 'reason', 'impact', 'impact_rating', 'evidence_ids', 'cleanup_rating', 'inheritance'], ['id', 'conclusion', 'purpose', 'reason', 'impact'])
                 if not isinstance(row['id'], str) or row['id'] not in current or row['id'] in additions:
                     raise AppError('建议包含未知或重复对象。')
                 if row['conclusion'] not in ('keep', 'review', 'recommend', 'skip', 'no_advice') or any(not isinstance(row[f], str) or not 1 <= len(row[f]) <= 400 for f in ('purpose', 'reason', 'impact')):
@@ -1064,6 +1069,9 @@ class TaskHarness:
                 value, inheritance = row.get('cleanup_rating'), row.get('inheritance', 'none')
                 if value is not None and rating(value) is None:
                     raise AppError('清理倾向只能是1到5的整数或未知，不能使用概率。')
+                impact_rating = row.get('impact_rating')
+                if impact_rating is not None and rating(impact_rating) is None:
+                    raise AppError('影响程度只能是1到5的整数或未知。')
                 if row['conclusion'] in ('skip', 'no_advice') and value is not None:
                     raise AppError('跳过或明确无建议的项目不能给清理倾向分。')
                 if row['conclusion'] == 'keep' and value in (4, 5) or row['conclusion'] == 'recommend' and value in (1, 2):
@@ -1076,7 +1084,7 @@ class TaskHarness:
                     raise AppError('保护对象可以解释用途，但应建议保留，不能建议处理。')
                 additions[item['id']] = dict(id=item['id'], name=item['name'], conclusion=row['conclusion'],
                     path=item['path'], kind=item['kind'], advice_id=secrets.token_hex(12),
-                    cleanup_rating=value, inheritance=inheritance,
+                    cleanup_rating=value, impact_rating=impact_rating, inheritance=inheritance,
                     signature=item['signature'], at=now(), evidence_ids=self._evidence(task, row.get('evidence_ids')),
                     provenance=self._provenance(provenance),
                     **{f: self.clean(row[f], 400) for f in ('purpose', 'reason', 'impact')})
@@ -1119,7 +1127,7 @@ class TaskHarness:
         source = self._provenance(provenance)
         entries, seen = [], set()
         for row in rows:
-            self._args(row, ['id', 'action', 'reason', 'impact', 'evidence_ids'], ['id', 'action', 'reason', 'impact'])
+            self._args(row, ['id', 'action', 'reason', 'impact', 'impact_rating', 'evidence_ids'], ['id', 'action', 'reason', 'impact'])
             if not isinstance(row['id'], str) or row['id'] not in current or row['id'] in seen:
                 raise AppError('方案包含未知、重复或已处理项目，请更新。')
             seen.add(row['id'])
@@ -1143,11 +1151,14 @@ class TaskHarness:
             for field in ('reason', 'impact'):
                 if not isinstance(row[field], str) or not 1 <= len(row[field]) <= 400:
                     raise AppError('每项都需要简短的原因和影响说明。')
+            impact_rating = row.get('impact_rating')
+            if impact_rating is not None and rating(impact_rating) is None:
+                raise AppError('影响程度只能是1到5的整数或未知。')
             context = item.get('details', {}).get('decision_context', {})
             personal = item['kind'] in ('file', 'directory') and context.get('personal_choice_required', True)
             entry = dict(id=item['id'], name=item['name'], kind=item['kind'], path=item['path'],
                                 size_bytes=item.get('size_bytes', 0), signature=item['signature'], action=row['action'],
-                                reason=self.clean(row['reason'], 400), impact=self.clean(row['impact'], 400),
+                                reason=self.clean(row['reason'], 400), impact=self.clean(row['impact'], 400), impact_rating=impact_rating,
                                 evidence_ids=self._evidence(task, row.get('evidence_ids')),
                                 provenance=copy.deepcopy(source),
                                 personal_choice_required=bool(personal), default_selected=not personal)
@@ -1350,13 +1361,18 @@ class TaskHarness:
             if len(staged['known_ids']) > 50000:
                 raise AppError('当前任务保存的对象已到上限，请为这些项目单独建立更小范围的任务。', 'task_item_limit')
             rows = []
+            saved_assessments = self.assessments.resolve(list(current.values()), task=task)
             for ident in ids:
                 item = current[ident]
                 advice = task.get('advice', {}).get(ident, {})
                 fresh = advice.get('signature') == item['signature']
+                saved = saved_assessments.get(ident) or {}
+                reusable = saved.get('state') in ('explicit', 'inherited') and not saved.get('stale')
+                explanation = advice if fresh else saved if reusable else {}
                 rows.append(dict(id=ident, action=actions[ident],
-                    reason=advice['reason'] if fresh and advice.get('reason') else '你在界面中明确选择了这项操作。',
-                    impact=advice['impact'] if fresh and advice.get('impact') else action_details(actions[ident])['action_effect']))
+                    reason=explanation.get('reason') or '你在界面中明确选择了这项操作。',
+                    impact=explanation.get('impact') or action_details(actions[ident])['action_effect'],
+                    impact_rating=rating(explanation.get('impact_rating'))))
             # The helper can validate without saving; runtime.prepare adds live
             # snapshot and full descendant checks before a host plan is published.
             self._propose_plan(staged, dict(summary='按你的明确选择处理这些项目。', items=rows), current=current,
@@ -1419,11 +1435,61 @@ class TaskHarness:
             task['approved'] = [entries[i] for i in ids]
             self._save(task)
 
+    def _prompt_facts(self, task):
+        page = self.facts_page(task['id'], limit=5, detail=False)
+        rows = list(page['items'])
+        seen = {row['id'] for row in rows}
+        # read_facts may have selected an older observation outside the last page.
+        requested = []
+        for observation in task['observations'][-6:]:
+            payload = observation.get('result')
+            if isinstance(payload, dict) and isinstance(payload.get('fact_id'), str) and payload['fact_id'] not in seen:
+                requested.append(payload['fact_id'])
+            if observation.get('tool') == 'read_facts' and isinstance(observation.get('result'), dict):
+                requested.extend(row['id'] for row in observation['result'].get('items', [])
+                                 if isinstance(row, dict) and isinstance(row.get('id'), str)
+                                 and row['id'].startswith('fact-') and row['id'] not in seen)
+        requested = list(dict.fromkeys(requested))[:12]
+        if requested:
+            rows.extend(self.facts_page(task['id'], ids=requested, limit=12, detail=False)['items'])
+        refs = []
+        for row in rows:
+            ref = {field: row[field] for field in ('id', 'tool')}
+            if row['source'] == 'skill_guidance':
+                ref['source'] = 'skill_guidance'
+            refs.append(ref)
+        result = dict(total=page['total'], has_more=page['total'] > len(refs))
+        if refs:
+            result.update(items=refs, note='本任务历史事实索引，较新在前，不代表当前状态；按ID用read_facts读取内容、原时间与范围，不增加处理权限。')
+        return result
+
+    def _prompt_observations(self, task):
+        rows = []
+        bookkeeping = {'selection_snapshot', 'record_advice', 'checkpoint_task',
+                       'read_advice', 'list_skills', 'read_skill', 'discover_tools', 'list_scopes'}
+        with self.state.lock:
+            retained = {row[0] for row in self.state.db.execute('SELECT id FROM task_facts WHERE task_id=?', (task['id'],))}
+        for row in task['observations'][-6:]:
+            result = row.get('result')
+            if row.get('tool') == 'read_facts' and isinstance(result, dict) and isinstance(result.get('items'), list):
+                # A retention eviction may leave this cache as the only copy.
+                # Keep it then, instead of replacing useful evidence by a dead ID.
+                if all(isinstance(fact, dict) and fact.get('id') in retained for fact in result['items']):
+                    continue
+            if row.get('tool') in bookkeeping or isinstance(result, dict) and result.get('fact_id') in retained:
+                continue
+            # Older tasks may have observations but no durable fact row. Keep them.
+            projected = dict(tool=row.get('tool'), result=copy.deepcopy(result))
+            if 'at' in row:
+                projected['at'] = row['at']
+            rows.append(projected)
+        return rows[-3:]
+
     def _context(self, task):
         """Decision inputs only; the persisted task and fact payloads stay complete.
 
         Omit absent optional sections, not meaningful false/zero/partial facts.
-        Sampling is a projection of existing target observations, never a scan.
+        Objects are fetched on demand; constructing context never scans paths.
         """
         choices = [dict(id=key, name=c['name'], choice=c['choice']) for key, c in task['choices'].items()]
         last_result = self.runtime.result(task['id'], task['last_result']['plan_version']) if task['last_result'] else None
@@ -1435,6 +1501,12 @@ class TaskHarness:
         context = dict(goal=task['goal'], scope_kind=task.get('scope_kind', 'filesystem'),
                        scopes=[dict(id=r['id'], name=r.get('label') or Path(r['path']).name) for r in scopes[:40]],
                        scope_count=len(scopes), available_items=len(items), simulation_only=True)
+        context['_prompt_projection'] = 'task-v2'
+        context['scope_boundary'] = (
+            '仅本次所选对象；没有目录遍历权限，背景查询不增加处理范围。' if task.get('analysis') and not scopes else
+            '仅本次所选对象/目录；只可展开下列位置，背景查询不增加处理范围。' if task.get('analysis') else
+            '仅启动项、服务与进程；软件查询只能补充背景，不能扩大处理范围。' if task.get('preset') == 'background' else
+            '仅下列位置内调查；已有观察不等于本轮已扫描，处理仍需用户确认。')
         # An empty traversal scope is an explicit boundary, not missing data.
         if len(scopes) > 40:
             context['more_scopes_tool'] = 'list_scopes'
@@ -1448,7 +1520,7 @@ class TaskHarness:
             context['preset'] = preset
         optional = dict(priority_scopes=[r['id'] for r in task['roots'] if r['id'].startswith('priority-')],
                         user_feedback=task['feedback'][-12:], user_choices=choices[-100:],
-                        observations=task['observations'][-3:], last_result=last_result,
+                         observations=self._prompt_observations(task), last_result=last_result,
                         preferences=self.assistant.public_settings()['custom_instructions'],
                         last_user_action=user_action, recent_host_actions=self._recent_host_actions(task),
                         loaded_skills=list(task['loaded_skills'].values())[-20:],
@@ -1462,11 +1534,6 @@ class TaskHarness:
             context['user_choices_omitted'] = len(choices) - 100
         if task.get('analysis'):
             context['analysis'] = dict(task['analysis'], **self._coverage(task))
-            by_id = {item['id']: item for item in items}
-            targets = [by_id[ident] for ident in task.get('target_ids', []) if ident in by_id]
-            if targets:
-                context['initial_objects'] = [self.assistant.task_metadata(i) for i in targets[:4]]
-                context['initial_objects_omitted'] = max(0, len(targets) - 4)
         if task.get('advice'):
             context['advice_progress'] = {'recorded': len(task['advice'])}
         handoff = task['handoff']
@@ -1481,10 +1548,7 @@ class TaskHarness:
                     context[name] = copy.deepcopy(task[source])
         if task.get('last_cleanup_result'):
             context['last_cleanup_result'] = copy.deepcopy(task['last_cleanup_result'])
-        facts = self.facts_page(task['id'], limit=5, detail=False)
-        context['facts'] = {name: facts[name] for name in ('total', 'has_more')}
-        if facts['items']:
-            context['facts']['items'] = facts['items']
+        context['facts'] = self._prompt_facts(task)
         return context
 
     def _recent_host_actions(self, task):

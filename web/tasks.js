@@ -52,7 +52,12 @@ window.PanxuAdvicePresentation = (() => {
     const operationAdvice=Boolean(text(suggestion))||record.origin==='user_direct'||record.provenance?.source==='llm'&&Boolean(operation);
     if(compactUnknown&&!analysed&&!operationAdvice){const pending=document.createElement('p');pending.className='inventory-advice-pending field-help';pending.textContent='尚未分析；取得建议后会直接显示用途、建议、原因和影响。';return pending;}
     const local=body=>body?'本机说明：'+body:'';
-    const purpose=text(assessment.purpose)||text(record.purpose),reason=text(assessment.reason)||text(record.reason),impact=text(assessment.impact)||text(record.impact);
+    const impactSource=direct&&Boolean(record.action)?record:assessment;
+    const rawImpact=impactSource.impact_rating;
+    const impactRating=!value.stale&&Number.isInteger(rawImpact)&&rawImpact>=1&&rawImpact<=5?rawImpact:null;
+    const impactLabels={1:'影响很小',2:'影响轻微',3:'影响明显',4:'影响较大',5:'影响重大'};
+    const impactDescription=value.stale?'影响程度需要重新核对。':impactRating===null?'影响程度尚未提供。':`影响程度 ${impactRating}/5，${impactLabels[impactRating]}。`;
+    const purpose=text(assessment.purpose)||text(record.purpose),reason=text(assessment.reason)||text(record.reason),impact=text(impactSource.impact);
     let advice=text(suggestion);
     if(!advice){
       if(value.stale)advice='已有建议需要重新核对。';
@@ -69,7 +74,9 @@ window.PanxuAdvicePresentation = (() => {
     const fields=[['purpose','用途',purpose?(analysed?purpose:local(purpose)):'暂未说明用途。'],['suggestion','建议',advice],
       ['reason','原因',reason?(analysed||operationAdvice?reason:local(reason)):'暂无分析依据。'],['impact','影响',impact || text(record.action_effect) || '影响尚未说明，执行前需要核对。']];
     const group=document.createElement('section');group.className='advice-explanation-grid';group.dataset.rating=value.rating===null?'':String(value.rating);group.dataset.assessmentState=value.state;if(value.stale)group.dataset.stale='true';group.setAttribute('aria-label','用途、建议、原因与影响');
-    for(const [key,label,body] of fields){const block=document.createElement('div'),heading=document.createElement('span'),content=document.createElement('p');block.className='advice-explanation-part';block.dataset.advicePart=key;heading.className='advice-explanation-label';heading.textContent=label;content.textContent=body;block.append(heading,content);group.append(block);}
+    for(const [key,label,body] of fields){const block=document.createElement('div'),heading=document.createElement('span'),content=document.createElement('p');block.className='advice-explanation-part';block.dataset.advicePart=key;
+      if(key==='impact'){block.dataset.impactRating=impactRating===null?'':String(impactRating);block.dataset.impactState=value.stale?'stale':impactRating===null?'unknown':'rated';block.setAttribute('role','group');block.setAttribute('aria-label','影响；'+impactDescription);block.title=impactDescription;}
+      heading.className='advice-explanation-label';heading.textContent=label;content.textContent=body;block.append(heading,content);group.append(block);}
     return group;
   }
   return {render};

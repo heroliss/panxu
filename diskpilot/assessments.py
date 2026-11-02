@@ -111,7 +111,7 @@ class AssessmentStore:
                             self.publish(task, {ident: advice}, migrating=True)
                     if ambiguous:
                         task, _, advice = choices[-1]
-                        advice.update(conclusion='no_advice', cleanup_rating=None, inheritance='none',
+                        advice.update(conclusion='no_advice', cleanup_rating=None, impact_rating=None, inheritance='none',
                             provenance=copy.deepcopy(UNKNOWN_PROVENANCE),
                             reason='历史建议先后顺序不完整，请重新分析。',
                             migration_generation_ceiling=ceiling, migration_uncertain=True)
@@ -162,7 +162,7 @@ class AssessmentStore:
             revision = int(self.revision()) + 1
             advice.update(task_id=task['id'], record_revision=revision)
             payload = dict(copy.deepcopy(advice), task_id=task['id'], advice_id=advice.get('advice_id') or f'legacy:{task["id"]}:{ident}',
-                           cleanup_rating=rating(advice.get('cleanup_rating')), inheritance=advice.get('inheritance', 'none'),
+                           cleanup_rating=rating(advice.get('cleanup_rating')), impact_rating=rating(advice.get('impact_rating')), inheritance=advice.get('inheritance', 'none'),
                            record_revision=revision)
             self.state.db.execute('INSERT OR REPLACE INTO assessment_records VALUES(?,?,?,?,?,?,?,?)',
                 (ident, advice['signature'], path, advice['kind'], generation, response_revision, revision, json.dumps(payload, ensure_ascii=False)))
@@ -182,7 +182,7 @@ class AssessmentStore:
 
     @staticmethod
     def _empty():
-        return dict(state='unanalysed', rating=None, conclusion=None, purpose=None, reason=None, impact=None,
+        return dict(state='unanalysed', rating=None, impact_rating=None, conclusion=None, purpose=None, reason=None, impact=None,
                     inheritance='none', provenance=copy.deepcopy(UNKNOWN_PROVENANCE), source_ref=None,
                     inherited_from=None, stale=False, blocked_reasons=[])
 
@@ -192,6 +192,7 @@ class AssessmentStore:
         conclusion = record.get('conclusion')
         result.update(state={'skip': 'skipped', 'no_advice': 'no_advice'}.get(conclusion, 'explicit'),
                       rating=None if stale else rating(record.get('cleanup_rating')),
+                      impact_rating=None if stale else rating(record.get('impact_rating')),
                       conclusion=conclusion, inheritance=record.get('inheritance', 'none'),
                       provenance=copy.deepcopy(record.get('provenance') or UNKNOWN_PROVENANCE),
                       source_ref=self._ref(record), stale=stale,
