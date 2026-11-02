@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+from contextlib import nullcontext
 import json
 from datetime import datetime, timezone
 import threading
@@ -72,7 +73,7 @@ class ActionRuntime:
                         message='已从处理记录核实上次结果。' if verified else '上次处理被中断，未确认完成；不会自动重复。')
             self._save(row['id'], row['task_id'], row['plan_version'], 'succeeded' if verified else 'unverified', data)
 
-    def run(self, task_id, version, entries, *, patterns=(), cancel=None, progress=None):
+    def run(self, task_id, version, entries, *, patterns=(), cancel=None, progress=None, guard=None, apply_context=None):
         cancel = cancel or threading.Event()
         for entry in entries:
             operation_id = hashlib.sha256(f'{task_id}:{version}:{entry["id"]}'.encode()).hexdigest()
@@ -93,7 +94,10 @@ class ActionRuntime:
                 injected = self.fault(entry, 'before') if self.fault else None
                 if injected:
                     raise AppError('测试场景：这项暂时无法处理。', 'simulated_failure')
-                batch = self.backend.apply(entry, operation_id, patterns)
+                with self.state.lock, apply_context(entry) if apply_context else nullcontext(patterns) as current_patterns:
+                    if guard:
+                        guard(entry)
+                    batch = self.backend.apply(entry, operation_id, current_patterns)
                 data['batch_id'] = batch['id']
                 injected = self.fault(entry, 'after') if self.fault else None
                 verified = not injected and self.backend.verify(entry, batch)

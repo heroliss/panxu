@@ -410,9 +410,10 @@ function initializePanxu() {
     const retainedIds = new Set([...state.selected, ...[...analysisSelections.values()].flatMap((ids) => [...ids])]);
     const retained = state.items.filter((item) => retainedIds.has(item.id));
     const merged = new Map(items.map((item) => [item.id, item]));
-    retained.forEach((item) => merged.set(item.id, item));
+    retained.forEach((item) => {if(!merged.has(item.id))merged.set(item.id,item);});
     state.items = [...merged.values()];
     itemMap = new Map(state.items.map((item) => [item.id, item]));
+    if(state.focused && merged.has(state.focused.id))state.focused=merged.get(state.focused.id);
     protectedFiles = state.items.filter((item) => item.risk === 'protected');
     unitCache = new Map();
   }
@@ -444,21 +445,27 @@ function initializePanxu() {
     append(tools, search, makeSelect([['all', '全部内容'], ['low', '可处理'], ['review', '需要决定'], ['protected', '已保留']], state.risk, (value) => { state.risk = value; renderResults(); renderSelection(); }, '筛选内容')); append(root, tools);
   }
   function locationPicker(root) {
-    const details = el('details', 'location-picker panel'); const sum = el('summary', '', '选择检查位置'); append(details, sum);
+    const details = el('details', 'location-picker'); const sum = el('summary', '', '选择检查位置'); append(details, sum);
     const controls = el('div', 'scan-controls'); const path = el('input'); path.value = state.scanPath; path.placeholder = '输入文件夹位置'; path.setAttribute('aria-label', '要检查的文件夹位置'); path.addEventListener('input', () => { state.scanPath = path.value; });
     const options = [['', '选择磁盘'], ...state.disks.map((disk) => [disk.path || disk.name, disk.name || disk.path])]; const disk = makeSelect(options, '', (value) => { if (value) { path.value = value; state.scanPath = value; } }, '选择一个磁盘');
     append(controls, disk, path, button('检查这个位置', () => { state.checkDestination = 'files'; startScan(path.value, false); }, 'button primary')); append(details, controls); append(root, details);
   }
   function renderFiles(root) {
-    append(root, heading('我的文件', '按需载入已检查内容，个人文件由你决定。'));
-    locationPicker(root); analysisOptions(root); appendJob(root);
+    append(root, heading('我的文件', '先看清理建议，再决定哪些文件可以删除。'));
+    const advanced=el('div','file-advanced-controls');locationPicker(advanced);analysisOptions(advanced);appendJob(root);
     window.PanxuFiles.render(root, {
-      revision: state.catalogRevision, disks: state.disks, bytes, ingest,
-      isSelected: analysisSelected, canSelect: canAnalyze, toggle: toggleAnalysis, changed: renderSelection,
-      selectionCount: () => analysisIds().size, analyze: (item, filters) => analyzeList(item, filters), show: showItem,
-      advice: (item) => window.PanxuTasks.adviceFor(item.id, item.signature),
-      adviceKnown: (item) => window.PanxuTasks.adviceKnown(item.id,item.signature),
-      lookupAdvice: (items) => window.PanxuTasks.lookupAdvice(items,api), adviceChanged:()=>{if(state.inspector&&state.focused)renderInspector();}, showAdvice
+      revision: state.catalogRevision, disks: state.disks, bytes, ingest,advanced,
+      changed:renderSelection,analyze:(item)=>analyzeList(item),show:showItem,
+      analyzeItems:async(items)=>{
+        const ids=[...new Set(items.filter(canAnalyze).map(item=>item.id))];if(!ids.length)return;
+        await task(async()=>{const data=await api('/api/tasks/analyze',{section:'files',depth:analysisDepth,ids});window.PanxuTasks.accept(data.task);setView('overview');});
+      },
+      prepare:async(payload)=>{
+        const data=await api('/api/assessments/plan',payload);
+        if(!window.PanxuTasks.acceptPickedPlan(data))throw new Error('返回的删除清单与选择不一致，请刷新后重试。');
+        setView('overview');
+      },
+      adviceChanged:()=>{if(state.inspector&&state.focused)renderInspector();}
     });
   }
   function simpleItemRow(item) {
@@ -529,7 +536,7 @@ function initializePanxu() {
     }).catch(()=>{if(panel.isConnected){adviceNote.hidden=false;adviceNote.textContent='已有建议暂时无法读取；点击分析时会先重试读取。';}});
   }
   function renderSelection() {
-    const active = ['files','background','software'].includes(state.view);
+    const active = ['background','software'].includes(state.view);
     const ids = active ? analysisIds() : new Set();
     $('selection-bar').hidden = !active || !ids.size;
     $('selection-count').textContent = `已选 ${ids.size} 项用于分析`;
@@ -544,21 +551,40 @@ function initializePanxu() {
     const head = el('div', 'inspector-heading'); append(head, el('h2', '', '项目说明'), button('关闭', () => toggleInspector(false), 'icon-button')); append(host, head);
     const item = state.focused;
     if (!item) { append(host, el('h3', '', '选一项，看看原因'), el('p', '', '这里会说明用途、操作建议和可能的影响。')); return; }
-    const modelAdvice = window.PanxuTasks.adviceFor(item.id, item.signature);
-    const rec = modelAdvice || advice(item); append(host, itemTitle(item, el('h3', '', rec.title || item.name)));
+    const assessment=item.assessment?window.PanxuAssessment.read(item):null;
+    const modelAdvice = assessment?null:window.PanxuTasks.adviceFor(item.id, item.signature);
+    const rec = assessment?{...assessment,assessment}:modelAdvice || advice(item); append(host, itemTitle(item, el('h3', '', rec.title || item.name)));
+    if(assessment)append(host,window.PanxuAssessment.render(item));
+    if(assessment?.state==='inherited')append(host,el('p','field-help',`继承自${assessment.inherited_from_name || '上级目录'}，此项未单独分析。`));
+    const blocked=assessment?window.PanxuAssessment.blocked(item):'';if(blocked)append(host,el('p','field-help',blocked));
     append(host, el('h4', '', '它是做什么的'), el('p', '', cleanCopy(rec.purpose || itemPurpose(item))), el('h4', '', '为什么建议'), el('p', '', cleanCopy(rec.reason || item.reason || '尚未取得 AI 建议，可以先分析用途。')), el('h4', '', '建议操作的影响'), el('p', '', cleanCopy(rec.impact || item.impact || '影响尚不明确，建议先保留。')));
-    if (modelAdvice) append(host,button(window.PanxuTasks.currentTask()?.plan?.items.some(entry=>entry.id===item.id)?'查看操作方案':'返回整理任务',()=>setView('overview'),'button primary'));
+    const sourceTaskId=assessment?.source_ref?.task_id || assessment?.inherited_from?.task_id;
+    if(sourceTaskId)append(host,button('查看来源任务',()=>task(async()=>{const data=await api('/api/tasks/'+encodeURIComponent(sourceTaskId));window.PanxuTasks.accept(data.task);setView('overview');}),'button primary'));
+    else if (modelAdvice) append(host,button(window.PanxuTasks.currentTask()?.plan?.items.some(entry=>entry.id===item.id)?'查看操作方案':'返回整理任务',()=>setView('overview'),'button primary'));
     else if (canAnalyze(item)) append(host, button('分析这项', () => analyzeList(item), 'button primary'));
     append(host, button('以后保留这项', () => protectItem(item), 'plain-button'));
     const detail = el('details', 'inspector-advanced'); append(detail, el('summary', '', '更多详情'));
     if (item.path) append(detail, el('div', 'inspector-path', item.path));
     const data = el('dl', 'inspector-definition'); [['所属软件', item.owner || '未知'], ['类型', kindNames[item.kind]], ['文件逻辑量', bytes(item.size_bytes)], ['分配空间', item.allocated_bytes == null ? '未核实' : bytes(item.allocated_bytes)]].forEach(([key, value]) => append(data, el('dt', '', key), el('dd', '', value)));
+    if(['file','directory'].includes(item.kind)){
+      const timestamps=item.details?.timestamps || {};
+      for(const [label,key] of [['创建时间','created_at'],['修改时间','modified_at'],['访问时间','accessed_at'],['信息采集时间','observed_at']]){
+        const stamp=window.PanxuProvenance.formatTime(timestamps[key]),value=el('dd');
+        if(stamp){const time=el('time','',stamp.local);time.dateTime=stamp.utc;time.title='UTC：'+stamp.utc;append(value,time);}else value.textContent='未核实';
+        append(data,el('dt','',label),value);
+      }
+      append(detail,el('p','field-help',item.kind==='directory'?'这些时间只描述目录条目，不代表内部文件最近活动；访问时间不等于最后使用。':'访问时间不等于最后使用；文件时间只是判断依据。'));
+    }
     if (item.kind === 'directory') { append(data, el('dt', '', '路径累计'), el('dd', '', bytes(item.details?.logical_bytes_all_paths ?? item.size_bytes)), el('dt', '', '唯一实体量'), el('dd', '', bytes(item.details?.unique_logical_bytes ?? item.size_bytes))); append(detail, el('p', '', '同一个文件可能有多个硬链接。这里的体积估计不等于实际可释放空间。')); }
     append(detail, data,window.PanxuProvenance.details(rec,{presets:state.providers}));
+    if((assessment && assessment.state!=='unanalysed' || modelAdvice)&&canAnalyze(item))append(detail,button('重新分析此项',()=>analyzeList(item),'plain-button'));
     if (canSelect(item)) { const manual = el('details', 'manual-actions'); append(manual, el('summary', '', '手动选择操作'), el('p', 'field-help', '这项操作不依赖 AI 建议。确认前会列出具体内容与影响，保护规则继续生效；当前只记录模拟，不改动文件或系统。'), button(`查看${window.PanxuActionCopy.label(item.actions[0],item.kind)}清单`, () => manualSelected(item))); append(detail, manual); }
     if ($('show-evidence').checked) { const evidence = el('ul', 'evidence-list'); (Array.isArray(item.evidence) ? item.evidence : []).forEach((entry) => append(evidence, el('li', '', text(entry)))); append(detail, evidence, el('pre', 'assistant-trace', text(item.details || {}))); }
-    const more = el('details', 'additional-analysis'); append(more, el('summary', '', '进一步分析这项'));
-    const form = el('form', 'assistant-mini'); const input = el('textarea'); input.setAttribute('aria-label', '想了解什么'); input.placeholder = '例如：保留它还有什么用途？'; const submit = el('button', 'button', '分析'); submit.type = 'submit'; append(form, input, submit); form.addEventListener('submit', (event) => { event.preventDefault(); askAssistant(input.value || input.placeholder, more, submit); }); append(more, form); if (state.assistant) append(more, analysisOutput(state.assistant)); append(detail, more); append(host, detail);
+    if(!(modelAdvice || assessment && assessment.state!=='unanalysed')){
+      const more = el('details', 'additional-analysis'); append(more, el('summary', '', '进一步分析这项'));
+      const form = el('form', 'assistant-mini'); const input = el('textarea'); input.setAttribute('aria-label', '想了解什么'); input.placeholder = '例如：保留它还有什么用途？'; const submit = el('button', 'button', '分析'); submit.type = 'submit'; append(form, input, submit); form.addEventListener('submit', (event) => { event.preventDefault(); askAssistant(input.value || input.placeholder, more, submit); }); append(more, form); if (state.assistant) append(more, analysisOutput(state.assistant)); append(detail, more);
+    }
+    append(host, detail);
   }
   async function protectItem(item) {
     if (!item.path) { toast('暂时无法保存此项，请到设置查看保留位置。'); return; }

@@ -8,6 +8,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import time
+from datetime import datetime, timezone
 
 
 def digest(value):
@@ -16,6 +17,7 @@ def digest(value):
 
 def _item(kind, key, name, owner, category, action, details, path='', protected=False, reason=''):
     details = dict(details)
+    details['observed_at'] = datetime.now(timezone.utc).isoformat()
     details['decision_context'] = {
         'ownership': 'system' if protected else 'application',
         'personal_choice_required': False,

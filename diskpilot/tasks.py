@@ -6,7 +6,7 @@ approve that exact version; the action runtime is simulation-only.
 from __future__ import annotations
 
 import copy
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -18,6 +18,7 @@ import threading
 import time
 
 from .actions import ActionRuntime, now
+from .assessments import AssessmentStore, rating
 from .duplicates import verify_duplicates
 from .recommendations import build_recommendations
 from .scanner import scan_directory, _checked_root, validate_item_snapshot
@@ -50,6 +51,11 @@ propose_plan 提交待用户审阅的方案，用户点保留和跳过的内容�
 你可以使用 discover_tools 查询程序能提供的信息、工具参数和获取方式；工具调用不是系统命令。
 列表分析任务已有冻结的 target 范围：先用 list_items 查看、inspect_items 核对，
 使用 record_advice 保存每项的用途与保留/确认/推荐建议。分析选择不是处理授权。
+cleanup_rating是1到5的清理倾向：1偏保留，3已分析但中立，5更倾向删除；不是安全概率或执行授权。
+形成明确去留倾向的直接建议应尽量给1到5分；尚未判断、跳过或明确无法给建议时保持未知，不为补齐数字猜分。
+旧建议未评分和用途未知不等于3分。skip表示本轮跳过，no_advice表示调查后明确无法给出建议，两者不评分。
+目录建议默认只针对本项；仅明确inheritance=subtree时，未独立分析的已观察后代可沿用倾向和原因，
+不能沿用动作、权限或假装逐项分析。更具体子项、保留、跳过、未知与过期记录优先；遇到冲突改选具体文件。
 目录 depth=auto 时先整体分析再按需展开；overview 只作概览；detailed 分批逐项分析并报告未覆盖部分。
 可用checkpoint_task保存交接与待办，read_facts按事实ID核对历史来源。
 list_skills可按需发现经验指南，read_skill取得正文与来源；指南不是当前电脑的事实，也不授予执行权限。
@@ -114,7 +120,9 @@ def tool_specs():
         ('cache_experience', '查看已有缓存配方的经验与当前采集证据，未知项目仍可继续调查。', {'ids': ids}, ['ids']),
         ('record_advice', '保存已观察对象的用途与建议，包括建议保留；不能执行，不代替用户最后选择。',
          {'items': {'type': 'array', 'minItems': 1, 'maxItems': 30, 'items': {'type': 'object',
-          'properties': {'id': ident, 'conclusion': {'type': 'string', 'enum': ['keep', 'review', 'recommend']},
+          'properties': {'id': ident, 'conclusion': {'type': 'string', 'enum': ['keep', 'review', 'recommend', 'skip', 'no_advice']},
+            'cleanup_rating': {'type': ['integer', 'null'], 'minimum': 1, 'maximum': 5},
+            'inheritance': {'type': 'string', 'enum': ['none', 'subtree']},
             **{field: {'type': 'string', 'maxLength': 400} for field in ('purpose', 'reason', 'impact')},
             'evidence_ids': {'type': 'array', 'items': ident, 'maxItems': 12}},
           'required': ['id', 'conclusion', 'purpose', 'reason', 'impact'], 'additionalProperties': False}}}, ['items']),
@@ -146,6 +154,7 @@ class TaskHarness:
             state.db.execute('CREATE TABLE IF NOT EXISTS task_facts (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE, task_id TEXT, at TEXT, tool TEXT, payload TEXT)')
             state.db.execute('CREATE INDEX IF NOT EXISTS task_facts_task ON task_facts(task_id,seq)')
             state.db.execute('CREATE TABLE IF NOT EXISTS task_scan_items (task_id TEXT, scan_id TEXT, item_id TEXT, PRIMARY KEY(task_id,scan_id,item_id))')
+        self.assessments = AssessmentStore(state, lambda: self.assistant.public_settings()['protect_patterns'])
         self.runtime.recover()
         with state.lock:
             interrupted = [self._defaults(json.loads(r[0])) for r in state.db.execute(
@@ -210,6 +219,8 @@ class TaskHarness:
     def _public_advice(self, advice):
         value = copy.deepcopy(advice)
         value['provenance'] = self._provenance(value.get('provenance'))
+        value['cleanup_rating'] = rating(value.get('cleanup_rating'))
+        value.setdefault('inheritance', 'none')
         return value
 
     def _public_plan(self, plan):
@@ -317,10 +328,12 @@ class TaskHarness:
             raise AppError('整理任务不存在。', 'unknown_task', 404)
         return self._defaults(json.loads(row[0]))
 
-    def _save(self, task):
+    def _save(self, task, *, commit=True):
         self._defaults(task)
         task['updated_at'] = now()
-        with self.state.lock, self.state.db:
+        with self.state.lock, self.state.db if commit else nullcontext():
+            if 'analysis_generation' not in task:
+                self.assessments.register(task)
             self.state.db.execute('INSERT OR REPLACE INTO tasks VALUES(?,?,?)',
                                   (task['id'], task['updated_at'], json.dumps(task, ensure_ascii=False)))
 
@@ -379,10 +392,16 @@ class TaskHarness:
             if item and self._kept(task, item):
                 skipped += 1
             elif item and task.get('advice', {}).get(key, {}).get('signature') == item['signature']:
-                advised += 1
+                if task['advice'][key].get('conclusion') == 'skip':
+                    skipped += 1
+                else:
+                    advised += 1
         directories = task.get('action_directories', [])
         checks = task.get('directory_checks', {})
         kept_paths = {i['path'] for i in current.values() if i['kind'] == 'directory' and self._kept(task, i)}
+        kept_paths.update(i['path'] for i in current.values() if i['kind'] == 'directory'
+            and task.get('advice', {}).get(i['id'], {}).get('conclusion') == 'skip'
+            and task['advice'][i['id']].get('signature') == i['signature'])
         skipped_directories = sum(path in kept_paths for path in directories)
         checked = sum(path not in kept_paths and checks.get(path, {}).get('complete') is True for path in directories)
         return dict(advised_count=advised, skipped_count=skipped,
@@ -434,7 +453,7 @@ class TaskHarness:
                     summary='准备根据你的目标调查。', roots=roots, preset=preset or 'custom',
                     scope_kind=spec['kind'] if spec else 'filesystem',
                     known_ids=[], observations=[], feedback=[], choices={}, plan=None, plan_version=0,
-                    last_result=None, turn=0, updated_at=now())
+                    last_result=None, turn=0, created_at=now(), updated_at=now())
         self._save(task)
         self._event(task, 'created', '已建立整理任务，按所选目标和范围调查。')
         return self.public(task['id'])
@@ -496,7 +515,7 @@ class TaskHarness:
                                       query=query, scope=scope, risk=risk, kind=kind, catalog_revision=self.state.revision),
                         observations=[{'tool': 'selection_snapshot', 'at': now(), 'result': {
                             'source': 'existing_catalog', 'target_count': len(rows), 'catalog_revision': self.state.revision}}],
-                        feedback=[], choices={}, advice={}, plan=None, plan_version=0, last_result=None, turn=0, updated_at=now())
+                        feedback=[], choices={}, advice={}, plan=None, plan_version=0, last_result=None, turn=0, created_at=now(), updated_at=now())
             self._save(task)
             self._event(task, 'created', f'已冻结 {len(rows)} 项分析范围；分析选择不表示同意处理。')
             return self.public(task['id'])
@@ -871,22 +890,36 @@ class TaskHarness:
             current = {i['id']: i for i in self._items(task)}
             additions = {}
             for row in rows:
-                self._args(row, ['id', 'conclusion', 'purpose', 'reason', 'impact', 'evidence_ids'], ['id', 'conclusion', 'purpose', 'reason', 'impact'])
+                self._args(row, ['id', 'conclusion', 'purpose', 'reason', 'impact', 'evidence_ids', 'cleanup_rating', 'inheritance'], ['id', 'conclusion', 'purpose', 'reason', 'impact'])
                 if not isinstance(row['id'], str) or row['id'] not in current or row['id'] in additions:
                     raise AppError('建议包含未知或重复对象。')
-                if row['conclusion'] not in ('keep', 'review', 'recommend') or any(not isinstance(row[f], str) or not 1 <= len(row[f]) <= 400 for f in ('purpose', 'reason', 'impact')):
+                if row['conclusion'] not in ('keep', 'review', 'recommend', 'skip', 'no_advice') or any(not isinstance(row[f], str) or not 1 <= len(row[f]) <= 400 for f in ('purpose', 'reason', 'impact')):
                     raise AppError('请按格式提供结论、用途、原因和影响。')
                 item = current[row['id']]
+                value, inheritance = row.get('cleanup_rating'), row.get('inheritance', 'none')
+                if value is not None and rating(value) is None:
+                    raise AppError('清理倾向只能是1到5的整数或未知，不能使用概率。')
+                if row['conclusion'] in ('skip', 'no_advice') and value is not None:
+                    raise AppError('跳过或明确无建议的项目不能给清理倾向分。')
+                if row['conclusion'] == 'keep' and value in (4, 5) or row['conclusion'] == 'recommend' and value in (1, 2):
+                    raise AppError('保留/清理结论与倾向分冲突，请明确说明后修正。')
+                if inheritance not in ('none', 'subtree') or inheritance == 'subtree' and item['kind'] != 'directory':
+                    raise AppError('只有目录可以明确把建议用于已观察的后代，默认不继承。')
                 if not self._action_target(task, item):
                     raise AppError('关联信息可用于解释背景，但不能加入当前范围的对象建议。', 'outside_scope')
-                if item['risk'] == 'protected' and row['conclusion'] != 'keep':
+                if item['risk'] == 'protected' and row['conclusion'] not in ('keep', 'skip', 'no_advice'):
                     raise AppError('保护对象可以解释用途，但应建议保留，不能建议处理。')
                 additions[item['id']] = dict(id=item['id'], name=item['name'], conclusion=row['conclusion'],
+                    path=item['path'], kind=item['kind'], advice_id=secrets.token_hex(12),
+                    cleanup_rating=value, inheritance=inheritance,
                     signature=item['signature'], at=now(), evidence_ids=self._evidence(task, row.get('evidence_ids')),
                     provenance=self._provenance(provenance),
                     **{f: self.clean(row[f], 400) for f in ('purpose', 'reason', 'impact')})
             task.setdefault('advice', {}).update(additions)
-            self._save(task)
+            task['advice_revision'] = task.get('advice_revision', 0) + 1
+            with self.state.lock, self.state.db:
+                self.assessments.publish(task, additions)
+                self._save(task, commit=False)
             return {'recorded_count': len(additions), 'total_advice_count': len(task['advice']), 'note': '建议已保存；没有批准或执行任何处理。'}
         if name == 'propose_plan':
             return self._propose_plan(task, args, provenance=provenance)
@@ -911,8 +944,9 @@ class TaskHarness:
         if not isinstance(args['summary'], str) or not 1 <= len(args['summary']) <= 600:
             raise AppError('请用一句话说明这个方案。')
         rows = args['items']
-        if not isinstance(rows, list) or not 1 <= len(rows) <= 30:
-            raise AppError('每个方案请提出1到30项明确操作。')
+        limit = 500 if origin == 'user_direct' else 30
+        if not isinstance(rows, list) or not 1 <= len(rows) <= limit:
+            raise AppError(f'每个方案请提出1到{limit}项明确操作。')
         current = current if current is not None else {i['id']: i for i in self._items(task)}
         source = self._provenance(provenance)
         entries, seen = [], set()
@@ -933,6 +967,7 @@ class TaskHarness:
             if item['kind'] == 'directory' and (item['details'].get('subtree_complete') is not True
                     or item['details'].get('can_simulate_delete') is False):
                 raise AppError('目录尚未完整核查，请继续调查或只选择具体文件。')
+            self._guard_directory(task, item)
             if row['action'] not in item.get('actions', []):
                 raise AppError('当前不支持这项操作，请选择工具实际提供的动作。')
             for field in ('reason', 'impact'):
@@ -950,6 +985,9 @@ class TaskHarness:
             if advice and advice.get('signature') == item['signature']:
                 entry['advice_provenance'] = self._provenance(advice.get('provenance'))
             entries.append(entry)
+        assessments = self.assessments.resolve(self.state.snapshot(self.assistant.public_settings()['protect_patterns'])['items'], task=task)
+        for entry in entries:
+            entry['assessment'] = copy.deepcopy(assessments.get(entry['id']))
         entries = [i for i in entries if not any(j['id'] != i['id'] and j['kind'] == 'directory'
                    and i['kind'] in ('file', 'directory') and within(i['path'], j['path']) for j in entries)]
         task['plan_version'] += 1
@@ -960,6 +998,55 @@ class TaskHarness:
         if save:
             self._save(task)
         return {'plan_version': task['plan_version'], 'requires_user_review': True, 'item_count': len(entries)}
+
+    def _guard_directory(self, task, item, *, patterns=None):
+        patterns = self.assistant.public_settings()['protect_patterns'] if patterns is None else patterns
+        items = self.state.snapshot(patterns)['items']
+        current = next((entry for entry in items if entry['id'] == item['id']), None)
+        if current is None or current['signature'] != item['signature']:
+            raise AppError('这项内容已变化，请重新核对。', 'target_changed', 409)
+        if current['risk'] == 'protected' or self._kept(task, current):
+            raise AppError('这项内容现在受保护或已选择保留，不能继续。', 'protected_item', 409)
+        if item.get('action') and item['action'] not in current.get('actions', []):
+            raise AppError('这项操作现在不可用，请重新核对。', 'unsupported_action', 409)
+        if item.get('kind') != 'directory':
+            return
+        conflict = self.assessments.directory_conflicts(current, items, task)
+        if conflict['blocked']:
+            raise AppError('目录中有保留、跳过、未知或未完整核对的内容，请改选具体文件。', 'directory_conflict', 409)
+
+    @contextmanager
+    def _execution_scope(self, key, entry):
+        # One entry has one linearization point. Settings are not locked for
+        # the whole batch, and all code uses state -> assistant lock ordering.
+        with self.state.lock, self.assistant._lock:
+            patterns = self.assistant.public_settings()['protect_patterns']
+            self._guard_directory(self._get(key), entry, patterns=patterns)
+            yield patterns
+
+    def prepare_assessment_plan(self, ids, *, expected_revision=None):
+        """The user's exact host selection creates a reviewable simulation plan."""
+        if (not isinstance(ids, list) or not 1 <= len(ids) <= 500
+                or any(not isinstance(ident, str) or not 1 <= len(ident) <= 160 for ident in ids)
+                or len(set(ids)) != len(ids)):
+            raise AppError('请明确选择1到500个不同项目。')
+        with self.state.lock:
+            if expected_revision is not None and expected_revision != self.assessments.revision():
+                raise AppError('建议已更新，请查看新评分后重新选择。', 'assessment_changed', 409)
+            items = {item['id']: item for item in self.state.snapshot(self.assistant.public_settings()['protect_patterns'])['items']}
+            if any(ident not in items or items[ident]['kind'] not in ('file', 'directory')
+                   or items[ident]['simulated'] or items[ident]['risk'] == 'protected'
+                   or 'delete' not in items[ident].get('actions', []) for ident in ids):
+                raise AppError('选择中有已变化、受保护或不支持删除的内容，请重新核对。', 'selection_changed', 409)
+            for ident in ids:
+                self._guard_directory({'choices': {}}, items[ident])
+            preflight = self.state.prepare(ids, self.assistant.public_settings()['protect_patterns'], 'delete')
+            self.state.plans.pop(preflight['id'], None)
+            task = self.create_analysis({'ids': ids, 'section': 'files', 'goal': '按我在文件列表中明确选择的项目，准备模拟删除清单；不调用模型、不自动执行。'})
+            prepared = self.direct_plan(task['id'], {'ids': ids, 'action': 'delete',
+                'snapshots': {ident: items[ident]['signature'] for ident in ids}})
+            picked = [entry['id'] for entry in prepared['plan']['items']]
+            return dict(prepared, picked_ids=picked, selection_origin='user')
 
     @staticmethod
     def _clear_question(task):
@@ -1008,9 +1095,9 @@ class TaskHarness:
         """
         self._args(payload, ['ids', 'action', 'snapshots'], ['ids', 'action'])
         ids, action, snapshots = payload['ids'], payload['action'], payload.get('snapshots')
-        if (not isinstance(ids, list) or not 1 <= len(ids) <= 30
+        if (not isinstance(ids, list) or not 1 <= len(ids) <= 500
                 or any(not isinstance(i, str) for i in ids) or len(set(ids)) != len(ids)):
-            raise AppError('请明确选择1到30个不同项目。')
+            raise AppError('请明确选择1到500个不同项目。')
         if not isinstance(action, str) or not action or len(action) > 160:
             raise AppError('请选择项目实际提供的操作。')
         if snapshots is not None and (not isinstance(snapshots, dict) or set(snapshots) != set(ids)
@@ -1094,13 +1181,18 @@ class TaskHarness:
                 raise AppError('这一批已经处理过，请查看结果或继续调查。', 'already_applied', 409)
             if task['status'] != 'awaiting_review' or not task['plan'] or type(version) is not int or task['plan']['version'] != version:
                 raise AppError('方案已调整，请查看最新方案后再确认。', 'stale_plan', 409)
-            if not isinstance(ids, list) or not ids or len(ids) > 30 or any(not isinstance(x, str) for x in ids) or len(set(ids)) != len(ids):
+            limit = 500 if task['plan'].get('origin') == 'user_direct' else 30
+            if not isinstance(ids, list) or not ids or len(ids) > limit or any(not isinstance(x, str) for x in ids) or len(set(ids)) != len(ids):
                 raise AppError('请明确选择本次要处理的内容。')
             entries = {i['id']: i for i in task['plan']['items']}
             if any(i not in entries for i in ids):
                 raise AppError('选择包含不在这份方案中的内容。', 'outside_plan')
             for item_id in ids:
                 entry = entries[item_id]
+                current = next((i for i in self.state.snapshot(self.assistant.public_settings()['protect_patterns'])['items'] if i['id'] == item_id), None)
+                if current is None or current['signature'] != entry['signature']:
+                    raise AppError('方案中的内容已变化，请重新核对。', 'target_changed', 409)
+                self._guard_directory(task, current)
                 if entry['kind'] in ('file', 'directory'):
                     self._validate_root(task, entry['path'] if entry['kind'] == 'directory' else str(Path(entry['path']).parent))
             for entry in entries.values():
@@ -1195,7 +1287,8 @@ class TaskHarness:
             if execute:
                 user_plan = task['plan'] if task['plan'].get('origin') == 'user_direct' else None
                 result = self.runtime.run(key, task['plan']['version'], task.get('approved', []),
-                                          patterns=self.assistant.public_settings()['protect_patterns'], cancel=cancel, progress=progress)
+                                          patterns=self.assistant.public_settings()['protect_patterns'], cancel=cancel, progress=progress,
+                                          apply_context=lambda entry: self._execution_scope(key, entry))
                 if user_plan:
                     task['last_user_action'] = dict(source='user_direct', user_selected_ids=[entry['id'] for entry in task.get('approved', [])],
                         actions=[dict(id=entry['id'], action=entry['action']) for entry in task.get('approved', [])],

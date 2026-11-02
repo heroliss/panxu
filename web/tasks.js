@@ -41,6 +41,44 @@ window.PanxuActionCopy = (() => {
   return {label,summary};
 })();
 
+// A score is advisory; it never changes action permission or user consent.
+window.PanxuAssessment = (() => {
+  const states=new Set(['explicit','inherited','unanalysed','skipped','no_advice']);
+  const labels={1:'建议保留',2:'倾向保留',3:'待你决定',4:'倾向清理',5:'建议清理'};
+  function read(record={}, {direct=false}={}) {
+    const value=record.assessment && typeof record.assessment==='object'?record.assessment:record;
+    const state=states.has(value.state)?value.state:states.has(value.analysis_state)?value.analysis_state:direct?({skip:'skipped',no_advice:'no_advice'}[value.conclusion] || 'explicit'):'unanalysed';
+    const raw=Object.hasOwn(value,'rating')?value.rating:value.cleanup_rating;
+    const rating=['explicit','inherited'].includes(state)&&Number.isInteger(raw)&&raw>=1&&raw<=5?raw:null;
+    return {...value,state,rating,stale:value.stale===true,blocked_reasons:Array.isArray(value.blocked_reasons)?value.blocked_reasons:[]};
+  }
+  function label(record,options) {
+    const value=read(record,options);
+    if(value.stale)return '建议需重新核对';
+    if(value.rating!==null)return `${value.rating}/5 · ${labels[value.rating]}${value.state==='inherited'?' · 继承':''}`;
+    return ({explicit:'未评分',inherited:'继承建议 · 未评分',unanalysed:'尚未分析',skipped:'已跳过评分',no_advice:'暂无建议'})[value.state];
+  }
+  function render(record, {direct=false,cls=''}={}) {
+    const value=read(record,{direct}),box=document.createElement('span');
+    box.className=`cleanup-rating ${cls}`.trim();box.dataset.assessmentState=value.state;box.dataset.rating=value.rating===null?'':String(value.rating);
+    if(value.stale)box.dataset.stale='true';
+    if(value.rating!==null&&!value.stale){
+      const scale=document.createElement('span');scale.className='cleanup-rating-scale';scale.setAttribute('aria-hidden','true');
+      for(let step=1;step<=5;step++){const segment=document.createElement('span');segment.className='cleanup-rating-segment';segment.dataset.active=String(step<=value.rating);scale.append(segment);}
+      box.append(scale);
+    }
+    const copy=document.createElement('span');copy.className='cleanup-rating-copy';copy.textContent=label(record,{direct});box.append(copy);
+    box.title='清理倾向，不代表危险程度或操作授权';
+    return box;
+  }
+  function blocked(record) {
+    const names={stale_assessment:'文件或建议已有变化，需要重新核对',protected:'此项已受保护',user_kept:'你已选择保留此项',ancestor_barrier:'上级目录有保留或未完成的判断',keep:'此项建议保留',review:'需要先由你决定',skip:'此项已跳过评分',no_advice:'此项暂时没有建议',unscored_assessment:'此项尚未评分',protected_descendant:'内部包含受保护的项目',coverage_incomplete:'目录内容尚未完整核对',legacy_unknown_descendant:'内部有旧记录尚未确定位置',stale_or_unknown_descendant:'内部有已变化或尚未核对的项目',explicit_keep:'内部有明确建议保留的项目',explicit_skip:'内部有已跳过分析的项目',explicit_no_advice:'内部有尚无建议的项目',unscored_descendant:'内部有尚未评分的项目',undecided_descendant:'内部有需要单独决定的项目',self_only_directory:'目录建议没有覆盖全部内部内容',user_kept_descendant:'你已选择保留内部项目'};
+    const reasons=read(record).blocked_reasons;
+    return [...new Set(reasons.map(code=>Object.hasOwn(names,code)?names[code]:'内部存在保留、未核对或不适合整目录删除的内容'))].join('；');
+  }
+  return {read,label,render,blocked};
+})();
+
 // Provenance is host-owned history, never inferred from the active connection.
 window.PanxuProvenance = (() => {
   const text=value=>typeof value==='string'?value:'';
@@ -80,7 +118,10 @@ window.PanxuProvenance = (() => {
     let loaded=false;
     box.addEventListener('toggle',()=>{
       if(!box.open||loaded)return;loaded=true;
-      const main=(origin || record.origin)==='user_direct'?{...(record.provenance || {}),source:'user'}:record.provenance;
+      const assessment=record.assessment;
+      if(assessment?.state==='inherited')box.append(node('p','field-help',`继承自${assessment.inherited_from_name || '上级目录'}，此项未单独分析。`));
+      const original=record.provenance || assessment?.provenance;
+      const main=(origin || record.origin)==='user_direct'?{...(original || {}),source:'user'}:original;
       const prior=record.advice_provenance;
       const double=Boolean(prior)&&key(main)!==key(prior);
       const groups=double?[['本次操作建议',main],['原用途建议',prior]]:[[plan?'本次操作建议':'',main]];
@@ -101,7 +142,7 @@ window.PanxuProvenance = (() => {
     });
     return box;
   }
-  return {describe,details};
+  return {describe,details,formatTime:time};
 })();
 
 // Task UI owns presentation and user choices; the server owns durable task state.
@@ -251,6 +292,14 @@ window.PanxuTasks = (() => {
       }
     }
     if (busy()) schedule();
+  }
+  function acceptPickedPlan(response) {
+    const task=response?.task,plan=response?.plan || task?.plan;
+    if(!task?.id || !plan || !task.plan || plan.version!==task.plan.version || !Array.isArray(response.picked_ids) || !Array.isArray(plan.items) || !Array.isArray(task.plan.items))return false;
+    const entries=new Map(task.plan.items.map(item=>[item.id,item]));
+    if(plan.items.length!==entries.size || plan.items.some(item=>{const entry=entries.get(item.id);return !entry || entry.signature!==item.signature || entry.action!==item.action;}))return false;
+    if(response.picked_ids.some(id=>!entries.has(id)))return false;
+    accept(task);selected=new Set(response.picked_ids);return true;
   }
   function redraw() { if (context?.isActive()) context.redraw(); }
   async function request(path, payload) {
@@ -511,7 +560,8 @@ window.PanxuTasks = (() => {
       add(titleLine,window.PanxuIcons?.create(item),title);
       add(copy, titleLine, add(node('div', 'task-plan-meta'),
         semanticTag(window.PanxuActionCopy.label(item.action,item.kind), 'info', 'task-action-label'),
-        item.personal_choice_required ? semanticTag('由你选择', 'warning', 'task-choice-note') : null),
+        window.PanxuAssessment.render(item,{direct:true,cls:'task-plan-rating'}),
+        item.personal_choice_required && window.PanxuAssessment.read(item).rating!==3 ? semanticTag('由你选择', 'warning', 'task-choice-note') : null),
         explanation('建议原因', item.reason));
       const info = detail('了解影响', explanation('影响', item.impact), node('p', 'task-path', item.path),
         window.PanxuProvenance.details({...item,provenance:item.provenance || current.plan.provenance},{presets:context.providerPresets,origin:current.plan.origin,plan:true}),
@@ -582,13 +632,10 @@ window.PanxuTasks = (() => {
         if (!section.isConnected || current?.id !== taskId) return;
         list.replaceChildren(); nav.replaceChildren(); loaded = true;
         (data.items || []).forEach((entry) => {
-          const labels = {keep:'建议保留',review:'需要确认',recommend:'建议处理'};
           const card = node('article', 'task-advice-item');
-          const label = entry.stale ? '内容已变化，需重新核对' : entry.user_kept ? '你已选择保留' : labels[entry.conclusion] || '待确认';
-          const tone = entry.stale ? 'warning' : entry.user_kept ? 'neutral' : {keep:'neutral', review:'warning', recommend:'info'}[entry.conclusion] || 'warning';
           add(card, add(node('div', 'task-advice-header'),
             add(node('div','item-title-line task-advice-title-line'),window.PanxuIcons?.create(entry),node('strong', 'task-advice-title', entry.name)),
-            semanticTag(label, tone, 'task-advice-state')),
+            entry.user_kept?semanticTag('你已选择保留','neutral','task-advice-state'):window.PanxuAssessment.render(entry,{direct:true,cls:'task-advice-state'})),
             node('p', 'task-purpose', entry.purpose), explanation('建议原因', entry.reason), detail('了解影响', explanation('影响', entry.impact),window.PanxuProvenance.details(entry,{presets:context.providerPresets})));
           if(!busy())directControls(card,entry,taskId);
           add(list, card);
@@ -674,5 +721,5 @@ window.PanxuTasks = (() => {
     });
     add(root, panel);
   }
-  return {render, accept, renderHistory, adviceFor, adviceKnown, lookupAdvice, currentTask: () => current, streamTaskId: () => current?.id || null, unmountLive: stopLivePreview};
+  return {render, accept, acceptPickedPlan, renderHistory, adviceFor, adviceKnown, lookupAdvice, currentTask: () => current, streamTaskId: () => current?.id || null, unmountLive: stopLivePreview};
 })();

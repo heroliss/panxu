@@ -63,7 +63,7 @@ class Application:
         self.skills = SkillRegistry()
         self.updates = UpdateChecker()
         self.harness = TaskHarness(self.state, self.assistant, trace=self.trace, scan_index=self.scan_index, skill_registry=self.skills)
-        self.catalog = FileCatalog(self.state, self.patterns)
+        self.catalog = FileCatalog(self.state, self.patterns, self.harness.assessments)
         self.icons = IconService(self.icon_item)
         self.recommendation_cache = None
         self.recommendation_generation = 0
@@ -293,14 +293,17 @@ class Application:
             except (ValueError, TypeError):
                 raise AppError('请使用有效的页码。') from None
             return self.catalog.page(offset=offset, limit=limit, query=query.get('query', [''])[0],
-                scope=query.get('scope', [''])[0], risk=query.get('risk', ['all'])[0], expected=query.get('revision', [''])[0])
+                scope=query.get('scope', [''])[0], risk=query.get('risk', ['all'])[0], expected=query.get('revision', [''])[0],
+                view=query.get('view', ['all'])[0], parent_id=query.get('parent_id', [''])[0], rating=query.get('rating', ['all'])[0])
         if path == '/api/applications':
             section = query.get('section', ['background'])[0]
             kinds = {'background': ('startup', 'service', 'process'), 'software': ('software',)}.get(section)
             if not kinds:
                 raise AppError('请选择后台或软件清单。')
             with self.state.lock:
-                items = [i for i in self.state.snapshot(self.patterns())['items'] if i['kind'] in kinds]
+                snapshot = self.state.snapshot(self.patterns())['items']
+                resolved = self.harness.assessments.resolve(snapshot)
+                items = [dict(i, assessment=resolved.get(i['id'])) for i in snapshot if i['kind'] in kinds]
                 return {'items': items}
         if path == '/api/health':
             return {'status': 'ok', 'mode': 'simulation', 'version': __version__, 'live_executor_available': False}
@@ -336,13 +339,35 @@ class Application:
             return self.job(path.rsplit('/', 1)[-1])
         if path == '/api/item':
             key = query.get('id', [''])[0]
-            item = next((x for x in self.state.snapshot(self.patterns())['items'] if x['id'] == key), None)
-            if not item:
-                raise AppError('项目不存在。', 'unknown_item', 404)
-            return {'item': item}
+            with self.state.lock:
+                snapshot = self.state.snapshot(self.patterns())['items']
+                item = next((x for x in snapshot if x['id'] == key), None)
+                if not item:
+                    raise AppError('项目不存在。', 'unknown_item', 404)
+                assessment = self.harness.assessments.resolve(snapshot).get(key)
+                if assessment:
+                    source_id = (assessment.get('inherited_from') or {}).get('item_id')
+                    source = next((x for x in snapshot if x['id'] == source_id), None) if source_id else None
+                    if source:
+                        assessment.update(inherited_from_name=source['name'], inherited_from_path=source['path'])
+                return {'item': dict(item, assessment=assessment)}
         raise AppError('接口不存在。', 'not_found', 404)
 
     def post(self, path, payload):
+        if path == '/api/assessments/plan':
+            if not isinstance(payload, dict) or set(payload) != {'ids', 'snapshots', 'revision', 'action'}:
+                raise AppError('请重新选择要加入删除清单的项目。')
+            ids, snapshots = payload['ids'], payload['snapshots']
+            if (not isinstance(ids, list) or not 1 <= len(ids) <= 500 or any(not isinstance(i, str) for i in ids)
+                    or len(set(ids)) != len(ids) or not isinstance(snapshots, dict) or set(snapshots) != set(ids)
+                    or any(not isinstance(v, str) for v in snapshots.values()) or not isinstance(payload['revision'], str)
+                    or payload['action'] != 'delete'):
+                raise AppError('请明确选择1到500个项目，并保留当前清单信息。')
+            with self.state.lock:
+                selected = self.catalog.selected(ids, expected=payload['revision'])
+                if any(snapshots[item['id']] != item['signature'] for item in selected):
+                    raise AppError('所选内容已更新，请重新查看后选择。', 'selection_changed', 409)
+                return self.harness.prepare_assessment_plan(ids, expected_revision=self.harness.assessments.revision())
         if path == '/api/updates/check':
             if payload:
                 raise AppError('检查更新不接受网址、凭据或其他参数。', 'invalid_update_request')

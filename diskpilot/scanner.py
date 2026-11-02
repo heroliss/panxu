@@ -12,6 +12,7 @@ import os
 import stat
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -72,6 +73,23 @@ def _metadata_signature(path: str, info: os.stat_result) -> str:
         str(info.st_size), str(info.st_mtime_ns), str(info.st_ctime_ns),
         str(info.st_nlink), str(getattr(info, "st_file_attributes", 0)),
     ])
+
+
+def _utc_timestamp_ns(value: Any) -> str | None:
+    """Render a stat nanosecond value without floating point or JS integers.
+
+    The displayed precision is microseconds, not a claim about filesystem
+    precision. Windows ctime is deliberately never used as creation time.
+    """
+    if type(value) is not int:
+        return None
+    try:
+        seconds, remainder = divmod(value, 1_000_000_000)
+        stamp = datetime(1970, 1, 1, tzinfo=timezone.utc) + timedelta(
+            seconds=seconds, microseconds=remainder // 1000)
+        return stamp.isoformat(timespec="microseconds")
+    except (ValueError, OverflowError):
+        return None
 
 
 def _checked_root(raw_root: str) -> tuple[str, os.stat_result]:
@@ -268,6 +286,13 @@ def metadata_item(path: str, info: os.stat_result, *, root: str, depth: int,
         "allocated_bytes": None if is_dir else _allocated(info), "actions": [],
         "signature": "", "details": {
             "depth": depth, "mtime_ns": info.st_mtime_ns, "ctime_ns": info.st_ctime_ns,
+            "timestamps": {
+                "created_at": _utc_timestamp_ns(getattr(info, "st_birthtime_ns", None)),
+                "modified_at": _utc_timestamp_ns(info.st_mtime_ns),
+                "accessed_at": _utc_timestamp_ns(getattr(info, "st_atime_ns", None)),
+                "observed_at": datetime.now(timezone.utc).isoformat(),
+                "scope": "entry_only",
+            },
             "file_identity": _identity(info, path), "link_count": info.st_nlink,
             "is_hardlink": not is_dir and info.st_nlink > 1,
             "signature_kind": "metadata_only", "root": root,

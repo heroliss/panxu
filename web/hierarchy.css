@@ -92,6 +92,13 @@ body { line-height: 1.7; }
 .task-plan-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; margin: 9px 0 13px; }
 .task-plan-meta .task-action-label { font-size: var(--type-meta); color: var(--blue); background: var(--blue-tint); padding: 3px 8px; border-radius: 6px; margin: 0; }
 .task-plan-meta .task-choice-note { font-size: var(--type-meta); color: var(--amber); background: var(--warning-bg); padding: 3px 8px; border-radius: 6px; margin: 0; }
+.cleanup-rating{display:inline-flex;flex-wrap:wrap;align-items:center;gap:6px 9px;max-width:100%;font-size:var(--type-meta);line-height:1.8;color:var(--blue);font-variant-numeric:tabular-nums}
+.cleanup-rating-scale{display:inline-flex;gap:3px;align-items:center;flex:none}
+.cleanup-rating-segment{display:block;width:7px;height:5px;border-radius:1px;background:var(--line)}
+.cleanup-rating-segment[data-active="true"]{background:var(--blue)}
+.cleanup-rating[data-rating=""],.cleanup-rating[data-rating="1"],.cleanup-rating[data-rating="2"]{color:var(--muted)}
+.cleanup-rating[data-rating="3"],.cleanup-rating[data-stale="true"]{color:var(--amber)}
+.cleanup-rating-copy{overflow-wrap:anywhere}
 .task-explanation { display: grid; grid-template-columns: 5em minmax(0, 1fr); align-items: baseline; gap: 5px 12px; margin: 9px 0; }
 .task-explanation-label { color: var(--muted); font-size: var(--type-label); font-weight: 600; line-height: 1.85; }
 .task-explanation .task-explanation-text, .task-detail .task-explanation-text {
@@ -129,6 +136,36 @@ body { line-height: 1.7; }
 .result-table .kind-label .semantic-tag { font-size: var(--type-meta); }
 .file-page-status, .file-pagination > span { font-size: var(--type-meta); line-height: 1.8; }
 .file-page-host[aria-busy="true"] { opacity: 1; }
+.file-view-tabs { margin: 4px 0 18px; }
+.file-browser-options { margin: -5px 0 12px; color: var(--muted); font-size: var(--type-label); }
+.file-browser-options > summary { width: fit-content; padding: 8px 0; cursor: pointer; }
+.file-browser-options > select { margin: 8px 12px 8px 0; max-width: 100%; }
+.file-browser-options > .check-line { margin: 7px 0; }
+.file-browser-options > .plain-button { margin-right: 14px; }
+.file-advanced-controls .location-picker { padding: 0; margin: 13px 0 5px; }
+.file-advanced-controls .location-picker > summary { cursor: pointer; padding: 8px 0; }
+.file-advanced-controls .analysis-options { margin: 0 0 9px; }
+.file-tree-path { display: flex; align-items: center; flex-wrap: wrap; gap: 3px 9px; margin: 7px 0 10px; font-size: var(--type-meta); color: var(--muted); }
+.file-tree-path .plain-button { min-height: 34px; font-size: var(--type-label); max-width: 100%; overflow-wrap: anywhere; }
+.file-tree-path [aria-current] { color: var(--ink); font-weight: 600; }
+.file-coverage-note { max-width: var(--reading-measure); margin: 7px 0 16px; }
+.file-review-selection { margin: 15px 0 19px; }
+.file-selection-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 9px 14px; }
+.file-review-selection > .field-help { margin: 8px 0 0; }
+.file-selection-notice { font-size: var(--type-label); line-height: 1.8; color: var(--amber); margin: 8px 0 0; }
+.file-tree-expand { display: inline-flex; justify-content: center; align-items: center; flex-shrink: 0; width: 28px; min-height: 32px; padding: 0; background: none; color: var(--muted); border: 0; border-radius: 5px; cursor: pointer; }
+.file-tree-expand:hover { color: var(--blue); background: var(--surface-soft); }
+.tree-chevron { width: 7px; height: 7px; border-right: 1.6px solid currentColor; border-top: 1.6px solid currentColor; transform: rotate(45deg); margin-right: 3px; }
+.file-inheritance-note { color: var(--muted); font-size: var(--type-meta); }
+.paged-file-meta .cleanup-rating { justify-content: flex-end; }
+@media (max-width: 760px) {
+  .file-selection-actions > .primary { order: -1; flex-basis: 100%; }
+  .paged-file-row { flex-wrap: wrap; }
+  .paged-file-copy { flex-basis: calc(100% - 35px); }
+  .paged-file-meta { align-items: flex-start; margin-left: 26px; flex: 1 1 auto; max-width: none; }
+  .paged-file-meta .cleanup-rating { justify-content: flex-start; }
+  .file-meta-measurement { justify-content: flex-start; }
+}
 
 /* Debug communication reads as dialogue; protocol detail remains subordinate. */
 .developer-message-meta { gap: 10px; margin-bottom: 13px; }

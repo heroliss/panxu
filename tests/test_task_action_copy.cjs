@@ -88,6 +88,14 @@ test('empty single-action plans name what must be selected',()=>{
   assert.equal(folders.get('task-approve').textContent,'选择要删除的文件夹');assert.match(folders.get('task-simulation-effect').textContent,/内部文件/);
 });
 
+test('persisted legacy plan without assessment is unscored while an explicit unanalysed state remains unknown',()=>{
+  const legacy=item('legacy'),unknown=item('unknown','delete','file',{assessment:{state:'unanalysed',rating:null}});
+  const f=fixture(task([legacy,unknown]));const ratings=f.root.querySelectorAll('.task-plan-rating');
+  assert.equal(ratings[0].textContent,'未评分');assert.equal(ratings[0].dataset.rating,'');assert.equal(ratings[0].querySelectorAll('.cleanup-rating-segment').length,0);
+  assert.equal(ratings[1].textContent,'尚未分析');assert.equal(ratings[1].dataset.rating,'');
+  assert.equal(f.get('pick-legacy').checked,true);assert.equal(f.requests.length,0);
+});
+
 test('actual approval submits the unchanged plan version/IDs and retains simulation wording while pending',async()=>{
   let complete;
   const value=task([item('service','stop_service','service')]);
@@ -188,12 +196,33 @@ test('actual Inspector shows stored provenance independently of connection setti
   assert.ok((await openProvenance(inspector.querySelector('.advice-provenance'))).includes('new-model-B'));
 });
 
-test('actual file advice refresh only signals Inspector after a current, successful lookup',async()=>{
-  const files=readFileSync(join(__dirname,'..','web','files.js'),'utf8');const start=files.indexOf('  async function refreshAdvice()'),end=files.indexOf('  function paint()',start);
-  let changed=0,finish;const target={isConnected:true,querySelector:()=>null};const env={host:target,page:{items:[item('one')]},sequence:0,
-    context:{lookupAdvice:async()=>true,adviceChanged:()=>changed++},refreshAdviceLabels:()=>{}};
-  runInNewContext(files.slice(start,end)+';this.refresh=refreshAdvice;',env);await env.refresh();assert.equal(changed,1);
-  env.context.lookupAdvice=()=>new Promise(resolve=>{finish=resolve;});const old=env.refresh();env.sequence++;finish(true);await old;assert.equal(changed,1,'late file pages cannot refresh Inspector from an old response');
+test('user-picked host plan preselects exact returned IDs including personal items without approving',()=>{
+  const personal=item('personal','delete','file',{personal_choice_required:true,default_selected:false});
+  const value=task([personal,item('other','delete','file',{default_selected:false})]);const f=fixture(task([]));
+  assert.equal(f.ui.acceptPickedPlan({task:value,plan:value.plan,picked_ids:['personal']}),true);f.helpers.redraw();
+  assert.equal(f.get('pick-personal').checked,true);assert.equal(f.get('pick-other').checked,false);assert.equal(f.requests.length,0);
+  assert.equal(f.ui.acceptPickedPlan({task:value,plan:{...value.plan,version:8},picked_ids:['personal']}),false);
+  assert.equal(f.ui.acceptPickedPlan({task:value,plan:{...value.plan,items:[{...personal,signature:'changed'},value.plan.items[1]]},picked_ids:['personal']}),false);
+  assert.equal(f.ui.acceptPickedPlan({task:value,plan:value.plan,picked_ids:['unknown']}),false);
+});
+
+test('Inspector prefers global inherited source over active task advice and preserves timestamp meaning',async()=>{
+  const ancestor={...provenanceB,model:'ancestor-B'};
+  const entry={...item('child'),assessment:{state:'inherited',rating:5,purpose:'目录继承用途',reason:'继承原因',impact:'继承影响',provenance:ancestor,inherited_from_name:'父目录',source_ref:{task_id:'source-B'},inherited_from:{task_id:'source-B'},blocked_reasons:['protected_descendant']},details:{timestamps:{created_at:'2026-11-01T04:05:06Z',modified_at:'invalid',accessed_at:null,observed_at:'2026-11-02T04:05:06Z'}}};
+  const f=fixture(task([],{status:'paused',plan:null,advice:[{...entry,purpose:'旧A',provenance:provenanceA}]}));
+  const inspector=f.environment.document.createElement('div');f.root.append(inspector);const calls=[];
+  const app=readFileSync(join(__dirname,'..','web','app.js'),'utf8');
+  Object.assign(f.environment,{state:{focused:entry,providers:[],settings:{provider:'current-C',model:'current-C'}},
+    $:id=>id==='inspector-content'?inspector:{checked:false},el:(tag,cls='',text)=>{const node=f.environment.document.createElement(tag);node.className=cls;if(text!==undefined)node.textContent=text;return node;},
+    append:(parent,...children)=>{parent.append(...children);return parent;},button:(label,run,cls='button')=>{const node=f.environment.document.createElement('button');node.textContent=label;node.className=cls;node.addEventListener('click',run);return node;},
+    itemTitle:(_item,node)=>node,advice:()=>({purpose:'legacy'}),cleanCopy:value=>String(value),itemPurpose:()=>'',kindNames:{file:'文件'},bytes:n=>n+' B',canSelect:()=>false,canAnalyze:()=>true,
+    task:async run=>run(),api:async path=>{calls.push(path);return {task:{id:'source-B',status:'paused',advice:[]}};},setView:view=>calls.push(view)});
+  const start=app.indexOf('  function renderInspector()'),end=app.indexOf('  async function protectItem(',start);runInNewContext(app.slice(start,end)+';this.inspect=renderInspector;',f.environment);f.environment.inspect();
+  assert.ok(inspector.textContent.includes('目录继承用途'));assert.ok(inspector.textContent.includes('未单独分析'));assert.ok(inspector.textContent.includes('包含受保护'));
+  assert.ok(inspector.textContent.includes('创建时间'));assert.ok(inspector.textContent.includes('修改时间未核实'));assert.ok(inspector.textContent.includes('访问时间不等于最后使用'));
+  assert.equal(inspector.all().filter(node=>node.tag==='button'&&node.textContent==='重新分析此项').length,1);assert.equal(inspector.querySelector('.additional-analysis'),null,'known advice has one reanalysis entry');
+  const source=await openProvenance(inspector.querySelector('.advice-provenance'));assert.ok(source.includes('ancestor-B'));assert.ok(!source.includes('original-model-A'));assert.ok(!source.includes('current-C'));
+  await inspector.all().find(node=>node.tag==='button'&&node.textContent==='查看来源任务').fire('click');assert.deepEqual(calls,['/api/tasks/source-B','overview']);
 });
 
 test('actual API notifies retained previous advice without relabeling it as new or mutating its provenance',async()=>{

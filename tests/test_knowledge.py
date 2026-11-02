@@ -43,8 +43,8 @@ class KnowledgeTests(unittest.TestCase):
             first = self.catalog()
             second = self.catalog()
         self.assertEqual(first, second)
-        self.assertEqual(len(first), 17)
-        self.assertEqual(len({item['id'] for item in first}), 17)
+        self.assertEqual(len(first), 18)
+        self.assertEqual(len({item['id'] for item in first}), 18)
         self.assertEqual({item['id'] + '.md' for item in first}, set(knowledge.BUNDLED_SKILL_FILES))
         for item in first:
             self.assertTrue({'id', 'name', 'summary', 'applies_when', 'version', 'sources',
@@ -57,7 +57,7 @@ class KnowledgeTests(unittest.TestCase):
     def test_all_guides_have_complete_content_hash_and_primary_source_snapshot(self):
         allowed = {'learn.microsoft.com', 'support.microsoft.com', 'docs.astral.sh', 'pip.pypa.io', 'docs.npmjs.com',
                    'helpx.adobe.com', 'www.asus.com', 'docs.docker.com', 'docs.unity.com', 'help.steampowered.com',
-                   'support-en.sandisk.com', 'www.dell.com', 'support.google.com', 'chromeenterprise.google'}
+                   'support-en.sandisk.com', 'www.dell.com', 'support.google.com', 'chromeenterprise.google', 'docs.python.org'}
         for item in self.catalog():
             with self.subTest(item=item['id']):
                 read = self.registry.load(item['id'])

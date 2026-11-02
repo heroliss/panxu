@@ -181,6 +181,11 @@ class ScanIndexTests(unittest.TestCase):
         scan_id = self.index.start(str(self.root))
         self.assertTrue(self.finish(scan_id)['coverage']['complete'])
         self.write('added-after-completion.bin')
+        # NTFS can briefly report the cached directory timestamp unchanged.
+        # This test exercises detection of an observable metadata change;
+        # it does not assert that metadata is a filesystem change journal.
+        stamp = self.root.stat()
+        os.utime(self.root, ns=(stamp.st_atime_ns, stamp.st_mtime_ns + 2_000_000_000))
         result = self.index.advance(scan_id)
         self.assertEqual(result['summary']['status'], 'invalidated')
         self.assertFalse(result['coverage']['complete'])

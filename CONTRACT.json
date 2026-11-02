@@ -1,6 +1,6 @@
 {
   "product": "盘序",
-  "version": "0.9.4",
+  "version": "0.10.1",
   "mode": "simulation",
   "root": "E:\\GPT-Projects\\win11-disk-assistant",
   "safety": "This build has NO real executor. All apply/undo/reset operations modify only SQLite simulation records. Never unlink/move/kill/control services/edit startup outside app-owned data.",
@@ -68,7 +68,7 @@
     "POST /api/assistant": "{question,ids?} -> {answer,trace,evidence,mode}",
     "GET /api/item?id=...": "{item}",
     "GET /api/bootstrap?compact=1": "{csrf,summary,settings,history,disks,source,catalog_revision,latest_task}; omits items",
-    "GET /api/files": "{offset?,limit?:1..100,query?,scope?,risk?,revision?} -> bounded projected page; 409 catalog_changed on old revision",
+    "GET /api/files": "{offset?,limit?:1..100,query?,scope?,risk?,revision?,view?:all|suggestions|tree,parent_id?,rating?:all|high|low|neutral|unrated|skipped|no_advice|1..5} -> bounded observed-only page with assessment_revision,coverage,breadcrumbs and per-row assessment; combined revision includes model assessment updates; 409 on stale revision",
     "GET /api/applications": "{section:background|software} -> only that application inventory",
     "GET /api/providers": "{presets,protocols,checked_at}; documented presets, no live vendor guarantee",
     "POST /api/settings/test": "{} -> {passed,message,requests?,provider?,protocol?,model?}; fixed-data tool roundtrip, no catalog",
@@ -80,7 +80,7 @@
     "GET /api/skills": "{query?,cursor?,limit?:1..10} -> fixed bundled catalog; guidance only",
     "GET /api/skills/{id}": "{cursor?} -> flat versioned content, sha256, sources, budget, next_cursor; allowlisted resources only",
     "POST /api/tasks/{id}/answer": "{version,question_id?,option_id?,text?,skip?:bool} -> {task,job_id}; structured preference, no operation approval",
-    "POST /api/tasks/{id}/direct-plan": "{ids:1..30,action,snapshots?} -> {task,plan}; user-origin versioned plan, approval via existing approve route",
+    "POST /api/tasks/{id}/direct-plan": "{ids:1..500,action,snapshots?} -> {task,plan}; user-origin versioned plan, approval via existing approve route",
     "GET /api/ui-preferences": "{preferences:{theme:dark|light|system,developer_live,developer_conversation,developer_skills,developer_tools}}",
     "POST /api/ui-preferences": "allowlisted preference subset -> {preferences}; persisted separately from model settings/capture",
     "GET /api/icon": "{id,v?} -> local image bytes, X-Panxu-Icon-Status:ready|pending|fallback; existing catalog IDs only; no arbitrary path; bounded private memory cache and async extraction",
@@ -88,7 +88,8 @@
     "GET /api/tasks/{id}/stream": "{stream,volatile:true}; bounded sanitized public cumulative reply, never tool arguments or approval",
     "GET /api/tasks/{id}/stream/events": "SSE default data:{stream}; 4 concurrent connections,25s lifetime, snapshots/keepalive; resume by epoch+sequence",
     "GET /api/about": "{name,subtitle,version,author,description,repository_url,license_name,license_url,simulation,updates}; fixed local metadata, no network",
-    "POST /api/updates/check": "{} -> {status,current_version,latest_version,release_url,message,checked_at,source,code,cached}; explicit manual read-only release discovery; current private source not_configured, no network; never downloads or installs"
+    "POST /api/updates/check": "{} -> {status,current_version,latest_version,release_url,message,checked_at,source,code,cached}; explicit manual read-only release discovery; current private source not_configured, no network; never downloads or installs",
+    "POST /api/assessments/plan": "{ids:1..500,snapshots:{id:signature},revision,action:delete} -> {task,plan,picked_ids}; host-only frozen selection, parent-child dedup and global exceptions, no LLM call or approval"
   },
   "mutations": "Require X-CSRF-Token from bootstrap. Errors are JSON {error,code}. Relative same-origin fetch only. Input limits apply.",
   "summary": "{total_items,visible_items,simulated_items,logical_bytes,simulated_bytes,process_memory_bytes,by_kind,source,mode}. Real disks separate; no simulated_bytes shown as actual freed space.",
@@ -100,10 +101,10 @@
   "agent_task": "statuses ready/investigating/awaiting_review/executing/needs_input/needs_model/paused/budget_exhausted/error/completed. Up to 6 model responses and 12 tools per turn. Personal files default unchecked; unknown/protected/out-of-scope and stale plans cannot bypass factual checks. Tool text is untrusted.",
   "action_runtime": "simulation backend only. Per-item durable intent plus atomic overlay/receipt, status succeeded/failed/partial/cancelled/unverified. Recovery verifies receipts without blind replay. User undo is separately visible as current_state=undone. Actual reclaimed bytes always zero.",
   "release_status": "passed_local_portable",
-  "installed_release": "0.8.0_profile_restored",
+  "installed_release": "0.10.1_profile_restored",
   "task_memory": "Durable goal, choices, versioned plan, simulation receipts, up to300 historical facts/task with32MiB global fact-payload retention. Model connection change reconstructs fresh context, not private provider continuation. Request attempts/tools/work counted; missing provider token usage is unknown.",
   "task_scan": "ScanIndex durable name/metadata spool, stable keyset cursor; steps1..512, rows<=100000/scan. Interrupted unfinished enumeration replays with explicit work accounting; acquired rows retained. Whole-directory actions require separate current subtree validation. All22 tool schemas still sent each model turn; discover_tools is help, not lazy loading.",
-  "guidance": "17 fixed bundled markdown resources, version1.1.0, each max32KiB; list_skills/read_skill provide bounded guidance with versions/fingerprints/official sources. Guidance is not current evidence or extra execution permission.",
+  "guidance": "18 fixed bundled markdown resources, version1.2.0, each max32KiB; list_skills/read_skill provide bounded guidance with versions/fingerprints/official sources. Guidance is not current evidence or extra execution permission.",
   "user_actions": "Model questions have independent monotonic versions; answers/skip durable but not approval. Host direct-plan preflights current identity in task scope, then same approve/runtime; source, chosen IDs, results flow back. Legacy manual history only intersects task-known IDs for model awareness.",
   "license": "PolyForm-Noncommercial-1.0.0; Required Notice copyright 2026 Liss. Scope original PanXu material; third-party components retain their licenses. Explicit user choice 2026-11-02.",
   "developer_dock": "Closed by default; settings entry and F12 toggle. Same bounded capture/view filters in right-side dock; mounted independently of current task view. No auto capture when opening.",
@@ -115,5 +116,7 @@
   "visual_hierarchy": "Platform Chinese typography, six text roles, shared semantic status labels, independent light/dark surfaces; recommendation/source and simulated results do not claim actual operation success. Presentation only, no extra execution authority.",
   "subtitle": "AI 磁盘清理助手",
   "author": "Liss",
-  "advice_provenance": "Optional host-owned {source:llm|local|unknown,provider,model,protocol,generated_at}; generated_at is timezone-aware UTC accepted output time, actual request snapshot, no endpoint/key. Missing history normalizes to unknown with null identities/time. Task advice and plan/item persist separately; matching old advice may appear as item.advice_provenance; user_direct uses local metadata and plan.origin. Changing settings never re-labels prior records."
+  "advice_provenance": "Optional host-owned {source:llm|local|unknown,provider,model,protocol,generated_at}; generated_at is timezone-aware UTC accepted output time, actual request snapshot, no endpoint/key. Missing history normalizes to unknown with null identities/time. Task advice and plan/item persist separately; matching old advice may appear as item.advice_provenance; user_direct uses local metadata and plan.origin. Changing settings never re-labels prior records.",
+  "assessment": "Optional ordinal cleanup_rating:int1..5|null;3 neutral, missing never3. record_advice conclusion recommend|review|keep|skip|no_advice, inheritance:none|subtree(default none, directory content only). Shared monotonic host index bound to item signature; newer task intent blocks late older responses. Explicit child/barrier wins. Inherited score/context/provenance grants no action or authorization. Full-directory plan/approve/runtime rejects specific keep/skip/no-advice/low-or-unscored/stale/unknown/protected descendants and incomplete coverage. Old per-task history retained.",
+  "timestamps": "details.timestamps:created_at from st_birthtime_ns only,modified_at,accessed_at,observed_at timezone-aware ISO or null,scope entry_only; ordinary LLM metadata omits access, detailed shows caveat. ctime/signature semantics unchanged. Age, size, RSS are weak context, not deterministic score or actual-use history."
 }
