@@ -47,6 +47,35 @@ class CleanupToolTests(unittest.TestCase):
         detail['parameters'][0]['default'] = 'Z:'
         self.assertEqual(self.tools.detail('windows_temp')['parameters'][0]['default'], 'C:')
 
+    def test_catalog_groups_every_tool_and_keeps_editorial_order_in_filters(self):
+        listing = self.tools.list()
+        categories = ['windows', 'applications', 'privacy', 'system', 'development', 'migration']
+        self.assertEqual([row['id'] for row in listing['categories']], categories)
+        self.assertEqual(listing['categories'][2]['title'], '浏览器与隐私')
+        ids = [row['id'] for row in listing['items']]
+        self.assertEqual(len(ids), 48)
+        self.assertEqual(len(set(ids)), 48)
+        self.assertEqual(set(ids), set(REGISTRY))
+        self.assertEqual([row['category'] for row in listing['items']],
+                         sorted([row['category'] for row in listing['items']], key=categories.index))
+        self.assertEqual(ids[:3], ['windows_temp', 'recycle_bin', 'storage_sense'])
+        system_ids = [row['id'] for row in self.tools.list(category='system')['items']]
+        self.assertEqual(system_ids[:2], ['startup_apps', 'memory_usage'])
+        self.assertEqual(system_ids[-1], 'system_restore')
+        selected = self.tools.list(query='缓存', category='development')
+        selected_ids = [row['id'] for row in selected['items']]
+        self.assertEqual(selected_ids, [ident for ident in ids if ident in selected_ids])
+        self.assertEqual(selected, self.tools.list(query='缓存', category='development'))
+        self.assertTrue(all('display_order' not in row for row in listing['items']))
+        # Future unranked tools remain visible, after explicit choices; common
+        # entries precede other new entries without changing registry order.
+        from diskpilot.cleanup_tools import _ROWS
+        future = [dict(REGISTRY['pagefile'], id='future-rare', common=False),
+                  dict(REGISTRY['pagefile'], id='future-common', common=True)]
+        with patch('diskpilot.cleanup_tools._ROWS', [*_ROWS, *future]):
+            fallback = self.tools.list(category='system')['items']
+            self.assertEqual([row['id'] for row in fallback[-2:]], ['future-common', 'future-rare'])
+
     def test_reference_normalizes_only_known_fields(self):
         self.assertEqual(self.tools.validate_reference({'tool_id': 'windows_temp', 'parameters': {'volume': 'e:'}}),
                          {'tool_id': 'windows_temp', 'parameters': {'volume': 'E:'}})

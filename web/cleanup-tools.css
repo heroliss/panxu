@@ -6,7 +6,14 @@
 .cleanup-tool-row{display:flex;align-items:center;gap:24px;padding:20px 22px}
 .cleanup-tool-row+.cleanup-tool-row{border-top:1px solid var(--line)}
 .cleanup-tool-copy{flex:1;min-width:0}
-.cleanup-tool-copy h2{font-size:var(--type-lead);line-height:1.5;margin:0 0 5px;font-weight:650}
+.cleanup-tool-copy h2,.cleanup-tool-copy h3{font-size:var(--type-lead);line-height:1.5;margin:0 0 5px;font-weight:650}
+.cleanup-tool-groups{display:flex;flex-direction:column;gap:30px}
+.cleanup-tool-group-heading{display:flex;align-items:baseline;gap:12px;margin:0 0 12px}
+.cleanup-tool-group-heading h2{margin:0;font-size:var(--type-section);font-weight:650;line-height:1.5}
+.cleanup-tool-group-count{color:var(--muted);font-size:var(--type-meta,13px);font-variant-numeric:tabular-nums}
+.cleanup-tool-row{min-width:0}
+.cleanup-tool-row>.button{flex-shrink:0}
+@media(min-width:1200px){.cleanup-tool-group .cleanup-tool-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}.cleanup-tool-group .cleanup-tool-row{padding:18px 20px;gap:16px;border-top:0}.cleanup-tool-group .cleanup-tool-row:nth-child(n+3){border-top:1px solid var(--line)}.cleanup-tool-group .cleanup-tool-row:nth-child(even){border-left:1px solid var(--line)}}
 .cleanup-tool-copy p{font-size:var(--type-label);color:var(--muted);margin:0;line-height:1.75;max-width:70ch;overflow-wrap:anywhere}
 .cleanup-show-all,.cleanup-resume{margin:16px 0 0}
 .cleanup-navigation{margin:0 0 18px}

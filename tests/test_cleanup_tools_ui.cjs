@@ -224,3 +224,25 @@ test('a late progress read cannot overwrite a newer pause control receipt',async
  assert.ok(f.find('继续'));read({...plan(),execution:{revision:2,status:'running',total:2,processed:0,can_resume:false,can_pause:true,can_cancel:true}});await flush();assert.ok(f.find('继续'));assert.match(f.root.textContent,/已暂停/);
  finish(result());await operation;f.subject.unmount();
 });
+
+test('tool groups follow declared category order and retain the host importance order within each category',async()=>{
+ const a={...tool('a'),title:'常用 A',category:'windows'},b={...tool('b'),title:'其他 B',category:'windows'},c={...tool('c'),title:'软件 C',category:'applications'};
+ const f=fixture(path=>path.startsWith('/api/cleanup-tools?')?{items:[a,c,b],categories:[{id:'windows',title:'Windows空间'},{id:'applications',title:'软件与缓存'},{id:'privacy',title:'浏览器与隐私'}]}:undefined);
+ await f.subject.mount(f.root,f.context);const groups=f.all().filter(n=>n.className==='cleanup-tool-group');assert.equal(groups.length,2);
+ assert.deepEqual(groups.map(n=>n.all().find(x=>x.tag==='h2').textContent),['Windows空间','软件与缓存']);
+ assert.deepEqual(groups[0].all().filter(n=>n.tag==='h3').map(n=>n.textContent),['常用 A','其他 B']);assert.match(groups[0].textContent,/2 项/);assert.match(groups[1].textContent,/1 项/);
+ assert.ok(groups.every(n=>n.tag==='section'&&n.attrs['aria-labelledby']));assert.equal(f.all().some(n=>n.tag==='details'),false);assert.equal(f.requests.length,1);
+});
+
+test('missing or repeated category metadata never hides tools or duplicates their rows',async()=>{
+ const f=fixture(path=>path.startsWith('/api/cleanup-tools?')?{items:[{...tool('a'),category:'applications'},{...tool('b'),category:'unregistered'},{...tool('c'),category:null}],categories:[{id:'applications',title:'软件与缓存'},{id:'applications',title:'重复标题'}]}:undefined);
+ await f.subject.mount(f.root,f.context);assert.equal(f.all().filter(n=>n.className==='cleanup-tool-row').length,3);assert.equal(f.all().filter(n=>n.tag==='h2'&&n.textContent==='软件与缓存').length,1);assert.match(f.root.textContent,/其他工具/);
+ assert.equal(f.all().filter(n=>n.tag==='button'&&n.textContent==='查看工具').length,3);
+});
+
+test('category filtering renders only matching groups and does not inspect or execute any tool',async()=>{
+ const all=[{...tool('a'),category:'windows'},{...tool('b'),category:'privacy'}],categories=[{id:'windows',title:'Windows空间'},{id:'privacy',title:'浏览器与隐私'}];
+ const f=fixture(path=>{if(path.startsWith('/api/cleanup-tools?')){const q=new URL(path,'http://local');return {categories,items:q.searchParams.get('category')==='privacy'?[all[1]]:all};}});
+ await f.subject.mount(f.root,f.context);const select=f.all().find(n=>n.tag==='select'&&n.attrs['aria-label']==='工具分类');select.value='privacy';await select.fire('change');
+ const groups=f.all().filter(n=>n.className==='cleanup-tool-group');assert.equal(groups.length,1);assert.equal(groups[0].all().find(n=>n.tag==='h2').textContent,'浏览器与隐私');assert.equal(f.requests.length,2);assert.ok(f.requests.every(r=>r.path.startsWith('/api/cleanup-tools?')));
+});

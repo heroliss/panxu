@@ -23,8 +23,23 @@ from .tool_launch import entry_definition, resolve_entry
 
 REGISTRY_VERSION = 1
 MAX_BATCH = 40
-CATEGORIES = {'windows': 'Windows空间', 'privacy': '隐私记录', 'system': '系统配置',
-              'applications': '软件与缓存', 'development': '开发环境', 'migration': '迁移与高级'}
+CATEGORIES = {'windows': 'Windows空间', 'applications': '软件与缓存', 'privacy': '浏览器与隐私',
+              'system': '系统配置', 'development': '开发环境', 'migration': '迁移与高级'}
+
+# Editorial browsing order only: neither a cleanup rating nor execution authority.
+DISPLAY_ORDER = {
+    'windows': ('windows_temp', 'recycle_bin', 'storage_sense', 'windows_upgrade',
+                'delivery_optimization', 'component_store', 'thumbnail_cache', 'diagnostic_files', 'printer_queue'),
+    'applications': ('software_uninstall', 'gpu_cache', 'steam_cache', 'adobe_cache', 'browser_models',
+                     'store_cache', 'app_reset', 'old_drivers', 'ollama_models'),
+    'privacy': ('browser_cache', 'browser_privacy', 'recent_history', 'clipboard_history',
+                'search_history', 'activity_history', 'diagnostic_privacy'),
+    'system': ('startup_apps', 'memory_usage', 'background_services', 'optional_features',
+               'hibernation', 'pagefile', 'file_history', 'system_restore'),
+    'development': ('uv_cache', 'pip_cache', 'npm_cache', 'unity_cache', 'conda_cache',
+                    'nuget_cache', 'cargo_cache', 'hf_cache', 'docker_cache', 'docker_volumes'),
+    'migration': ('cloud_local_copy', 'known_folder_move', 'cache_location', 'wsl_storage', 'virtual_disk'),
+}
 
 
 def _field(name, label, *, choices=None, default=None, kind='string', required=False,
@@ -330,7 +345,18 @@ class CleanupToolkit:
             raise AppError('请选择有效的工具分类或搜索内容。', 'invalid_tool_query')
         needle = query.strip().casefold()
         items = []
-        for row in _ROWS:
+        category_order = {key: index for index, key in enumerate(CATEGORIES)}
+        ranks = {key: {ident: index for index, ident in enumerate(ids)} for key, ids in DISPLAY_ORDER.items()}
+
+        def order(entry):
+            index, row = entry
+            rank = ranks.get(row['category'], {}).get(row['id'])
+            return (category_order.get(row['category'], len(category_order)),
+                    0 if rank is not None else 1,
+                    rank if rank is not None else 0 if row.get('common') else 1,
+                    index)
+
+        for _, row in sorted(enumerate(_ROWS), key=order):
             if category != 'all' and row['category'] != category:
                 continue
             if needle and needle not in ' '.join((row['id'], row['title'], row['description'], row['impact'])).casefold():

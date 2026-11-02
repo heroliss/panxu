@@ -43,23 +43,47 @@ window.PanxuCleanupTools = (() => {
     b.setAttribute('aria-label', tool.label ? `${label}：${tool.label}` : label);
     return b;
   }
+  function toolGroups(data) {
+    const groups=new Map();
+    for(const entry of data.categories || []){
+      const category=typeof entry==='string'?{id:entry,title:entry}:entry;
+      if(category?.id&&category.id!=='all'&&!groups.has(category.id))groups.set(category.id,{...category,items:[]});
+    }
+    for(const tool of data.items || []){
+      const id=tool.category || 'other';
+      if(!groups.has(id))groups.set(id,{id,title:'其他工具',items:[]});
+      groups.get(id).items.push(tool);
+    }
+    return [...groups.values()];
+  }
   async function renderList(t) {
     if (!alive(t)) return; cancelInspection(t);const route = t.route = (t.route || 0) + 1; t.busy = false; t.extra = null; t.extraList = null; t.detail = null; t.plan = null; t.context.setContextBack?.('',null); loading(t, '清理工具');
     try {
       const data = await t.context.api('/api/cleanup-tools?query=' + encodeURIComponent(listing.query) + '&category=' + encodeURIComponent(listing.category));
       if (!alive(t) || route !== t.route) return; listing.data = data; t.root.replaceChildren();
-      heading(t.root, '清理工具', '常用缓存、隐私和系统设置，选择一项即可查看适用方式。');
+      heading(t.root, '清理工具', '按用途分组，常用工具靠前；选择一项查看详情。');
       const toolbar = node('div', 'cleanup-toolbar'), search = node('input'); search.type = 'search'; search.value = listing.query; search.placeholder = '搜索工具，例如缓存、休眠'; search.setAttribute('aria-label', '搜索清理工具');
       let timer; search.addEventListener('input', () => {listing.query = search.value; clearTimeout(timer); timer = setTimeout(() => {if (alive(t)) renderList(t);}, 280);});
       const category = node('select'); category.setAttribute('aria-label', '工具分类');
-      const categories = [{id: 'all', label: '全部分类'}, ...(data.categories || []).map(row => typeof row === 'string' ? {id: row, label: row} : row).filter(row => row.id !== 'all')];
+      const groups=toolGroups(data);
+      const categories = [{id: 'all', label: '全部分类'}, ...groups];
       categories.forEach(row => {const o = node('option', '', row.label || row.title || row.id); o.value = row.id; category.append(o);}); category.value = listing.category;
       category.addEventListener('change', () => {listing.category = category.value; renderList(t);}); append(toolbar, search, category); t.root.append(toolbar);
       const resumable = pending(); if (resumable) t.root.append(button('继续上次专项操作', () => loadPlan(t, resumable), 'button cleanup-resume'));
       const items = data.items || [];
       if (!items.length) {message(t, '没有找到匹配工具，可以换一个关键词或分类。'); return;}
-      const list = node('div', 'cleanup-tool-list'); list.setAttribute('aria-label', '清理工具列表');
-      items.forEach(tool => {const row = node('section', 'cleanup-tool-row'), copy = node('div', 'cleanup-tool-copy'); append(copy, node('h2', '', tool.title), node('p', '', tool.description)); append(row, copy, button('查看工具', () => {t.source = null; loadDetail(t, tool.id);}, 'button small')); list.append(row);}); t.root.append(list);
+      const catalog=node('div','cleanup-tool-groups');
+      groups.filter(group=>group.items.length).forEach((group,index)=>{
+        const section=node('section','cleanup-tool-group'),header=node('header','cleanup-tool-group-heading'),title=node('h2','',group.title || group.label || group.id);
+        title.id=`cleanup-tool-group-${route}-${index}`;section.setAttribute('aria-labelledby',title.id);
+        append(header,title,node('span','cleanup-tool-group-count',`${group.items.length} 项`));section.append(header);
+        const list=node('div','cleanup-tool-list');list.setAttribute('aria-label',(group.title || group.label || group.id)+'工具列表');
+        group.items.forEach(tool=>{
+          const row=node('section','cleanup-tool-row'),copy=node('div','cleanup-tool-copy');
+          append(copy,node('h3','',tool.title),node('p','',tool.description));
+          append(row,copy,button('查看工具',()=>{t.source=null;loadDetail(t,tool.id);},'button small'));list.append(row);
+        });section.append(list);catalog.append(section);
+      });t.root.append(catalog);
     } catch (error) {if (route === t.route) failed(t, error, () => renderList(t));}
   }
   function sourceKey(t, toolId) {return [toolId,t.source?.task_id,t.source?.item_id,t.source?.advice_version,t.source?.suggestion_id,t.toolVariant].map(value=>value ?? '').join(':');}
