@@ -785,7 +785,7 @@ function initializePanxu() {
       history.forEach(plan=>{
         const line=el('article','history-card');append(line,el('h3','',plan.title),el('p','field-help',labels[plan.status] || '待核实'),
           button('查看方案与结果',()=>openSpecialist({plan_id:plan.id,source:plan.source}),'button small'));
-        if(plan.result&&plan.status!=='undone')line.append(button('撤销记录',()=>task(async()=>{await api('/api/cleanup-tools/undo',{plan_id:plan.id});render();}),'plain-button'));
+        if(plan.result&&['completed','interrupted'].includes(plan.status))line.append(button('撤销记录',()=>task(async()=>{await api('/api/cleanup-tools/undo',{plan_id:plan.id});render();}),'plain-button'));
         specialist.append(line);
       });
     }).catch(error=>{if(specialist.isConnected)specialist.append(el('p','field-error',error.message));});

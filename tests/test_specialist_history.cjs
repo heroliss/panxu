@@ -118,3 +118,25 @@ test('existing ordinary history remains visible when the specialist history is e
   assert.equal(f.empty(), undefined);
   assert.equal(f.visible().includes('还没有操作记录'), false);
 });
+
+for (const status of ['cancelled', 'awaiting_review', 'executing', 'undone', 'completed', 'interrupted']) {
+  test(`specialist history exposes undo only for an ended receipt-bearing plan: ${status}`, async () => {
+    const f = fixture();
+    // A cancelled plan can still carry a truthy empty result. Result presence
+    // alone must not turn cancellation or in-progress work into undo capability.
+    const result = status === 'cancelled' ? {total: 0, items: []} : {total: 1, items: [{status: 'succeeded'}]};
+    f.resolve({history: [{id: 'status-plan', title: '专项状态样本', status, result}]});
+    await flush();
+    const undo = f.root.all().filter(node => node.tag === 'button' && node.textContent === '撤销记录');
+    assert.equal(undo.length, ['completed', 'interrupted'].includes(status) ? 1 : 0);
+    assert.match(f.visible(), /查看方案与结果/);
+    assert.equal(f.visible().includes('还没有操作记录'), false);
+  });
+}
+
+test('an ended specialist plan without a result does not offer an undo action', async () => {
+  const f = fixture();
+  f.resolve({history: ['completed', 'interrupted'].map(status => ({id: 'missing-' + status, title: status, status}))});
+  await flush();
+  assert.equal(f.root.all().some(node => node.tag === 'button' && node.textContent === '撤销记录'), false);
+});
