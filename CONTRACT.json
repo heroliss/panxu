@@ -1,6 +1,6 @@
 {
   "product": "盘序",
-  "version": "0.21.0",
+  "version": "0.22.0",
   "mode": "simulation",
   "root": "E:\\GPT-Projects\\win11-disk-assistant",
   "safety": "This build has NO real executor. All apply/undo/reset operations modify only SQLite simulation records. Never unlink/move/kill/control services/edit startup outside app-owned data.",
@@ -220,5 +220,8 @@
     "finalization": "saved fact retrieval remains during scoring; final turn consumes provided evidence only"
   },
   "tool_activity": "Host-owned durable metadata ledger, no raw parameters/paths/free text/credentials; opened/accepted/declined/answered/cancelled/completed/interrupted/undone are separate. New events reach next model round; current/other/global relation supplied by host. read_tool_activity(limit1..20) is read-only; choices never authorize execution.",
-  "request_budget": "Context compaction target96KiB over visible-message estimate; ignores duplicate canonical continuation, not token usage. Hard192KiB limit enforced on actual native wire after provider preparation."
+  "request_budget": "Context compaction target96KiB over visible-message estimate; ignores duplicate canonical continuation, not token usage. Hard192KiB limit enforced on actual native wire after provider preparation.",
+  "item_dispositions": "POST /api/item-dispositions {id,disposition:lean_clean|lean_keep|direct_clean|direct_keep|null,snapshot}; returns current item+catalog revision. Model-independent user intent, nearest observed ancestor inheritance; direct_clean never executes automatically. Direct_keep blocks current target and ancestor plans, persists ordinary edits only with stable file identity. Replacement becomes stale. Preferences and source/time/staleness projected separately from model scores.",
+  "direct_inventory_actions": "POST /api/actions/plan {ids,snapshots,revision},1..500 exact current IDs. Frozen user_direct task uses existing action guard, approval, simulation journal, progress and recovery. No model request. Default /api/tasks/analyze skips valid existing analyses and strong choices; reanalyze:true overrides prior-analysis skip only.",
+  "tool_detail_interaction": "All48 tools listed; actual-volume select; automatic read-only inspect+refresh; impact/recovery visible. Action prepares a frozen confirmation without preview page. Explicit complete-empty disables; unknown/partial does not become0. Progress polls revision-aware; cancel stops remaining commits. Current execution simulation only."
 }

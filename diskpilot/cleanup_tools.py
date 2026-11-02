@@ -537,6 +537,12 @@ class CleanupToolkit:
             raise AppError('专项方案内容有变化，请重新预览。', 'cleanup_plan_changed', 409)
         for entry in plan['entries']:
             self._validate_entry(entry)
+        # The persisted plan stays frozen; its live control snapshot is a
+        # read-only projection for progress and cancellation in the UI.
+        with self._lock:
+            control = self._controls.get(plan_id)
+        if control:
+            plan['execution'] = control.snapshot()
         return plan
 
     def execute(self, plan_id, version, *, cancel=None, progress=None):

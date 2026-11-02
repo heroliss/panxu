@@ -10,14 +10,15 @@ window.PanxuFileWorkspace = (() => {
   function render(root,helpers){
     unmount();const t={root,helpers,serial,busy:false,error:''};mounted=t;
     const tabs=node('div','subtabs file-workspace-tabs');tabs.setAttribute('aria-label','文件工作区视图');
-    for(const [id,label] of [['suggestions','已有建议'],['all','全部文件']]){const b=button(label,()=>{state.mode=id;render(root,helpers);},'subtab'+(state.mode===id?' active':''));b.setAttribute('aria-pressed',String(state.mode===id));tabs.append(b);}
+    const selectionLabel=helpers.renderTaskResults&&helpers.latestTask?.()?.plan?.origin==='user_direct'?'本次勾选':'已有建议';
+    for(const [id,label] of [['suggestions',selectionLabel],['all','全部文件']]){const b=button(label,()=>{state.mode=id;render(root,helpers);},'subtab'+(state.mode===id?' active':''));b.setAttribute('aria-pressed',String(state.mode===id));tabs.append(b);}
     root.replaceChildren(tabs);t.host=node('section','file-workspace-content');root.append(t.host);
     if(state.mode==='suggestions'){if(helpers.renderTaskResults)helpers.renderTaskResults(t.host);else window.PanxuFiles.render(t.host,{...helpers,forcedView:'suggestions'});return;}
     window.PanxuFiles?.unmount();load(t);
   }
   function open(path='',{suggestions=false}={}){state.mode=suggestions?'suggestions':'all';state.path=path;state.cursor=null;state.previous=[];state.query='';state.rating='all';state.layer=null;state.page=null;state.filterOffset=0;}
   const selected=()=>[...state.rules.values()].filter(r=>r.selected).map(r=>r.item || r);
-  function eligible(item){return !item.navigation_only&&!item.simulated&&typeof item.signature==='string'&&item.risk!=='protected'&&item.can_logical_select!==false&&['file','directory'].includes(item.kind);}
+  function eligible(item){return !item.navigation_only&&!item.simulated&&typeof item.signature==='string'&&item.risk!=='protected'&&item.can_logical_select!==false&&!(item.user_disposition?.value==='direct_keep'&&!item.user_disposition?.stale)&&['file','directory'].includes(item.kind);}
   function matches(item){const a=window.PanxuAssessment.read(item);return (!state.query||(item.name+' '+item.path).toLowerCase().includes(state.query.toLowerCase()))&&(state.rating==='all'||state.rating===String(a.rating)||state.rating==='unrated'&&a.rating===null&&!['skipped','no_advice'].includes(a.state)||['skipped','no_advice'].includes(state.rating)&&a.state===state.rating);}
   function mark(item){return window.PanxuFilteredSelection.mark(state.rules,item);}
   function write(item,checked){window.PanxuFilteredSelection.write(state.rules,item,checked,true);window.PanxuFiles?.stampSelection?.(state.page?.revision,state.page?.selection_revision);}
@@ -95,8 +96,7 @@ window.PanxuFileWorkspace = (() => {
     }
     const toolbar=node('div','workspace-file-toolbar'),query=node('input');query.type='search';query.value=state.query;query.placeholder='筛选当前目录';query.setAttribute('aria-label','筛选当前目录');query.addEventListener('input',()=>{state.query=query.value;clearTimeout(timer);timer=setTimeout(()=>filter(t),180);});
     const rating=node('select');rating.setAttribute('aria-label','按分析倾向筛选');for(const [value,label] of [['all','全部倾向'],['5','5分 · 建议清理'],['4','4分 · 倾向清理'],['3','3分 · 由你决定'],['2','2分 · 倾向保留'],['1','1分 · 建议保留'],['unrated','未评分'],['skipped','已跳过'],['no_advice','暂无建议']]){const option=node('option','',label);option.value=value;rating.append(option);}rating.value=state.rating;rating.addEventListener('change',()=>{state.rating=rating.value;filter(t);});
-    const analyse=button(selected().length?`分析勾选的 ${selected().length} 项`:'分析此目录',()=>analyze(t),'button primary');analyse.disabled=t.busy;
-    toolbar.append(query,rating,analyse);if(selected().length){const remove=button('删除勾选项',()=>prepare(t));remove.disabled=t.busy;toolbar.append(remove,button('取消选择',()=>{state.rules.clear();paint(t);},'plain-button'));}t.host.append(toolbar);
+    toolbar.append(query,rating);t.host.append(toolbar);
     const filtered=(state.layer?.items || state.page?.items || []).filter(matches),rows=state.layer?filtered.slice(state.filterOffset,state.filterOffset+50):filtered,selectable=filtered.filter(eligible),selection=window.PanxuFilteredSelection.aggregate(state.rules,selectable);
     const incomplete=!state.layer&&state.page?.has_more;
     const allLabel=node('label','workspace-select-all'),allCheck=node('input');allCheck.type='checkbox';allCheck.checked=!incomplete&&selection.checked;allCheck.indeterminate=selection.indeterminate||Boolean(incomplete&&selection.checked);allCheck.disabled=t.busy;allCheck.setAttribute('aria-label','全选当前目录的筛选结果');allCheck.addEventListener('change',()=>all(t,allCheck.checked));allLabel.append(allCheck,node('span','','全选当前目录的筛选结果'));t.host.append(allLabel);
@@ -109,6 +109,7 @@ window.PanxuFileWorkspace = (() => {
       if(item.browse_block_reason)copy.append(node('p','field-help',item.browse_block_reason));
       if(a.state!=='unanalysed')copy.append(window.PanxuAdvicePresentation.render(item,{compactUnknown:true}));
       else copy.append(node('span','workspace-item-state','未分析'));
+      if(!item.navigation_only)copy.append(window.PanxuDisposition.render(item,{api:h.api,disabled:t.busy,onChange:()=>{if(!active(t))return;if(item.user_disposition?.value==='direct_keep')write(item,false);state.layer=null;load(t,true);},onError:error=>{if(active(t)){t.error=error.message;paint(t);}}}));
       if(item.kind==='directory'&&item.analysis_summary){const c=item.analysis_summary;copy.append(node('small','workspace-item-state',c.known_children?`已观察 ${c.known_children} 个直接子项：单独分析 ${c.direct}，继承 ${c.inherited}，待分析 ${c.unanalysed ?? '未知'}。`:'子项尚未展开；整棵目录的分析进度未知。'));}
       const modified=item.details?.timestamps?.modified_at || item.modified_at;if(modified){const stamp=new Date(modified);if(!Number.isNaN(stamp.getTime()))copy.append(node('small','workspace-item-time','修改于 '+stamp.toLocaleString('zh-CN')));}
       const size=node('span','workspace-file-size',item.kind==='directory'&&item.size_known!==true?'未统计':Number.isFinite(item.size_bytes)?h.bytes(item.size_bytes):'大小未知');row.append(check,window.PanxuAssessment.render(item,{primary:true}),copy,size);list.append(row);
@@ -117,6 +118,11 @@ window.PanxuFileWorkspace = (() => {
     const pager=node('div','file-pagination');
     if(state.layer){const prev=button('上一页',()=>{state.filterOffset=Math.max(0,state.filterOffset-50);paint(t);});prev.disabled=t.busy||!state.filterOffset;const next=button('下一页',()=>{state.filterOffset+=50;paint(t);});next.disabled=t.busy||state.filterOffset+50>=filtered.length;pager.append(prev,node('span','',`第 ${Math.floor(state.filterOffset/50)+1} / ${Math.max(1,Math.ceil(filtered.length/50))} 页`),next);}
     else{const prev=button('上一页',()=>{state.cursor=state.previous.pop() || null;load(t);});prev.disabled=t.busy||!state.previous.length;const next=button('下一页',()=>{state.previous.push(state.cursor);state.cursor=state.page.next_cursor;load(t);});next.disabled=t.busy||!state.page?.has_more;pager.append(prev,next);}t.host.append(pager);
+    const footer=node('footer','workspace-selection-footer'),count=selected().length;
+    const summary=node('span','',count?`已勾选 ${count} 项或目录`:'勾选后可分析或删除');summary.setAttribute('role','status');
+    const analyse=button(count?`分析勾选的 ${count} 项`:'分析此目录',()=>analyze(t),'button');analyse.disabled=t.busy;
+    const remove=button('删除勾选项',()=>prepare(t),'button primary');remove.disabled=t.busy||!count;
+    footer.append(summary,analyse,remove);if(count)footer.append(button('取消选择',()=>{state.rules.clear();paint(t);},'plain-button'));t.host.append(footer);
   }
   return {render,unmount,open,selectedIds:()=>selected().map(i=>i.id)};
 })();

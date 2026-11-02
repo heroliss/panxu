@@ -11,6 +11,7 @@ from functools import cmp_to_key
 import json
 
 from .simulation import canonical, within, _parent
+from .dispositions import DispositionStore
 
 
 UNKNOWN_PROVENANCE = dict(source='unknown', provider=None, model=None, protocol=None, generated_at=None)
@@ -24,6 +25,7 @@ class AssessmentStore:
     def __init__(self, state, patterns):
         self.state, self.patterns = state, patterns
         self._cache_revision, self._records = None, {}
+        self.dispositions = DispositionStore(state)
         with state.lock, state.db:
             state.db.executescript('''
                 CREATE TABLE IF NOT EXISTS assessment_generations (
@@ -236,6 +238,7 @@ class AssessmentStore:
         paths = {canonical(item['path']): item for item in items if item['kind'] in ('file', 'directory') and item.get('path')}
         parent_records = {canonical(row['path']): row for row in records.values() if row.get('kind') == 'directory'}
         result = {}
+        dispositions = self.dispositions.current()
         for item in items:
             record = records.get(item['id'])
             value = self._direct(record, item) if record else self._empty()
@@ -253,6 +256,9 @@ class AssessmentStore:
                     break  # A more specific statement is always a boundary.
             if item.get('risk') == 'protected':
                 value['blocked_reasons'].append('protected')
+            disposition = dispositions.get(item['id'])
+            if disposition and not disposition['stale'] and disposition['value'] == 'direct_keep':
+                value['blocked_reasons'].append('user_direct_keep')
             if task and any(choice['choice'] in ('keep', 'defer') and (key == item['id'] or
                     choice.get('kind') == 'directory' and within(item['path'], choice['path'])) for key, choice in task.get('choices', {}).items()):
                 value['blocked_reasons'].append('user_kept')
@@ -311,6 +317,8 @@ class AssessmentStore:
         for choice in (task or {}).get('choices', {}).values():
             if choice['choice'] in ('keep', 'defer') and choice.get('kind') in ('file', 'directory'):
                 add(choice['path'], 'user_kept_descendant', choice['kind'] == 'directory')
+        for path in self.dispositions.direct_keep_paths(items):
+            add(path, 'user_direct_keep_descendant', True)
         return blocked
 
     def directory_conflicts(self, item, items, task=None):

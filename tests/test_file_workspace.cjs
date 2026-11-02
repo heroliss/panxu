@@ -200,3 +200,27 @@ test('a poll response for a previous task cannot replace a newly selected task o
 test('task result embedding uses the shared review list and does not emit another page heading or request',()=>{
  const f=taskFixture(taskValue()),renders=[];f.window.PanxuCleanupReview={unmount(){},sourceFor:value=>value,render:(root,options)=>renders.push({root,options})};f.root.replaceChildren();f.ui.renderResultWorkspace(f.root,{...f.taskHelpers,page:'results',embeddedResult:true});assert.equal(renders.length,1);assert.equal(renders[0].options.task.id,'task-one');assert.equal(f.root.all().filter(n=>n.tag==='header').length,0);assert.equal(f.requests.length,0);assert.equal(f.events.some(e=>e[0]==='results'),false);
 });
+
+test('the bottom selection bar keeps analysis and explicit deletion together, disabled until selected',async()=>{
+ const f=fixture(url=>url.pathname==='/api/file-browser'?page([item('a')]):undefined);await f.open();
+ const footer=f.root.querySelector('.workspace-selection-footer');assert.ok(footer);assert.equal(footer.tag,'footer');assert.equal(f.button('删除勾选项').disabled,true);
+ await f.select('a');assert.equal(f.button('删除勾选项').disabled,false);assert.ok(f.button('分析勾选的 1 项'));assert.equal(f.actions.length,0);
+});
+
+test('a persistent direct-keep decision deselects the item, refreshes its projection and never invokes AI or execution',async()=>{
+ const a=item('a');const f=fixture((url,body)=>{if(url.pathname==='/api/item-dispositions'){assert.deepEqual(plain(body),{id:'a',disposition:'direct_keep',snapshot:'sig-a'});a.user_disposition={value:'direct_keep',stale:false};a.can_logical_select=false;return {item:a};}if(url.pathname==='/api/file-browser')return page([a]);});
+ await f.open();await f.select('a');const select=f.root.querySelector('.item-disposition');select.value='direct_keep';await select.fire('change');
+ assert.equal(f.input('选择 a.txt').disabled,true);assert.deepEqual(f.selected(),[]);assert.equal(f.actions.length,0);
+ assert.equal(f.requests.filter(r=>r.path==='/api/item-dispositions').length,1);assert.equal(f.root.querySelector('.item-disposition').value,'direct_keep');
+});
+
+test('a failed preference save preserves the previous decision and selection with an actionable message',async()=>{
+ const a=item('a',{user_disposition:{value:'lean_clean'}});const f=fixture(url=>{if(url.pathname==='/api/item-dispositions')throw new Error('保存失败，请重试');if(url.pathname==='/api/file-browser')return page([a]);});
+ await f.open();await f.select('a');const select=f.root.querySelector('.item-disposition');select.value='direct_keep';await select.fire('change');
+ assert.equal(select.value,'lean_clean');assert.equal(select.disabled,false);assert.deepEqual(f.selected(),['a']);assert.match(f.root.textContent,/保存失败，请重试/);assert.equal(f.actions.length,0);
+});
+
+test('a user-direct handoff labels its selected list without calling it AI advice',async()=>{
+ const f=fixture();f.helpers.latestTask=()=>({plan:{origin:'user_direct'}});f.helpers.renderTaskResults=root=>root.append(new f.Element('p'));
+ await f.open('',{suggestions:true});assert.ok(f.button('本次勾选'));assert.equal(f.root.textContent.includes('已有建议'),false);assert.ok(f.button('全部文件'));assert.equal(f.actions.length,0);
+});

@@ -53,6 +53,7 @@ impact_rating独立表示所述操作的后果程度：1很小、2轻微、3明�
 按需用list_skills/read_skill取得经验与来源；指导不是本机事实或额外权限。系统占用用collect_system_configuration/inspect_volume核查已有范围的有限配置统计，不能据此证明可恢复、健康或扩大范围。工具用法可discover_tools。需要专项清理时按需discover_cleanup_tools/inspect_cleanup_tool，建议正文直接说明；record_advice可附specialist入口，mode=replace表示用专项替代普通动作，不能再把高分目录提议整删。特殊情况用record_specialist_suggestions提供可读说明及选项；用户回答不等于执行授权。
 先读已有目标、用户选择、事实和结果，避免重复调查。working_evidence是压缩后保留的有限事实正文，不是全库或新的扫描；不足时在read_facts可用的阶段回读本任务事实。最后结论阶段只基于已给出的内容，不把未覆盖当成没有问题。checkpoint_task保存下一步与缺口；有关键偏好用ask_user一次问一个易懂问题。
 系统工具建议由程序直接提供，无需你重复生成；recent_tool_activity记录用户选择与工具结果，仅作背景，不扩大处理范围。打开工具不等于完成清理，接受建议不等于授权执行，模拟记录不等于真实系统已修改。
+程序默认跳过已有有效建议及用户已决定直接清理/直接保留的对象；无需再问使用频率或重复分析。user_disposition中的倾向作为判断偏好，不代替证据、保护规则或执行确认。直接清理只是用户意图，程序仍需勾选和执行确认。
 输出先给约80字的一句结论，最值得处理的3–5项用propose_plan；需要补充或本轮无更多建议用present_findings。有多方面信息时用briefing分模块，只填相关类：highlights最多3条重点，cautions最多2条关键影响/待确认，coverage最多2条已查范围/缺口，每条约40–80字。不要重复摘要、逐项建议或调查流水账。
 每项purpose用短用途，reason一句主要依据，impact一句主要后果；通常40–80字，必要事实仍要说清。评分是最直观的倾向，理由负责解释它，避免在各字段重复介绍软件。建议和方案每次最多6项，可分批保存。
 最多6次模型响应、12次工具调用；最后2次留给已有证据的评分和短结论，收束时不再采集新信息。工具失败、预算耗尽、提出计划或只采集元数据都不能伪报已完成。只呈现当前最重要内容，其余可由用户展开或继续查询。'''
@@ -946,6 +947,9 @@ class TaskHarness:
         if type(reserve_intent) is not bool:
             raise AppError('内部分析意图标记无效。')
         section, depth = payload.get('section', 'files'), payload.get('depth', 'auto')
+        reanalyze, skip_analyzed = payload.get('reanalyze', False), payload.get('skip_analyzed', False)
+        if type(reanalyze) is not bool or type(skip_analyzed) is not bool:
+            raise AppError('分析选项无效。')
         kinds = {'files': ('file', 'directory'), 'background': ('startup', 'service', 'process'), 'software': ('software',)}
         if not isinstance(section, str) or not isinstance(depth, str) or section not in kinds or depth not in ('auto', 'overview', 'detailed'):
             raise AppError('请选择有效的分析列表和方式。')
@@ -971,6 +975,15 @@ class TaskHarness:
                         and (kind in (None, 'all') or i['kind'] == kind)]
             if not rows:
                 raise AppError('当前范围没有可分析的对象，请先检查这个位置或调整筛选。')
+            skipped_count = 0
+            if reserve_intent:
+                assessments = self.assessments.resolve(all_rows) if skip_analyzed and not reanalyze else {}
+                selected_count = len(rows)
+                rows = [item for item in rows if not self.assessments.dispositions.strong(item)
+                        and not (skip_analyzed and not reanalyze and self._valid_assessment(assessments.get(item['id'])))]
+                skipped_count = selected_count - len(rows)
+                if not rows:
+                    raise AppError(f'这 {skipped_count} 项已有有效建议或你已直接决定，已跳过。可使用重新分析更新建议。', 'nothing_to_analyze', 409)
             if len(rows) > 50000:
                 raise AppError('当前清单超过五万项，请选择较小范围分批分析。')
             roots, seen = [], set()
@@ -997,7 +1010,8 @@ class TaskHarness:
                         roots=roots, preset='analysis', scope_kind='filesystem' if section == 'files' else 'applications',
                         known_ids=[i['id'] for i in rows], target_ids=[i['id'] for i in rows], action_directories=directories,
                         directory_checks={}, analysis=dict(section=section, depth=depth, target_count=len(rows), initial_target_count=len(rows), selection='selected' if ids is not None else 'filtered',
-                                      query=query, scope=scope, risk=risk, kind=kind, catalog_revision=self.state.revision),
+                                      query=query, scope=scope, risk=risk, kind=kind, catalog_revision=self.state.revision,
+                                      skipped_existing_count=skipped_count, reanalyze=reanalyze),
                         observations=[{'tool': 'selection_snapshot', 'at': now(), 'result': {
                             'source': 'existing_catalog', 'target_count': len(rows), 'catalog_revision': self.state.revision}}],
                         feedback=[], choices={}, advice={}, plan=None, plan_version=0, last_result=None, turn=0,
@@ -1075,9 +1089,20 @@ class TaskHarness:
         return in_task_scope(task, item)
 
     def _kept(self, task, item):
-        return any(c['choice'] in ('keep', 'defer') and (key == item['id'] or
+        return self.assessments.dispositions.strong(item) == 'direct_keep' or any(c['choice'] in ('keep', 'defer') and (key == item['id'] or
                    (c.get('kind') == 'directory' and item['kind'] in ('file', 'directory') and within(item['path'], c['path'])))
                    for key, c in task['choices'].items())
+
+    @staticmethod
+    def _valid_assessment(value):
+        return bool(value and not value.get('stale') and value.get('state') in ('explicit', 'inherited', 'skipped', 'no_advice'))
+
+    def _metadata(self, item):
+        value = self.assistant.task_metadata(item)
+        disposition = self.assessments.dispositions.get(item)
+        if disposition and not disposition['stale']:
+            value['user_disposition'] = dict(value=disposition['value'], label=disposition['label'], inherited=disposition['inherited'])
+        return value
 
     def _selected(self, task, ids):
         if (not isinstance(ids, list) or not 1 <= len(ids) <= 20 or
@@ -1150,7 +1175,7 @@ class TaskHarness:
         rows.sort(key=lambda i: i.get('size_bytes', 0), reverse=True)
         return dict(summary=report['summary'], warnings=report.get('warnings', [])[:4],
                     directory_id=parent['id'] if parent else None,
-                    items=[self.assistant.task_metadata(i) for i in rows[:40]],
+                    items=[self._metadata(i) for i in rows[:40]],
                     shown_count=min(len(rows), 40), observed_children=len(rows),
                     acquired_items=report['summary'].get('scanned_entries', len(report['items'])),
                     note='目录可能有深度或条目限制；可以展开目录或用list_items继续查看。')
@@ -1193,7 +1218,7 @@ class TaskHarness:
         self._save(task)
         return dict(scan_id=scan_id, summary=report['summary'], coverage=report['coverage'], aggregate=report['aggregate'],
                     cursor=report.get('cursor'), next_cursor=report.get('next_cursor'), has_more=report.get('has_more'),
-                    items=[self.assistant.task_metadata(i) for i in items[:40]], shown_count=min(len(items), 40),
+                    items=[self._metadata(i) for i in items[:40]], shown_count=min(len(items), 40),
                     acquired_items=len(items), scan_work=report['summary'].get('work_done', 0),
                     published_count=published, warnings=report.get('warnings', [])[:4],
                     note='可用continue_scan继续采集，read_scan分页读取已取得观察；目录索引不等于当前整目录处理验证。')
@@ -1388,17 +1413,22 @@ class TaskHarness:
             if (type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 40 or
                     not isinstance(query, str) or len(query) > 120 or type(args.get('unanalysed', False)) is not bool or kind not in (None, 'file', 'directory', 'software', 'startup', 'service', 'process')):
                 raise AppError('分页或筛选参数不正确。')
-            unanalysed = args.get('unanalysed', task.get('analysis', {}).get('depth') == 'detailed')
-            rows = [i for i in self._items(task) if not self._kept(task, i) and (not kind or i['kind'] == kind)
+            unanalysed = args.get('unanalysed', True)
+            candidates = self._items(task)
+            saved = self.assessments.resolve(self.state.snapshot(self.assistant.public_settings()['protect_patterns'])['items'])
+            force = task.get('analysis', {}).get('reanalyze', False)
+            rows = [i for i in candidates if not self._kept(task, i) and not self.assessments.dispositions.strong(i)
+                    and (not unanalysed or not self._valid_assessment(saved.get(i['id']))
+                         or force and (saved.get(i['id'], {}).get('source_ref') or {}).get('task_id') != task['id']) and (not kind or i['kind'] == kind)
                     and query.casefold() in i['name'].casefold() and (not unanalysed or
                       task.get('advice', {}).get(i['id'], {}).get('signature') != i['signature'])]
             rows.sort(key=lambda i: i.get('size_bytes', 0), reverse=True)
-            return dict(total=len(rows), offset=offset, items=[self.assistant.task_metadata(i) for i in rows[offset:offset+limit]])
+            return dict(total=len(rows), offset=offset, items=[self._metadata(i) for i in rows[offset:offset+limit]])
         if name in ('inspect_items', 'compare_files', 'cache_experience'):
             self._args(args, ['ids'], ['ids'])
             items = self._selected(task, args['ids'])
             if name == 'inspect_items':
-                return {'items': [dict(self.assistant.task_metadata(i), user_kept=self._kept(task, i)) for i in items]}
+                return {'items': [dict(self._metadata(i), user_kept=self._kept(task, i)) for i in items]}
             if name == 'cache_experience':
                 advice = build_recommendations(items)
                 return {'items': [dict(id=i['id'], advice=i['advice']) for i in advice['items']]}
@@ -1424,8 +1454,13 @@ class TaskHarness:
             self.state.publish(report['items'], args['section'])
             task['known_ids'] = list(dict.fromkeys(task['known_ids'] + [i['id'] for i in report['items']]))[:50000]
             self._save(task)
+            saved = self.assessments.resolve(self.state.snapshot(self.assistant.public_settings()['protect_patterns'])['items'])
+            force = task.get('analysis', {}).get('reanalyze', False)
+            candidates = [item for item in report['items'] if not self.assessments.dispositions.strong(item)
+                          and (not self._valid_assessment(saved.get(item['id']))
+                               or force and (saved.get(item['id'], {}).get('source_ref') or {}).get('task_id') != task['id'])]
             return {'observed_count': len(report['items']), 'warnings': report.get('warnings', [])[:4],
-                    'items': [self.assistant.task_metadata(i) for i in report['items'][:25]],
+                    'items': [self._metadata(i) for i in candidates[:25]], 'skipped_existing_count': len(report['items']) - len(candidates),
                     'note': '这里只提供注册与运行事实，不证明某程序已无用；可以用list_items搜索其名称。'}
         if name == 'record_advice':
             self._args(args, ['items'], ['items'])
@@ -1578,7 +1613,7 @@ class TaskHarness:
         current = next((entry for entry in items if entry['id'] == item['id']), None)
         if current is None or current['signature'] != item['signature']:
             raise AppError('这项内容已变化，请重新核对。', 'target_changed', 409)
-        if current['risk'] == 'protected' or respect_advice and self._kept(task, current):
+        if current['risk'] == 'protected' or self.assessments.dispositions.strong(current) == 'direct_keep' or respect_advice and self._kept(task, current):
             raise AppError('这项内容现在受保护或已选择保留，不能继续。', 'protected_item', 409)
         if item.get('action') and item['action'] not in current.get('actions', []):
             raise AppError('这项操作现在不可用，请重新核对。', 'unsupported_action', 409)
@@ -1591,7 +1626,7 @@ class TaskHarness:
         # Explicit user selections can override model inclination and temporary
         # task holds. Protection/real coverage and identity remain hard gates.
         reasons = conflict['reasons'] if respect_advice else [reason for reason in conflict['reasons']
-                    if reason in ('protected_descendant', 'coverage_incomplete')]
+                    if reason in ('protected_descendant', 'coverage_incomplete', 'user_direct_keep_descendant')]
         if reasons:
             raise AppError('目录中有保留、跳过、未知或未完整核对的内容，请改选具体文件。', 'directory_conflict', 409)
 
@@ -1606,7 +1641,7 @@ class TaskHarness:
                 respect_advice=(task.get('plan') or {}).get('origin') != 'user_direct')
             yield patterns
 
-    def prepare_assessment_plan(self, ids, *, expected_revision=None, source_task_id=None):
+    def prepare_assessment_plan(self, ids, *, expected_revision=None, source_task_id=None, allow_global_applications=False):
         """The user's exact host selection creates a reviewable simulation plan."""
         if (not isinstance(ids, list) or not 1 <= len(ids) <= 500
                 or any(not isinstance(ident, str) or not 1 <= len(ident) <= 160 for ident in ids)
@@ -1620,7 +1655,7 @@ class TaskHarness:
                    or items[ident]['simulated'] or items[ident]['risk'] == 'protected'
                    or not primary_action(items[ident]) for ident in ids):
                 raise AppError('选择中有已变化、受保护或当前不支持操作的内容，请重新核对。', 'selection_changed', 409)
-            if source_task_id is None and any(items[ident]['kind'] not in FILE_KINDS for ident in ids):
+            if source_task_id is None and not allow_global_applications and any(items[ident]['kind'] not in FILE_KINDS for ident in ids):
                 raise AppError('后台和软件操作必须来自当前任务的明确选择。', 'task_scope_required')
             if source_task_id is not None:
                 if not isinstance(source_task_id, str) or not 1 <= len(source_task_id) <= 160:
@@ -1965,6 +2000,9 @@ class TaskHarness:
                         last_user_action=user_action, recent_host_actions=self._recent_host_actions(task),
                         loaded_skills=list(task['loaded_skills'].values())[-20:],
                         scans=[self._scan_summary(s) for s in list(task.get('scans', {}).values())[:20]])
+        dispositions = self.assessments.dispositions.current()
+        optional['user_dispositions'] = [dict(id=item['id'], **{key: dispositions[item['id']][key] for key in ('value', 'label', 'inherited')})
+                                        for item in items if item['id'] in dispositions and not dispositions[item['id']]['stale']][:100]
         # These fields have declared optional-section semantics. Do not apply a
         # recursive empty-value filter to metadata: null may mean unknown there.
         for name, value in optional.items():

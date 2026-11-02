@@ -16,6 +16,14 @@
 .cleanup-explanation h2,.cleanup-observation h2,.cleanup-plan h2,.cleanup-result h2{font-size:var(--type-label);font-weight:650;line-height:1.5;margin:0 0 8px}
 .cleanup-explanation p{font-size:var(--type-body);line-height:1.8;margin:0;max-width:70ch;white-space:pre-wrap;overflow-wrap:anywhere}
 .cleanup-impact{background:var(--impact-3-bg,var(--surface-soft))}
+.cleanup-recovery{background:var(--panel);margin-top:12px}
+.cleanup-impact,.cleanup-recovery{max-width:900px;margin-bottom:12px}
+.cleanup-tool-dialog{width:min(680px,calc(100vw - 48px));max-height:calc(100vh - 64px);overflow:auto}
+.cleanup-tool-dialog h2{font-size:var(--type-section);line-height:1.45;margin:0 0 16px}
+.cleanup-tool-dialog p{line-height:1.8;overflow-wrap:anywhere;user-select:text}
+.cleanup-tool-progress{display:block;width:100%;height:10px;accent-color:var(--accent);margin:12px 0 18px}
+.cleanup-progress-count{font-variant-numeric:tabular-nums;color:var(--muted);margin:0}
+.cleanup-progress-message{font-size:var(--type-lead);margin:0 0 20px}
 .cleanup-parameters{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px 24px;max-width:800px;margin-bottom:24px}
 .cleanup-field{display:flex;flex-direction:column;gap:7px;min-width:0}
 .cleanup-field input:not([type="checkbox"]),.cleanup-field select{width:100%;min-height:44px;font-size:var(--type-body)}

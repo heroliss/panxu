@@ -732,6 +732,16 @@ button:disabled{opacity:.55}
 .selection-bar{background:var(--panel);border-color:var(--border-strong);box-shadow:0 -8px 28px var(--shadow-color)}
 .selection-bar #selection-size,.selection-bar .plain-button{color:var(--muted)}
 .inspector{background:var(--panel);border-color:var(--line)}
+.app-body{height:100vh;min-height:0;overflow:hidden}
+.topbar,.safety-banner,.global-message,.selection-bar,.app-footer{flex-shrink:0}
+.content-grid{min-height:0;overflow:hidden;align-items:stretch;grid-template-rows:minmax(0,1fr)}
+.content-grid>main{min-height:0;height:100%;margin-block:0;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable}
+.content-grid>.inspector{min-height:0;height:auto;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable}
+.inventory-row-actions{min-width:152px}
+.inventory-row-actions .item-disposition{margin-top:8px;max-width:170px}
+.inventory-row-actions select{max-width:170px;font-size:var(--type-meta,13px)}
+.inventory-row-actions .button{width:100%}
+.selection-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .inspector h4,.inspector-definition dt{color:var(--muted)}
 .inspector-definition dd{color:var(--ink)}
 .advanced-drawer{background:var(--panel);box-shadow:-14px 0 40px var(--shadow-color)}

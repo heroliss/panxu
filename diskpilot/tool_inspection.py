@@ -185,7 +185,7 @@ def volume_presentation(tool_id, params, evidence):
     metrics = []
     if tool_id == 'recycle_bin':
         size, count = recycle.get('size_bytes'), recycle.get('item_count')
-        valid = recycle.get('query_succeeded') is True and type(size) is int and type(count) is int
+        valid = recycle.get('query_succeeded') is True and type(size) is int and type(count) is int and size >= 0 and count >= 0
         if valid:
             metrics.extend([_metric('recycle_bytes', '回收站占用', size, denominator=total, denominator_label='占此卷总容量'),
                             _metric('recycle_count', '回收站项目', count, 'count')])
@@ -193,6 +193,8 @@ def volume_presentation(tool_id, params, evidence):
         if type(free) is int: metrics.append(_metric('volume_free_bytes', '此卷可用空间', free))
         return _presentation('recycle_bin', '当前用户在此卷的回收站' if valid else '暂未取得此卷回收站统计',
             status='observed' if valid else 'unknown', complete=valid, metrics=metrics,
+            action_availability=dict(available=count > 0 if valid else None,
+                                     reason='回收站已空' if valid and count == 0 else ''),
             recycle=dict(bytes=size if valid else None, count=count if valid else None,
                          volume_total_bytes=total, volume_free_bytes=free, volume=params.get('volume')))
     if type(free) is int: metrics.append(_metric('volume_free_bytes', '此卷可用空间', free, denominator=total, denominator_label='此卷总容量'))
@@ -229,12 +231,14 @@ def inspect_metadata(tool_id, params):
         metrics = [_metric('observed_bytes', '已统计占用' if complete else '已统计占用（至少）', measured['observed_bytes']),
                    _metric('observed_files', '已统计文件', measured['observed_files'], 'count')] if found else []
         warnings = []
-        if not complete: warnings.append('部分位置因占用、权限、链接或检查预算未完整统计。')
-        if source == 'default_candidates': warnings.append('仅检查已知默认位置；自行修改的缓存位置可能未包含。')
-        if source == 'recognized_profiles': warnings.append('统计当前用户可识别配置的文件缓存，尚未识别活动Profile。')
+        if not complete: warnings.append('部分位置未能检查。')
+        if source == 'default_candidates': warnings.append('仅检查已知位置。')
+        if source == 'recognized_profiles': warnings.append('按可识别的浏览器配置统计。')
         return dict(**measured, location_source=source), _presentation('cache',
-            '找到可检查的缓存位置' if found else '暂时无法检查这些位置' if measured['status'] == 'unknown' else '未在这些位置发现缓存', status=measured['status'],
+            '缓存占用' if found else '暂时无法检查' if measured['status'] == 'unknown' else '未找到缓存位置', status=measured['status'],
             complete=complete and found, metrics=metrics, warnings=warnings,
+            action_availability=dict(available=measured['observed_files'] > 0 if complete and found else None,
+                                     reason='检查范围内没有可清理文件' if complete and found and not measured['observed_files'] else ''),
             items=[dict(label='检查位置', value=str(path)) for path in paths[:4]])
     if tool_id in ('browser_privacy', 'browser_cache', 'browser_models'):
         browser = params.get('browser', 'edge'); program = find_program(browser)
@@ -254,4 +258,4 @@ def inspect_metadata(tool_id, params):
         except OSError:
             return dict(status='unknown'), _presentation('location', '暂时无法读取此位置')
     return dict(status='unknown', reason='此工具尚无完整专用状态读取器。'), _presentation(
-        'status', '可在对应程序中核对当前状态', items=[dict(label='清理操作', value='尚未执行')])
+        'status', '请在对应程序中查看状态')

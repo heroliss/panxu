@@ -19,25 +19,25 @@ function fixture(respond,storage=new Map()){
   }
   const root=new Element('main'),window={},requests=[],returns=[],results=[],opened=[],answers=[];
   runInNewContext(source,{window,document:{createElement:tag=>new Element(tag)},setTimeout,clearTimeout,sessionStorage:{getItem:key=>storage.get(key),setItem:(key,value)=>storage.set(key,value),removeItem:key=>storage.delete(key)}});
-  const context={api:async(path,body)=>{requests.push({path,body:body===undefined?undefined:plain(body)});if(respond){const value=await respond(path,body);if(value!==undefined)return value;}if(path.startsWith('/api/cleanup-tools?'))return {items:[tool()],categories:[{id:'applications',title:'软件与缓存'}]};if(path==='/api/cleanup-tools/browser_cache')return tool();if(path==='/api/cleanup-tools/prepare')return plan(body.parameters);if(path==='/api/cleanup-tools/inspect')return {presentation:{kind:'browser_cache',status:'unknown',summary:'尚未确认浏览器缓存大小。',metrics:[],items:[],warnings:['尚未读取浏览器资料。']},evidence:{private_debug_only:'不应显示的原始值'},parameters:body.parameters};if(path==='/api/cleanup-tools/execute')return result();if(path==='/api/cleanup-plans/owned-plan')return plan();throw Error('Unexpected '+path);},onReturn:()=>returns.push('returned'),onResult:value=>results.push(value),onOpenSettings:(...args)=>opened.push(args),onAnswer:value=>answers.push(value)};
+  const context={api:async(path,body)=>{requests.push({path,body:body===undefined?undefined:plain(body)});if(respond){const value=await respond(path,body);if(value!==undefined)return value;}if(path.startsWith('/api/cleanup-tools?'))return {items:[tool()],categories:[{id:'applications',title:'软件与缓存'}]};if(path==='/api/cleanup-tools/browser_cache')return tool();if(path==='/api/cleanup-tools/prepare')return plan(body.parameters);if(path==='/api/cleanup-tools/inspect')return {presentation:{kind:'browser_cache',status:'unknown',summary:'尚未确认浏览器缓存大小。',metrics:[],items:[],warnings:['尚未读取浏览器资料。']},evidence:{private_debug_only:'不应显示的原始值'},parameters:body.parameters};if(path==='/api/file-browser/drives')return {items:[{path:'C:\\',name:'系统盘'},{path:'E:\\',name:'数据盘'}]};if(path==='/api/cleanup-tools/cancel')return {...plan(),status:'cancelled'};if(path==='/api/cleanup-tools/execute')return result();if(path==='/api/cleanup-plans/owned-plan')return plan();throw Error('Unexpected '+path);},onReturn:()=>returns.push('returned'),onResult:value=>results.push(value),onOpenSettings:(...args)=>opened.push(args),onAnswer:value=>answers.push(value)};
   return {root,subject:window.PanxuCleanupTools,context,requests,returns,results,opened,answers,storage,find:label=>root.all().find(x=>x.tag==='button'&&x.textContent===label),input:name=>root.all().find(x=>x.name===name),all:()=>root.all()};
 }
 test('opening a recommendation reads a registered tool and automatically inspects once; navigation never executes',async()=>{
   const f=fixture();await f.subject.open(f.root,{tool_id:'browser_cache',source:{task_id:'owned-task',item_id:'owned-item'}},f.context);
-  assert.equal(f.requests.length,2);assert.equal(f.requests.filter(r=>r.path.endsWith('/inspect')).length,1);assert.match(f.root.textContent,/影响与恢复说明/);assert.equal(f.find('检查当前状态'),undefined);assert.ok(f.find('刷新'));
+  assert.equal(f.requests.length,2);assert.equal(f.requests.filter(r=>r.path.endsWith('/inspect')).length,1);assert.match(f.root.textContent,/恢复说明/);assert.equal(f.find('检查当前状态'),undefined);assert.ok(f.find('刷新'));
   await f.find('打开浏览器').fire();assert.equal(f.opened[0][0],'browser_cache');assert.equal(f.opened[0][2],0);assert.deepEqual(plain(f.opened[0][3]),{browser:'edge',profile:'current'});assert.match(f.root.textContent,/已打开对应入口/);assert.equal(f.root.textContent.includes('官方'),false);
   await f.find('返回清单').fire();assert.equal(f.returns.length,1);assert.equal(f.requests.some(r=>r.path.endsWith('/execute')),false);
 });
 test('preview freezes parameters, and only explicit confirmation submits exactly that plan',async()=>{
   const f=fixture();await f.subject.open(f.root,{tool_id:'browser_cache',source:{task_id:'owned-task',item_id:'owned-item',advice_version:3}},f.context);
-  f.input('browser').value='chrome';await f.input('browser').fire('input');await f.find('预览操作').fire();
+  f.input('browser').value='chrome';await f.input('browser').fire('input');await f.find('执行清理').fire();
   assert.equal(f.requests.at(-1).body.parameters.browser,'chrome');assert.equal(f.requests.at(-1).body.source.advice_version,3);assert.ok(f.find('确认执行'));assert.match(f.root.textContent,/Google Chrome/);
   assert.equal(f.requests.some(r=>r.path.endsWith('/execute')),false);await f.find('确认执行').fire();
   assert.deepEqual(f.requests.find(r=>r.path.endsWith('/execute')),{path:'/api/cleanup-tools/execute',body:{plan_id:'owned-plan',version:4}});assert.equal(f.results.length,1);assert.match(f.root.textContent,/实际释放空间：0 B/);assert.equal(f.find('确认执行'),undefined);
 });
 test('editing a frozen parameter requires another preview and preserves the draft across reopening',async()=>{
   const f=fixture(),ref={tool_id:'browser_cache',source:{task_id:'owned-task',item_id:'owned-item',advice_version:7}};
-  await f.subject.open(f.root,ref,f.context);await f.find('预览操作').fire();assert.equal(f.input('profile'),undefined);await f.find('返回调整').fire();f.input('profile').value='Work';await f.input('profile').fire('input');
+  await f.subject.open(f.root,ref,f.context);await f.find('执行清理').fire();assert.equal(f.input('profile').disabled,true);await f.find('返回调整').fire();f.input('profile').value='Work';await f.input('profile').fire('input');
   assert.equal(f.find('确认执行'),undefined);f.subject.unmount();await f.subject.open(f.root,{...ref,parameters:{profile:'current'}},f.context);assert.equal(f.input('profile').value,'Work');assert.equal(f.requests.some(r=>r.path.endsWith('/execute')),false);
 });
 test('read-only inspection reports unknown without inferring cache size or successful cleanup',async()=>{
@@ -46,17 +46,17 @@ test('read-only inspection reports unknown without inferring cache size or succe
 });
 test('double clicks cannot resubmit an in-flight frozen operation',async()=>{
   let resolve;const wait=new Promise(done=>{resolve=done;});const f=fixture((path)=>path.endsWith('/execute')?wait:undefined);
-  await f.subject.open(f.root,{tool_id:'browser_cache'},f.context);await f.find('预览操作').fire();const confirm=f.find('确认执行'),first=confirm.fire();await flush();await confirm.fire();
+  await f.subject.open(f.root,{tool_id:'browser_cache'},f.context);await f.find('执行清理').fire();const confirm=f.find('确认执行'),first=confirm.fire();await flush();await confirm.fire();
   assert.equal(f.requests.filter(r=>r.path.endsWith('/execute')).length,1);resolve(result());await first;
 });
 test('a transport failure offers receipt verification and never automatically replays execution',async()=>{
   const f=fixture(path=>{if(path.endsWith('/execute'))throw Error('连接中断');if(path==='/api/cleanup-plans/owned-plan')return {...plan(),status:'completed',result:result()};});
-  await f.subject.open(f.root,{tool_id:'browser_cache'},f.context);await f.find('预览操作').fire();await f.find('确认执行').fire();assert.match(f.root.textContent,/不会自动重复/);assert.equal(f.find('确认执行'),undefined);
+  await f.subject.open(f.root,{tool_id:'browser_cache'},f.context);await f.find('执行清理').fire();await f.find('确认执行').fire();assert.match(f.root.textContent,/不会自动重复/);assert.equal(f.find('确认执行'),undefined);
   await f.find('核对操作结果').fire();assert.match(f.root.textContent,/操作结果已记录/);assert.equal(f.requests.filter(r=>r.path.endsWith('/execute')).length,1);
 });
 test('a later directory response cannot overwrite a tool opened after it',async()=>{
   let resolve;const wait=new Promise(done=>{resolve=done;});const f=fixture(path=>path.startsWith('/api/cleanup-tools?')?wait:undefined);
-  const listing=f.subject.mount(f.root,f.context);await f.subject.open(f.root,{tool_id:'browser_cache'},f.context);resolve({items:[],categories:[]});await listing;assert.match(f.root.textContent,/浏览器文件缓存/);assert.ok(f.find('预览操作'));
+  const listing=f.subject.mount(f.root,f.context);await f.subject.open(f.root,{tool_id:'browser_cache'},f.context);resolve({items:[],categories:[]});await listing;assert.match(f.root.textContent,/浏览器文件缓存/);assert.ok(f.find('执行清理'));
 });
 test('pending plan recovery is user initiated, reads persisted frozen plan and never executes',async()=>{
   const storage=new Map([['panxu.cleanup.pending.v1','owned-plan']]),f=fixture(undefined,storage);await f.subject.mount(f.root,f.context);
@@ -85,19 +85,19 @@ test('extra list batches only checked registered-tool options, records choices, 
   await f.subject.open(f.root,{extra_suggestions:suggestions,source:{task_id:'owned-task'}},f.context);
   const all=f.all().find(x=>x.attrs['aria-label']==='全选可批量处理的专项建议');all.checked=true;await all.fire('change');
   assert.equal(f.all().find(x=>x.attrs['aria-label']==='选择专项建议：查看人工步骤').disabled,true);
-  const select=f.all().find(x=>x.attrs['aria-label']==='选择处理方式：调整休眠模式');select.value='off';await select.fire('change');await f.find('预览勾选的 2 项').fire();
+  const select=f.all().find(x=>x.attrs['aria-label']==='选择处理方式：调整休眠模式');select.value='off';await select.fire('change');await f.find('执行勾选的 2 项').fire();
   const answers=f.requests.filter(r=>r.path.endsWith('/specialist-answer'));assert.deepEqual(answers.map(r=>r.body),[{suggestion_id:'browser',option_id:'cache',version:2},{suggestion_id:'power',option_id:'off',version:3}]);
   const batch=f.requests.find(r=>r.path.endsWith('/prepare-many'));assert.equal(batch.body.items.length,2);assert.deepEqual(batch.body.items[1],{tool_id:'hibernation',parameters:{mode:'off'}});assert.match(f.root.textContent,/关闭/);assert.ok(f.find('确认执行 2 项'));assert.equal(f.requests.some(r=>r.path.endsWith('/execute')),false);
   await f.find('确认执行 2 项').fire();assert.equal(f.requests.filter(r=>r.path.endsWith('/execute')).length,1);
 });
 test('failed batch preparation preserves selections and cannot execute partially saved answers',async()=>{
   const suggestions=extras(),f=fixture((path,body)=>{if(path.endsWith('/specialist-answer')){const s=suggestions.find(s=>s.id===body.suggestion_id),o=s.options.find(o=>o.id===body.option_id);return {specialist:{tool_id:o.tool_id,parameters:o.parameters}};}if(path.endsWith('/prepare-many'))throw Error('参数缺少目标目录');});
-  await f.subject.open(f.root,{extra_suggestions:suggestions,source:{task_id:'owned-task'}},f.context);const all=f.all().find(x=>x.attrs['aria-label']==='全选可批量处理的专项建议');all.checked=true;await all.fire('change');await f.find('预览勾选的 2 项').fire();
-  assert.match(f.root.textContent,/已保存 2 项选择，尚未执行任何操作/);assert.match(f.root.textContent,/单独查看方案/);assert.ok(f.find('预览勾选的 2 项'));assert.equal(f.requests.some(r=>r.path.endsWith('/execute')),false);
+  await f.subject.open(f.root,{extra_suggestions:suggestions,source:{task_id:'owned-task'}},f.context);const all=f.all().find(x=>x.attrs['aria-label']==='全选可批量处理的专项建议');all.checked=true;await all.fire('change');await f.find('执行勾选的 2 项').fire();
+  assert.match(f.root.textContent,/已保存 2 项选择，尚未执行任何操作/);assert.match(f.root.textContent,/单独查看方案/);assert.ok(f.find('执行勾选的 2 项'));assert.equal(f.requests.some(r=>r.path.endsWith('/execute')),false);
 });
 test('returning while an extra answer is in flight prevents late navigation and subsequent batch preparation',async()=>{
   let resolve;const wait=new Promise(done=>{resolve=done;}),f=fixture(path=>path.endsWith('/specialist-answer')?wait:undefined);
-  await f.subject.open(f.root,{extra_suggestions:extras(),source:{task_id:'owned-task'}},f.context);const check=f.all().find(x=>x.attrs['aria-label']==='选择专项建议：清理浏览器缓存');check.checked=true;await check.fire('change');const waiting=f.find('预览勾选的 1 项').fire();await flush();await f.find('返回清单').fire();resolve({specialist:{tool_id:'browser_cache',parameters:{}}});await waiting;
+  await f.subject.open(f.root,{extra_suggestions:extras(),source:{task_id:'owned-task'}},f.context);const check=f.all().find(x=>x.attrs['aria-label']==='选择专项建议：清理浏览器缓存');check.checked=true;await check.fire('change');const waiting=f.find('执行勾选的 1 项').fire();await flush();await f.find('返回清单').fire();resolve({specialist:{tool_id:'browser_cache',parameters:{}}});await waiting;
   assert.equal(f.returns.length,1);assert.equal(f.requests.some(r=>r.path.endsWith('/prepare-many')),false);assert.equal(f.requests.some(r=>r.path.endsWith('/execute')),false);
 });
 test('system-managed pagefile conceals inactive custom sizes until custom mode is chosen',async()=>{
@@ -113,9 +113,9 @@ test('host back navigation replaces duplicate page controls and clears when retu
   await f.subject.open(f.root,{tool_id:'browser_cache',source:{task_id:'owned-task'}},f.context);assert.equal(f.find('返回清单'),undefined);assert.equal(backs.at(-1).label,'返回清单');backs.at(-1).run();assert.equal(f.returns.length,1);
 });
 test('confirmation is a distinct compact stage and adjustment restores the full parameter form',async()=>{
-  const f=fixture();await f.subject.open(f.root,{tool_id:'browser_cache'},f.context);assert.ok(f.input('browser'));assert.match(f.root.textContent,/清理缓存后可能/);await f.find('预览操作').fire();
-  assert.equal(f.input('browser'),undefined);assert.equal(f.find('检查当前状态'),undefined);assert.equal(f.find('预览操作'),undefined);assert.equal(f.root.textContent.includes('操作影响'),false);assert.ok(f.find('确认执行'));
-  await f.find('返回调整').fire();assert.ok(f.input('browser'));await f.find('预览操作').fire();await f.find('确认执行').fire();assert.equal(f.root.textContent.includes('确认这次操作'),false);assert.match(f.root.textContent,/操作结果已记录/);assert.ok(f.find('返回工具说明'));
+  const f=fixture();await f.subject.open(f.root,{tool_id:'browser_cache'},f.context);assert.ok(f.input('browser'));assert.match(f.root.textContent,/清理缓存后可能/);await f.find('执行清理').fire();
+  assert.equal(f.input('browser').disabled,true);assert.equal(f.find('检查当前状态'),undefined);assert.equal(f.find('执行清理').disabled,true);assert.equal(f.root.textContent.includes('操作影响'),true);assert.ok(f.find('确认执行'));assert.ok(f.all().find(x=>x.tag==='dialog'&&x.attrs.open!==undefined));
+  await f.find('返回调整').fire();assert.ok(f.input('browser'));await f.find('执行清理').fire();await f.find('确认执行').fire();assert.equal(f.root.textContent.includes('确认这次操作'),false);assert.match(f.root.textContent,/操作结果已记录/);assert.ok(f.find('返回工具说明'));
 });
 test('browser launch entries follow selected product and preserve the registered index',async()=>{
   const value={...tool(),settings:[{kind:'application',browser:'chrome',target:'registered-chrome',label:'打开Chrome',available:true},{kind:'application',browser:'edge',target:'registered-edge',label:'打开Edge',available:true},{kind:'application',browser:'firefox',target:'registered-firefox',label:'打开Firefox',available:true}]};
@@ -123,14 +123,14 @@ test('browser launch entries follow selected product and preserve the registered
 });
 
 test('default profile is an honest placeholder and blank user input retains the internal current reference',async()=>{
-  const f=fixture();await f.subject.open(f.root,{tool_id:'browser_cache'},f.context);assert.equal(f.input('profile').value,'');assert.equal(f.input('profile').placeholder,'当前用户（具体配置待核实）');await f.input('profile').fire('input');await f.find('预览操作').fire();assert.equal(f.requests.at(-1).body.parameters.profile,'current');assert.match(f.root.textContent,/当前用户（具体配置待核实）/);assert.equal(f.root.textContent.includes('当前资料配置'),false);
+  const f=fixture();await f.subject.open(f.root,{tool_id:'browser_cache'},f.context);assert.equal(f.input('profile').value,'');assert.equal(f.input('profile').placeholder,'当前用户（具体配置待核实）');await f.input('profile').fire('input');await f.find('执行清理').fire();assert.equal(f.requests.at(-1).body.parameters.profile,'current');assert.match(f.root.textContent,/当前用户（具体配置待核实）/);assert.equal(f.root.textContent.includes('当前资料配置'),false);
 });
 
 const wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 test('automatic inspection is independent from opening a program or returning while the read is slow',async()=>{
  let finish;const pending=new Promise(resolve=>{finish=resolve;}),f=fixture(path=>path.endsWith('/inspect')?pending:undefined);
  await f.subject.open(f.root,{tool_id:'browser_cache',source:{task_id:'owned-task'}},f.context);
- assert.equal(f.find('打开浏览器').disabled,false);assert.equal(f.find('预览操作').disabled,false);await f.find('打开浏览器').fire();await f.find('返回清单').fire();finish({presentation:{summary:'迟到的检查',kind:'cache'}});await flush();assert.equal(f.returns.length,1);assert.equal(f.root.textContent.includes('迟到的检查'),false);assert.equal(f.requests.some(r=>/prepare|execute/.test(r.path)),false);
+ assert.equal(f.find('打开浏览器').disabled,false);assert.equal(f.find('执行清理').disabled,false);await f.find('打开浏览器').fire();await f.find('返回清单').fire();finish({presentation:{summary:'迟到的检查',kind:'cache'}});await flush();assert.equal(f.returns.length,1);assert.equal(f.root.textContent.includes('迟到的检查'),false);assert.equal(f.requests.some(r=>/prepare|execute/.test(r.path)),false);
 });
 test('parameter changes debounce automatic inspection and reject older-scope results',async()=>{
  let old;const first=new Promise(resolve=>{old=resolve;}),f=fixture((path,body)=>{if(path.endsWith('/inspect'))return body.parameters.browser==='edge'?first:{presentation:{kind:'cache',summary:'Chrome当前读数',metrics:[],items:[]}};});
@@ -159,12 +159,12 @@ test('official documents never become tool actions and unavailable programs are 
 });
 test('required tool parameters defer automatic checks until the target is entered',async()=>{
  const value={...tool('cache_location'),parameters:[{name:'target_path',label:'目标目录',required:true,type:'string'}],settings:[]};const f=fixture(path=>path==='/api/cleanup-tools/cache_location'?value:undefined);await f.subject.open(f.root,{tool_id:'cache_location'},f.context);
- assert.equal(f.requests.filter(r=>r.path.endsWith('/inspect')).length,0);assert.match(f.root.textContent,/补充必填选项/);assert.equal(f.find('预览操作').disabled,true);f.input('target_path').value='E:\\Cache';await f.input('target_path').fire('input');await wait(210);assert.equal(f.requests.filter(r=>r.path.endsWith('/inspect')).length,1);assert.equal(f.find('预览操作').disabled,false);f.input('target_path').value='';await f.input('target_path').fire('input');assert.equal(f.find('预览操作').disabled,true);
+ assert.equal(f.requests.filter(r=>r.path.endsWith('/inspect')).length,0);assert.match(f.root.textContent,/补充必填选项/);assert.equal(f.find('应用设置').disabled,true);f.input('target_path').value='E:\\Cache';await f.input('target_path').fire('input');await wait(210);assert.equal(f.requests.filter(r=>r.path.endsWith('/inspect')).length,1);assert.equal(f.find('应用设置').disabled,false);f.input('target_path').value='';await f.input('target_path').fire('input');assert.equal(f.find('应用设置').disabled,true);
 });
 
 test('bounded partial checks remain visibly partial instead of presenting a whole-directory total',async()=>{
  const f=fixture(path=>path.endsWith('/inspect')?{presentation:{kind:'cache',summary:'已读取缓存大小',status:'partial',complete:false,metrics:[{label:'已读取大小',value:4096,unit:'bytes'}],items:[],warnings:[]}}:undefined);
- await f.subject.open(f.root,{tool_id:'browser_cache'},f.context);await flush();assert.match(f.root.textContent,/部分结果/);assert.match(f.root.textContent,/仅表示已读取范围/);assert.match(f.root.textContent,/4 KiB/);
+ await f.subject.open(f.root,{tool_id:'browser_cache'},f.context);await flush();assert.match(f.root.textContent,/部分结果/);assert.match(f.root.textContent,/部分信息未取得/);assert.match(f.root.textContent,/4 KiB/);
 });
 
 test('cache shows its known size prominently and keeps checked locations in one optional disclosure',async()=>{
@@ -175,4 +175,52 @@ test('cache shows its known size prominently and keeps checked locations in one 
 test('memory ratios use only explicitly known denominators and pagefile allocations honor byte units',async()=>{
  const value={...tool('pagefile'),parameters:[]};const f=fixture(path=>path==='/api/cleanup-tools/pagefile'?value:path.endsWith('/inspect')?{presentation:{kind:'pagefile',status:'observed',complete:true,summary:'当前内存与分页快照',metrics:[{key:'physical_available_bytes',label:'可用物理内存',value:1024,unit:'bytes',denominator:4096},{key:'commit_current_bytes',label:'当前内存提交',value:8192,unit:'bytes',denominator:4096},{key:'other',label:'其他读数',value:2,unit:'count',denominator:9}],items:[{label:'E:',value:2048,unit:'bytes'}]}}:undefined);
  await f.subject.open(f.root,{tool_id:'pagefile'},f.context);await flush();const meters=f.all().filter(x=>x.tag==='progress');assert.equal(meters.length,1);assert.equal(meters[0].max,4096);assert.equal(meters[0].value,1024);assert.match(meters[0].attrs['aria-label'],/物理内存总量/);assert.match(f.root.textContent,/2 KiB/);assert.equal(f.root.textContent.includes('2048'),false);
+});
+
+test('all registered tools are visible without a show-more step',async()=>{
+ const f=fixture(path=>path.startsWith('/api/cleanup-tools?')?{items:Array.from({length:48},(_,i)=>({...tool('tool-'+i),common:i<5})),categories:[]}:undefined);
+ await f.subject.mount(f.root,f.context);assert.equal(f.all().filter(x=>x.className==='cleanup-tool-row').length,48);assert.equal(f.root.textContent.includes('查看全部'),false);
+});
+test('volume is an actual-drive dropdown and changing it changes the automatic inspection scope',async()=>{
+ const value={...tool('recycle_bin'),parameters:[{name:'volume',format:'volume',default:'C:',label:'目标盘符'}]};
+ const f=fixture(path=>path==='/api/cleanup-tools/recycle_bin'?value:undefined);await f.subject.open(f.root,{tool_id:'recycle_bin'},f.context);
+ const select=f.input('volume');assert.equal(select.tag,'select');assert.deepEqual(select.children.filter(x=>x.value).map(x=>x.value),['C:','E:']);
+ select.value='E:';await select.fire('input');await wait(210);assert.equal(f.requests.filter(r=>r.path.endsWith('/inspect')).at(-1).body.parameters.volume,'E:');
+});
+test('drive read failure cannot fall back to a freely typed or unverified volume',async()=>{
+ const value={...tool('recycle_bin'),parameters:[{name:'volume',format:'volume',default:'C:',label:'目标盘符'}]};const f=fixture(path=>{if(path==='/api/cleanup-tools/recycle_bin')return value;if(path==='/api/file-browser/drives')throw Error('unavailable');});
+ await f.subject.open(f.root,{tool_id:'recycle_bin'},f.context);assert.equal(f.input('volume').tag,'select');assert.equal(f.find('执行清理').disabled,true);assert.equal(f.requests.some(r=>r.path.endsWith('/inspect')),false);assert.match(f.root.textContent,/暂时无法读取磁盘/);
+});
+test('impact and recovery remain visible without disclosures',async()=>{
+ const f=fixture();await f.subject.open(f.root,{tool_id:'browser_cache'},f.context);assert.match(f.root.textContent,/操作影响/);assert.match(f.root.textContent,/恢复说明/);
+ assert.equal(f.all().some(x=>x.tag==='details'&&/恢复/.test(x.textContent)),false);assert.equal(f.find('预览操作'),undefined);
+});
+test('confirmed empty inspection disables execution while unknown or partial zero stays distinct',async()=>{
+ for(const availability of [false,null,true]){
+  const f=fixture(path=>path.endsWith('/inspect')?{presentation:{kind:'cache',status:availability===null?'partial':'observed',complete:availability!==null,summary:'检查结果',metrics:[{key:'observed_bytes',value:0,unit:'bytes'}],action_availability:{available:availability,reason:availability===false?'检查范围内没有可清理文件':''}}}:undefined);
+  await f.subject.open(f.root,{tool_id:'browser_cache'},f.context);await flush();assert.equal(f.find('执行清理').disabled,availability===false);
+  if(availability===false){await f.find('执行清理').fire();assert.equal(f.requests.some(r=>r.path.endsWith('/prepare')),false);assert.match(f.root.textContent,/没有可清理文件/);}
+  f.subject.unmount();
+ }
+});
+test('long operations expose progress and cancellation through the host without another model request',async()=>{
+ let finish;const running=new Promise(resolve=>finish=resolve);const f=fixture((path,body)=>{
+  if(path.endsWith('/execute'))return running;
+  if(path==='/api/cleanup-plans/owned-plan')return {...plan(),status:'executing',execution:{total:2,processed:1,current:{name:'第二项缓存'},can_pause:true,can_cancel:true}};
+  if(path==='/api/cleanup-tools/control')return {execution:{total:2,processed:1,status:'cancelling',can_pause:false,can_cancel:false}};
+ });
+ await f.subject.open(f.root,{tool_id:'browser_cache'},f.context);await f.find('执行清理').fire();const execution=f.find('确认执行').fire();await wait(280);
+ const dialog=f.all().find(x=>x.tag==='dialog'),progress=dialog.all().find(x=>x.tag==='progress');assert.equal(progress.max,2);assert.equal(progress.value,1);assert.match(dialog.textContent,/第二项缓存/);
+ await f.find('取消剩余操作').fire();assert.deepEqual(f.requests.find(r=>r.path.endsWith('/control')).body,{plan_id:'owned-plan',action:'cancel'});assert.equal(f.find('正在取消…').disabled,true);
+ finish({...result(),status:'cancelled'});await execution;assert.match(f.root.textContent,/操作已取消/);assert.equal(f.requests.some(r=>r.path.includes('/agent')),false);f.subject.unmount();
+});
+test('a late progress read cannot overwrite a newer pause control receipt',async()=>{
+ let finish,read;const running=new Promise(resolve=>finish=resolve),oldRead=new Promise(resolve=>read=resolve);const f=fixture(path=>{
+  if(path.endsWith('/execute'))return running;
+  if(path==='/api/cleanup-plans/owned-plan')return oldRead;
+  if(path==='/api/cleanup-tools/control')return {execution:{revision:8,status:'paused',total:2,processed:0,can_resume:true,can_pause:false,can_cancel:true}};
+ });
+ await f.subject.open(f.root,{tool_id:'browser_cache'},f.context);await f.find('执行清理').fire();const operation=f.find('确认执行').fire();await wait(275);await f.find('暂停').fire();
+ assert.ok(f.find('继续'));read({...plan(),execution:{revision:2,status:'running',total:2,processed:0,can_resume:false,can_pause:true,can_cancel:true}});await flush();assert.ok(f.find('继续'));assert.match(f.root.textContent,/已暂停/);
+ finish(result());await operation;f.subject.unmount();
 });

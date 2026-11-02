@@ -89,6 +89,7 @@ class FileCatalog:
             snapshot = self.state.snapshot(self.patterns())
             snapshot_index = {item['id']: item for item in snapshot['items']}
             resolved = self.assessments.resolve(snapshot['items']) if self.assessments else {}
+            dispositions = self.assessments.dispositions.current() if self.assessments else {}
             rows = [i for i in snapshot['items'] if i['kind'] in KINDS and not i['simulated']
                     and not i.get('details', {}).get('synthetic')]
             blocked = set()
@@ -130,6 +131,7 @@ class FileCatalog:
                 if source:
                     assessment.update(inherited_from_name=source['name'], inherited_from_path=source['path'])
                 projected['assessment'] = assessment
+                projected['user_disposition'] = copy.deepcopy(dispositions.get(item['id']))
                 projected['navigation_only'] = False
                 projected['can_prepare'] = bool(selectable and projected['action']
                     and not assessment.get('blocked_reasons') and not assessment.get('stale'))
@@ -219,6 +221,9 @@ class FileCatalog:
             reasons.append('already_simulated')
         if row.get('risk') == 'protected':
             reasons.append('protected')
+        disposition = row.get('user_disposition')
+        if disposition and not disposition.get('stale') and disposition.get('value') == 'direct_keep':
+            reasons.append('user_direct_keep')
         if not primary_action(row):
             reasons.append('unsupported_action')
         if not isinstance(row.get('signature'), str) or not row.get('signature'):

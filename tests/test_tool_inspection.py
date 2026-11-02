@@ -3,6 +3,8 @@ import hashlib
 import os
 from pathlib import Path
 import tempfile
+import threading
+from concurrent.futures import ThreadPoolExecutor
 import unittest
 from unittest.mock import patch
 
@@ -122,6 +124,37 @@ class ToolInspectionTests(unittest.TestCase):
         self.assertFalse(evidence['reads_private_data'])
         self.assertEqual(report['kind'], 'application')
 
+    def test_confirmed_empty_is_distinct_from_absent_or_partial_cache(self):
+        cache = self.root / 'cache'; cache.mkdir()
+        with patch('diskpilot.tool_inspection.candidate_paths', return_value=([cache], 'environment')):
+            _, report = inspect_metadata('uv_cache', {})
+        self.assertTrue(report['complete'])
+        self.assertIs(report['action_availability']['available'], False)
+        with patch('diskpilot.tool_inspection.candidate_paths', return_value=([cache / 'absent'], 'environment')):
+            _, report = inspect_metadata('uv_cache', {})
+        self.assertIsNone(report['action_availability']['available'])
+        with patch('diskpilot.tool_inspection.candidate_paths', return_value=([cache], 'environment')), \
+             patch('diskpilot.tool_inspection.measure_paths', return_value=dict(roots_found=1, complete=False,
+                 status='partial', observed_bytes=0, observed_files=0)):
+            _, report = inspect_metadata('uv_cache', {})
+        self.assertIsNone(report['action_availability']['available'])
+
+    def test_zero_length_cache_files_are_still_actionable(self):
+        (self.root / 'empty.bin').touch()
+        with patch('diskpilot.tool_inspection.candidate_paths', return_value=([self.root], 'environment')):
+            _, report = inspect_metadata('uv_cache', {})
+        self.assertIs(report['action_availability']['available'], True)
+
+    def test_empty_recycle_bin_is_actionable_only_after_successful_query(self):
+        for success, expected in ((True, False), (False, None)):
+            report = volume_presentation('recycle_bin', {}, dict(recycle_bin=dict(
+                query_succeeded=success, size_bytes=0, item_count=0)))
+            self.assertIs(report['action_availability']['available'], expected)
+        report = volume_presentation('recycle_bin', {}, dict(recycle_bin=dict(
+            query_succeeded=True, size_bytes=-1, item_count=-1)))
+        self.assertIsNone(report['action_availability']['available'])
+        self.assertFalse(report['complete'])
+
 
 class ToolInspectionIntegrationTests(unittest.TestCase):
     def setUp(self):
@@ -154,6 +187,30 @@ class ToolInspectionIntegrationTests(unittest.TestCase):
     def test_browser_models_and_project_targets_are_separate_batch_identities(self):
         plan = self.tools.prepare_many([dict(tool_id='browser_models', parameters=dict(browser=browser)) for browser in ('edge', 'chrome')])
         self.assertEqual(len(plan['entries']), 2)
+
+    def test_live_plan_exposes_control_progress_and_cancellation_without_changing_frozen_targets(self):
+        plan = self.tools.prepare('browser_cache')
+        started, release = threading.Event(), threading.Event()
+        original = self.tools.runtime.run
+        def delayed(*args, **kwargs):
+            started.set()
+            if not release.wait(3):
+                raise AssertionError('test release was not signalled')
+            return original(*args, **kwargs)
+        with ThreadPoolExecutor(max_workers=1) as pool, patch.object(self.tools.runtime, 'run', side_effect=delayed):
+            future = pool.submit(self.tools.execute, plan['id'], plan['version'])
+            try:
+                self.assertTrue(started.wait(2))
+                live = self.tools.get_plan(plan['id'])
+                self.assertEqual(live['entries'], plan['entries'])
+                self.assertEqual(live['execution']['total'], 1)
+                self.assertEqual(live['execution']['processed'], 0)
+                self.assertTrue(live['execution']['can_cancel'])
+                self.tools.control(plan['id'], 'cancel')
+                self.assertEqual(self.tools.get_plan(plan['id'])['execution']['status'], 'cancelling')
+            finally:
+                release.set()
+            self.assertEqual(future.result(timeout=3)['status'], 'cancelled')
 
     def test_every_registered_tool_uses_only_virtual_action_runtime(self):
         fixture = Path(self.temp.name) / 'untouched.txt'; fixture.write_bytes(b'fixture remains intact')

@@ -174,12 +174,12 @@ test('app file callbacks send distinct analysis/prepare requests and never appro
   const entry=record('personal',3,'explicit',{action:'delete',personal_choice_required:true,default_selected:false});
   const task={id:'host-picked',status:'awaiting_review',updated_at:'round1',plan:{version:9,items:[entry]}};
   f.window.PanxuFileWorkspace={render:(_root,helpers)=>{wired=helpers;}};
-  Object.assign(f.environment,{state:{catalogRevision:'catalog-1',disks:[],inspector:false},el:(tag,cls)=>{const node=f.environment.document.createElement(tag);node.className=cls;return node;},heading:()=>f.environment.document.createElement('header'),append:(parent,...children)=>parent.append(...children),locationPicker(){},analysisOptions(){},appendJob(){},bytes:n=>n+' B',ingest(){},renderSelection(){},analyzeList(){},showItem(){},canAnalyze:()=>true,analysisDepth:'auto',task:async run=>run(),setView:view=>views.push(view),
+  Object.assign(f.environment,{state:{catalogRevision:'catalog-1',disks:[],inspector:false},el:(tag,cls)=>{const node=f.environment.document.createElement(tag);node.className=cls;return node;},heading:()=>f.environment.document.createElement('header'),append:(parent,...children)=>parent.append(...children),locationPicker(){},analysisOptions(){},appendJob(){},bytes:n=>n+' B',ingest(){},renderSelection(){},analyzeList(){},showItem(){},canAnalyze:()=>true,analysisDepth:'auto',analysisReanalyze:false,task:async run=>run(),setView:view=>views.push(view),
     api:async(path,payload)=>{requests.push({path,payload:plain(payload)});return path==='/api/assessments/plan'?{task,plan:task.plan,picked_ids:['personal']}:{task:{id:'analysis-only',status:'paused',advice:[]}};}});
   Object.assign(f.environment,{fileTaskId:null,openTaskResults:()=>views.push('files')});
   const start=app.indexOf('  function renderFiles('),end=app.indexOf('  function simpleItemRow(',start);runInNewContext(app.slice(start,end)+';this.mountFiles=renderFiles;',f.environment);f.environment.mountFiles(f.root);
   assert.equal(wired.advanced.className,'file-advanced-controls');assert.ok(!f.root.children.includes(wired.advanced),'advanced controls are handed to the closed options section rather than the page');
-  await wired.analyzeItems([entry]);assert.deepEqual(requests[0],{path:'/api/tasks/analyze',payload:{section:'files',depth:'auto',ids:['personal']}});
+  await wired.analyzeItems([entry]);assert.deepEqual(requests[0],{path:'/api/tasks/analyze',payload:{section:'files',depth:'auto',reanalyze:false,ids:['personal']}});
   const payload={ids:['personal'],snapshots:{personal:'sig-personal'},revision:'catalog-1',action:'delete'};await wired.prepare(payload);
   assert.deepEqual(requests[1],{path:'/api/assessments/plan',payload});assert.equal(requests.length,2);assert.equal(f.window.PanxuTasks.currentTask().id,'host-picked');assert.deepEqual(views,['current','files']);
 });

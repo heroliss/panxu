@@ -147,7 +147,7 @@ test('filter-wide cancellation changes matching descendants and preserves select
   assert.ok(f.calls.filter(call=>call.path==='/api/assessments/select').every(call=>call.payload.limit===500));
 });
 
-test('confirmation approves only frozen actual IDs, preserves original scope, and pause waits for host acknowledgement before cancellation',async()=>{
+test('confirmation approves frozen IDs and progress modal offers pause and cancellation without a model request',async()=>{
   const f=await fixture();await f.button('删除勾选项').fire('click');
   assert.ok(f.root.querySelector('dialog').textContent.includes('删除 1 个文件'));
   const dialog=f.root.querySelector('dialog');assert.equal(dialog.scrollTop,0,'showModal automatic focus scrolling is reset before the first paint');assert.equal(dialog.tabIndex,-1);assert.equal(dialog.focusOptions.preventScroll,true);assert.equal(dialog.attrs['aria-labelledby'],dialog.querySelector('h2').id);
@@ -156,7 +156,8 @@ test('confirmation approves only frozen actual IDs, preserves original scope, an
   const approval=f.calls.find(call=>call.path.endsWith('/approve'));assert.deepEqual(approval,{path:'/api/tasks/host-batch/approve',payload:{version:2,ids:['high']}});
   assert.ok(f.root.textContent.includes('正在执行所选操作'));assert.equal(f.helpers.task.cleanup_source_task_id,'analysis-one');
   const pause=f.button('暂停');await f.tick();assert.equal(f.button('暂停'),pause,'progress polling keeps the pressed/focused control in the DOM');
-  await f.button('暂停').fire('click');assert.ok(f.root.textContent.includes('正在暂停'));assert.equal(f.button('取消剩余项'),undefined);
+  assert.equal(f.root.querySelector('dialog').open,true);assert.equal(f.root.querySelector('dialog').scrollTop,0);
+  await f.button('暂停').fire('click');assert.ok(f.root.textContent.includes('正在暂停'));assert.ok(f.button('取消剩余项'));
   await f.tick();assert.ok(f.root.textContent.includes('已暂停'));
   f.staleExecution();await f.tick();assert.ok(f.root.textContent.includes('已暂停'),'an older poll cannot roll back the host pause acknowledgement');
   await f.button('继续本批').fire('click');assert.ok(f.root.textContent.includes('正在执行所选操作'));assert.equal(f.button('暂停'),pause,'resume reuses the same pause control');
@@ -213,10 +214,10 @@ test('task navigation keeps the review draft while explanation and adjustment us
   await f.button('返回当前整理').fire('click');assert.equal(f.check('high').checked,false);assert.equal(f.calls.filter(call=>call.path==='/api/assessments/select'&&call.payload.mode==='automatic').length,1);
 });
 
-test('completed execution publishes the contextual top-left return without a duplicate bottom return button',async()=>{
+test('completed modal offers an accessible return inside the modal and retains the contextual return',async()=>{
   const f=await fixture();let back=null;f.helpers.setContextBack=(label,run)=>{back={label,run};};
   await f.button('删除勾选项').fire('click');await f.button('删除 1 个文件').fire('click');f.finishExecution([{id:high.id,status:'succeeded',verified:true}]);await f.tick();
-  assert.equal(back.label,'返回清理清单');assert.equal(f.button('返回清理清单'),undefined);back.run();await flush();assert.equal(f.check('high').checked,false);
+  assert.equal(back.label,'返回清理清单');assert.ok(f.button('返回清理清单'));await f.button('返回清理清单').fire('click');await flush();assert.equal(f.check('high').checked,false);
 });
 
 test('submitting adjusted requirements returns to the results list when the next investigation completes',async()=>{
@@ -328,4 +329,11 @@ test('a fresh UI restores a persisted user-direct frozen plan without relying on
   assert.equal(f.root.querySelector('dialog').open,true);assert.ok(f.root.querySelector('dialog').textContent.includes('Persisted owned impact'));assert.equal(f.check(owned.id).checked,true);
   assert.ok(f.calls.slice(before).filter(call=>call.path==='/api/assessments/select').every(call=>call.payload.mode==='manual'));assert.equal(f.calls.filter(call=>call.path.endsWith('/approve')||call.path==='/api/assessments/plan').length,0);
   await f.button('返回修改').fire('click');assert.ok(f.events.includes('files'));f.redrawTaskUI();await flush();assert.equal(f.root.querySelector('dialog'),null,'restoration is only for a new state, not every redraw');
+});
+
+test('embedded direct selections remain visible as exact task rows without invented model advice',async()=>{
+ const owned={...high,assessment:{state:'unanalysed',rating:null}},f=await fixture({rows:[owned],auto:[]});
+ f.helpers.singleSuggestions=true;f.helpers.task={id:'direct-visible',scope_kind:'filesystem',status:'awaiting_review',plan:{version:1,origin:'user_direct',items:[owned]}};
+ f.root.replaceChildren();f.subject.render(f.root,f.helpers);await flush();await flush();
+ assert.ok(f.calls.filter(call=>call.path.startsWith('/api/files?')).at(-1).path.includes('view=all'));assert.ok(f.check(owned.id));assert.equal(f.root.querySelector('.file-view-tabs').hidden,true);
 });

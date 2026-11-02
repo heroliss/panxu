@@ -418,8 +418,9 @@ class Application:
             with self.state.lock:
                 snapshot = self.state.snapshot(self.patterns())['items']
                 resolved = self.harness.assessments.resolve(snapshot)
-                items = [dict(i, assessment=resolved.get(i['id'])) for i in snapshot if i['kind'] in kinds]
-                return {'items': items}
+                dispositions = self.harness.assessments.dispositions.current()
+                items = [dict(i, assessment=resolved.get(i['id']), user_disposition=dispositions.get(i['id'])) for i in snapshot if i['kind'] in kinds]
+                return {'items': items, 'revision': self.catalog.token()}
         if path == '/api/health':
             return {'status': 'ok', 'mode': 'simulation', 'version': __version__, 'live_executor_available': False}
         if path == '/api/history':
@@ -470,10 +471,35 @@ class Application:
                     source = next((x for x in snapshot if x['id'] == source_id), None) if source_id else None
                     if source:
                         assessment.update(inherited_from_name=source['name'], inherited_from_path=source['path'])
-                return {'item': dict(item, assessment=assessment)}
+                return {'item': dict(item, assessment=assessment, user_disposition=self.harness.assessments.dispositions.get(item))}
         raise AppError('接口不存在。', 'not_found', 404)
 
     def post(self, path, payload):
+        if path == '/api/item-dispositions':
+            if not isinstance(payload, dict) or set(payload) != {'id', 'disposition', 'snapshot'} or not isinstance(payload['id'], str):
+                raise AppError('请从项目列表选择清理偏好。', 'invalid_disposition')
+            with self.state.lock:
+                item = next((row for row in self.state.snapshot(self.patterns())['items'] if row['id'] == payload['id']), None)
+                if item is None:
+                    raise AppError('项目已变化，请刷新后选择。', 'selection_changed', 409)
+                self.harness.assessments.dispositions.set(item, payload['disposition'], payload['snapshot'])
+                return dict(self.get('/api/item', {'id': [item['id']]}), revision=self.catalog.token())
+        if path == '/api/actions/plan':
+            if not isinstance(payload, dict) or set(payload) != {'ids', 'snapshots', 'revision'}:
+                raise AppError('请重新选择要处理的项目。')
+            ids, snapshots = payload['ids'], payload['snapshots']
+            if (not isinstance(ids, list) or not 1 <= len(ids) <= 500 or any(not isinstance(i, str) for i in ids)
+                    or len(set(ids)) != len(ids) or not isinstance(snapshots, dict) or set(snapshots) != set(ids)
+                    or any(not isinstance(v, str) for v in snapshots.values()) or not isinstance(payload['revision'], str)):
+                raise AppError('请明确选择1到500个项目，并保留当前清单信息。')
+            with self.state.lock:
+                if payload['revision'] != self.catalog.token():
+                    raise AppError('清单或偏好已更新，请刷新后重新选择。', 'catalog_changed', 409)
+                current = {row['id']: row for row in self.state.snapshot(self.patterns())['items']}
+                if any(ident not in current or snapshots[ident] != current[ident]['signature'] for ident in ids):
+                    raise AppError('所选内容已更新，请刷新后选择。', 'selection_changed', 409)
+                return self.harness.prepare_assessment_plan(ids, expected_revision=self.harness.assessments.revision(),
+                                                            allow_global_applications=True)
         if path.startswith('/api/recovery/'):
             allowed = {'/api/recovery/prepare': {'ids', 'action'},
                        '/api/recovery/execute': {'plan_id', 'confirmation'}}
@@ -588,7 +614,9 @@ class Application:
             request = validate_duplicate_request(payload)
             return self.start_job('duplicates', request)
         if path == '/api/tasks/analyze':
-            task = self.harness.create_analysis(payload)
+            if not isinstance(payload, dict):
+                raise AppError('分析选项需要一个对象。', 'invalid_request')
+            task = self.harness.create_analysis(dict(payload, skip_analyzed=True))
             job = self.start_job('agent', {'task_id': task['id']})
             return dict(job, task=self.harness.public(task['id']))
         if path == '/api/tasks':
