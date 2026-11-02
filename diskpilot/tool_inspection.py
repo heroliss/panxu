@@ -6,6 +6,7 @@ used. Missing defaults are not proof of an empty or uninstalled application.
 from __future__ import annotations
 
 from collections import deque
+import hashlib
 import os
 import ntpath
 from pathlib import Path
@@ -91,6 +92,7 @@ def measure_paths(paths, *, max_entries=MAX_ENTRIES, max_seconds=MAX_SECONDS, ma
                        'unknown' if skipped or errors else 'not_found',
                 complete=complete, observed_bytes=size, observed_files=files, visited_entries=visited,
                 roots_found=roots_seen, skipped_entries=skipped, unavailable_entries=errors,
+                observed_file_keys=sorted(hashlib.sha256(repr(identity).encode('utf-8')).hexdigest()[:32] for identity in seen),
                 budget=dict(max_entries=max_entries, max_seconds=max_seconds, max_depth=max_depth),
                 reads_file_contents=False)
 
@@ -234,7 +236,10 @@ def inspect_metadata(tool_id, params):
         if not complete: warnings.append('部分位置未能检查。')
         if source == 'default_candidates': warnings.append('仅检查已知位置。')
         if source == 'recognized_profiles': warnings.append('按可识别的浏览器配置统计。')
-        return dict(**measured, location_source=source), _presentation('cache',
+        # Keep the complete bounded root set separately from the four display
+        # examples. Batch assessment needs this to detect overlapping tools.
+        return dict(**measured, location_source=source,
+            coverage_paths=[str(path) for path in paths[:256]], coverage_complete=len(paths) <= 256), _presentation('cache',
             '缓存占用' if found else '暂时无法检查' if measured['status'] == 'unknown' else '未找到缓存位置', status=measured['status'],
             complete=complete and found, metrics=metrics, warnings=warnings,
             action_availability=dict(available=measured['observed_files'] > 0 if complete and found else None,

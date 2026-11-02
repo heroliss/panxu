@@ -419,7 +419,12 @@ class CleanupToolkit:
     def validate_reference(self, ref, *, allow_missing=False):
         if not isinstance(ref, dict) or set(ref) - {'tool_id', 'parameters'} or 'tool_id' not in ref:
             raise AppError('专项工具引用格式不正确。', 'invalid_tool_reference')
-        tool = self.detail(ref['tool_id'])
+        # Parameter validation must not resolve native entrypoints or probe the
+        # machine. Catalog/assessment construction calls this for every tool.
+        tool_id = ref['tool_id']
+        if not isinstance(tool_id, str) or tool_id not in REGISTRY:
+            raise AppError('此专项工具不可用，请重新选择。', 'unknown_cleanup_tool', 404)
+        tool = REGISTRY[tool_id]
         params = ref.get('parameters', {})
         if not isinstance(params, dict) or set(params) - {f['name'] for f in tool['parameters']}:
             raise AppError('专项工具参数不受支持。', 'invalid_tool_parameter')

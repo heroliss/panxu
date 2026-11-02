@@ -928,9 +928,10 @@ window.PanxuTasks = (() => {
     }
     const task=current,id=task.id,hasResults=hasTaskResults(task),questionPending=Boolean(task.question),
       application=task.scope_kind==='applications'||['background','software'].includes(task.analysis?.section),
+      toolTask=task.scope_kind==='cleanup_tools'||task.analysis?.section==='cleanup_tools',
       direct=task.task_kind==='operation'||task.plan?.origin==='user_direct',
       executing=task.status==='executing',analysing=task.status==='investigating',
-      resultLabel=application?'查看后台建议':'查看文件建议';
+      resultLabel=toolTask?'查看工具建议':application?'查看后台建议':'查看文件建议';
     const stages={ready:['准备开始','开始分析后，助手会按需检查所选范围。'],
       investigating:['正在分析','可以切换页面，分析会继续；需要你回答时，左侧会显示提示。'],
       executing:['正在执行所选操作','到执行进度中查看逐项结果，或暂停、取消剩余项。'],

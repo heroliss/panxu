@@ -31,6 +31,8 @@ from .context_memory import build_working_evidence, model_visible_bytes
 from .catalog import FileCatalog
 from .task_jobs import TaskJobs
 from .diagnostics import DiagnosticsStore
+from .tool_assessments import ToolAssessments
+from . import task_tool_analysis
 from .user_tools import UserToolStore
 from .agent_budget import AgentBudget, budget_hint
 from .orchestration import Orchestration, orchestration_definitions
@@ -199,6 +201,7 @@ class TaskHarness(Orchestration):
                 plan_version INTEGER, payload TEXT, UNIQUE(execution_task_id,plan_version))''')
             state.db.execute('CREATE INDEX IF NOT EXISTS cleanup_results_source ON cleanup_results(source_task_id,seq)')
         self.assessments = AssessmentStore(state, lambda: self.assistant.public_settings()['protect_patterns'])
+        self.tool_assessments = ToolAssessments(self.cleanup_tools, advice_provider=self.cleanup_tool_advice)
         self.catalog = FileCatalog(state, lambda: self.assistant.public_settings()['protect_patterns'], self.assessments)
         self.task_jobs = TaskJobs(state)
         self.diagnostics = DiagnosticsStore(state, self.cleanup_tools)
@@ -239,6 +242,34 @@ class TaskHarness(Orchestration):
             from .cleanup_tools import CleanupToolkit
             self._cleanup_tools = CleanupToolkit(self.state)
         return self._cleanup_tools
+
+    def cleanup_tool_advice(self, row):
+        """Restore accepted tool advice without adding objects to the file catalog.
+
+        The shared assessment generation prevents a late older model response
+        from overriding newer analysis intent. Ref/signature checks also apply
+        in the tool projection; task-local historical snapshots remain intact.
+        """
+        if not isinstance(row, dict) or not str(row.get('id', '')).startswith('tool-assessment-'):
+            return None
+        with self.state.lock:
+            stored = self.state.db.execute('SELECT payload FROM assessment_records WHERE item_id=?',
+                                           (row['id'],)).fetchone()
+        advice = json.loads(stored[0]) if stored else None
+        if (not advice or advice.get('kind') != 'cleanup_tool'
+                or advice.get('signature') != row.get('signature')
+                or self._provenance(advice.get('provenance'))['source'] != 'llm'):
+            return None
+        return copy.deepcopy(advice)
+
+    def _cleanup_tool_assessments(self, items):
+        """Tool namespace records do not require resolving the file catalog."""
+        result = {}
+        for item in items:
+            advice = self.cleanup_tool_advice(item)
+            if advice:
+                result[item['id']] = self.assessments._direct(advice, item)
+        return result
 
     def _specialist_link(self, task, row, item):
         if 'specialist' in row and 'extra_suggestion_id' in row:
@@ -484,7 +515,8 @@ class TaskHarness(Orchestration):
         with self.state.lock:
             task = self._get(source['task_id']) if 'task_id' in source else None
             if 'item_id' in source:
-                items = self.state.snapshot(self.assistant.public_settings()['protect_patterns'])['items']
+                items = (self._items(task, include_processed=True) if task and task.get('scope_kind') == task_tool_analysis.SCOPE_KIND
+                         else self.state.snapshot(self.assistant.public_settings()['protect_patterns'])['items'])
                 item = next((row for row in items if row['id'] == source['item_id']), None)
                 if item is None or not source.get('signature') or source['signature'] != item['signature']:
                     raise AppError('来源对象已有变化，请返回清单重新核对。', 'target_changed', 409)
@@ -913,6 +945,12 @@ class TaskHarness(Orchestration):
         value['feedback'] = task['feedback'][-8:]
         value['preset'] = task.get('preset', 'custom')
         value['scope_kind'] = task.get('scope_kind', 'filesystem')
+        if value['scope_kind'] == task_tool_analysis.SCOPE_KIND:
+            value['cleanup_tool_targets'] = task_tool_analysis.references(task)
+            for target in value['cleanup_tool_targets']:
+                target['stale'] = not self.tool_assessments.is_current(target['tool_ref'],
+                    target['inspection_id'], target['signature'])
+            value['requires_recheck_for_execution'] = True
         value['question'] = copy.deepcopy(task['question'])
         value['question_version'] = task['question_version']
         value['loaded_skills'] = copy.deepcopy(list(task['loaded_skills'].values())[-20:])
@@ -935,6 +973,9 @@ class TaskHarness(Orchestration):
         current = {i['id']: i for i in self._items(task, include_processed=True)} if all_advice or task.get('analysis') else {}
         for advice in value['advice']:
             advice['stale'] = advice['id'] not in current or current[advice['id']]['signature'] != advice['signature']
+            if advice.get('kind') == 'cleanup_tool':
+                advice['stale'] = not self.tool_assessments.is_current(
+                    advice.get('tool_ref'), advice.get('inspection_id'), advice.get('signature'))
         if task.get('analysis'):
             value['analysis'] = copy.deepcopy(task['analysis'])
             value['analysis'].update(self._coverage(task, current))
@@ -979,6 +1020,9 @@ class TaskHarness(Orchestration):
         current = {i['id']: i for i in self._items(task, include_processed=True)}
         for advice in items:
             advice['stale'] = advice['id'] not in current or current[advice['id']]['signature'] != advice['signature']
+            if advice.get('kind') == 'cleanup_tool':
+                advice['stale'] = not self.tool_assessments.is_current(
+                    advice.get('tool_ref'), advice.get('inspection_id'), advice.get('signature'))
             advice['user_kept'] = advice['id'] in current and self._kept(task, current[advice['id']])
             advice['processed'] = advice['id'] in current and current[advice['id']]['simulated']
         return dict(items=items, offset=offset, limit=limit, total=len(rows), has_more=offset + limit < len(rows))
@@ -1095,6 +1139,45 @@ class TaskHarness(Orchestration):
             self._event(task, 'created', f'已冻结 {len(rows)} 项分析范围；分析选择不表示同意处理。')
             return self.public(task['id'])
 
+    def create_tool_analysis(self, payload):
+        """Reuse the task loop for exact checked tools, not an arbitrary tool call."""
+        self._args(payload, ['items', 'goal', 'reanalyze', 'skip_analyzed'], ['items'])
+        goal = payload.get('goal') or '结合当前诊断和我的偏好，分析所选清理工具是否值得执行，说明用途、原因和影响并评分。'
+        reanalyze, skip_analyzed = payload.get('reanalyze', False), payload.get('skip_analyzed', True)
+        if (not isinstance(goal, str) or not 1 <= len(goal.strip()) <= 2000
+                or type(reanalyze) is not bool or type(skip_analyzed) is not bool):
+            raise AppError('请填写最多2000字的分析要求，并选择有效分析方式。')
+        # This is a cache-only validation. Never inspect all tools, execute a
+        # helper, infer a volume or replace the user's selected parameter set.
+        frozen = self.tool_assessments.freeze_targets(payload['items'])
+        rows = [task_tool_analysis.task_item(item) for item in frozen]
+        saved = self._cleanup_tool_assessments(rows) if skip_analyzed and not reanalyze else {}
+        selected_count = len(rows)
+        rows = [item for item in rows if not (self._valid_assessment(saved.get(item['id']))
+                and saved[item['id']].get('provenance', {}).get('source') == 'llm')]
+        skipped_count = selected_count - len(rows)
+        if not rows:
+            raise AppError(f'这 {skipped_count} 项已有有效智能建议，已跳过。可使用重新分析更新建议。',
+                           'nothing_to_analyze', 409)
+        stamp = now()
+        task = dict(id=secrets.token_hex(12), goal=self.clean(goal, 2000), status='ready',
+                    summary='准备分析所选清理工具。', roots=[], preset='analysis',
+                    scope_kind=task_tool_analysis.SCOPE_KIND,
+                    known_ids=[item['id'] for item in rows], target_ids=[item['id'] for item in rows],
+                    tool_targets=rows, action_directories=[], directory_checks={},
+                    analysis=dict(section='cleanup_tools', depth='auto', selection='selected',
+                                  target_count=len(rows), initial_target_count=len(rows),
+                                  skipped_existing_count=skipped_count, reanalyze=reanalyze, skip_analyzed=skip_analyzed,
+                                  snapshot_basis='saved_tool_inspections'),
+                    observations=[dict(tool='selection_snapshot', at=stamp, result=dict(
+                        source='checked_cleanup_tools', target_count=len(rows),
+                        note='精确工具及参数已冻结；分析不执行工具。'))],
+                    feedback=[], choices={}, advice={}, plan=None, plan_version=0,
+                    last_result=None, turn=0, created_at=stamp, updated_at=stamp)
+        self._save(task)
+        self._event(task, 'created', f'已保存 {len(rows)} 项工具诊断；分析不表示同意执行。')
+        return self.public(task['id'])
+
     def claim(self, key, *, execute=False):
         with self.state.lock:
             task = self._get(key)
@@ -1152,6 +1235,8 @@ class TaskHarness(Orchestration):
             self._save(task)
 
     def _items(self, task, *, include_processed=False):
+        if task.get('scope_kind') == task_tool_analysis.SCOPE_KIND:
+            return copy.deepcopy(task.get('tool_targets', []))
         known = set(task['known_ids'])
         targets = set(task.get('target_ids', []))
         items = self.state.snapshot(self.assistant.public_settings()['protect_patterns'])['items']
@@ -1164,6 +1249,8 @@ class TaskHarness(Orchestration):
         return in_task_scope(task, item)
 
     def _kept(self, task, item):
+        if item.get('kind') == 'cleanup_tool':
+            return task.get('choices', {}).get(item['id'], {}).get('choice') in ('keep', 'defer')
         return self.assessments.dispositions.strong(item) == 'direct_keep' or any(c['choice'] in ('keep', 'defer') and (key == item['id'] or
                    (c.get('kind') == 'directory' and item['kind'] in ('file', 'directory') and within(item['path'], c['path'])))
                    for key, c in task['choices'].items())
@@ -1172,7 +1259,9 @@ class TaskHarness(Orchestration):
     def _valid_assessment(value):
         return bool(value and not value.get('stale') and value.get('state') in ('explicit', 'inherited', 'skipped', 'no_advice'))
 
-    def _metadata(self, item):
+    def _metadata(self, item, *, detailed=True):
+        if item.get('kind') == 'cleanup_tool':
+            return task_tool_analysis.metadata(item, self.assistant.clean_text, detailed=detailed)
         value = self.assistant.task_metadata(item)
         disposition = self.assessments.dispositions.get(item)
         if disposition and not disposition['stale']:
@@ -1322,6 +1411,8 @@ class TaskHarness(Orchestration):
 
     def tool(self, key, name, args, *, cancel, provenance=None):
         task = self._get(key)
+        if task.get('scope_kind') == task_tool_analysis.SCOPE_KIND and name not in task_tool_analysis.ALLOWED_TOOLS:
+            raise AppError('本任务仅分析已选工具的诊断；不能修改参数、重新扫描或执行。', 'outside_scope')
         if name in {row[0] for row in orchestration_definitions()}:
             return self.orchestration_tool(key, name, args, cancel, provenance)
         if name == 'read_tool_activity':
@@ -1491,24 +1582,31 @@ class TaskHarness(Orchestration):
         if name == 'list_items':
             self._args(args, ['offset', 'limit', 'query', 'kind', 'unanalysed'])
             offset, limit, query, kind = args.get('offset', 0), args.get('limit', 20), args.get('query', ''), args.get('kind')
+            permitted_kinds = (None, 'cleanup_tool') if task.get('scope_kind') == task_tool_analysis.SCOPE_KIND else (None, 'file', 'directory', 'software', 'startup', 'service', 'process')
             if (type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 40 or
-                    not isinstance(query, str) or len(query) > 120 or type(args.get('unanalysed', False)) is not bool or kind not in (None, 'file', 'directory', 'software', 'startup', 'service', 'process')):
+                    not isinstance(query, str) or len(query) > 120 or type(args.get('unanalysed', False)) is not bool or kind not in permitted_kinds):
                 raise AppError('分页或筛选参数不正确。')
             unanalysed = args.get('unanalysed', True)
             candidates = self._items(task)
-            saved = self.assessments.resolve(self.state.snapshot(self.assistant.public_settings()['protect_patterns'])['items'])
+            saved = (self._cleanup_tool_assessments(candidates) if task.get('scope_kind') == task_tool_analysis.SCOPE_KIND
+                else self.assessments.resolve(self.state.snapshot(self.assistant.public_settings()['protect_patterns'])['items']))
             force = task.get('analysis', {}).get('reanalyze', False)
-            rows = [i for i in candidates if not self._kept(task, i) and not self.assessments.dispositions.strong(i)
+            if task.get('scope_kind') == task_tool_analysis.SCOPE_KIND:
+                force = force or not task.get('analysis', {}).get('skip_analyzed', True)
+            rows = [i for i in candidates if not self._kept(task, i) and (i['kind'] == 'cleanup_tool' or not self.assessments.dispositions.strong(i))
                     and (not unanalysed or not self._valid_assessment(saved.get(i['id']))
                          or force and (saved.get(i['id'], {}).get('source_ref') or {}).get('task_id') != task['id']) and (not kind or i['kind'] == kind)
                     and query.casefold() in i['name'].casefold() and (not unanalysed or
                       task.get('advice', {}).get(i['id'], {}).get('signature') != i['signature'])]
             rows.sort(key=lambda i: i.get('size_bytes') or 0, reverse=True)
-            return dict(total=len(rows), offset=offset, items=[self._metadata(i) for i in rows[offset:offset+limit]])
+            return dict(total=len(rows), offset=offset, items=[self._metadata(i, detailed=i['kind'] != 'cleanup_tool') for i in rows[offset:offset+limit]])
         if name in ('inspect_items', 'compare_files', 'cache_experience'):
             self._args(args, ['ids'], ['ids'])
             items = self._selected(task, args['ids'])
             if name == 'inspect_items':
+                if task.get('scope_kind') == task_tool_analysis.SCOPE_KIND:
+                    task.setdefault('tool_diagnostics_read', {}).update({item['id']: item['signature'] for item in items})
+                    self._save(task)
                 return {'items': [dict(self._metadata(i), user_kept=self._kept(task, i)) for i in items]}
             if name == 'cache_experience':
                 advice = build_recommendations(items)
@@ -1560,6 +1658,11 @@ class TaskHarness(Orchestration):
                 if row['conclusion'] not in ('keep', 'review', 'recommend', 'skip', 'no_advice') or any(not isinstance(row[f], str) or not 1 <= len(row[f]) <= 400 for f in ('purpose', 'reason', 'impact')):
                     raise AppError('请按格式提供结论、用途、原因和影响。')
                 item = current[row['id']]
+                if item['kind'] == 'cleanup_tool' and ('specialist' in row or 'extra_suggestion_id' in row):
+                    raise AppError('专项工具建议只针对原选择，不能更换工具或参数。', 'outside_scope')
+                if (item['kind'] == 'cleanup_tool' and row['conclusion'] not in ('skip', 'no_advice')
+                        and task.get('tool_diagnostics_read', {}).get(item['id']) != item['signature']):
+                    raise AppError('请先用inspect_items读取对应的已保存诊断，再给工具评分。', 'inspection_required')
                 value, inheritance = row.get('cleanup_rating'), row.get('inheritance', 'none')
                 if value is not None and rating(value) is None:
                     raise AppError('清理倾向只能是1到5的整数或未知，不能使用概率。')
@@ -1583,6 +1686,9 @@ class TaskHarness(Orchestration):
                     provenance=self._provenance(provenance),
                     **{f: self.clean(row[f], 400) for f in ('purpose', 'reason', 'impact')})
                 additions[item['id']].update(self._specialist_link(task, row, item))
+                if item['kind'] == 'cleanup_tool':
+                    additions[item['id']].update(tool_ref=copy.deepcopy(item['tool_ref']),
+                        inspection_id=item['inspection_id'], snapshot_basis='saved_tool_inspection')
             task.setdefault('advice', {}).update(additions)
             task['advice_revision'] = task.get('advice_revision', 0) + 1
             with self.state.lock, self.state.db:
@@ -1613,6 +1719,8 @@ class TaskHarness(Orchestration):
         raise AppError('没有这个工具，请使用当前提供的调查或方案工具。', 'unknown_tool')
 
     def _propose_plan(self, task, args, *, current=None, origin='model', save=True, provenance=None):
+        if task.get('scope_kind') == task_tool_analysis.SCOPE_KIND:
+            raise AppError('请在原工具列表勾选执行，模型分析不会建立文件或后台操作方案。', 'outside_scope')
         self._args(args, ['summary', 'items', 'briefing'], ['summary', 'items'])
         if not isinstance(args['summary'], str) or not 1 <= len(args['summary']) <= 600:
             raise AppError('请用一句话说明这个方案。')
@@ -2047,8 +2155,12 @@ class TaskHarness(Orchestration):
         context = self._context(task, working=True)
         context['context_state'] = dict(reason=reason,
             note='这是当前任务状态和有限已存证据；缺少正文时可在工具可用阶段回读，不必重新采集。')
-        return [{'role': 'system', 'content': SYSTEM},
+        return [{'role': 'system', 'content': self._system(task)},
                 {'role': 'user', 'content': json.dumps(context, ensure_ascii=False)}]
+
+    @staticmethod
+    def _system(task):
+        return task_tool_analysis.SYSTEM if task.get('scope_kind') == task_tool_analysis.SCOPE_KIND else SYSTEM
 
     @staticmethod
     def _task_tool_specs(task, allowed=None):
@@ -2056,12 +2168,25 @@ class TaskHarness(Orchestration):
                        'validate_directory', 'inspect_volume', 'compare_files', 'cache_experience', 'list_scopes',
                        'start_duplicate_scan', 'read_duplicate_groups', 'read_duplicate_members', 'run_cleanup_diagnostics'}
         specs = [spec for spec in tool_specs() if (allowed is None or spec['function']['name'] in allowed)
+                and (task.get('scope_kind') != task_tool_analysis.SCOPE_KIND or spec['function']['name'] in task_tool_analysis.ALLOWED_TOOLS)
                 and not (task.get('scope_kind') == 'applications' and spec['function']['name'] in unavailable)]
         section = task.get('analysis', {}).get('section')
         actions = (('uninstall',) if section == 'software' else
                    ('disable_startup', 'stop_service', 'stop_process') if section == 'background' or task.get('preset') == 'background' else
                    ('disable_startup', 'stop_service', 'stop_process', 'uninstall') if task.get('scope_kind') == 'applications' else ('delete',))
         for spec in specs:
+            if task.get('scope_kind') == task_tool_analysis.SCOPE_KIND:
+                properties = spec['function']['parameters']['properties']
+                if spec['function']['name'] == 'list_items':
+                    properties['kind']['enum'] = ['cleanup_tool']
+                    spec['function']['description'] = '分页查看本次已选工具的紧凑索引；具体诊断按ID用inspect_items读取。'
+                elif spec['function']['name'] == 'inspect_items':
+                    spec['function']['description'] = '读取已选工具的固定说明和已保存诊断；不采集、不修改参数、不执行。'
+                elif spec['function']['name'] == 'record_advice':
+                    fields = properties['items']['items']['properties']
+                    fields.pop('specialist', None)
+                    fields.pop('extra_suggestion_id', None)
+                    fields['inheritance']['enum'] = ['none']
             if spec['function']['name'] == 'propose_plan':
                 spec['function']['parameters']['properties']['items']['items']['properties']['action']['enum'] = list(actions)
         return specs
@@ -2084,10 +2209,14 @@ class TaskHarness(Orchestration):
                        scope_count=len(scopes), available_items=len(items), simulation_only=True)
         context['_prompt_projection'] = 'task-v2'
         context['scope_boundary'] = (
+            '仅本次已检查的工具及原参数；使用已保存诊断分析，不重新采集，不授予执行权限。' if task.get('scope_kind') == task_tool_analysis.SCOPE_KIND else
             '仅本次所选对象；没有目录遍历权限，背景查询不增加处理范围。' if task.get('analysis') and not scopes else
             '仅本次所选对象/目录；只可展开下列位置，背景查询不增加处理范围。' if task.get('analysis') else
             '仅启动项、服务与进程；软件查询只能补充背景，不能扩大处理范围。' if task.get('preset') == 'background' else
             '仅下列位置内调查；已有观察不等于本轮已扫描，处理仍需用户确认。')
+        if task.get('scope_kind') == task_tool_analysis.SCOPE_KIND:
+            context['selected_tools'] = [dict(id=item['id'], name=self.assistant.clean_text(
+                item['name'], outbound=True, limit=160)) for item in items]
         # An empty traversal scope is an explicit boundary, not missing data.
         if len(scopes) > 40:
             context['more_scopes_tool'] = 'list_scopes'
@@ -2110,7 +2239,7 @@ class TaskHarness(Orchestration):
         if task.get('diagnostic_snapshot_id'):
             optional['diagnostics'] = self._diagnostic_brief(task['id'], task['diagnostic_snapshot_id'])
         optional['background_work'] = [{k: v for k, v in work.items() if k in ('id', 'kind', 'status', 'summary', 'snapshot_id', 'error')} for work in self.task_jobs.recent(task['id'])]
-        dispositions = self.assessments.dispositions.current()
+        dispositions = {} if task.get('scope_kind') == task_tool_analysis.SCOPE_KIND else self.assessments.dispositions.current()
         optional['user_dispositions'] = [dict(id=item['id'], **{key: dispositions[item['id']][key] for key in ('value', 'label', 'inherited')})
                                         for item in items if item['id'] in dispositions and not dispositions[item['id']]['stale']][:100]
         # These fields have declared optional-section semantics. Do not apply a
@@ -2335,7 +2464,7 @@ class TaskHarness(Orchestration):
                     task['summary'] = '正在整理已检查内容的评分与结论…'
                     if progress:
                         progress({'message': task['summary']})
-                messages[0] = {'role': 'system', 'content': SYSTEM + '\n\n' + render_host_text({'work_budget': budget_hint(budget, model_requests_used=round_index, tool_calls_used=calls_used)})}
+                messages[0] = {'role': 'system', 'content': self._system(task) + '\n\n' + render_host_text({'work_budget': budget_hint(budget, model_requests_used=round_index, tool_calls_used=calls_used)})}
                 task['usage']['model_requests'] += 1
                 self._save(task)
                 try:

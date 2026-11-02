@@ -4,16 +4,16 @@
 // executes it; only the frozen plan's explicit confirmation can submit a change.
 window.PanxuCleanupTools = (() => {
   const drafts = new Map(), extraSelections = new Map(), storedKey = 'panxu.cleanup.pending.v1';
-  let mounted = null, sequence = 0;
+  let mounted = null, sequence = 0, catalogActive = 0;
   const optionLabels = {full:'完整休眠',reduced:'仅保留快速启动',off:'关闭',system:'系统管理',custom:'自定义大小',review:'查看当前配置',quota:'调整占用额度',disable:'关闭系统保护',edge:'Microsoft Edge',chrome:'Google Chrome',firefox:'Firefox',last_hour:'最近一小时',last_day:'最近一天',last_week:'最近一周',all:'全部',history:'浏览记录',cookies:'Cookie与登录状态',download_history:'下载记录',site_data:'站点与离线数据',prune:'清理不再使用的缓存',clean:'清理缓存',wheels:'已构建安装包缓存',verify:'检查缓存完整性',documents:'文档',pictures:'图片',desktop:'桌面',downloads:'下载',onedrive:'OneDrive',dropbox:'Dropbox',google_drive:'Google Drive',current:'当前用户（具体配置待核实）'};
-  const listing = {query: '', category: 'all', data: null};
+  const listing = {query: '', category: 'all', rating: 'all', view: 'all', data: null, selected: new Map(), configured: new Map(), touched: new Set(), seeded: new Set()};
   const node = (tag, cls = '', text) => {const n = document.createElement(tag); n.className = cls; if (text !== undefined) n.textContent = String(text); return n;};
   const append = (root, ...children) => {children.flat().filter(Boolean).forEach(child => root.append(child)); return root;};
   function button(label, handler, cls = 'button') {const b = node('button', cls, label); b.type = 'button'; b.addEventListener('click', handler); return b;}
   const alive = t => mounted === t && t.root.isConnected;
   function pending(value) {try {if (value === null) sessionStorage.removeItem(storedKey); else if (value) sessionStorage.setItem(storedKey, String(value)); else return sessionStorage.getItem(storedKey);} catch (_) {} return null;}
   function clearPending(id) {if (pending() === id) pending(null);}
-  function unmount() {if(mounted){cancelInspection(mounted);clearTimeout(mounted.progressTimer);mounted.dialog?.close?.();}mounted = null; sequence++;}
+  function unmount() {if(mounted){cancelInspection(mounted);cancelCatalog(mounted);clearTimeout(mounted.progressTimer);mounted.dialog?.close?.();}mounted = null; sequence++;}
   function heading(root, title, description) {const h = node('header', 'page-heading'); append(h, node('h1', '', title), description ? node('p', '', description) : null); root.append(h);}
   function message(t, text, error = false) {const p = node('p', error ? 'field-error cleanup-message' : 'field-help cleanup-message', text); p.setAttribute('role', error ? 'alert' : 'status'); t.root.append(p); return p;}
   function sourceLabel(t){return t.context.returnLabel || '返回清单';}
@@ -24,11 +24,13 @@ window.PanxuCleanupTools = (() => {
   function failed(t, error, retry) {if (!alive(t)) return; t.root.replaceChildren(); controls(t, t.context.onReturn ? sourceLabel(t) : '返回工具', () => returnToSource(t)); heading(t.root, '暂时无法打开', '已有选择和操作记录会保留。'); message(t, error.message || '读取失败，请稍后重试。', true); t.root.append(button('重试', retry));}
 
   async function mount(root, context = {}) {
+    listing.view='all';
     unmount(); const t = {root, context, source: context.source || null, token: sequence}; mounted = t;
     await renderList(t); return t;
   }
   async function open(root, ref = {}, context = {}) {
-    unmount(); const t = {root, context, source: ref.source || context.source || null, token: sequence}; mounted = t;
+    if(ref.analysis_task_id)listing.view='recommended';
+    unmount(); const t = {root, context, source: ref.source || context.source || null, analysisTaskId:ref.analysis_task_id || null, token: sequence}; mounted = t;
     if (ref.extra_suggestions) {renderExtraList(t, ref.extra_suggestions); return t;}
     if (ref.extra_suggestion) {renderExtra(t, ref.extra_suggestion); return t;}
     if (ref.plan_id) {await loadPlan(t, ref.plan_id); return t;}
@@ -57,36 +59,124 @@ window.PanxuCleanupTools = (() => {
     }
     return [...groups.values()];
   }
+  const refKey = ref => JSON.stringify([ref.tool_id,Object.entries(ref.parameters || {}).sort(([a],[b])=>a.localeCompare(b))]);
+  const toolRef = row => ({tool_id:row.tool_ref?.tool_id || row.tool_id || row.definition?.id,parameters:{...(row.tool_ref?.parameters || {})},...(row.inspection_id?{inspection_id:row.inspection_id}:{})});
+  const rating = row => Number.isInteger(row.recommendation?.rating)&&row.recommendation.rating>=1&&row.recommendation.rating<=5?row.recommendation.rating:null;
+  function cancelCatalog(t){t.catalogGeneration=(t.catalogGeneration || 0)+1;clearTimeout(t.summaryTimer);clearTimeout(t.searchTimer);}
+  function catalogAlive(t,generation){return alive(t)&&t.catalogGeneration===generation&&t.catalogVisible===true;}
+  function assessmentRecord(row){return {kind:'cleanup_tool',assessment:{state:'explicit',...row.recommendation,stale:row.inspection?.stale===true||row.recommendation?.stale===true}};}
+  function canSeedSelection(t,row){return Boolean((!t.analysisTaskId||row.task_snapshot)&&row.inspection_id&&!row.inspection?.stale&&row.recommendation?.eligible_auto_select===true&&row.benefit?.kind==='space'&&(rating(row)===5||rating(row)===4&&t.context.autoSelectFour===true));}
+  function seedSelection(t,row){const ref=toolRef(row),key=refKey(ref);if(t.analysisTaskId&&!row.task_snapshot||!row.inspection_id||row.inspection?.stale||listing.seeded.has(key))return;listing.seeded.add(key);if(!listing.touched.has(key)&&canSeedSelection(t,row))listing.selected.set(key,ref);}
+  function pruneTaskAutoSelection(t){if(!t.analysisTaskId)return;const rows=new Map((listing.data?.items||[]).map(row=>[refKey(toolRef(row)),row]));for(const key of listing.selected.keys()){if(listing.touched.has(key))continue;const row=rows.get(key);if(!row||!canSeedSelection(t,row))listing.selected.delete(key);}}
+  function rememberParameters(t){
+    if(!t.catalogOrigin||!t.detail||t.batch)return;
+    const original=t.catalogOrigin,parameters={...values(t)},ref={tool_id:t.detail.id,parameters};
+    if(t.catalogParametersConfirmed||refKey(original.tool_ref)!==refKey(ref)){
+      const next={...original,tool_ref:ref,inspection_id:null,inspection:null,status:'pending',requires_parameters:false,can_execute:false,availability:{can_execute:false,reason:'选项已变更，正在重新检查。'},recommendation:{...original.recommendation,rating:null}};
+      const oldKey=refKey(original.tool_ref),newKey=refKey(ref);if(listing.selected.has(oldKey)){listing.selected.delete(oldKey);listing.selected.set(newKey,ref);}if(listing.touched.has(oldKey))listing.touched.add(newKey);
+      listing.configured.set(ref.tool_id,next);t.catalogParametersConfirmed=false;
+    }
+  }
+  function filteredRows(){
+    const query=listing.query.trim().toLocaleLowerCase();
+    return (listing.data?.items || []).filter(row=>{
+      if(listing.category!=='all'&&row.category!==listing.category)return false;
+      if(query&&![row.title,row.definition?.description,row.recommendation?.purpose,row.recommendation?.reason].filter(Boolean).join(' ').toLocaleLowerCase().includes(query))return false;
+      if(listing.rating!=='all'&&(listing.rating==='unrated'?rating(row)!==null:String(rating(row))!==listing.rating))return false;
+      return listing.view!=='recommended'||rating(row)!==null||row.recommendation?.source==='llm';
+    });
+  }
   async function renderList(t) {
-    if (!alive(t)) return; cancelInspection(t);const route = t.route = (t.route || 0) + 1; t.busy = false; t.extra = null; t.extraList = null; t.detail = null; t.plan = null; t.context.setContextBack?.('',null); loading(t, '清理工具');
-    try {
-      const data = await t.context.api('/api/cleanup-tools?query=' + encodeURIComponent(listing.query) + '&category=' + encodeURIComponent(listing.category));
-      if (!alive(t) || route !== t.route) return; listing.data = data; t.root.replaceChildren();
-      heading(t.root, '清理工具', '按用途分组，常用工具靠前；选择一项查看详情。');
-      if(t.context.onOpenUserTools){const own=node('div','cleanup-toolbar');append(own,button('我的工具',()=>t.context.onOpenUserTools({}),'button'),button('新建工具',()=>t.context.onOpenUserTools({new:true}),'plain-button'));t.root.append(own);}
-      const toolbar = node('div', 'cleanup-toolbar'), search = node('input'); search.type = 'search'; search.value = listing.query; search.placeholder = '搜索工具，例如缓存、休眠'; search.setAttribute('aria-label', '搜索清理工具');
-      let timer; search.addEventListener('input', () => {listing.query = search.value; clearTimeout(timer); timer = setTimeout(() => {if (alive(t)) renderList(t);}, 280);});
-      const category = node('select'); category.setAttribute('aria-label', '工具分类');
-      const groups=toolGroups(data);
-      const categories = [{id: 'all', label: '全部分类'}, ...groups];
-      categories.forEach(row => {const o = node('option', '', row.label || row.title || row.id); o.value = row.id; category.append(o);}); category.value = listing.category;
-      category.addEventListener('change', () => {listing.category = category.value; renderList(t);}); append(toolbar, search, category); t.root.append(toolbar);
-      const resumable = pending(); if (resumable) t.root.append(button('继续上次专项操作', () => loadPlan(t, resumable), 'button cleanup-resume'));
-      const items = data.items || [];
-      if (!items.length) {message(t, '没有找到匹配工具，可以换一个关键词或分类。'); return;}
-      const catalog=node('div','cleanup-tool-groups');
-      groups.filter(group=>group.items.length).forEach((group,index)=>{
-        const section=node('section','cleanup-tool-group'),header=node('header','cleanup-tool-group-heading'),title=node('h2','',group.title || group.label || group.id);
-        title.id=`cleanup-tool-group-${route}-${index}`;section.setAttribute('aria-labelledby',title.id);
-        append(header,title,node('span','cleanup-tool-group-count',`${group.items.length} 项`));section.append(header);
-        const list=node('div','cleanup-tool-list');list.setAttribute('aria-label',(group.title || group.label || group.id)+'工具列表');
-        group.items.forEach(tool=>{
-          const row=node('section','cleanup-tool-row'),copy=node('div','cleanup-tool-copy');
-          append(copy,node('h3','',tool.title),node('p','',tool.description));
-          append(row,copy,button('查看工具',()=>{t.source=null;loadDetail(t,tool.id);},'button small'));list.append(row);
-        });section.append(list);catalog.append(section);
-      });t.root.append(catalog);
-    } catch (error) {if (route === t.route) failed(t, error, () => renderList(t));}
+    if(!alive(t))return;rememberParameters(t);cancelInspection(t);cancelCatalog(t);const route=t.route=(t.route || 0)+1;
+    t.catalogVisible=true;t.catalogOrigin=null;t.catalogBatch=false;t.busy=false;t.extra=null;t.extraList=null;t.detail=null;t.plan=null;t.context.setContextBack?.('',null);loading(t,'清理工具');
+    try{
+      const data=await t.context.api('/api/cleanup-tools/assessments');if(!alive(t)||route!==t.route)return;
+      listing.data={...data,items:(data.items || []).map(row=>configuredRow(row,data.cache_ttl_seconds))};
+      if(t.analysisTaskId){const response=await t.context.api('/api/tasks/'+encodeURIComponent(t.analysisTaskId));if(!alive(t)||route!==t.route)return;mergeTaskAssessments(response.task||response);}
+      pruneTaskAutoSelection(t);
+      for(const row of listing.data.items){const key=refKey(toolRef(row));seedSelection(t,row);if(listing.selected.has(key))listing.selected.set(key,toolRef(row));}
+      renderCatalog(t);startCatalogChecks(t);
+    }catch(error){if(alive(t)&&route===t.route)failed(t,error,()=>renderList(t));}
+  }
+  function configuredRow(row,ttl=60){const saved=listing.configured.get(toolRef(row).tool_id);if(!saved)return row;if(refKey(toolRef(saved))===refKey(toolRef(row)))return row;const at=Date.parse(saved.inspection?.at),age=Date.now()-at;if(saved.inspection_id&&!saved.inspection?.stale&&Number.isFinite(age)&&age>=0&&age<Math.max(1,Number(ttl)||60)*1000)return saved;return {...saved,status:'stale',inspection:{...saved.inspection,stale:true},can_execute:false,benefit:{...saved.benefit,estimated_reclaimable_bytes:null},availability:{can_execute:false,reason:'上次读数已过期，正在重新检查。'}};}
+  function mergeTaskAssessments(task){
+    const advice=new Map((task.advice||[]).map(item=>[item.id,item]));for(const target of task.cleanup_tool_targets||[]){
+      if(!target.assessment?.tool_ref)continue;const saved=target.assessment,item=advice.get(target.id),key=refKey(target.tool_ref||saved.tool_ref),index=listing.data.items.findIndex(candidate=>refKey(toolRef(candidate))===key),current=listing.data.items[index],sameFresh=Boolean(current?.inspection_id&&!current.inspection?.stale&&current.signature&&current.signature===target.signature),base=sameFresh?current:saved,stale=!sameFresh&&(target.stale===true||item?.stale===true||saved.inspection?.stale===true);const recommendation=item?{...base.recommendation,state:item.analysis_state||item.state||({skip:'skipped',no_advice:'no_advice'}[item.conclusion])||'explicit',rating:item.rating??item.cleanup_rating??null,purpose:item.purpose||saved.recommendation?.purpose,reason:item.reason||'',impact:item.impact||saved.recommendation?.impact,impact_rating:item.impact_rating??null,advice:typeof item.advice==='string'?item.advice:'',source:'llm',stale,at:item.provenance?.generated_at}:base.recommendation;
+      const row={...base,tool_ref:target.tool_ref||saved.tool_ref,inspection_id:sameFresh?current.inspection_id:target.inspection_id||saved.inspection_id,task_snapshot:true,recommendation,provenance:item?.provenance||saved.provenance,inspection:{...base.inspection,stale},can_execute:!stale&&base.can_execute,availability:stale?{can_execute:false,reason:'AI 建议对应的检查已过期，请刷新检查；需要时重新分析。'}:base.availability};if(stale)row.benefit={...row.benefit,estimated_reclaimable_bytes:null};if(index>=0)listing.data.items[index]=row;else listing.data.items.push(row);
+    }
+  }
+  function renderCatalog(t){
+    if(!alive(t))return;t.root.replaceChildren();t.rowViews=new Map();
+    heading(t.root,'清理工具','先看本机检查与内置建议，勾选后清理；需要综合判断时再交给 AI 分析。');
+    const top=node('div','cleanup-catalog-top'),tabs=node('div','cleanup-view-tabs');tabs.setAttribute('role','group');tabs.setAttribute('aria-label','工具视图');
+    for(const [id,label] of [['recommended','建议工具'],['all','全部工具']]){const b=button(label,()=>{listing.view=id;renderCatalog(t);},'button small');b.setAttribute('aria-pressed',String(listing.view===id));tabs.append(b);}
+    top.append(tabs);if(t.context.onOpenUserTools){const own=node('div','cleanup-own-tools');append(own,button('我的工具',()=>t.context.onOpenUserTools({}),'plain-button'),button('新建工具',()=>t.context.onOpenUserTools({new:true}),'plain-button'));top.append(own);}t.root.append(top);
+    const toolbar=node('div','cleanup-toolbar cleanup-catalog-filters'),search=node('input');search.type='search';search.value=listing.query;search.placeholder='搜索工具、用途';search.setAttribute('aria-label','搜索清理工具');
+    search.addEventListener('input',()=>{listing.query=search.value;clearTimeout(t.searchTimer);t.searchTimer=setTimeout(()=>{if(alive(t)&&t.catalogVisible)renderCatalogRows(t);},180);});
+    const category=node('select');category.setAttribute('aria-label','工具分类');for(const value of [{id:'all',title:'全部分类'},...toolGroups(listing.data)]){const option=node('option','',value.title||value.id);option.value=value.id;category.append(option);}category.value=listing.category;category.addEventListener('change',()=>{listing.category=category.value;renderCatalogRows(t);});
+    const scores=node('select');scores.setAttribute('aria-label','工具评分');for(const [id,label]of [['all','全部评分'],['5','建议清理'],['4','倾向清理'],['3','待你决定'],['2','倾向保留'],['1','建议保留'],['unrated','未评分']]){const option=node('option','',label);option.value=id;scores.append(option);}scores.value=listing.rating;scores.addEventListener('change',()=>{listing.rating=scores.value;renderCatalogRows(t);});
+    append(toolbar,search,category,scores,button('刷新检查',()=>startCatalogChecks(t,true),'button small'));t.root.append(toolbar);
+    t.catalogProgress=node('p','field-help cleanup-catalog-progress');t.catalogProgress.setAttribute('role','status');t.root.append(t.catalogProgress);
+    const resumable=pending();if(resumable)t.root.append(button('继续上次专项操作',()=>{t.catalogVisible=false;loadPlan(t,resumable);},'button cleanup-resume'));
+    t.catalogRows=node('div','cleanup-tool-groups cleanup-assessment-groups');t.root.append(t.catalogRows);t.catalogFooter=node('footer','cleanup-catalog-footer');t.footerUI=null;t.root.append(t.catalogFooter);renderCatalogRows(t);updateCatalogProgress(t);
+  }
+  function renderCatalogRows(t){
+    if(!alive(t)||!t.catalogRows)return;t.rowViews.clear();t.catalogRows.replaceChildren();const rows=filteredRows();t.visibleRows=rows;
+    const allLabel=node('label','cleanup-extra-select-all'),all=node('input');all.type='checkbox';all.setAttribute('aria-label','全选当前筛选的工具');t.catalogAll=all;append(allLabel,all,node('span','',`全选当前列表 · ${rows.length} 项`));t.catalogRows.append(allLabel);
+    all.addEventListener('change',()=>{for(const row of rows){const ref=toolRef(row),key=refKey(ref);listing.touched.add(key);if(all.checked)listing.selected.set(key,ref);else listing.selected.delete(key);}for(const view of t.rowViews.values())view.check.checked=listing.selected.has(view.key);updateCatalogSelection(t);});
+    if(!rows.length){const empty=node('div','cleanup-catalog-empty');empty.append(node('p','field-help',listing.view==='recommended'&&!listing.query&&listing.category==='all'&&listing.rating==='all'?'还没有可用建议。本机检查完成后，可切换视图查看新建议。':'没有匹配的工具，可以调整筛选。'));if(listing.view==='recommended')empty.append(button('查看全部工具',()=>{listing.view='all';renderCatalog(t);},'button small'));t.catalogRows.append(empty);}
+    const groups=toolGroups({...listing.data,items:rows});for(const [index,group]of groups.entries()){
+      if(!group.items.length)continue;const section=node('section','cleanup-tool-group'),header=node('header','cleanup-tool-group-heading'),title=node('h2','',group.title||group.id);title.id=`cleanup-tool-group-${t.route}-${index}`;section.setAttribute('aria-labelledby',title.id);append(header,title,node('span','cleanup-tool-group-count',`${group.items.length} 项`));section.append(header);
+      const list=node('div','cleanup-tool-list cleanup-assessment-list');for(const row of group.items){const view=createAssessmentRow(t,row);list.append(view.root);t.rowViews.set(view.key,view);}section.append(list);t.catalogRows.append(section);
+    }updateCatalogSelection(t);
+  }
+  function createAssessmentRow(t,row){
+    const key=refKey(toolRef(row)),root=node('section','cleanup-tool-row'),check=node('input');check.type='checkbox';check.checked=listing.selected.has(key);check.setAttribute('aria-label','选择工具：'+row.title);
+    check.addEventListener('change',()=>{listing.touched.add(key);if(check.checked)listing.selected.set(key,toolRef(view.row));else listing.selected.delete(key);updateCatalogSelection(t);});
+    const grade=node('div','cleanup-tool-rating'),copy=node('div','cleanup-tool-copy'),titleLine=node('div','cleanup-tool-title-line'),source=node('span','cleanup-builtin-source');const icon=window.PanxuIcons?.create({kind:'service'});append(titleLine,icon,node('h3','',row.title),source);const scope=node('p','cleanup-tool-scope');scope.textContent=Object.entries(toolRef(row).parameters).filter(([key])=>fieldVisible(toolRef(row).tool_id,key,toolRef(row).parameters)).slice(0,3).map(([key,value])=>`${fields(row.definition||{}).find(field=>field.name===key)?.label || parameterLabels[key] || key}：${displayValue(value)}`).join(' · ');const advice=node('div','cleanup-tool-advice');append(copy,titleLine,scope.textContent?scope:null,advice);
+    const meta=node('div','cleanup-tool-measurement'),actions=node('div','cleanup-tool-row-actions'),details=button(row.requires_parameters?'补充选项':'查看工具',()=>{t.catalogOrigin=view.row;t.catalogParametersConfirmed=false;t.catalogVisible=false;cancelCatalog(t);t.source=null;loadDetail(t,toolRef(view.row).tool_id,toolRef(view.row).parameters);},'plain-button');append(actions,details);append(root,check,grade,copy,meta,actions);const view={root,check,grade,advice,meta,details,source,key,row};updateAssessmentRow(view,row);return view;
+  }
+  function updateAssessmentRow(view,row){
+    view.row=row;view.check.checked=listing.selected.has(view.key);view.source.textContent=row.recommendation?.source==='llm'?'AI 建议':'内置建议';view.source.title=row.recommendation?.source==='llm'?[row.provenance?.model,row.recommendation?.at||row.provenance?.at].filter(Boolean).join(' · '):'由本机工具检查结果与内置说明生成，无需模型。';const record=assessmentRecord(row);view.grade.replaceChildren(window.PanxuAssessment?.render(record,{direct:true,primary:true})||node('span','cleanup-rating',rating(row)===null?'未评分':`${rating(row)} 分`));
+    view.advice.replaceChildren(window.PanxuAdvicePresentation?.render(record,{direct:true,suggestion:row.recommendation?.advice})||append(node('div','cleanup-tool-fallback-copy'),...['purpose','advice','reason','impact'].map((key,index)=>node('p','',(['用途：','建议：','原因：','影响：'][index])+(row.recommendation?.[key]||'尚未取得')))));
+    view.details.textContent=row.requires_parameters?'补充选项':'查看工具';view.meta.replaceChildren();const benefit=row.benefit||{},inspection=row.inspection||{};
+    let label,value;if(Number.isFinite(benefit.estimated_reclaimable_bytes)){label='预估可清理上限';value=formatBytes(benefit.estimated_reclaimable_bytes);}else if(Number.isFinite(benefit.observed_bytes)){label=benefit.complete===false?'已读取占用至少':'已统计占用';value=formatBytes(benefit.observed_bytes);}else{label=benefit.estimate_kind==='not_applicable'?'不以释放空间计量':'空间待确认';value='';}
+    append(view.meta,node('span','cleanup-tool-measure-label',label),value?node('strong','cleanup-tool-measure-value',value):null,node('span','cleanup-tool-measure-count',Number.isFinite(benefit.count)?`${benefit.count} 项`:'项目数未取得'));
+    const states={pending:'等待检查',uninspected:'等待检查',partial:'部分结果',failed:'检查未完成',unknown:'信息未取得',not_found:'未找到位置',not_applicable:'不适用',observed:'已检查',needs_input:'需补充选项',stale:'读数已过期'},state=row.requires_parameters?'需补充选项':inspection.stale?'读数已过期':view.checking?'正在检查…':states[row.status]||(!inspection.id?'等待检查':'已检查');view.root.dataset.inspectionState=row.requires_parameters?'parameters':inspection.stale?'stale':row.status||'pending';view.meta.append(node('span','cleanup-tool-check-state',state));
+    const unavailable=row.availability?.reason;if(unavailable&&!row.can_execute&&![row.recommendation?.reason,row.recommendation?.advice].includes(unavailable))view.meta.append(node('span','cleanup-tool-unavailable',unavailable));if(view.error)view.meta.append(node('span','field-error',view.error));
+  }
+  function updateCatalogProgress(t){if(!t.catalogProgress)return;const items=listing.data?.items || [],done=t.catalogChecked||0,total=t.catalogCheckTotal||0;t.catalogProgress.textContent=t.catalogChecking?`正在检查 ${done} / ${total} 项；可先查看、勾选。`:`${items.length} 项工具 · ${items.filter(row=>rating(row)!==null).length} 项已评分。设置与隐私项目由你选择。`;}
+  function selectedRows(){return (listing.data?.items || []).filter(row=>listing.selected.has(refKey(toolRef(row))));}
+  function updateCatalogSelection(t){
+    if(!alive(t)||!t.catalogVisible||!t.catalogFooter)return;const rows=selectedRows(),visible=t.visibleRows||[],n=visible.filter(row=>listing.selected.has(refKey(toolRef(row)))).length;if(t.catalogAll){t.catalogAll.checked=n>0&&n===visible.length;t.catalogAll.indeterminate=n>0&&n<visible.length;t.catalogAll.disabled=!visible.length;}
+    if(!t.footerUI){const copy=node('div','cleanup-selection-copy'),count=node('strong'),summary=node('p','field-help cleanup-selection-summary'),hidden=node('p','field-help cleanup-selection-hidden'),actions=node('div','cleanup-actions'),analyze=button('分析勾选项',()=>analyzeCatalog(t),'button'),reanalyze=button('重新分析勾选项',()=>analyzeCatalog(t,true),'plain-button'),execute=button('执行勾选项',()=>prepareCatalog(t),'button primary'),reason=node('p','field-help cleanup-selection-blocked'),error=node('p','field-error');append(copy,count,summary,hidden);append(actions,analyze,reanalyze,execute);append(t.catalogFooter,copy,actions,reason,error);t.footerUI={count,summary,hidden,analyze,reanalyze,execute,reason,error};}
+    const pendingAnalysis=rows.filter(row=>!row.inspection_id||row.inspection?.stale),ui=t.footerUI;t.selectionSummary=ui.summary;ui.count.textContent=`已勾选 ${rows.length} 项`;ui.summary.textContent=rows.length?'正在汇总范围…':'勾选需要分析或清理的工具。';ui.hidden.textContent=rows.length>n?`其中 ${rows.length-n} 项不在当前列表`:'';ui.hidden.hidden=rows.length===n;ui.analyze.disabled=t.catalogActionBusy||!rows.length||rows.length>64||pendingAnalysis.length>0||typeof t.context.onAnalyzeTools!=='function';ui.reanalyze.hidden=!rows.some(row=>row.recommendation?.source==='llm');ui.reanalyze.disabled=ui.analyze.disabled;
+    const invalid=rows.filter(row=>row.requires_parameters||!row.can_execute||!row.inspection_id||row.inspection?.stale);ui.execute.textContent=rows.length?`执行勾选的 ${rows.length} 项`:'执行勾选项';ui.execute.disabled=t.catalogActionBusy||!rows.length||rows.length>40||invalid.length>0;
+    const reason=rows.length>64?'一次最多分析 64 项、执行 40 项，请分批选择。':pendingAnalysis.length?rows.some(row=>!row.inspection_id)?'请先等待检查完成，或点击“刷新检查”，再分析勾选项。':`${pendingAnalysis.length} 项检查已过期，请先刷新检查，再分析勾选项。`:rows.length>40?'已选工具可以一起分析；执行时每批最多 40 项。':invalid.length?`${invalid.length} 项需补充选项、刷新检查或当前没有可执行操作，请查看对应工具。`:'';ui.reason.textContent=reason;ui.reason.hidden=!reason;ui.error.textContent=t.catalogError||'';ui.error.hidden=!t.catalogError;
+    clearTimeout(t.summaryTimer);const version=t.summaryVersion=(t.summaryVersion||0)+1;if(rows.length)t.summaryTimer=setTimeout(()=>void catalogSummary(t,rows,version),120);
+  }
+  async function catalogSummary(t,rows,version){
+    try{const result=await t.context.api('/api/cleanup-tools/assessments/summary',{items:rows.map(toolRef)});if(!alive(t)||!t.catalogVisible||version!==t.summaryVersion)return;const summary=result.summary||result,estimate=summary.estimated_reclaimable_bytes??summary.benefit?.estimated_reclaimable_bytes,observed=summary.observed_bytes??summary.benefit?.observed_bytes;const parts=[];if(Number.isFinite(estimate))parts.push('预估可清理上限 '+formatBytes(estimate));else if(Number.isFinite(observed))parts.push('已统计占用 '+formatBytes(observed));else parts.push('释放空间尚未确定');if(summary.overlap_detected||summary.has_overlap||summary.overlap_count>0)parts.push('部分工具范围重叠，不能相加');if(summary.unknown_count>0)parts.push(`${summary.unknown_count} 项空间未知`);t.selectionSummary.textContent=parts.join(' · ');}catch(_){if(alive(t)&&t.catalogVisible&&version===t.summaryVersion)t.selectionSummary.textContent='汇总暂未取得；执行前会重新核对范围。';}
+  }
+  function startCatalogChecks(t,refresh=false){
+    if(!alive(t)||!t.catalogVisible)return;cancelCatalog(t);const generation=t.catalogGeneration;t.catalogQueue=(listing.data?.items||[]).filter(row=>refresh||!row.task_snapshot&&(!row.inspection?.id||row.inspection.stale)).map(row=>({row,generation,refresh}));t.catalogCheckTotal=t.catalogQueue.length;t.catalogChecked=0;t.catalogChecking=t.catalogCheckTotal>0;updateCatalogProgress(t);pumpCatalog(t);
+  }
+  function pumpCatalog(t){
+    if(!t||!alive(t)||!t.catalogVisible)return;while(catalogActive<3&&t.catalogQueue?.length){const job=t.catalogQueue.shift();if(!catalogAlive(t,job.generation))continue;catalogActive++;void checkCatalogRow(t,job);}
+  }
+  async function checkCatalogRow(t,{row,generation,refresh}){
+    const ref=toolRef(row),key=refKey(ref),view=t.rowViews?.get(key);if(view){view.checking=true;updateAssessmentRow(view,row);}
+    try{const response=await t.context.api('/api/cleanup-tools/assess',{tool_id:ref.tool_id,parameters:ref.parameters,refresh});if(!catalogAlive(t,generation))return;const next={...(response.item||response),...(row.task_snapshot?{task_snapshot:true}:{})},index=listing.data.items.findIndex(item=>refKey(toolRef(item))===key);if(index>=0)listing.data.items[index]=next;if(listing.configured.has(ref.tool_id))listing.configured.set(ref.tool_id,next);seedSelection(t,next);if(listing.selected.has(key))listing.selected.set(key,toolRef(next));const current=t.rowViews?.get(key);if(current){current.checking=false;current.error='';updateAssessmentRow(current,next);}}
+    catch(_){if(catalogAlive(t,generation)){const current=t.rowViews?.get(key);if(current){current.checking=false;current.error='检查未完成，可刷新重试。';updateAssessmentRow(current,row);}}}
+    finally{catalogActive=Math.max(0,catalogActive-1);if(catalogAlive(t,generation)){t.catalogChecked++;t.catalogChecking=t.catalogChecked<t.catalogCheckTotal;updateCatalogProgress(t);updateCatalogSelection(t);}pumpCatalog(mounted);}
+  }
+  async function analyzeCatalog(t,reanalyze=false){
+    if(t.catalogActionBusy)return;const rows=selectedRows(),refs=rows.map(toolRef);if(!refs.length||refs.length>64||rows.some(row=>!row.inspection_id||row.inspection?.stale)||!t.context.onAnalyzeTools)return;t.catalogActionBusy=true;t.catalogError='';updateCatalogSelection(t);const generation=t.catalogGeneration;
+    try{await t.context.onAnalyzeTools(refs,reanalyze?{reanalyze:true,skip_analyzed:false}:{});if(catalogAlive(t,generation))t.catalogError='';}catch(error){if(alive(t)&&t.catalogVisible)t.catalogError=error.message||'分析暂未开始，请重试。';}finally{t.catalogActionBusy=false;if(alive(t)&&t.catalogVisible)updateCatalogSelection(t);}
+  }
+  async function prepareCatalog(t){
+    if(t.catalogActionBusy)return;const rows=selectedRows();if(!rows.length||rows.length>40||rows.some(row=>row.requires_parameters||!row.can_execute||!row.inspection_id||row.inspection?.stale))return;t.catalogActionBusy=true;t.catalogError='';updateCatalogSelection(t);const route=t.route;
+    try{const plan=await t.context.api('/api/cleanup-tools/prepare-selection',{items:rows.map(toolRef),source:t.source||{}});if(!alive(t)||route!==t.route)return;cancelCatalog(t);t.catalogVisible=false;t.catalogBatch=true;showBatchPlan(t,plan);}catch(error){if(alive(t)&&route===t.route)t.catalogError=error.message||'无法准备清理，请刷新检查后重试。';}finally{t.catalogActionBusy=false;if(alive(t)&&t.catalogVisible)updateCatalogSelection(t);}
   }
   function sourceKey(t, toolId) {return [toolId,t.source?.task_id,t.source?.item_id,t.source?.advice_version,t.source?.suggestion_id,t.toolVariant].map(value=>value ?? '').join(':');}
   function fields(tool) {return Array.isArray(tool.parameters) ? tool.parameters : [];}
@@ -95,7 +185,7 @@ window.PanxuCleanupTools = (() => {
   function entryVisible(t,entry) {return entry && entry.kind!=='official_method' && !/^https?:/i.test(String(entry.target || entry.url || '')) && (!entry.browser || entry.browser===values(t).browser);}
   function values(t) {return drafts.get(sourceKey(t, t.detail.id)) || {};}
   async function loadDetail(t, id, initial) {
-    if (!alive(t)) return false; cancelInspection(t); const request = t.route = (t.route || 0) + 1; t.busy = false; loading(t, '专项清理');
+    if (!alive(t)) return false; cancelInspection(t);cancelCatalog(t);t.catalogVisible=false; const request = t.route = (t.route || 0) + 1; t.busy = false; loading(t, '专项清理');
     try {
       const tool = await t.context.api('/api/cleanup-tools/' + encodeURIComponent(id));
       if (!alive(t) || request !== t.route) return false; t.detail = tool; t.batch = false; t.plan = null; t.result = null; t.inspection = null; t.error = ''; t.submitted = false; t.opened = false;
@@ -126,7 +216,7 @@ window.PanxuCleanupTools = (() => {
     if(delay===0){void inspect(t);return;}
     t.inspectTimer=setTimeout(()=>{t.inspectTimer=null;if(alive(t))void inspect(t);},delay);
   }
-  function backToTool(t) {t.plan=null;t.result=null;t.submitted=false;renderDetail(t);scheduleInspection(t,0);}
+  function backToTool(t) {t.plan=null;t.result=null;t.submitted=false;if(t.catalogBatch){void renderList(t);return;}renderDetail(t);scheduleInspection(t,0);}
   function renderDetail(t) {
     if (!alive(t)) return; const tool = t.detail; t.root.replaceChildren();
     controls(t, t.extra ? '返回专项方案' : t.extraList ? '返回专项建议' : t.context.onReturn && t.source ? sourceLabel(t) : '返回工具', () => detailBack(t));
@@ -160,6 +250,7 @@ window.PanxuCleanupTools = (() => {
     if(tool.impact)t.root.append(copyBlock('操作影响',tool.impact,'cleanup-impact'));
     if(tool.recovery)t.root.append(copyBlock('恢复说明',tool.recovery,'cleanup-recovery'));
     const actions = node('div', 'cleanup-actions');
+    if(t.catalogOrigin&&!t.plan){const save=button('保存选项并返回清单',()=>{if(!parametersReady(t))return;t.catalogParametersConfirmed=true;void renderList(t);},'button');save.disabled=!parametersReady(t)||t.busy===true;t.parameterSaveButton=save;actions.append(save);}
     if (tool.capabilities?.prepare !== false) {const execute=button(actionLabel(t), () => prepare(t), 'button primary');execute.disabled=actionDisabled(t);t.executeButton=execute;actions.append(execute);}
     const settings = Array.isArray(tool.settings) ? tool.settings : tool.settings ? [tool.settings] : [];
     settings.forEach((entry, index) => {
@@ -207,6 +298,7 @@ window.PanxuCleanupTools = (() => {
     });host.append(grid);
   }
   function renderInspection(t) {
+    if(t.parameterSaveButton)t.parameterSaveButton.disabled=!parametersReady(t)||t.busy===true;
     const host=t.statusHost;if(!host?.isConnected)return;if(t.executeButton?.isConnected){t.executeButton.disabled=actionDisabled(t);t.executeButton.title=emptyReason(t);}host.replaceChildren();host.setAttribute('aria-busy',String(t.checking===true));
     const top=node('div','cleanup-status-heading');top.append(node('h2','','当前状态'));if(t.inspection?.presentation?.complete===false||t.inspection?.presentation?.status==='partial')top.append(node('span','cleanup-status-coverage','部分结果'));
     if(t.detail.capabilities?.inspect!==false){const refresh=button(t.checking?'刷新中…':'刷新',()=>inspect(t),'plain-button cleanup-refresh');refresh.disabled=t.checking===true||!parametersReady(t);top.append(refresh);}host.append(top);
@@ -329,7 +421,7 @@ window.PanxuCleanupTools = (() => {
     for (const item of r.items || []) append(box, node('p', 'cleanup-result-item', (item.name ? item.name + '：' : '') + (item.message || displayValue(item.status))));
     if (r.message) box.append(node('p', '', r.message));
     if (typeof r.actual_reclaimed_bytes === 'number') box.append(node('p', 'field-help', '实际释放空间：' + formatBytes(r.actual_reclaimed_bytes)));
-    if (t.context.onReturn && t.source && !t.context.setContextBack) box.append(button(sourceLabel(t), () => returnToSource(t), 'button primary'));box.append(button('返回工具说明',()=>backToTool(t),'button'));t.root.append(box);
+    if (t.context.onReturn && t.source && !t.context.setContextBack) box.append(button(sourceLabel(t), () => returnToSource(t), 'button primary'));box.append(button(t.catalogBatch?'返回工具清单':'返回工具说明',()=>backToTool(t),'button'));t.root.append(box);
   }
   function renderExtra(t, suggestion) {
     if (!alive(t)) return; cancelInspection(t);t.route = (t.route || 0) + 1; t.extra = suggestion; t.source = t.source || suggestion.source || null; t.detail = null; t.root.replaceChildren();

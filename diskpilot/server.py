@@ -69,6 +69,7 @@ class Application:
         self.updates = UpdateChecker()
         self.harness = TaskHarness(self.state, self.assistant, trace=self.trace, scan_index=self.scan_index, skill_registry=self.skills)
         self.cleanup_tools = self.harness.cleanup_tools
+        self.tool_assessments = self.harness.tool_assessments
         for plan in self.cleanup_tools.history():
             if plan.get('result'):
                 self.harness.record_specialist_result(plan, reconcile=True)
@@ -419,6 +420,9 @@ class Application:
                 limit=limit,refresh=query.get('refresh',['0'])[0]=='1',task=self.selection_task(query.get('task_id',[None])[0]))
         if path == '/api/cleanup-tools':
             return self.cleanup_tools.list(query=query.get('query', [''])[0], category=query.get('category', ['all'])[0])
+        if path == '/api/cleanup-tools/assessments':
+            return self.tool_assessments.catalog(query=query.get('query', [''])[0],
+                category=query.get('category', ['all'])[0], volume=query.get('volume', [None])[0])
         if path == '/api/cleanup-tools/history':
             return {'history': self.cleanup_tools.history()}
         if path.startswith('/api/cleanup-tools/') and len(path.split('/')) == 4:
@@ -607,6 +611,10 @@ class Application:
             for batch_id in result.get('affected_batch_ids', []):
                 self.harness.refresh_operation_receipts(batch_id)
             return result
+        if path == '/api/cleanup-tools/assessments/summary':
+            if not isinstance(payload, dict) or set(payload) != {'items'}:
+                raise AppError('请重新选择要汇总的工具。', 'invalid_tool_selection')
+            return self.tool_assessments.summarize(payload['items'])
         if path.startswith('/api/cleanup-tools/'):
             if len(path.split('/')) != 4:
                 raise AppError('接口不存在。', 'not_found', 404)
@@ -615,12 +623,20 @@ class Application:
                 'execute': {'plan_id', 'version'}, 'open-settings': {'tool_id', 'index', 'parameters', 'source'},
                 'prepare-many': {'items', 'source'}, 'control': {'plan_id', 'action'},
                 'cancel': {'plan_id', 'version'}, 'undo': {'plan_id'},
+                'assess': {'tool_id', 'parameters', 'refresh'},
+                'prepare-selection': {'items', 'source'},
             }
             operation = path.rsplit('/', 1)[-1]
             if operation not in allowed or not isinstance(payload, dict) or set(payload) - allowed[operation]:
                 raise AppError('专项操作信息无效，请重新打开工具。')
             if operation == 'inspect':
                 return self.cleanup_tools.inspect(payload.get('tool_id'), payload.get('parameters'))
+            if operation == 'assess':
+                return self.tool_assessments.inspect(payload.get('tool_id'), payload.get('parameters'),
+                    refresh=payload.get('refresh', False))
+            if operation == 'prepare-selection':
+                return self.tool_assessments.prepare_selection(payload.get('items'),
+                    source=self._cleanup_source(payload.get('source')))
             if operation in ('prepare', 'prepare-many'):
                 source = self._cleanup_source(payload.get('source'))
                 if operation == 'prepare-many':
@@ -631,6 +647,7 @@ class Application:
                 self._cleanup_source(plan.get('source'))
                 result = self.cleanup_tools.execute(payload.get('plan_id'), payload.get('version'))
                 self._cleanup_feedback(plan, result)
+                self.tool_assessments.invalidate()
                 return result
             if operation == 'control':
                 return {'execution': self.cleanup_tools.control(payload.get('plan_id'), payload.get('action'))}
@@ -641,6 +658,7 @@ class Application:
             if operation == 'undo':
                 plan = self.cleanup_tools.undo(payload.get('plan_id'))
                 self._cleanup_feedback(plan, plan.get('result'))
+                self.tool_assessments.invalidate()
                 return plan
             return self._open_cleanup_settings(payload)
         if path == '/api/assessments/select':
@@ -709,6 +727,12 @@ class Application:
         if path == '/api/duplicates/scan':
             request = validate_duplicate_request(payload)
             return self.start_job('duplicates', request)
+        if path == '/api/tasks/tool-analysis':
+            if not isinstance(payload, dict):
+                raise AppError('请选择要分析的工具。', 'invalid_request')
+            task = self.harness.create_tool_analysis(payload)
+            job = self.start_job('agent', {'task_id': task['id']})
+            return dict(job, task=self.harness.public(task['id']))
         if path == '/api/tasks/analyze':
             if not isinstance(payload, dict):
                 raise AppError('分析选项需要一个对象。', 'invalid_request')

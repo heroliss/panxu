@@ -1,6 +1,6 @@
 {
   "product": "盘序",
-  "version": "0.24.0",
+  "version": "0.25.0",
   "mode": "simulation",
   "root": "E:\\GPT-Projects\\win11-disk-assistant",
   "safety": "This build has NO real executor. All apply/undo/reset operations modify only SQLite simulation records. Never unlink/move/kill/control services/edit startup outside app-owned data.",
@@ -130,7 +130,12 @@
     "POST /api/user-tools/archive": "{tool_id,version} -> archived definition; no file deletion",
     "GET /api/tasks/{id}/work/{job_id}": "task-owned durable read-only background work; paths/results not dumped",
     "POST /api/tasks/{id}/work/{job_id}/cancel": "{} -> cancel remaining read-only work, keep existing results",
-    "GET /api/tasks/{id}/diagnostics/{snapshot_id}": "paged diagnostic detail with original time, status, coverage and evidence refs"
+    "GET /api/tasks/{id}/diagnostics/{snapshot_id}": "paged diagnostic detail with original time, status, coverage and evidence refs",
+    "GET /api/cleanup-tools/assessments": "{query?,category?,volume?}; static 48-tool catalog plus bounded cached assessments; no OS/model I/O. Unknown is not zero; fixed definition separate from current observations and builtin/llm recommendation.",
+    "POST /api/cleanup-tools/assess": "{tool_id,parameters?,refresh?}; read-only bounded inspection, exact parameter identity, inspection_id/signature, 96-entry cache with 60-second freshness. Logical bytes are not actual savings; partial/subset observations cannot claim full cleanup size.",
+    "POST /api/cleanup-tools/assessments/summary": "{items:[{tool_id,parameters?,inspection_id?}]}; cache-only summary up to64 references; unknown coverage and overlapping roots/file identities are not summed as confirmed reclaimed space.",
+    "POST /api/cleanup-tools/prepare-selection": "{items:[{tool_id,parameters,inspection_id}],source?};1-40 fresh checked executable nonoverlapping operations through existing prepare_many/ActionRuntime. No model call or real mutation.",
+    "POST /api/tasks/tool-analysis": "{items:[{tool_id,parameters,inspection_id}],goal?,reanalyze?,skip_analyzed?};1-64 exact cached diagnostic snapshots, task-private kind cleanup_tool, scope_kind/analysis.section cleanup_tools; existing agent job/facts/advice loop. No file catalog insertion, parameter changes or execution. Public cleanup_tool_targets retains frozen assessments and genuine advice/provenance, including stale historical results."
   },
   "mutations": "Require X-CSRF-Token from bootstrap. Errors are JSON {error,code}. Relative same-origin fetch only. Input limits apply.",
   "summary": "{total_items,visible_items,simulated_items,logical_bytes,simulated_bytes,process_memory_bytes,by_kind,source,mode}. Real disks separate; no simulated_bytes shown as actual freed space.",

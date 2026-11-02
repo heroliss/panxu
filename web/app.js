@@ -465,6 +465,15 @@ function initializePanxu() {
   }
   function renderCleanupTools(root) {
     const context={api,source:cleanupReference?.source || {},onReturn:returnFromCleanup,returnLabel:cleanupReturn?'返回'+(names[cleanupReturn.view] || '原页面'):'返回清单',toast,setContextBack,
+      autoSelectFour:window.PanxuAppearance.get().cleanup_auto_select_four,
+      onAnalyzeTools:async(items,options={})=>{
+        const revision=state.navigationRevision;
+        const data=await api('/api/tasks/tool-analysis',{items,...options});
+        window.PanxuTasks.accept(data.task);
+        if(state.view==='cleanup'&&state.navigationRevision===revision)setView('current',false);
+        else notify('工具分析已开始，可在整理进度中查看。');
+        return data;
+      },
       onOpenUserTools:openUserTools,onSaveTool:ref=>openUserTools(ref),
       onOpenSettings:async(tool_id,entry,index,parameters)=>{
         const result=await api('/api/cleanup-tools/open-settings',{tool_id,index,parameters,source:cleanupReference?.source || {}});
@@ -535,6 +544,11 @@ function initializePanxu() {
   function taskWorkspaceId(task){return task?.cleanup_source_task_id || task?.id || null;}
   function openTaskResults(task) {
     if(!task)return;
+    if(task.scope_kind==='cleanup_tools'||task.analysis?.section==='cleanup_tools'){
+      cleanupReturn=state.view==='cleanup'?cleanupReturn:locationSnapshot();
+      cleanupReference={analysis_task_id:task.id,source:{task_id:task.id}};
+      setView('cleanup',false);return;
+    }
     const application=task.scope_kind==='applications'||['background','software'].includes(task.analysis?.section);
     if(application){backgroundTaskId=taskWorkspaceId(task);setView('background',false);}
     else{fileTaskId=taskWorkspaceId(task);window.PanxuFileWorkspace.open(task.scopes?.[0]?.path || '',{suggestions:true});setView('files',false);}
