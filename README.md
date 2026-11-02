@@ -6,6 +6,8 @@
 
 代码基地：[GitHub · heroliss/panxu](https://github.com/heroliss/panxu)（私有仓库），由 **Liss** 维护。
 
+下一阶段的[导航与所有文件方案](docs/NAVIGATION_FILE_WORKSPACE.md)、[清理工具及额外建议方案](docs/CLEANUP_TOOLBOX_AND_EXTENSIONS.md)和[官方操作研究清单](docs/research/cleanup-toolbox-official-sources-2026-11-02.md)已记录，均待开发；不代表当前程序已能执行这些系统或隐私操作。
+
 由 Liss 有权许可的项目原创代码与原创指导资料采用 [PolyForm Noncommercial License 1.0.0](LICENSE)。许可范围内的使用、修改和再分发应保留许可证及必要通知；超出许可允许用途的商业使用需另行取得相应权利人的书面授权。版权通知见 [NOTICE](NOTICE)，第三方依赖、运行材料及另有标注的内容继续遵循各自许可证，不因项目署名而改归盘序。此为源码可见的非商业许可，不标为 OSI 意义上的开源许可。商业授权联系 [Liss](https://github.com/heroliss)。
 
 第三方原文与来源清单见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。公开二进制分发前，仍需完成部分 Microsoft/.NET facade DLL 的逐文件来源及适用再分发条件对应，以及实际 UCRT/VC 运行材料的条件核对；随包附有许可材料不等于这些待办已完成。
