@@ -362,7 +362,7 @@ test('Inspector prefers global inherited source over active task advice and pres
   assert.ok(inspector.textContent.includes('创建时间'));assert.ok(inspector.textContent.includes('修改时间未核实'));assert.ok(inspector.textContent.includes('访问时间不等于最后使用'));
   assert.equal(inspector.all().filter(node=>node.tag==='button'&&node.textContent==='重新分析此项').length,1);assert.equal(inspector.querySelector('.additional-analysis'),null,'known advice has one reanalysis entry');
   const source=await openProvenance(inspector.querySelector('.advice-provenance'));assert.ok(source.includes('ancestor-B'));assert.ok(!source.includes('original-model-A'));assert.ok(!source.includes('current-C'));
-  await inspector.all().find(node=>node.tag==='button'&&node.textContent==='查看来源任务').fire('click');assert.deepEqual(calls,['/api/tasks/source-B','overview']);
+  await inspector.all().find(node=>node.tag==='button'&&node.textContent==='查看来源任务').fire('click');assert.deepEqual(calls,['/api/tasks/source-B','current']);
 });
 
 test('actual API notifies retained previous advice without relabeling it as new or mutating its provenance',async()=>{

@@ -469,6 +469,7 @@ window.PanxuTasks = (() => {
     try {
       const data = await context.api(path, payload);
       if (data.task) accept(data.task);
+      if(data.task&&path==='/api/tasks'){intent='';context.onTaskCreated?.(data.task);}
       feedbackDraft = '';
       if (!busy()) await context.refreshCatalog();
     } catch (error) { lastError = error.message || '操作暂时未完成，请重试。'; }
@@ -488,6 +489,8 @@ window.PanxuTasks = (() => {
       if (current?.id !== id) return;
       accept(data.task);
       if (!busy()) await context.refreshCatalog();
+      if(current?.id!==id)return;
+      if(!busy()&&(current.advice_total || current.advice?.length || current.plan))context.onTaskReady?.(current);
       if (before !== current.status + ':' + current.summary) redraw();
     } catch (error) { lastError = '暂时连不上本机服务。重新打开程序后可以继续这个任务。'; redraw(); }
     if (busy()) schedule();
@@ -501,7 +504,6 @@ window.PanxuTasks = (() => {
   function reviewPane(pane=''){const id=current.cleanup_source_task_id || current.id;if(reviewPanes.size>=8&&!reviewPanes.has(id))reviewPanes.delete(reviewPanes.keys().next().value);reviewPanes.set(id,pane);redraw();}
   function choose(preset) {
     if(preset==='duplicates'&&context.openDuplicates){context.openDuplicates();return;}
-    if(current&&homeVisible)newTask();
     if (preset === 'c_cleanup' || preset === 'background') {
       request('/api/tasks', {preset}); return;
     }
@@ -511,7 +513,7 @@ window.PanxuTasks = (() => {
     if (!intent) {
       context.setContextBack?.('',null);
       add(root, context.heading('今天想整理什么？', '助手先调查并解释，再由你确认具体操作。'));
-      if(current)add(root,action('返回当前整理',()=>{homeVisible=false;redraw();},'button task-return-current'));
+      if(current&&context.page!=='home')add(root,action('返回当前整理',()=>{homeVisible=false;redraw();},'button task-return-current'));
       const grid = node('div', 'task-intents');
       ['c_cleanup', 'disk_cleanup', 'directory_cleanup', 'duplicates'].forEach((key) => {
         const card = action('', () => choose(key), 'task-intent'); card.dataset.preset = key;
@@ -520,9 +522,10 @@ window.PanxuTasks = (() => {
       });
       const extras=node('div','task-secondary-intents');add(extras,...['background','installers','custom'].map(key=>action(intents[key][0],()=>choose(key),'plain-button more-task')));
       add(root,grid,extras,node('p','task-privacy-note','助手查看文件与软件信息，按需在本机核对；不会向模型发送文件正文，个人资料由你决定去留。'));
+      context.renderHomeInfo?.(root);
       return;
     }
-    context.setContextBack?.('返回常用任务',()=>{intent='';redraw();});
+    context.setContextBack?.('返回首页',()=>{intent='';redraw();});
     add(root, context.heading(intents[intent][0], intent === 'disk_cleanup' ? '选择位置，助手会分步调查，并说明哪些地方还没检查。' : '选择要检查的文件夹。'));
     const panel = node('section', 'task-welcome panel');
     const goal = textInput('你想怎么整理', draftGoal, (value) => { draftGoal = value; }, true);
@@ -772,11 +775,12 @@ window.PanxuTasks = (() => {
     const tones = {succeeded:'info', failed:'danger', unverified:'warning', cancelled:'neutral', running:'warning'};
     result.items.forEach((item) => {
       const undone = item.current_state === 'undone';
+      const purged = item.current_state === 'purged';
       const row = node('article', 'task-result-item');
       const heading = add(node('div', 'task-result-heading'),
         add(node('div', 'item-title-line'), window.PanxuIcons?.create(item), node('strong', 'task-result-name', item.name)),
-        semanticTag(undone?'记录已撤销':labels[item.status] || '待核实',undone?'neutral':tones[item.status] || 'warning','task-result-state'));
-      add(row,heading,node('p','task-result-message',undone?'这次处理记录已撤销。':item.message));
+        semanticTag(undone?'记录已撤销':purged?'永久删除已记录':labels[item.status] || '待核实',undone||purged?'neutral':tones[item.status] || 'warning','task-result-state'));
+      add(row,heading,node('p','task-result-message',undone?'这次处理记录已撤销。':purged?'此项已从可还原列表移除，不能再通过盘序还原。':item.message));
       add(box, row);
     });
     add(root, box);
@@ -837,7 +841,12 @@ window.PanxuTasks = (() => {
     entries.forEach(entry=>add(list,adviceCard(entry,current.id)));add(root,list);
   }
   function taskView(root) {
-    context.setContextBack?.('返回常用任务',returnHome);
+    context.setContextBack?.(context.page==='task'?'':'返回常用任务',context.page==='task'?null:returnHome);
+    if(context.page==='task'&&context.openResults&&!busy()&&!current.question&&(current.advice_total || current.advice?.length || current.plan)){
+      add(root,context.heading('当前任务',current.goal));
+      const panel=node('section','panel task-session');add(panel,node('p','task-summary-original',current.summary || '建议已保存，可以查看清单并调整选择。'),action('查看建议与操作清单',()=>context.openResults(current),'button primary'));
+      briefing(panel);renderLivePreview(panel);specialistSuggestions(panel);add(root,panel);return;
+    }
     if(window.PanxuCleanupReview&&!current.question&&(current.status==='executing'||!busy()&&['awaiting_review','completed','paused','budget_exhausted','error'].includes(current.status))){reviewView(root);return;}
     add(root, context.heading(intents[current.preset]?.[0] || '整理助手', current.preset && current.preset !== 'custom' ? '按需调查，先给出最值得关注的建议。' : current.goal));
     const panel = node('section', 'panel task-session');
@@ -898,7 +907,7 @@ window.PanxuTasks = (() => {
       if(!context.setContextBack)add(root,action(returnLabel,()=>reviewPane(returnPane),'plain-button task-new'));
       return;
     }
-    const heading=context.heading(listTitle,'按评分查看用途、建议与影响，勾选后核对具体操作。');heading.classList?.add('cleanup-page-heading');add(root,heading);
+    if(!context.embeddedResult){const heading=context.heading(listTitle,'按评分查看用途、建议与影响，勾选后核对具体操作。');heading.classList?.add('cleanup-page-heading');add(root,heading);}
     const summary=node('div','cleanup-task-summary');add(root,summary);
     const list=node('div','cleanup-task-list');add(root,list);
     const explanation=node('div','cleanup-task-explanation');add(root,explanation);
@@ -911,6 +920,7 @@ window.PanxuTasks = (() => {
     }
     window.PanxuCleanupReview.render(list,{
       task:current,api:context.api,bytes:context.bytes,showItem:context.showItem,autoSelectFour:context.autoSelectFour,disabled:pending,
+      singleSuggestions:context.embeddedResult&&current.scope_kind!=='applications',
       setContextBack:context.setContextBack,openFiles:context.openFiles,onSource:showContext,acceptTask:accept,redraw,
       renderTools:tools=>add(tools,action('分析详情',()=>reviewPane('analysis'),'plain-button'),action('调整要求',()=>reviewPane('adjust'),'plain-button'))
     });
@@ -922,7 +932,9 @@ window.PanxuTasks = (() => {
     window.PanxuCleanupReview?.unmount();
     context = helpers;
     if (lastError) add(root, node('p', 'global-message error task-error', lastError));
-    if(current&&!homeVisible)taskView(root);else welcome(root);
+    if(context.page==='home'){homeVisible=true;welcome(root);}
+    else if(context.page==='task'){homeVisible=false;if(current)taskView(root);else add(root,context.heading('当前任务','还没有当前任务。'),action('选择常用任务',()=>context.openHome?.(),'button primary'));}
+    else if(current&&!homeVisible)taskView(root);else welcome(root);
     updateApproval();
     if (busy()) schedule();
   }
@@ -945,5 +957,6 @@ window.PanxuTasks = (() => {
     });
     add(root, panel);
   }
-  return {render, accept, acceptPickedPlan, renderHistory, adviceFor, adviceKnown, lookupAdvice, currentTask: () => current, streamTaskId: () => current?.cleanup_source_task_id || current?.id || null, unmountLive:()=>{stopLivePreview();window.PanxuCleanupReview?.unmount();}};
+  function renderResultWorkspace(root,helpers){stopLivePreview();window.PanxuCleanupReview?.unmount();context=helpers;if(!current)return;reviewView(root);if(busy())schedule();}
+  return {render,renderResultWorkspace, accept, acceptPickedPlan, renderHistory, adviceFor, adviceKnown, lookupAdvice, currentTask: () => current, streamTaskId: () => current?.cleanup_source_task_id || current?.id || null, unmountLive:()=>{stopLivePreview();window.PanxuCleanupReview?.unmount();}};
 })();

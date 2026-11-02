@@ -87,7 +87,7 @@ test('history presents ordinary receipts and undo without inventing actual delet
   const text=f.text(root);
   assert.ok(text.includes('1 项操作'));assert.ok(!text.includes('模拟'));
   assert.ok(text.includes('撤销后可重新选择相关项目'));assert.ok(root.all().some(node=>node.tag==='button'&&node.textContent==='撤销'));
-  assert.ok(!text.includes('处理了'));assert.ok(!text.includes('已删除'));assert.ok(!text.includes('删除成功'));
+  assert.ok(!text.includes('处理了'));assert.ok(!text.replace('查看已删除文件','').includes('已删除'));assert.ok(!text.includes('删除成功'));
 });
 
 test('one global mode notice covers ordinary confirmation and no simulation-only reset control',()=>{

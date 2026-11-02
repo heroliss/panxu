@@ -159,6 +159,8 @@ class SimulationState:
         self.revision = 0
         self._cached_key = None
         self._cached_view = None
+        from .recovery import RecoveryStore
+        RecoveryStore(self)
 
     def close(self):
         with self.lock:
@@ -175,6 +177,7 @@ class SimulationState:
         """Upgrade older development stores without touching observed user data."""
         with self.lock, self.db:
             synthetic = {x['id'] for x in self._rows() if x.get('details', {}).get('synthetic')}
+            self.recovery_store.discard_fixtures_in_transaction(synthetic)
             for key in synthetic:
                 self.db.execute('DELETE FROM catalog WHERE id=?', (key,))
                 self.db.execute('DELETE FROM overlay WHERE item_id=?', (key,))
@@ -254,10 +257,12 @@ class SimulationState:
         with self.lock:
             items = self._rows()
             overlays = {x['item_id']: x for x in self.db.execute('SELECT * FROM overlay WHERE active=1 ORDER BY rowid')}
+            permanent = self.recovery_store.permanent_signatures()
             simulated_dirs = []
             for item in items:
                 hit = overlays.get(item['id'])
-                item['simulated'] = bool(hit and hit['signature'] == item['signature'])
+                item['simulated'] = bool(hit and hit['signature'] == item['signature']
+                                         or (item['id'], item.get('signature')) in permanent)
                 if item['simulated'] and item['kind'] == 'directory':
                     simulated_dirs.append(item['path'])
                 if is_user_protected(item, patterns):
@@ -368,10 +373,12 @@ class SimulationState:
             result_items = [dict(id=x['id'], name=x['name'], path=x['path'], kind=x['kind'], action=x['action'], status='simulated') for x in items]
             payload = dict(item_count=len(items), estimated_bytes=plan['public']['estimated_bytes'], items=result_items, actual_reclaimed_bytes=0)
             now = datetime.now(timezone.utc).isoformat()
+            recovery_snapshots = self.recovery_store.capture(items)
             with self.db:
                 self.db.execute('INSERT INTO batches VALUES(?,?,?,?)', (batch_id, now, 'simulated', json.dumps(payload, ensure_ascii=False)))
                 for item in items:
                     self.db.execute('INSERT INTO overlay VALUES(?,?,?,?,1)', (batch_id, item['id'], item['signature'], item['action']))
+                self.recovery_store.retain_in_transaction(batch_id, now, items, recovery_snapshots)
                 if operation_id:
                     self.db.execute('INSERT INTO operation_receipts VALUES(?,?)', (operation_id, batch_id))
             self.plans.pop(plan_id, None)
@@ -385,18 +392,27 @@ class SimulationState:
             row = self.db.execute('SELECT status FROM batches WHERE id=?', (batch_id,)).fetchone()
             if not row:
                 raise AppError('批次不存在。', 'unknown_batch', 404)
-            if row[0] != 'simulated':
+            if row[0] not in ('simulated', 'partially_undone'):
                 raise AppError('该批次已经撤销。', 'already_undone', 409)
-            self.db.execute('UPDATE overlay SET active=0 WHERE batch_id=?', (batch_id,))
-            self.db.execute("UPDATE batches SET status='undone' WHERE id=?", (batch_id,))
+            self.recovery_store.undo_in_transaction(batch_id)
+            self.db.execute('''UPDATE overlay SET active=0 WHERE batch_id=? AND NOT EXISTS (
+                SELECT 1 FROM recovery_entries r WHERE r.batch_id=overlay.batch_id AND r.item_id=overlay.item_id
+                AND r.status IN ('retained','purged'))''', (batch_id,))
+            remaining = self.db.execute("SELECT COUNT(*) FROM recovery_entries WHERE batch_id=? AND status IN ('retained','purged')", (batch_id,)).fetchone()[0]
+            self.db.execute('UPDATE batches SET status=? WHERE id=?', ('partially_undone' if remaining else 'undone', batch_id))
             self.revision += 1
             self.plans.clear()
         return self.view(patterns)
 
     def reset(self, patterns=()):
         with self.lock, self.db:
-            self.db.execute('UPDATE overlay SET active=0')
-            self.db.execute("UPDATE batches SET status='undone' WHERE status='simulated'")
+            self.recovery_store.undo_in_transaction()
+            self.db.execute('''UPDATE overlay SET active=0 WHERE NOT EXISTS (
+                SELECT 1 FROM recovery_entries r WHERE r.batch_id=overlay.batch_id AND r.item_id=overlay.item_id
+                AND r.status IN ('retained','purged'))''')
+            self.db.execute("""UPDATE batches SET status=CASE WHEN EXISTS (
+                SELECT 1 FROM recovery_entries r WHERE r.batch_id=batches.id AND r.status IN ('retained','purged'))
+                THEN 'partially_undone' ELSE 'undone' END WHERE status IN ('simulated','partially_undone')""")
             self.revision += 1
             self.plans.clear()
         return self.view(patterns)

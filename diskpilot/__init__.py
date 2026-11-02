@@ -1,2 +1,2 @@
 """DiskPilot: a Windows maintenance workspace with a simulation-only executor."""
-__version__ = "0.19.0"
+__version__ = "0.20.0"

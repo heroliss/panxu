@@ -11,11 +11,23 @@ from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
+import re
 import stat
+import sys
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+from diskpilot import __version__
+from diskpilot.cleanup_tools import REGISTRY
+
+
+STATIC_ASSETS = ('/cleanup-tools.js', '/specialist-links.js', '/cleanup-tools.css',
+                 '/file-workspace.js', '/file-workspace.css', '/recovery.js', '/recovery.css')
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -37,7 +49,7 @@ class API:
         self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
 
     def request(self, path, payload=None, *, expect=200, raw=False):
-        if not path.startswith('/api/') and path not in ('/cleanup-tools.js', '/specialist-links.js', '/cleanup-tools.css'):
+        if not path.startswith('/api/') and path not in STATIC_ASSETS:
             raise ValueError('Route is outside the fixed acceptance surface.')
         if path.startswith('/api/cleanup-tools/') and path.rsplit('/', 1)[-1] == 'open-settings':
             raise ValueError('Opening system settings or external pages is prohibited.')
@@ -79,8 +91,8 @@ class API:
 
 
 def sample_hashes(scope):
-    if not scope.is_dir() or not scope.name.startswith('panxu-owned-v0190-'):
-        raise ValueError('The scope must be an existing panxu-owned-v0190-* fixture.')
+    if not scope.is_dir() or re.fullmatch(r'panxu-owned-v(?:0190|0200)-[A-Za-z0-9_-]+', scope.name) is None:
+        raise ValueError('The scope must be an existing owned v0190 or v0200 fixture.')
     for ancestor in (scope, *scope.parents):
         info = ancestor.lstat()
         if stat.S_ISLNK(info.st_mode) or getattr(info, 'st_file_attributes', 0) & 0x400:
@@ -122,27 +134,47 @@ def run(base_url, fixture_meta, output):
 
     try:
         health = api.get('/api/health')
-        check('version_and_simulation_boundary', str(health.get('version', '')).startswith('0.19.')
+        check('version_and_simulation_boundary', health.get('version') == __version__
               and health.get('mode') == 'simulation' and health.get('live_executor_available') is False,
               version=health.get('version'))
         bootstrap = api.get('/api/bootstrap', {'compact': 1})
         api.csrf = bootstrap['csrf']
         del bootstrap
-        for path, expected_mime in (('/cleanup-tools.js', 'text/javascript'),
-                                    ('/specialist-links.js', 'text/javascript'),
-                                    ('/cleanup-tools.css', 'text/css')):
+        for path in STATIC_ASSETS:
+            expected_mime = 'text/css' if path.endswith('.css') else 'text/javascript'
             body, mime = api.request(path, raw=True)
             check('static_asset_' + path[1:], mime.startswith(expected_mime) and len(body) > 100,
                   size_bytes=len(body), sha256=hashlib.sha256(body).hexdigest())
         tools = api.get('/api/cleanup-tools')
-        check('shared_registry_25_tools', tools.get('total') == 25 and len(tools.get('items', [])) == 25
-              and tools.get('simulation_only') is True)
+        check('shared_registry_current_tools', tools.get('total') == len(REGISTRY) and len(tools.get('items', [])) == len(REGISTRY)
+              and {row['id'] for row in tools.get('items', [])} == set(REGISTRY)
+              and tools.get('simulation_only') is True, registered_tools=len(REGISTRY))
+        recycle = api.get('/api/cleanup-tools/recycle_bin')
+        check('recycle_opens_shell_not_storage_settings', recycle.get('settings', [{}])[0].get('entry_id') == 'recycle_bin'
+              and recycle['settings'][0].get('kind') == 'application')
+        browser = api.get('/api/cleanup-tools/browser_cache')
+        check('browser_destinations_are_local_program_entries', len(browser.get('settings', [])) == 3
+              and all(row.get('kind') == 'application' and row.get('browser') in ('edge', 'chrome', 'firefox')
+                      and not str(row.get('target', '')).startswith(('https:', 'http:')) for row in browser['settings']))
         inspected = api.post('/api/cleanup-tools/inspect', {'tool_id': 'pagefile', 'parameters': {}})
         evidence = inspected.get('evidence') or {}
         check('fixed_read_only_pagefile_observation', inspected.get('read_only') is True
               and evidence.get('read_only') is True and evidence.get('status') in ('observed', 'partial', 'unsupported')
               and evidence.get('budget', {}).get('reads_file_contents') is False,
               observation_status=evidence.get('status'))
+        check('compact_tool_presentation_is_available', inspected.get('presentation', {}).get('kind') == 'pagefile'
+              and isinstance(inspected['presentation'].get('metrics'), list))
+        drives = api.get('/api/file-browser/drives')
+        check('drive_roots_are_available_without_a_scan', isinstance(drives.get('items'), list))
+        observed = api.get('/api/file-browser', {'path': str(scope), 'limit': 1})
+        check('file_browsing_is_bounded_and_current_layer_only', len(observed.get('items', [])) <= 1
+              and observed.get('path') == str(scope) and bool(observed.get('revision')))
+        recovery = api.get('/api/recovery/summary')
+        deleted = api.get('/api/recovery', {'limit': 50, 'status': 'all'})
+        check('retention_has_no_expiry_or_claimed_actual_savings', recovery.get('auto_expiry') is None
+              and recovery.get('actual_reclaimed_bytes') == 0 and isinstance(recovery.get('volumes'), list))
+        check('deleted_records_keep_paths_and_simulation_boundary', all(row.get('original_path')
+              and row.get('storage', {}).get('actual_moved') is False for row in deleted.get('items', [])))
         task_id = meta['task_id']
         task = api.get('/api/tasks/' + task_id)['task']
         model_requests_before = task.get('usage', {}).get('model_requests')

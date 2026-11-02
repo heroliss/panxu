@@ -705,8 +705,9 @@ class TaskHarness:
             status=execution.get('status') or result['status'], result_status=result['status'],
             total=execution.get('total', result['total']), succeeded=result['succeeded'],
             failed=result.get('failed', 0), cancelled=result.get('cancelled', 0), unverified=result.get('unverified', 0),
-            pending=execution.get('pending', 0), undone=result.get('undone', 0),
+            pending=execution.get('pending', 0), undone=result.get('undone', 0), purged=result.get('purged', 0),
             actions=copy.deepcopy(result.get('actions', {})), undone_actions=copy.deepcopy(result.get('undone_actions', {})),
+            purged_actions=copy.deepcopy(result.get('purged_actions', {})),
             action_results=copy.deepcopy(result.get('action_results', {})),
             actual_reclaimed_bytes=0, backend='simulation')
         with self.state.lock:
@@ -729,7 +730,7 @@ class TaskHarness:
                                       (source_id, task['id'], result['plan_version'], json.dumps(value, ensure_ascii=False)))
 
     def refresh_operation_receipts(self, batch_id):
-        """After an undo, propagate the current overlay without another LLM turn."""
+        """Propagate restored/permanently removed states without another LLM turn."""
         with self.state.lock:
             affected = self.state.db.execute("SELECT DISTINCT task_id,plan_version FROM action_attempts WHERE json_extract(payload,'$.batch_id')=?",
                                              (batch_id,)).fetchall()
@@ -740,7 +741,8 @@ class TaskHarness:
                     task['last_result'] = result
                     self._save(task)
                 self._record_cleanup_result(task, result, task.get('execution'))
-                self._event(task, 'undo', f'已撤销本批 {result["undone"]} 项操作记录；历史结果仍保留。')
+                self._event(task, 'recovery_update', f'已更新本批处理记录：还原 {result["undone"]} 项，永久删除 {result.get("purged", 0)} 项；历史结果仍保留。')
+                self._save(task)
 
     def _save(self, task, *, commit=True):
         self._defaults(task)

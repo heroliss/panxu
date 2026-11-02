@@ -115,6 +115,7 @@ window.PanxuFiles = (() => {
   function navigate(id){parentId=id || '';offset=0;query='';if(searchInput)searchInput.value='';load();}
   function render(root,helpers){
     unmount();context=helpers;consumeExecution(helpers.latestTask?.());invalidate(helpers.revision);
+    if(helpers.forcedView){view=helpers.forcedView;parentId='';}
     const modes=node('div','subtabs file-view-tabs');modes.setAttribute('aria-label','文件查看方式');
     [['suggestions','建议清单'],['tree','目录结构（已扫描）']].forEach(([id,label])=>{
       const entry=button(label,()=>{if(view===id)return;view=id;parentId='';offset=0;render(root,helpers);},`subtab${view===id?' active':''}`);
@@ -144,7 +145,7 @@ window.PanxuFiles = (() => {
     status=node('p','file-page-status');status.setAttribute('role','status');
     host=node('div','file-page-host');host.id='file-page';pager=node('div','file-pagination');
     const navigation=node('div','file-page-navigation');navigation.append(status,pager);
-    controls.append(modes,tools,more,trailHost,selectionHost,navigation);
+    if(!helpers.forcedView)controls.append(modes);controls.append(tools,more,trailHost,selectionHost,navigation);
     const previous=root.querySelector('[data-file-controls]');if(previous)previous.remove();
     const oldPage=root.querySelector('.file-page-host');if(oldPage)oldPage.remove();
     root.append(controls,host);load();
@@ -274,7 +275,7 @@ window.PanxuFiles = (() => {
     const next=button('下一页',()=>{offset+=limit;load();});next.disabled=!page.has_more;
     pager.append(previous,node('span','',`第 ${Math.floor(page.offset/limit)+1} / ${Math.max(1,Math.ceil(page.total/limit))} 页`),next);
   }
-  return {render,unmount,invalidate,selectionChanged,refreshAdvice,filters:()=>({query,scope,risk}),visibleIds:()=>page?.items.map(item=>item.id) || []};
+  return {render,unmount,invalidate,selectionChanged,refreshAdvice,selectionRules:()=>picked,stampSelection:(nextRevision,nextSelectionRevision)=>{for(const rule of picked.values())if(!rule.catalogRevision){rule.catalogRevision=nextRevision;rule.selectionRevision=nextSelectionRevision;}updatePickedVersion(nextRevision,nextSelectionRevision);},filters:()=>({query,scope,risk}),visibleIds:()=>page?.items.map(item=>item.id) || []};
 })();
 
 // A task-scoped review draft. Logical directory rules never become raw path operations.
@@ -359,6 +360,7 @@ window.PanxuCleanupReview = (() => {
     if(executing)state.mode='execution';
     if(state.mode==='execution'&&state.execution){renderExecution(token);return;}
     const panel=node('section','cleanup-review'),toolbar=node('div','cleanup-review-toolbar'),tabs=node('div','subtabs file-view-tabs');
+    if(helpers.singleSuggestions&&!state.applications){if(state.view!=='suggestions')state.offset=0;state.view='suggestions';state.parentId='';tabs.hidden=true;}
     [['suggestions','建议清单'],[state.applications?'all':'tree',state.applications?'全部项目':'目录结构（已扫描）']].forEach(([id,label])=>{const entry=button(label,()=>{state.view=id;state.parentId='';state.offset=0;load(token);},`subtab${state.view===id?' active':''}`);entry.dataset.cleanupView=id;entry.setAttribute('aria-pressed',String(state.view===id));tabs.append(entry);});
     const deletion=button('执行勾选项',()=>prepare(token),'button primary');deletion.dataset.cleanupDelete='1';
     add(toolbar,tabs,deletion);
@@ -483,6 +485,7 @@ window.PanxuCleanupReview = (() => {
     const heading=node('h2','','确认所选操作');heading.id='cleanup-confirm-title-'+serial+'-'+data.plan.version;
     dialog.tabIndex=-1;dialog.setAttribute('aria-labelledby',heading.id);
     add(dialog,heading,node('p','cleanup-confirm-summary',copy.breakdown+'。'),node('p','field-help',copy.effect));
+    if(items.some(item=>item.action==='delete'&&['file','directory'].includes(item.kind)))add(dialog,node('p','cleanup-batch-note','文件将进入盘序的“已删除文件”，保留在原卷供还原，不进入系统回收站。仍会占用空间，只有在已删除文件中确认永久删除后才释放。'));
     if(data.selection?.has_more||data.selection?.requires_batches){
       const total=data.selection?.counts?.total_targets;
       add(dialog,node('p','cleanup-batch-note',`本批实际包含 ${items.length} 个目标${Number.isFinite(total)?`，另有 ${Math.max(0,total-items.length)} 个尚未纳入本批`:''}；其余仍留在清单中，需要另行确认下一批。`));

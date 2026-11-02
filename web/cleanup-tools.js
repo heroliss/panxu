@@ -13,7 +13,7 @@ window.PanxuCleanupTools = (() => {
   const alive = t => mounted === t && t.root.isConnected;
   function pending(value) {try {if (value === null) sessionStorage.removeItem(storedKey); else if (value) sessionStorage.setItem(storedKey, String(value)); else return sessionStorage.getItem(storedKey);} catch (_) {} return null;}
   function clearPending(id) {if (pending() === id) pending(null);}
-  function unmount() {mounted = null; sequence++;}
+  function unmount() {if(mounted)cancelInspection(mounted);mounted = null; sequence++;}
   function heading(root, title, description) {const h = node('header', 'page-heading'); append(h, node('h1', '', title), description ? node('p', '', description) : null); root.append(h);}
   function message(t, text, error = false) {const p = node('p', error ? 'field-error cleanup-message' : 'field-help cleanup-message', text); p.setAttribute('role', error ? 'alert' : 'status'); t.root.append(p); return p;}
   function controls(t, label, run) {if (typeof t.context.setContextBack==='function') {t.context.setContextBack(label,run); return;} const nav = node('div', 'cleanup-navigation'); nav.append(button(label, run, 'plain-button')); t.root.append(nav);}
@@ -44,7 +44,7 @@ window.PanxuCleanupTools = (() => {
     return b;
   }
   async function renderList(t) {
-    if (!alive(t)) return; const route = t.route = (t.route || 0) + 1; t.busy = false; t.extra = null; t.extraList = null; t.detail = null; t.plan = null; t.context.setContextBack?.('',null); loading(t, '清理工具');
+    if (!alive(t)) return; cancelInspection(t);const route = t.route = (t.route || 0) + 1; t.busy = false; t.extra = null; t.extraList = null; t.detail = null; t.plan = null; t.context.setContextBack?.('',null); loading(t, '清理工具');
     try {
       const data = await t.context.api('/api/cleanup-tools?query=' + encodeURIComponent(listing.query) + '&category=' + encodeURIComponent(listing.category));
       if (!alive(t) || route !== t.route) return; listing.data = data; t.root.replaceChildren();
@@ -68,26 +68,36 @@ window.PanxuCleanupTools = (() => {
   function fields(tool) {return Array.isArray(tool.parameters) ? tool.parameters : [];}
   function fieldVisible(toolId,key,params) {return !(toolId==='pagefile' && ['initial_mb','maximum_mb'].includes(key) && params.mode!=='custom');}
   function browserTool(tool) {return ['browser_cache','browser_privacy'].includes(tool.id);}
-  function methodBrowser(entry) {const url=String(entry.target || entry.url || ''); if(entry.browser)return entry.browser;if(/^https:\/\/support\.google\.com\/chrome\//.test(url))return 'chrome';if(/^https:\/\/support\.microsoft\.com\/[^/]+\/edge\//.test(url))return 'edge';if(/^https:\/\/support\.mozilla\.org\//.test(url))return 'firefox';return null;}
-  function methodVisible(t,entry) {return !browserTool(t.detail) || !methodBrowser(entry) || methodBrowser(entry)===values(t).browser;}
+  function entryVisible(t,entry) {return entry && entry.kind!=='official_method' && !/^https?:/i.test(String(entry.target || entry.url || '')) && (!entry.browser || entry.browser===values(t).browser);}
   function values(t) {return drafts.get(sourceKey(t, t.detail.id)) || {};}
   async function loadDetail(t, id, initial) {
-    if (!alive(t)) return false; const request = t.route = (t.route || 0) + 1; t.busy = false; loading(t, '专项清理');
+    if (!alive(t)) return false; cancelInspection(t); const request = t.route = (t.route || 0) + 1; t.busy = false; loading(t, '专项清理');
     try {
       const tool = await t.context.api('/api/cleanup-tools/' + encodeURIComponent(id));
       if (!alive(t) || request !== t.route) return false; t.detail = tool; t.batch = false; t.plan = null; t.result = null; t.inspection = null; t.error = ''; t.submitted = false; t.opened = false;
       const key = sourceKey(t, tool.id), params = drafts.has(key) ? drafts.get(key) : {...Object.fromEntries(fields(tool).filter(field => Object.hasOwn(field, 'default')).map(field => [field.name, field.default])), ...(initial || {})};
-      drafts.set(key, params); renderDetail(t); return true;
+      drafts.set(key, params); renderDetail(t);scheduleInspection(t,0);return true;
     } catch (error) {if (request === t.route) failed(t, error, () => loadDetail(t, id, initial)); return false;}
   }
   function copyBlock(label, text, cls = '') {if (!text) return null; const b = node('section', 'cleanup-explanation ' + cls); append(b, node('h2', '', label), node('p', '', typeof text === 'string' ? text : String(text))); return b;}
+  function cancelInspection(t) {clearTimeout(t.inspectTimer);t.inspectTimer=null;t.inspectGeneration=(t.inspectGeneration || 0)+1;t.checking=false;}
+  function parametersReady(t) {return fields(t.detail || {}).every(field=>!field.required || values(t)[field.name]!==undefined && values(t)[field.name]!==null && String(values(t)[field.name]).trim()!=='');}
+  function scheduleInspection(t, delay=180) {
+    cancelInspection(t);if(!alive(t)||!t.detail||t.detail.capabilities?.inspect===false)return;
+    t.inspection=null;t.inspectionError='';
+    if(!parametersReady(t)){renderInspection(t);return;}
+    t.checking=true;renderInspection(t);
+    if(delay===0){void inspect(t);return;}
+    t.inspectTimer=setTimeout(()=>{t.inspectTimer=null;if(alive(t))void inspect(t);},delay);
+  }
+  function backToTool(t) {t.plan=null;t.result=null;t.submitted=false;renderDetail(t);scheduleInspection(t,0);}
   function renderDetail(t) {
     if (!alive(t)) return; const tool = t.detail; t.root.replaceChildren();
     controls(t, t.extra ? '返回专项方案' : t.extraList ? '返回专项建议' : t.context.onReturn && t.source ? '返回清单' : '返回工具', () => detailBack(t));
     heading(t.root, tool.title, t.plan ? '' : tool.description);
     if (t.plan) {if(t.error)message(t,t.error,true);if(t.result)renderResult(t);else renderPlan(t);return;}
     if (t.source?.item_name || t.source?.path) t.root.append(node('p', 'cleanup-origin', '来自：' + (t.source.item_name || t.source.path)));
-    const explanation = node('div', 'cleanup-explanation-grid'); append(explanation, copyBlock('操作影响', tool.impact, 'cleanup-impact'), copyBlock('恢复方式', tool.recovery)); if (explanation.childNodes.length) t.root.append(explanation);
+    t.statusHost=node('section','cleanup-status');t.statusHost.setAttribute('aria-label','当前工具状态');t.root.append(t.statusHost);renderInspection(t);
     const form = node('div', 'cleanup-parameters');
     fields(tool).forEach(field => {
       if (!fieldVisible(tool.id,field.name,values(t))) return;
@@ -98,32 +108,98 @@ window.PanxuCleanupTools = (() => {
       if (input.type === 'checkbox') input.checked = values(t)[field.name] === true; else input.value = field.name==='profile' && values(t)[field.name]==='current' ? '' : values(t)[field.name] ?? '';
       if (field.name==='profile') input.placeholder='当前用户（具体配置待核实）';
       input.disabled = t.busy === true;
-      input.addEventListener('input', () => {const raw = input.type === 'checkbox' ? input.checked : input.value; values(t)[field.name] = field.name==='profile' && !String(raw).trim() ? 'current' : (field.type === 'integer' || field.type === 'number') && raw !== '' ? Number(raw) : raw; if (field.name==='browser')t.opened=false; if (t.plan || t.result || tool.id==='pagefile' && field.name==='mode' || browserTool(tool) && field.name==='browser') {clearPending(t.plan?.id); t.plan = null; t.result = null; t.submitted = false; renderDetail(t);}});
+      input.addEventListener('input', () => {
+        const raw = input.type === 'checkbox' ? input.checked : input.value;
+        values(t)[field.name] = field.name==='profile' && !String(raw).trim() ? 'current' : (field.type === 'integer' || field.type === 'number') && raw !== '' ? Number(raw) : raw;
+        t.opened=false;t.inspection=null;t.inspectionError='';
+        if(t.plan||t.result){clearPending(t.plan?.id);t.plan=null;t.result=null;t.submitted=false;}
+        if(tool.id==='pagefile'&&field.name==='mode'||browserTool(tool)&&field.name==='browser')renderDetail(t);
+        scheduleInspection(t);
+      });
       append(line, title, input, field.help ? node('span', 'field-help', field.help) : null); form.append(line);
     }); if (fields(tool).length) t.root.append(form);
     if (t.error) message(t, t.error, true);
+    if(tool.impact)t.root.append(node('p','cleanup-impact-note',tool.impact));
     const actions = node('div', 'cleanup-actions');
-    if (tool.capabilities?.inspect !== false) actions.append(button(t.busy ? '正在检查…' : '检查当前状态', () => inspect(t)));
-    if (tool.capabilities?.prepare !== false) actions.append(button('预览操作', () => prepare(t), 'button primary'));
+    if (tool.capabilities?.prepare !== false) {const preview=button('预览操作', () => prepare(t), 'button primary');preview.disabled=t.busy===true||!parametersReady(t);t.previewButton=preview;actions.append(preview);}
     const settings = Array.isArray(tool.settings) ? tool.settings : tool.settings ? [tool.settings] : [];
-    settings.forEach((entry, index) => {if (t.context.onOpenSettings && methodVisible(t,entry)) actions.append(button(entry.label || (entry.kind === 'official_method' ? '查看官方方法' : '打开设置'), async () => {
-      if (t.busy) return; try {await t.context.onOpenSettings(tool.id, entry, index); if (alive(t)) {t.opened = true; renderDetail(t);}} catch (error) {if (alive(t)) {t.error = error.message; renderDetail(t);}}
-    }, 'plain-button'));});
-    for (const b of actions.childNodes) b.disabled = t.busy === true; t.root.append(actions);
-    if (t.opened) message(t, '已打开入口。返回后可检查当前状态；打开页面本身不代表已清理。');
-    if (t.inspection) {const inspection = node('section', 'cleanup-observation'); append(inspection, node('h2', '', '当前检查结果')); renderFacts(inspection, t.inspection); t.root.append(inspection);}
-    if (t.plan) renderPlan(t);
-    if (t.result) renderResult(t);
-    const sources=(tool.sources || []).filter(entry=>methodVisible(t,entry));if (sources.length) {const foot = node('p', 'field-help cleanup-source-note', '依据：' + sources.map(source => source.title || '官方说明').join('、')); t.root.append(foot);}
+    settings.forEach((entry, index) => {
+      if (!t.context.onOpenSettings || !entryVisible(t,entry))return;
+      if(entry.available===false){if(entry.reason)t.root.append(node('p','field-help cleanup-unavailable',entry.reason));return;}
+      const open=button(entry.label || (entry.kind==='location'?'打开位置':entry.kind==='application'?'打开程序':'打开设置'),async()=>{
+        if(t.busy)return;
+        try {await t.context.onOpenSettings(tool.id,entry,index,{...values(t)});if(alive(t)){t.opened=true;renderDetail(t);}}
+        catch(error){if(alive(t)){t.error=error.message;renderDetail(t);}}
+      });open.disabled=t.busy===true;actions.append(open);
+    });
+    if(actions.childNodes.length)t.root.append(actions);
+    if(t.opened)message(t,'已打开对应入口；需要时可刷新状态。');
+    if(tool.recovery){const details=node('details','cleanup-detail-note');append(details,node('summary','','影响与恢复说明'),node('p','',tool.recovery));t.root.append(details);}
   }
   async function inspect(t) {
-    if (t.busy) return; const route = t.route; t.busy = true; t.error = ''; renderDetail(t);
-    try {const result = await t.context.api('/api/cleanup-tools/inspect', {tool_id: t.detail.id, parameters: {...values(t)}}); if (alive(t) && route === t.route) t.inspection = result;}
-    catch (error) {if (alive(t) && route === t.route) t.error = error.message;}
-    finally {if (route === t.route) {t.busy = false; if (alive(t)) renderDetail(t);}}
+    if(!alive(t)||!t.detail||t.detail.capabilities?.inspect===false||!parametersReady(t))return;
+    clearTimeout(t.inspectTimer);t.inspectTimer=null;
+    const generation=t.inspectGeneration=(t.inspectGeneration || 0)+1,route=t.route,toolId=t.detail.id,parameters={...values(t)};
+    t.checking=true;t.inspectionError='';renderInspection(t);
+    try {const value=await t.context.api('/api/cleanup-tools/inspect',{tool_id:toolId,parameters});if(alive(t)&&generation===t.inspectGeneration&&route===t.route)t.inspection=value;}
+    catch(error){if(alive(t)&&generation===t.inspectGeneration&&route===t.route)t.inspectionError=error.message;}
+    finally {if(alive(t)&&generation===t.inspectGeneration&&route===t.route){t.checking=false;renderInspection(t);}}
+  }
+  function metricValue(metric) {
+    const value=metric.value;if(value===null||value===undefined||value==='')return '未取得';
+    if(typeof value==='number'&&(!Number.isFinite(value)||value<0))return '未取得';
+    if(metric.unit==='bytes')return formatBytes(value);
+    if(['count','items'].includes(metric.unit)&&typeof value==='number')return value.toLocaleString('zh-CN')+' 项';
+    if(metric.unit==='percent'&&typeof value==='number')return value.toLocaleString('zh-CN',{maximumFractionDigits:1})+'%';
+    return displayValue(value)+(metric.unit&& !['text','boolean','count','items','bytes','percent'].includes(metric.unit)?' '+metric.unit:'');
+  }
+  function validNumber(value) {return typeof value==='number'&&Number.isFinite(value)&&value>=0;}
+  function renderStatusMetrics(host,metrics,kind) {
+    if(!metrics.length)return;const grid=node('dl','cleanup-status-metrics');
+    const ratioLabels={physical_available_bytes:'可用内存占物理内存总量',commit_current_bytes:'当前提交占内存提交上限'};
+    metrics.slice(0,4).forEach(metric=>{
+      const value=node('dd','',metricValue(metric)),ratioLabel=ratioLabels[metric.key] || metric.denominator_label;
+      if(['memory','pagefile'].includes(kind)&&ratioLabel&&validNumber(metric.value)&&validNumber(metric.denominator)&&metric.denominator>0&&metric.value<=metric.denominator){
+        const meter=node('progress','cleanup-status-meter');meter.max=metric.denominator;meter.value=metric.value;meter.setAttribute('aria-label',ratioLabel);value.append(meter);
+      }
+      append(grid,node('dt','',metric.label || '当前读数'),value);
+    });host.append(grid);
+  }
+  function renderInspection(t) {
+    const host=t.statusHost;if(!host?.isConnected)return;if(t.previewButton?.isConnected)t.previewButton.disabled=t.busy===true||!parametersReady(t);host.replaceChildren();host.setAttribute('aria-busy',String(t.checking===true));
+    const top=node('div','cleanup-status-heading');top.append(node('h2','','当前状态'));if(t.inspection?.presentation?.complete===false||t.inspection?.presentation?.status==='partial')top.append(node('span','cleanup-status-coverage','部分结果'));
+    if(t.detail.capabilities?.inspect!==false){const refresh=button(t.checking?'刷新中…':'刷新',()=>inspect(t),'plain-button cleanup-refresh');refresh.disabled=t.checking===true||!parametersReady(t);top.append(refresh);}host.append(top);
+    if(!parametersReady(t)){host.append(node('p','field-help','补充必填选项后会自动检查。'));return;}
+    const presentation=t.inspection?.presentation;
+    if(!presentation){const label=t.inspectionError?'状态暂未取得':t.checking?'正在检查…':t.detail.capabilities?.inspect===false?'此项无需额外检查':'尚未取得状态';host.append(node('p','cleanup-status-summary',label));if(t.inspectionError)host.append(node('p','field-help',t.inspectionError));return;}
+    host.dataset.status=presentation.status || 'unknown';host.dataset.kind=presentation.kind || 'summary';
+    const metrics=Array.isArray(presentation.metrics)?presentation.metrics:[];
+    if(presentation.kind==='recycle_bin'){
+      const m=key=>metrics.find(value=>value.key===key)?.value,r=presentation.recycle || {};
+      const bytes=r.bytes??m('recycle_bytes'),count=r.count??m('recycle_count'),total=r.volume_total_bytes??m('volume_total_bytes');
+      const headline=node('div','cleanup-recycle-headline');append(headline,node('strong','cleanup-status-primary',validNumber(bytes)?formatBytes(bytes):'占用未取得'),node('span','cleanup-status-secondary',validNumber(count)?count.toLocaleString('zh-CN')+' 项':'项目数未取得'));host.append(headline);
+      if(validNumber(bytes)&&validNumber(total)&&total>0&&bytes<=total){const progress=node('progress','cleanup-recycle-meter');progress.max=total;progress.value=bytes;progress.setAttribute('aria-label','回收站数据大小占所选磁盘总容量');const percent=bytes/total*100;host.append(progress);host.append(node('p','field-help',`占${r.volume || values(t).volume || '所选磁盘'}总容量 ${percent>0&&percent<.01?'不足 0.01':percent.toLocaleString('zh-CN',{maximumFractionDigits:2})}% · 磁盘总容量 ${formatBytes(total)}`));}
+      else host.append(node('p','field-help',validNumber(bytes)&&validNumber(total)&&bytes>total?'数据大小无法直接与磁盘容量比较。':'未取得可比较的磁盘总容量。'));
+      if(!validNumber(bytes)&&presentation.summary)host.append(node('p','cleanup-status-summary',presentation.summary));
+    }else if(presentation.kind==='cache'&&metrics.some(metric=>metric.key==='observed_bytes'&&validNumber(metric.value))){
+      const size=metrics.find(metric=>metric.key==='observed_bytes'),count=metrics.find(metric=>metric.key==='observed_files');
+      host.append(node('p','cleanup-status-caption',size.label || '已统计占用'));
+      const headline=node('div','cleanup-recycle-headline');append(headline,node('strong','cleanup-status-primary',metricValue(size)),count?node('span','cleanup-status-secondary',metricValue(count)):null);host.append(headline);
+    }else{
+      if(presentation.summary)host.append(node('p','cleanup-status-summary',presentation.summary));
+      renderStatusMetrics(host,metrics,presentation.kind);
+    }
+    const entries=Array.isArray(presentation.items)?presentation.items:[];
+    if(entries.length&&presentation.kind!=='recycle_bin'){
+      const list=node('dl','cleanup-status-items');entries.slice(0,4).forEach(entry=>append(list,node('dt','',entry.label || '说明'),node('dd','',entry.unit?metricValue(entry):displayValue(entry.value))));
+      if(presentation.kind==='cache'){const locations=node('details','cleanup-status-locations');append(locations,node('summary','','查看检查位置'),list);host.append(locations);}else host.append(list);
+    }
+    if(presentation.complete===false||presentation.status==='partial')host.append(node('p','field-help','以下仅表示已读取范围，仍有部分信息未取得。'));
+    const warnings=(Array.isArray(presentation.warnings)?presentation.warnings:[]).filter(value=>typeof value==='string'&&value.trim());if(warnings.length)host.append(node('p','cleanup-status-warning',warnings[0]));
+    if(t.inspectionError)host.append(node('p','field-help','刷新未完成：'+t.inspectionError));
   }
   async function prepare(t) {
-    if (t.busy) return; const route = t.route; t.busy = true; t.error = ''; t.result = null; t.submitted = false; renderDetail(t);
+    if (t.busy) return; cancelInspection(t); const route = t.route; t.busy = true; t.error = ''; t.result = null; t.submitted = false; renderDetail(t);
     try {const plan = await t.context.api('/api/cleanup-tools/prepare', {tool_id: t.detail.id, parameters: {...values(t)}, source: t.source || {}}); if (alive(t) && route === t.route) {t.plan = plan; pending(plan.id);}}
     catch (error) {if (alive(t) && route === t.route) t.error = error.message;}
     finally {if (route === t.route) {t.busy = false; if (alive(t)) renderDetail(t);}}
@@ -139,13 +215,13 @@ window.PanxuCleanupTools = (() => {
     const actions = node('div', 'cleanup-actions');
     if (!t.result && !t.submitted) {const confirm = button(t.busy ? '正在执行…' : t.batch ? `确认执行 ${p.entries.length} 项` : '确认执行', () => execute(t), 'button primary'); confirm.disabled = t.busy === true; actions.append(confirm);}
     else if (t.submitted && !t.result) {const check = button('核对操作结果', () => loadPlan(t, p.id)); check.disabled = t.busy === true; actions.append(check);}
-    const cancel = button(t.result ? '返回工具说明' : '返回调整', () => {t.plan = null; t.result = null; t.submitted = false; renderDetail(t);}); cancel.disabled = t.busy === true; actions.append(cancel); box.append(actions); t.root.append(box);
+    const cancel = button(t.result ? '返回工具说明' : '返回调整', () => backToTool(t)); cancel.disabled = t.busy === true; actions.append(cancel); box.append(actions); t.root.append(box);
   }
   async function execute(t) {
     if (t.busy || t.submitted || !t.plan) return; const plan = t.plan, route = t.route; t.busy = true; t.submitted = true; t.error = ''; renderDetail(t);
     try {const result = await t.context.api('/api/cleanup-tools/execute', {plan_id: plan.id, version: plan.version}); clearPending(plan.id); if (alive(t) && route === t.route) t.result = result; await t.context.onResult?.(result);}
     catch (error) {if (alive(t) && route === t.route) t.error = error.message + ' 已提交的操作不会自动重复，请先核对结果。';}
-    finally {if (route === t.route) {t.busy = false; if (alive(t)) renderDetail(t);}}
+    finally {if (route === t.route) {t.busy = false; if (alive(t)){renderDetail(t);void inspect(t);}}}
   }
   async function loadPlan(t, id) {
     if (!alive(t)) return; const route = t.route = (t.route || 0) + 1; loading(t, '专项操作');
@@ -156,20 +232,8 @@ window.PanxuCleanupTools = (() => {
     } catch (error) {if (route === t.route) failed(t, error, () => loadPlan(t, id));}
   }
   const parameterLabels = {mode:'管理方式',operation:'操作',volume:'目标盘符',browser:'浏览器',profile:'资料配置',time_range:'时间范围',data_type:'清理类别',initial_mb:'初始大小（MB）',maximum_mb:'最大大小（MB）',quota_gb:'占用额度（GB）',target_path:'目标目录',source_path:'原目录',folder:'系统目录',program:'工具',application_id:'软件引用',package:'驱动包',name:'组件名称',provider:'同步客户端'};
-  const labels = {status: '状态', message: '说明', warnings: '留意', available: '可用', unknown: '未知', parameters: '操作选项', observations: '已读取的信息', memory: '内存', memory_power: '内存与电源', volumes: '磁盘', volume: '磁盘', committed_bytes: '当前内存提交', commit_limit_bytes: '提交上限', total_physical_bytes: '物理内存', available_physical_bytes: '可用物理内存', pagefiles: '活动分页文件', configured_pagefiles: '分页配置', hibernation: '休眠', free_bytes: '可用空间', size_bytes: '大小', path: '位置', name: '名称', current: '当前状态', note: '说明', tool_id: '工具', actual_reclaimed_bytes: '实际释放空间', source: '来源', automatic_managed_pagefile: '自动管理分页', supported: '支持情况', value: '值', section: '信息类别', evidence: '现有证据', unsupported: '未提供', needs_restart: '需要重启'};
-  Object.assign(labels, {reason:'说明',at:'检查时间',root:'磁盘位置',capacity:'磁盘容量',recycle_bin:'当前用户回收站',power_capabilities:'电源能力',configuration:'系统配置',values:'配置读数',active_pagefiles:'活动分页文件',items:'项目',file:'文件',volume:'磁盘',initial_mb:'初始大小（MB）',maximum_mb:'最大大小（MB）',physical_total_bytes:'物理内存',physical_available_bytes:'可用物理内存',commit_current_bytes:'当前提交量',commit_peak_since_boot_bytes:'本次开机提交峰值',hibernation_supported:'支持休眠',hibernation_file_present:'存在休眠文件',hibernate_enabled:'休眠开关',available_to_current_user_bytes:'当前用户可用空间',total_bytes:'总容量',item_count:'项目数',query_succeeded:'读取成功',complete:'已完整读取',partial:'部分信息未取得',paging_files:'配置分页文件',existing_page_files:'已存在分页文件',temporary_pagefile_flag:'临时分页标志',automatic_managed_pagefile:'系统自动管理'});
   const valueLabels = {unknown:'尚未确认',observed:'已读取',unsupported:'暂不支持',fixed:'固定磁盘',removable:'移动磁盘',ramdisk:'内存磁盘',awaiting_review:'待确认',completed:'已完成',interrupted:'上次操作已中断',cancelled:'已取消',running:'正在处理',executing:'正在处理',failed:'未完成',partial:'部分完成',unverified:'结果待核实',succeeded:'已完成'};
   function displayValue(value) {if (value === null || value === undefined || value === '') return '未知'; if (typeof value === 'boolean') return value ? '是' : '否'; if (Array.isArray(value)) return value.map(displayValue).join('、'); if (typeof value === 'object') return '已取得分项信息'; return optionLabels[value] || valueLabels[value] || String(value);}
-  function renderFacts(root, value, depth = 0) {
-    if (depth > 3) {root.append(node('p', 'field-help', '更多细节可在开发面板查看。')); return;}
-    if (!value || typeof value !== 'object') {root.append(node('p', '', displayValue(value))); return;}
-    const entries = Array.isArray(value) ? value.map((v, i) => [String(i + 1), v]) : Object.entries(value);
-    const dl = node('dl', 'cleanup-facts'); let count = 0;
-    for (const [key, content] of entries) {if (['tool_id', 'simulation_only', 'backend', 'source', 'parameters', 'settings', 'sources', 'capabilities','read_only','budget','impact','recovery','hresult','page_size_bytes','path_truncated','limit_reached','reads_file_contents','enumerates_recycle_items'].includes(key)) continue;
-      if (count++ >= 16) {root.append(node('p', 'field-help', '已显示主要检查信息。')); break;}
-      const term = node('dt', '', labels[key] || key.replace(/_/g, ' ')), dd = node('dd'); if (content && typeof content === 'object') renderFacts(dd, content, depth + 1); else dd.textContent = /(?:bytes|size)$/.test(key) && typeof content === 'number' ? formatBytes(content) : displayValue(content); append(dl, term, dd);
-    } if (dl.childNodes.length) root.append(dl);
-  }
   function formatBytes(value) {if (!Number.isFinite(value)) return '未知'; let n = value, unit = 0; const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB']; while (Math.abs(n) >= 1024 && unit < units.length - 1) {n /= 1024; unit++;} return n.toLocaleString('zh-CN', {maximumFractionDigits: 2}) + ' ' + units[unit];}
   function renderResult(t) {
     const r = t.result, box = node('section', 'cleanup-result'); box.setAttribute('role', 'status');
@@ -177,10 +241,10 @@ window.PanxuCleanupTools = (() => {
     for (const item of r.items || []) append(box, node('p', 'cleanup-result-item', (item.name ? item.name + '：' : '') + (item.message || displayValue(item.status))));
     if (r.message) box.append(node('p', '', r.message));
     if (typeof r.actual_reclaimed_bytes === 'number') box.append(node('p', 'field-help', '实际释放空间：' + formatBytes(r.actual_reclaimed_bytes)));
-    if (t.context.onReturn && t.source && !t.context.setContextBack) box.append(button('返回清单', () => returnToSource(t), 'button primary'));box.append(button('返回工具说明',()=>{t.plan=null;t.result=null;t.submitted=false;renderDetail(t);},'button'));t.root.append(box);
+    if (t.context.onReturn && t.source && !t.context.setContextBack) box.append(button('返回清单', () => returnToSource(t), 'button primary'));box.append(button('返回工具说明',()=>backToTool(t),'button'));t.root.append(box);
   }
   function renderExtra(t, suggestion) {
-    if (!alive(t)) return; t.route = (t.route || 0) + 1; t.extra = suggestion; t.source = t.source || suggestion.source || null; t.detail = null; t.root.replaceChildren();
+    if (!alive(t)) return; cancelInspection(t);t.route = (t.route || 0) + 1; t.extra = suggestion; t.source = t.source || suggestion.source || null; t.detail = null; t.root.replaceChildren();
     controls(t, t.extraList ? '返回专项建议' : t.context.onReturn ? '返回清单' : '返回工具', () => t.extraList ? renderExtraList(t,t.extraList) : returnToSource(t)); heading(t.root, suggestion.title || '专项方案', suggestion.explanation || '请选择适合你的处理方式。');
     if (suggestion.impact) t.root.append(copyBlock('操作影响', suggestion.impact, 'cleanup-impact'));
     if (suggestion.provenance) {const p = suggestion.provenance; t.root.append(node('p', 'field-help cleanup-source-note', [p.model || p.model_id, p.at || p.created_at].filter(Boolean).join(' · ')));}
@@ -208,7 +272,7 @@ window.PanxuCleanupTools = (() => {
     t.plan=plan;t.result=planResult(plan);t.submitted=plan.status!=='awaiting_review';t.busy=false;t.error='';if(t.result)clearPending(plan.id);else pending(plan.id);renderDetail(t);
   }
   function renderExtraList(t,suggestions) {
-    if (!alive(t)) return;t.route=(t.route || 0)+1;t.extraList=suggestions;t.extra=null;t.detail=null;t.plan=null;t.batch=false;t.root.replaceChildren();
+    if (!alive(t)) return;cancelInspection(t);t.route=(t.route || 0)+1;t.extraList=suggestions;t.extra=null;t.detail=null;t.plan=null;t.batch=false;t.root.replaceChildren();
     controls(t,t.context.onReturn?'返回清单':'返回工具',()=>returnToSource(t));heading(t.root,'专项建议','选择需要的处理方式，勾选后一起预览；说明和人工步骤可单独查看。');
     if (!suggestions.length) {message(t,'本次任务暂时没有额外专项建议。');return;}
     const list=node('div','cleanup-extra-list'), eligible=suggestions.filter(s=>(s.options || []).some(option=>option.kind==='tool'));

@@ -3,12 +3,12 @@ const {test}=require('node:test'),assert=require('node:assert/strict'),{readFile
 const source=readFileSync(join(__dirname,'..','web','cleanup-tools.js'),'utf8');
 const flush=async()=>{await new Promise(setImmediate);await new Promise(setImmediate);};
 const plain=value=>JSON.parse(JSON.stringify(value));
-const tool=(id='browser_cache')=>({id,title:id==='browser_cache'?'浏览器文件缓存':'休眠设置',category:'applications',description:'使用专用工具处理，不删除整个资料目录。',impact:'清理缓存后可能需要重新下载。',recovery:'缓存可重建，不等同撤销清理。',common:true,parameters:[{name:'browser',type:'string',label:'浏览器',enum:['edge','chrome'],default:'edge'},{name:'profile',type:'string',label:'资料配置',default:'current',maxLength:120}],settings:[{kind:'official_method',target:'https://official.example/method',label:'查看官方方法'}],sources:[{title:'官方说明'}],capabilities:{inspect:true,prepare:true,apply:false}});
+const tool=(id='browser_cache')=>({id,title:id==='browser_cache'?'浏览器文件缓存':'休眠设置',category:'applications',description:'使用专用工具处理，不删除整个资料目录。',impact:'清理缓存后可能需要重新下载。',recovery:'缓存可重建，不等同撤销清理。',common:true,parameters:[{name:'browser',type:'string',label:'浏览器',enum:['edge','chrome'],default:'edge'},{name:'profile',type:'string',label:'资料配置',default:'current',maxLength:120}],settings:[{kind:'application',target:'registered-browser',label:'打开浏览器',available:true}],sources:[{title:'官方说明'}],capabilities:{inspect:true,prepare:true,apply:false}});
 const plan=(parameters={browser:'edge',profile:'current'})=>({id:'owned-plan',version:4,tool_id:'browser_cache',title:'浏览器文件缓存',parameters,entries:[],status:'awaiting_review',source:{task_id:'owned-task',item_id:'owned-item'},impact:'只清文件缓存，保留登录数据。'});
 const result=()=>({plan_id:'owned-plan',status:'succeeded',actual_reclaimed_bytes:0,items:[{name:'浏览器文件缓存',status:'succeeded',message:'操作结果已记录并核验。'}]});
 function fixture(respond,storage=new Map()){
   class Element{
-    constructor(tag){this.tag=tag;this.children=[];this.handlers={};this.attrs={};this.parent=null;this._text='';this.hidden=false;this.disabled=false;this.value='';this.type='';}
+    constructor(tag){this.tag=tag;this.children=[];this.handlers={};this.attrs={};this.dataset={};this.parent=null;this._text='';this.hidden=false;this.disabled=false;this.value='';this.type='';}
     get textContent(){return this._text+this.children.map(x=>x.textContent).join('');}set textContent(x){this._text=String(x);this.children=[];}
     get childNodes(){return this.children;}get isConnected(){return this===root||!!this.parent?.isConnected;}
     append(...items){items.forEach(x=>{x.parent=this;this.children.push(x);});}replaceChildren(...items){this.children.forEach(x=>x.parent=null);this.children=[];this._text='';this.append(...items);}
@@ -19,13 +19,13 @@ function fixture(respond,storage=new Map()){
   }
   const root=new Element('main'),window={},requests=[],returns=[],results=[],opened=[],answers=[];
   runInNewContext(source,{window,document:{createElement:tag=>new Element(tag)},setTimeout,clearTimeout,sessionStorage:{getItem:key=>storage.get(key),setItem:(key,value)=>storage.set(key,value),removeItem:key=>storage.delete(key)}});
-  const context={api:async(path,body)=>{requests.push({path,body:body===undefined?undefined:plain(body)});if(respond){const value=await respond(path,body);if(value!==undefined)return value;}if(path.startsWith('/api/cleanup-tools?'))return {items:[tool()],categories:[{id:'applications',title:'软件与缓存'}]};if(path==='/api/cleanup-tools/browser_cache')return tool();if(path==='/api/cleanup-tools/prepare')return plan(body.parameters);if(path==='/api/cleanup-tools/inspect')return {evidence:{status:'unknown',reason:'尚未读取浏览器资料。'},parameters:body.parameters,note:'只读检查'};if(path==='/api/cleanup-tools/execute')return result();if(path==='/api/cleanup-plans/owned-plan')return plan();throw Error('Unexpected '+path);},onReturn:()=>returns.push('returned'),onResult:value=>results.push(value),onOpenSettings:(...args)=>opened.push(args),onAnswer:value=>answers.push(value)};
+  const context={api:async(path,body)=>{requests.push({path,body:body===undefined?undefined:plain(body)});if(respond){const value=await respond(path,body);if(value!==undefined)return value;}if(path.startsWith('/api/cleanup-tools?'))return {items:[tool()],categories:[{id:'applications',title:'软件与缓存'}]};if(path==='/api/cleanup-tools/browser_cache')return tool();if(path==='/api/cleanup-tools/prepare')return plan(body.parameters);if(path==='/api/cleanup-tools/inspect')return {presentation:{kind:'browser_cache',status:'unknown',summary:'尚未确认浏览器缓存大小。',metrics:[],items:[],warnings:['尚未读取浏览器资料。']},evidence:{private_debug_only:'不应显示的原始值'},parameters:body.parameters};if(path==='/api/cleanup-tools/execute')return result();if(path==='/api/cleanup-plans/owned-plan')return plan();throw Error('Unexpected '+path);},onReturn:()=>returns.push('returned'),onResult:value=>results.push(value),onOpenSettings:(...args)=>opened.push(args),onAnswer:value=>answers.push(value)};
   return {root,subject:window.PanxuCleanupTools,context,requests,returns,results,opened,answers,storage,find:label=>root.all().find(x=>x.tag==='button'&&x.textContent===label),input:name=>root.all().find(x=>x.name===name),all:()=>root.all()};
 }
-test('opening a recommendation only reads a registered tool; settings and return never execute',async()=>{
+test('opening a recommendation reads a registered tool and automatically inspects once; navigation never executes',async()=>{
   const f=fixture();await f.subject.open(f.root,{tool_id:'browser_cache',source:{task_id:'owned-task',item_id:'owned-item'}},f.context);
-  assert.equal(f.requests.length,1);assert.match(f.root.textContent,/操作影响/);assert.match(f.root.textContent,/恢复方式/);
-  await f.find('查看官方方法').fire();assert.equal(f.opened[0][0],'browser_cache');assert.equal(f.opened[0][2],0);assert.match(f.root.textContent,/不代表已清理/);
+  assert.equal(f.requests.length,2);assert.equal(f.requests.filter(r=>r.path.endsWith('/inspect')).length,1);assert.match(f.root.textContent,/影响与恢复说明/);assert.equal(f.find('检查当前状态'),undefined);assert.ok(f.find('刷新'));
+  await f.find('打开浏览器').fire();assert.equal(f.opened[0][0],'browser_cache');assert.equal(f.opened[0][2],0);assert.deepEqual(plain(f.opened[0][3]),{browser:'edge',profile:'current'});assert.match(f.root.textContent,/已打开对应入口/);assert.equal(f.root.textContent.includes('官方'),false);
   await f.find('返回清单').fire();assert.equal(f.returns.length,1);assert.equal(f.requests.some(r=>r.path.endsWith('/execute')),false);
 });
 test('preview freezes parameters, and only explicit confirmation submits exactly that plan',async()=>{
@@ -33,7 +33,7 @@ test('preview freezes parameters, and only explicit confirmation submits exactly
   f.input('browser').value='chrome';await f.input('browser').fire('input');await f.find('预览操作').fire();
   assert.equal(f.requests.at(-1).body.parameters.browser,'chrome');assert.equal(f.requests.at(-1).body.source.advice_version,3);assert.ok(f.find('确认执行'));assert.match(f.root.textContent,/Google Chrome/);
   assert.equal(f.requests.some(r=>r.path.endsWith('/execute')),false);await f.find('确认执行').fire();
-  assert.deepEqual(f.requests.at(-1),{path:'/api/cleanup-tools/execute',body:{plan_id:'owned-plan',version:4}});assert.equal(f.results.length,1);assert.match(f.root.textContent,/实际释放空间：0 B/);assert.equal(f.find('确认执行'),undefined);
+  assert.deepEqual(f.requests.find(r=>r.path.endsWith('/execute')),{path:'/api/cleanup-tools/execute',body:{plan_id:'owned-plan',version:4}});assert.equal(f.results.length,1);assert.match(f.root.textContent,/实际释放空间：0 B/);assert.equal(f.find('确认执行'),undefined);
 });
 test('editing a frozen parameter requires another preview and preserves the draft across reopening',async()=>{
   const f=fixture(),ref={tool_id:'browser_cache',source:{task_id:'owned-task',item_id:'owned-item',advice_version:7}};
@@ -41,7 +41,7 @@ test('editing a frozen parameter requires another preview and preserves the draf
   assert.equal(f.find('确认执行'),undefined);f.subject.unmount();await f.subject.open(f.root,{...ref,parameters:{profile:'current'}},f.context);assert.equal(f.input('profile').value,'Work');assert.equal(f.requests.some(r=>r.path.endsWith('/execute')),false);
 });
 test('read-only inspection reports unknown without inferring cache size or successful cleanup',async()=>{
-  const f=fixture();await f.subject.open(f.root,{tool_id:'browser_cache'},f.context);await f.find('检查当前状态').fire();
+  const f=fixture();await f.subject.open(f.root,{tool_id:'browser_cache'},f.context);await flush();await f.find('刷新').fire();
   assert.match(f.root.textContent,/尚未确认/);assert.match(f.root.textContent,/尚未读取浏览器资料/);assert.equal(f.requests.some(r=>/prepare|execute/.test(r.path)),false);
 });
 test('double clicks cannot resubmit an in-flight frozen operation',async()=>{
@@ -113,14 +113,66 @@ test('host back navigation replaces duplicate page controls and clears when retu
   await f.subject.open(f.root,{tool_id:'browser_cache',source:{task_id:'owned-task'}},f.context);assert.equal(f.find('返回清单'),undefined);assert.equal(backs.at(-1).label,'返回清单');backs.at(-1).run();assert.equal(f.returns.length,1);
 });
 test('confirmation is a distinct compact stage and adjustment restores the full parameter form',async()=>{
-  const f=fixture();await f.subject.open(f.root,{tool_id:'browser_cache'},f.context);assert.ok(f.input('browser'));assert.match(f.root.textContent,/操作影响/);await f.find('预览操作').fire();
+  const f=fixture();await f.subject.open(f.root,{tool_id:'browser_cache'},f.context);assert.ok(f.input('browser'));assert.match(f.root.textContent,/清理缓存后可能/);await f.find('预览操作').fire();
   assert.equal(f.input('browser'),undefined);assert.equal(f.find('检查当前状态'),undefined);assert.equal(f.find('预览操作'),undefined);assert.equal(f.root.textContent.includes('操作影响'),false);assert.ok(f.find('确认执行'));
   await f.find('返回调整').fire();assert.ok(f.input('browser'));await f.find('预览操作').fire();await f.find('确认执行').fire();assert.equal(f.root.textContent.includes('确认这次操作'),false);assert.match(f.root.textContent,/操作结果已记录/);assert.ok(f.find('返回工具说明'));
 });
-test('browser methods follow the selected product and preserve the registered settings index',async()=>{
-  const value={...tool(),settings:[{kind:'official_method',target:'https://support.google.com/chrome/answer/2392709',label:'Chrome官方清理方法'},{kind:'official_method',target:'https://support.microsoft.com/en-us/edge/view-and-delete',label:'Edge官方清理方法'},{kind:'official_method',target:'https://support.mozilla.org/en-US/kb/how-clear-firefox-cache',label:'Firefox官方清理方法'}]};
-  const f=fixture(path=>path==='/api/cleanup-tools/browser_cache'?value:undefined);await f.subject.open(f.root,{tool_id:'browser_cache'},f.context);assert.ok(f.find('Edge官方清理方法'));assert.equal(f.find('Chrome官方清理方法'),undefined);f.input('browser').value='chrome';await f.input('browser').fire('input');assert.ok(f.find('Chrome官方清理方法'));assert.equal(f.find('Edge官方清理方法'),undefined);assert.equal(f.find('Firefox官方清理方法'),undefined);await f.find('Chrome官方清理方法').fire();assert.equal(f.opened[0][2],0);
+test('browser launch entries follow selected product and preserve the registered index',async()=>{
+  const value={...tool(),settings:[{kind:'application',browser:'chrome',target:'registered-chrome',label:'打开Chrome',available:true},{kind:'application',browser:'edge',target:'registered-edge',label:'打开Edge',available:true},{kind:'application',browser:'firefox',target:'registered-firefox',label:'打开Firefox',available:true}]};
+  const f=fixture(path=>path==='/api/cleanup-tools/browser_cache'?value:undefined);await f.subject.open(f.root,{tool_id:'browser_cache'},f.context);assert.ok(f.find('打开Edge'));assert.equal(f.find('打开Chrome'),undefined);f.input('browser').value='chrome';await f.input('browser').fire('input');assert.ok(f.find('打开Chrome'));assert.equal(f.find('打开Edge'),undefined);assert.equal(f.find('打开Firefox'),undefined);await f.find('打开Chrome').fire();assert.equal(f.opened[0][2],0);assert.equal(f.opened[0][3].browser,'chrome');
 });
+
 test('default profile is an honest placeholder and blank user input retains the internal current reference',async()=>{
   const f=fixture();await f.subject.open(f.root,{tool_id:'browser_cache'},f.context);assert.equal(f.input('profile').value,'');assert.equal(f.input('profile').placeholder,'当前用户（具体配置待核实）');await f.input('profile').fire('input');await f.find('预览操作').fire();assert.equal(f.requests.at(-1).body.parameters.profile,'current');assert.match(f.root.textContent,/当前用户（具体配置待核实）/);assert.equal(f.root.textContent.includes('当前资料配置'),false);
+});
+
+const wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+test('automatic inspection is independent from opening a program or returning while the read is slow',async()=>{
+ let finish;const pending=new Promise(resolve=>{finish=resolve;}),f=fixture(path=>path.endsWith('/inspect')?pending:undefined);
+ await f.subject.open(f.root,{tool_id:'browser_cache',source:{task_id:'owned-task'}},f.context);
+ assert.equal(f.find('打开浏览器').disabled,false);assert.equal(f.find('预览操作').disabled,false);await f.find('打开浏览器').fire();await f.find('返回清单').fire();finish({presentation:{summary:'迟到的检查',kind:'cache'}});await flush();assert.equal(f.returns.length,1);assert.equal(f.root.textContent.includes('迟到的检查'),false);assert.equal(f.requests.some(r=>/prepare|execute/.test(r.path)),false);
+});
+test('parameter changes debounce automatic inspection and reject older-scope results',async()=>{
+ let old;const first=new Promise(resolve=>{old=resolve;}),f=fixture((path,body)=>{if(path.endsWith('/inspect'))return body.parameters.browser==='edge'?first:{presentation:{kind:'cache',summary:'Chrome当前读数',metrics:[],items:[]}};});
+ await f.subject.open(f.root,{tool_id:'browser_cache'},f.context);f.input('browser').value='chrome';await f.input('browser').fire('input');f.input('profile').value='Work';await f.input('profile').fire('input');await wait(220);await flush();
+ assert.equal(f.requests.filter(r=>r.path.endsWith('/inspect')).length,2);assert.equal(f.requests.filter(r=>r.path.endsWith('/inspect')).at(-1).body.parameters.profile,'Work');old({presentation:{kind:'cache',summary:'旧Edge读数'}});await flush();assert.match(f.root.textContent,/Chrome当前读数/);assert.equal(f.root.textContent.includes('旧Edge读数'),false);
+});
+test('unmount clears pending parameter inspection rather than reading another location after return',async()=>{
+ const f=fixture();await f.subject.open(f.root,{tool_id:'browser_cache'},f.context);f.input('profile').value='Other';await f.input('profile').fire('input');f.subject.unmount();await wait(210);assert.equal(f.requests.filter(r=>r.path.endsWith('/inspect')).length,1);
+});
+test('refresh keeps the last complete result until replacement without changing parameters or preparing an action',async()=>{
+ let next;const delayed=new Promise(resolve=>{next=resolve;}),f=fixture(path=>{if(path.endsWith('/inspect'))return f.requests.filter(r=>r.path.endsWith('/inspect')).length===1?{presentation:{kind:'cache',summary:'最近完整读数',metrics:[{label:'缓存大小',value:2048,unit:'bytes'}]}}:delayed;});
+ await f.subject.open(f.root,{tool_id:'browser_cache'},f.context);await flush();const read=f.find('刷新').fire();await flush();assert.match(f.root.textContent,/最近完整读数/);next({presentation:{kind:'cache',summary:'最新读数',metrics:[]}});await read;assert.match(f.root.textContent,/最新读数/);assert.equal(f.input('profile').value,'');assert.equal(f.requests.some(r=>/prepare|execute/.test(r.path)),false);
+});
+test('recycle bin uses known byte count and volume capacity for its own accessible meter',async()=>{
+ const recycle={...tool('recycle_bin'),title:'回收站',parameters:[{name:'volume',label:'目标磁盘',default:'C:'}],settings:[{kind:'application',label:'打开回收站',target:'registered-recycle',available:true}]};
+ const f=fixture(path=>path==='/api/cleanup-tools/recycle_bin'?recycle:path.endsWith('/inspect')?{presentation:{kind:'recycle_bin',status:'observed',recycle:{bytes:1024,count:3,volume_total_bytes:4096,volume:'C:'},evidence:{secret:'不应显示'},warnings:[]}}:undefined);await f.subject.open(f.root,{tool_id:'recycle_bin'},f.context);await flush();
+ const meter=f.all().find(x=>x.tag==='progress');assert.equal(meter.max,4096);assert.equal(meter.value,1024);assert.match(meter.attrs['aria-label'],/磁盘总容量/);assert.match(f.root.textContent,/25%/);assert.match(f.root.textContent,/3 项/);assert.equal(f.root.textContent.includes('配额'),false);assert.equal(f.root.textContent.includes('不应显示'),false);assert.ok(f.find('打开回收站'));
+});
+test('unknown recycle size is not shown as empty or zero and has no invented meter',async()=>{
+ const value={...tool('recycle_bin'),title:'回收站',parameters:[]};const f=fixture(path=>path==='/api/cleanup-tools/recycle_bin'?value:path.endsWith('/inspect')?{presentation:{kind:'recycle_bin',status:'partial',summary:'当前用户回收站未能读取',recycle:{bytes:null,count:null,volume_total_bytes:4096}}}:undefined);
+ await f.subject.open(f.root,{tool_id:'recycle_bin'},f.context);await flush();assert.match(f.root.textContent,/占用未取得/);assert.match(f.root.textContent,/项目数未取得/);assert.equal(f.all().some(x=>x.tag==='progress'),false);assert.equal(f.root.textContent.includes('0 B'),false);
+});
+test('official documents never become tool actions and unavailable programs are explained without a fake launch button',async()=>{
+ const value={...tool(),settings:[{kind:'official_method',label:'查看官方文档',target:'https://official.example'},{kind:'application',label:'打开浏览器',available:false,reason:'尚未找到所选浏览器。'}],sources:[{title:'官方文档'}]};const f=fixture(path=>path==='/api/cleanup-tools/browser_cache'?value:undefined);
+ await f.subject.open(f.root,{tool_id:'browser_cache'},f.context);assert.equal(f.find('查看官方文档'),undefined);assert.equal(f.find('打开浏览器'),undefined);assert.equal(f.root.textContent.includes('依据：'),false);assert.match(f.root.textContent,/尚未找到所选浏览器/);
+});
+test('required tool parameters defer automatic checks until the target is entered',async()=>{
+ const value={...tool('cache_location'),parameters:[{name:'target_path',label:'目标目录',required:true,type:'string'}],settings:[]};const f=fixture(path=>path==='/api/cleanup-tools/cache_location'?value:undefined);await f.subject.open(f.root,{tool_id:'cache_location'},f.context);
+ assert.equal(f.requests.filter(r=>r.path.endsWith('/inspect')).length,0);assert.match(f.root.textContent,/补充必填选项/);assert.equal(f.find('预览操作').disabled,true);f.input('target_path').value='E:\\Cache';await f.input('target_path').fire('input');await wait(210);assert.equal(f.requests.filter(r=>r.path.endsWith('/inspect')).length,1);assert.equal(f.find('预览操作').disabled,false);f.input('target_path').value='';await f.input('target_path').fire('input');assert.equal(f.find('预览操作').disabled,true);
+});
+
+test('bounded partial checks remain visibly partial instead of presenting a whole-directory total',async()=>{
+ const f=fixture(path=>path.endsWith('/inspect')?{presentation:{kind:'cache',summary:'已读取缓存大小',status:'partial',complete:false,metrics:[{label:'已读取大小',value:4096,unit:'bytes'}],items:[],warnings:[]}}:undefined);
+ await f.subject.open(f.root,{tool_id:'browser_cache'},f.context);await flush();assert.match(f.root.textContent,/部分结果/);assert.match(f.root.textContent,/仅表示已读取范围/);assert.match(f.root.textContent,/4 KiB/);
+});
+
+test('cache shows its known size prominently and keeps checked locations in one optional disclosure',async()=>{
+ const f=fixture(path=>path.endsWith('/inspect')?{presentation:{kind:'cache',status:'observed',complete:true,metrics:[{key:'observed_bytes',label:'已统计占用',value:4096,unit:'bytes'},{key:'observed_files',label:'已统计文件',value:7,unit:'count'}],items:[{label:'检查位置',value:'E:\\Cache'}]}}:undefined);
+ await f.subject.open(f.root,{tool_id:'browser_cache'},f.context);await flush();assert.equal(f.all().find(x=>x.className==='cleanup-status-primary').textContent,'4 KiB');assert.match(f.root.textContent,/7 项/);const details=f.all().find(x=>x.className==='cleanup-status-locations');assert.equal(details.tag,'details');assert.match(details.textContent,/E:\\Cache/);assert.equal(f.all().some(x=>x.tag==='progress'),false);
+});
+
+test('memory ratios use only explicitly known denominators and pagefile allocations honor byte units',async()=>{
+ const value={...tool('pagefile'),parameters:[]};const f=fixture(path=>path==='/api/cleanup-tools/pagefile'?value:path.endsWith('/inspect')?{presentation:{kind:'pagefile',status:'observed',complete:true,summary:'当前内存与分页快照',metrics:[{key:'physical_available_bytes',label:'可用物理内存',value:1024,unit:'bytes',denominator:4096},{key:'commit_current_bytes',label:'当前内存提交',value:8192,unit:'bytes',denominator:4096},{key:'other',label:'其他读数',value:2,unit:'count',denominator:9}],items:[{label:'E:',value:2048,unit:'bytes'}]}}:undefined);
+ await f.subject.open(f.root,{tool_id:'pagefile'},f.context);await flush();const meters=f.all().filter(x=>x.tag==='progress');assert.equal(meters.length,1);assert.equal(meters[0].max,4096);assert.equal(meters[0].value,1024);assert.match(meters[0].attrs['aria-label'],/物理内存总量/);assert.match(f.root.textContent,/2 KiB/);assert.equal(f.root.textContent.includes('2048'),false);
 });

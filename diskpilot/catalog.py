@@ -20,15 +20,72 @@ class FileCatalog:
         self._nodes = {}
         self._children = {}
         self._selection_cache = {}
+        self._browser_source_cache = {}
 
     def token(self):
         policy = hashlib.sha256(json.dumps(self.patterns(), ensure_ascii=False).encode()).hexdigest()[:16]
         suffix = ':' + self.assessments.revision() if self.assessments else ''
         return f'{self.state.revision}:{policy}{suffix}'
 
+    def _browser_assessment(self, item, value):
+        """New browser observations do not enlarge an old analysis snapshot."""
+        if not item.get('details', {}).get('browser_only') or value.get('state') != 'inherited':
+            return value
+        source = value.get('inherited_from') or value.get('source_ref') or {}
+        task_id = source.get('task_id')
+        if task_id not in self._browser_source_cache:
+            row = self.state.db.execute('SELECT payload FROM tasks WHERE id=?', (task_id,)).fetchone() if task_id else None
+            payload = json.loads(row[0]) if row else {}
+            known = set(payload.get('known_ids', [])) | set(payload.get('target_ids', []))
+            if task_id:
+                known.update(row[0] for row in self.state.db.execute('SELECT item_id FROM task_scan_items WHERE task_id=?', (task_id,)))
+            self._browser_source_cache[task_id] = known
+        if item['id'] in self._browser_source_cache[task_id]:
+            return value
+        result = copy.deepcopy(value)
+        result.update(state='unanalysed', rating=None, impact_rating=None,
+                      outside_analysis_coverage=True, inheritance='none')
+        result['blocked_reasons'] = list(dict.fromkeys([*result.get('blocked_reasons', []), 'outside_analysis_coverage']))
+        result.pop('specialist', None)
+        result.pop('extra_suggestion_id', None)
+        return result
+
+    def observed_rows(self, ids, *, task=None, include_outside=True):
+        """Shared projection for lazy browsing, without changing task scope."""
+        if not isinstance(ids, list) or len(ids) > 100 or any(not isinstance(i, str) for i in ids):
+            raise AppError('每次只能查看当前层1至100个观察。')
+        with self.state.lock:
+            global_rows = {row['id']: row for row in self._selection_rows()}
+            scoped = {row['id']: row for row in self._selection_rows(task)} if task else global_rows
+            result = []
+            for ident in ids:
+                row = scoped.get(ident)
+                outside = row is None and task is not None
+                if outside and include_outside:
+                    row = global_rows.get(ident)
+                if row is None:
+                    continue
+                row = copy.deepcopy(row)
+                row['in_task_scope'] = not outside
+                if outside:
+                    row.update(can_prepare=False, can_logical_select=False, can_auto_select=False,
+                               analysis_requires_new_task=True)
+                if row['kind'] == 'directory':
+                    children = self._children.get(ident, [])
+                    counted = children[:1000]
+                    states = Counter(child.get('assessment', {}).get('state', 'unanalysed') for child in counted)
+                    complete = len(counted) == len(children)
+                    row['analysis_summary'] = dict(known_children=len(children), counted_children=len(counted),
+                        direct=states['explicit'] + states['skipped'] + states['no_advice'], inherited=states['inherited'],
+                        unanalysed=states['unanalysed'] if complete else None, counts_complete=complete,
+                        subtree_total=None, scope='known_direct_children', label=f'已观察{len(children)}个直接子项')
+                result.append(row)
+            return result
+
     def _index(self):
         token = self.token()
         if token != self._token:
+            self._browser_source_cache.clear()
             snapshot = self.state.snapshot(self.patterns())
             snapshot_index = {item['id']: item for item in snapshot['items']}
             resolved = self.assessments.resolve(snapshot['items']) if self.assessments else {}
@@ -59,12 +116,14 @@ class FileCatalog:
                 projected['details'] = {k: copy.deepcopy(details[k]) for k in (
                     'complete', 'subtree_complete', 'can_simulate_delete', 'file_identity', 'is_hardlink', 'hardlink_entities',
                     'timestamps', 'parent_id', 'root', 'scan_only', 'state', 'start_mode', 'pid',
-                    'version', 'scope', 'has_uninstaller', 'observed_at', 'registry_location') if k in details}
+                    'version', 'scope', 'has_uninstaller', 'observed_at', 'registry_location',
+                    'browser_only', 'browser_layer_only', 'size_known', 'browseable', 'browse_block_reason',
+                    'entry_metadata_signature') if k in details}
                 if item['kind'] == 'service':
                     projected['details']['state_label'] = {'Running': '正在运行', 'Stopped': '已停止',
                         'Start Pending': '正在启动', 'Stop Pending': '正在停止', 'Paused': '已暂停'}.get(details.get('state'), '状态尚未确认')
-                assessment = copy.deepcopy(resolved.get(item['id'], dict(state='unanalysed', rating=None,
-                    conclusion=None, stale=False, blocked_reasons=[])))
+                assessment = self._browser_assessment(item, copy.deepcopy(resolved.get(item['id'], dict(state='unanalysed', rating=None,
+                    conclusion=None, stale=False, blocked_reasons=[]))))
                 assessment.update(analysis_state=assessment['state'], cleanup_rating=assessment['rating'])
                 source_id = (assessment.get('inherited_from') or {}).get('item_id')
                 source = snapshot_index.get(source_id)
@@ -180,7 +239,7 @@ class FileCatalog:
         resolved = self.assessments.resolve(self.state.snapshot(self.patterns())['items'], task=task) if task and self.assessments else {}
         for row in result:
             if row['id'] in resolved:
-                row['assessment'] = copy.deepcopy(resolved[row['id']])
+                row['assessment'] = self._browser_assessment(row, copy.deepcopy(resolved[row['id']]))
                 row['assessment'].update(analysis_state=row['assessment']['state'], cleanup_rating=row['assessment']['rating'])
                 row['can_prepare'] = bool(row['can_select'] and row['action'] and not row['assessment'].get('blocked_reasons')
                                           and not row['assessment'].get('stale'))

@@ -10,6 +10,7 @@ from unittest.mock import patch
 from diskpilot.actions import ActionRuntime
 from diskpilot.cleanup_tools import CleanupToolkit, REGISTRY
 from diskpilot.simulation import AppError, SimulationState
+from diskpilot.tool_launch import entry_definition
 
 
 class Interrupted(BaseException):
@@ -23,10 +24,14 @@ class CleanupToolTests(unittest.TestCase):
         self.state = SimulationState(Path(self.temp.name) / 'data')
         self.addCleanup(self.state.close)
         self.tools = CleanupToolkit(self.state)
+        resolver = patch('diskpilot.cleanup_tools.resolve_entry', side_effect=lambda entry_id, parameters=None:
+            dict(entry_definition(entry_id), parameters=parameters or {}, available=False, reason='测试不启动本机程序'))
+        resolver.start()
+        self.addCleanup(resolver.stop)
 
     def test_registry_is_common_to_direct_and_model_clients(self):
         listing = self.tools.list()
-        self.assertEqual(listing['total'], 25)
+        self.assertEqual(listing['total'], 48)
         self.assertTrue(listing['simulation_only'])
         for tool in listing['items']:
             detail = self.tools.detail(tool['id'])
@@ -89,18 +94,20 @@ class CleanupToolTests(unittest.TestCase):
         read.assert_called_once_with('E:\\')
         self.assertEqual(report['evidence']['free_bytes'], 123)
         self.assertTrue(report['read_only'])
-        self.assertEqual(self.tools.inspect('browser_privacy')['evidence']['status'], 'unknown')
+        with patch('diskpilot.tool_inspection.find_program', return_value=None):
+            self.assertEqual(self.tools.inspect('browser_privacy')['evidence']['status'], 'unknown')
         with patch('diskpilot.cleanup_tools.system_configuration', return_value={'status': 'partial'}) as config:
             self.assertEqual(self.tools.inspect('pagefile')['evidence']['status'], 'partial')
         config.assert_called_once_with()
 
     def test_settings_are_definitions_not_a_side_effect(self):
         settings = self.tools.detail('windows_temp')['settings']
-        self.assertEqual(settings[0]['target'], 'ms-settings:storagesense')
+        self.assertEqual(settings[0]['entry_id'], 'disk_cleanup')
         self.assertEqual(self.tools.history(), [])
         names = [row['label'] for row in self.tools.detail('browser_cache')['settings']]
         self.assertTrue(any('Firefox' in label for label in names))
-        self.assertFalse(self.tools.detail('browser_cache')['capabilities']['open_settings'])
+        self.assertTrue(self.tools.detail('browser_cache')['capabilities']['open_settings'])
+        self.assertTrue(all(row['kind'] != 'official_method' for row in self.tools.detail('browser_cache')['settings']))
 
     def test_prepare_is_frozen_and_execute_uses_same_runtime(self):
         plan = self.tools.prepare('windows_temp')

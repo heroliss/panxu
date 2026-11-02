@@ -11,13 +11,15 @@ import secrets
 import sys
 import threading
 import time
-import webbrowser
 from urllib.parse import urlsplit, parse_qs
 
 from . import __version__
 from .duplicates import verify_duplicates
 from .dedup import validate_duplicate_request, run_duplicate_scan
 from .catalog import FileCatalog
+from .file_browser import DirectoryBrowser
+from .recovery import RecoveryStore
+from .tool_launch import open_entry
 from .llm import ModelAssistant
 from .lease import DataLease
 from .live_streams import LiveStreams
@@ -70,6 +72,9 @@ class Application:
             if plan.get('result'):
                 self.harness.record_specialist_result(plan)
         self.catalog = FileCatalog(self.state, self.patterns, self.harness.assessments)
+        self.file_browser = DirectoryBrowser(self.state, self.catalog, self.patterns)
+        self.recovery = RecoveryStore(self.state)
+        self.recovery.assessment_resolver = self.harness.assessments.resolve
         self.icons = IconService(self.icon_item)
         self.recommendation_cache = None
         self.recommendation_generation = 0
@@ -91,29 +96,10 @@ class Application:
 
     def _open_cleanup_settings(self, payload):
         source = self._cleanup_source(payload.get('source'))
-        tool = self.cleanup_tools.detail(payload.get('tool_id'))
-        index = payload.get('index', 0)
-        entries = tool.get('settings') or []
-        if type(index) is not int or not 0 <= index < len(entries):
-            raise AppError('这个设置入口暂不可用，请查看工具说明。')
-        entry = entries[index]
-        target = entry.get('target', '')
-        if not isinstance(target, str):
-            raise AppError('工具未提供可用入口。')
-        # Only the host registry supplies a destination. No supplied command,
-        # executable argument, browser script or model-generated URL is opened.
-        try:
-            if target.startswith('https://'):
-                if not webbrowser.open(target):
-                    raise OSError('browser unavailable')
-            elif os.name == 'nt' and target.startswith('ms-settings:'):
-                os.startfile(target)
-            else:
-                raise OSError('unsupported entry')
-        except OSError:
-            raise AppError('未能打开此入口。请按照工具中的官方方法手动打开。', 'settings_unavailable') from None
-        result = {'status': 'opened', 'applied': False, 'tool_id': tool['id'], 'label': entry.get('label'),
-                  'message': '已打开入口，尚未核实是否修改或完成清理。'}
+        entry = self.cleanup_tools.entrypoint(payload.get('tool_id'),payload.get('index',0),payload.get('parameters'))
+        result = open_entry(entry)
+        result.update(tool_id=payload.get('tool_id'),applied=False,
+                      message='已打开对应程序或系统界面，尚未核实是否完成清理。')
         if source.get('task_id'):
             self.harness._record_fact(source['task_id'], 'specialist_settings_opened', result)
         return result
@@ -337,6 +323,36 @@ class Application:
             raise AppError('图标对应的内容不存在。', 'not_found', 404) from None
 
     def get(self, path, query):
+        query_contract = {'/api/file-browser/drives': set(),
+                          '/api/file-browser': {'path', 'cursor', 'limit', 'refresh', 'task_id'},
+                          '/api/recovery/summary': set(),
+                          '/api/recovery': {'page', 'limit', 'status', 'volume'}}
+        if path in query_contract and (set(query) - query_contract[path]
+                or any(not isinstance(v, list) or len(v) != 1 for v in query.values())):
+            raise AppError('查询参数无效，请刷新后重试。')
+        if path == '/api/recovery/summary':
+            return self.recovery.summary()
+        if path == '/api/recovery':
+            try:
+                page = int(query.get('page', ['1'])[0])
+                limit = int(query.get('limit', ['50'])[0])
+            except (TypeError, ValueError):
+                raise AppError('分页参数无效。') from None
+            return self.recovery.list(page=page, limit=limit, status=query.get('status', ['retained'])[0],
+                                      volume=query.get('volume', [''])[0])
+        if path.startswith('/api/recovery/plans/'):
+            return self.recovery.get_plan(path[len('/api/recovery/plans/'):])
+        if path == '/api/file-browser/drives':
+            return self.file_browser.drives()
+        if path == '/api/file-browser':
+            if query.get('refresh', ['0'])[0] not in ('0', '1'):
+                raise AppError('刷新参数无效。')
+            try:
+                limit = int(query.get('limit',['50'])[0])
+            except (TypeError,ValueError):
+                raise AppError('请使用有效的文件页大小。') from None
+            return self.file_browser.page(query.get('path',[''])[0],cursor=query.get('cursor',[None])[0],
+                limit=limit,refresh=query.get('refresh',['0'])[0]=='1',task=self.selection_task(query.get('task_id',[None])[0]))
         if path == '/api/cleanup-tools':
             return self.cleanup_tools.list(query=query.get('query', [''])[0], category=query.get('category', ['all'])[0])
         if path == '/api/cleanup-tools/history':
@@ -455,10 +471,23 @@ class Application:
         raise AppError('接口不存在。', 'not_found', 404)
 
     def post(self, path, payload):
+        if path.startswith('/api/recovery/'):
+            allowed = {'/api/recovery/prepare': {'ids', 'action'},
+                       '/api/recovery/execute': {'plan_id', 'confirmation'}}
+            if path not in allowed or not isinstance(payload, dict) or set(payload) != allowed[path]:
+                raise AppError('恢复操作参数无效。')
+            if path.endswith('/prepare'):
+                return self.recovery.prepare(payload['ids'], action=payload['action'])
+            result = self.recovery.execute(payload['plan_id'], payload['confirmation'])
+            for batch_id in result.get('affected_batch_ids', []):
+                self.harness.refresh_operation_receipts(batch_id)
+            return result
         if path.startswith('/api/cleanup-tools/'):
+            if len(path.split('/')) != 4:
+                raise AppError('接口不存在。', 'not_found', 404)
             allowed = {
                 'inspect': {'tool_id', 'parameters'}, 'prepare': {'tool_id', 'parameters', 'source'},
-                'execute': {'plan_id', 'version'}, 'open-settings': {'tool_id', 'index', 'source'},
+                'execute': {'plan_id', 'version'}, 'open-settings': {'tool_id', 'index', 'parameters', 'source'},
                 'prepare-many': {'items', 'source'}, 'control': {'plan_id', 'action'},
                 'cancel': {'plan_id', 'version'}, 'undo': {'plan_id'},
             }
@@ -674,6 +703,7 @@ class Application:
                     pass
         self.pool.shutdown(wait=True, cancel_futures=True)
         self.icons.close()
+        self.file_browser.close()
         self.scan_index.close()
         self.trace.close()
         self.state.close()
@@ -759,6 +789,9 @@ def create_server(data_dir, port=0, *, developer_fixtures=False):
                     names.update({'/cleanup-tools.js': ('cleanup-tools.js', 'text/javascript; charset=utf-8'),
                                   '/specialist-links.js': ('specialist-links.js', 'text/javascript; charset=utf-8'),
                                   '/cleanup-tools.css': ('cleanup-tools.css', 'text/css; charset=utf-8')})
+                if parsed.path not in names:
+                    names.update({f'/{name}': (name, 'text/javascript; charset=utf-8' if name.endswith('.js') else 'text/css; charset=utf-8')
+                                  for name in ('file-workspace.js', 'file-workspace.css', 'recovery.js', 'recovery.css')})
                 if parsed.path not in names:
                     raise AppError('页面不存在。', 'not_found', 404)
                 name, mime = names[parsed.path]

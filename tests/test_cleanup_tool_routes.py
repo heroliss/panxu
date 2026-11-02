@@ -184,30 +184,29 @@ class CleanupToolRouteTests(unittest.TestCase):
         self.assert_files_unchanged()
 
     def test_open_settings_uses_registered_destination_only_and_never_marks_applied(self):
-        expected = self.app.get('/api/cleanup-tools/windows_temp', {})['settings'][0]['target']
-        with patch('diskpilot.server.os.startfile', create=True) as open_file, patch('diskpilot.server.webbrowser.open') as open_web:
+        with patch('diskpilot.server.open_entry', return_value=dict(status='opened', applied=False, label='打开磁盘清理')) as launch:
             result = self.app.post('/api/cleanup-tools/open-settings', dict(tool_id='windows_temp', source=self.source))
             self.assertEqual(result['status'], 'opened')
             self.assertFalse(result['applied'])
-            open_file.assert_called_once_with(expected)
-            open_web.assert_not_called()
+            self.assertEqual(launch.call_args.args[0]['entry_id'], 'disk_cleanup')
+            self.assertEqual(launch.call_args.args[0]['parameters'], {'volume': 'C:'})
             with self.assertRaises(AppError):
                 self.app.post('/api/cleanup-tools/open-settings', dict(tool_id='windows_temp', target='evil.exe'))
-            self.assertEqual(open_file.call_count, 1)
+            self.assertEqual(launch.call_count, 1)
         facts = self.app.harness.facts_page(self.task_id)['items']
         self.assertTrue(any(row['tool'] == 'specialist_settings_opened' for row in facts))
         self.assertEqual(self.app.state.db.execute('SELECT COUNT(*) FROM cleanup_tool_receipts').fetchone()[0], 0)
         self.assert_files_unchanged()
 
-    def test_official_method_only_opens_registry_url_and_open_failures_are_not_success(self):
+    def test_browser_entry_opens_registered_app_and_open_failures_are_not_success(self):
         detail = self.app.get('/api/cleanup-tools/browser_cache', {})
         index = len(detail['settings']) - 1
-        with patch('diskpilot.server.os.startfile', create=True) as open_file, patch('diskpilot.server.webbrowser.open', return_value=True) as open_web:
+        self.assertNotEqual(detail['settings'][index]['kind'], 'official_method')
+        with patch('diskpilot.server.open_entry', return_value=dict(status='opened', applied=False, label='打开Firefox隐私设置')) as launch:
             result = self.app.post('/api/cleanup-tools/open-settings', dict(tool_id='browser_cache', index=index))
             self.assertFalse(result['applied'])
-            open_web.assert_called_once_with(detail['settings'][index]['target'])
-            open_file.assert_not_called()
-        with patch('diskpilot.server.webbrowser.open', return_value=False), self.assertRaises(AppError):
+            self.assertEqual(launch.call_args.args[0]['entry_id'], 'firefox_clear')
+        with patch('diskpilot.server.open_entry', side_effect=AppError('未能打开对应程序', 'entrypoint_unavailable')), self.assertRaises(AppError):
             self.app.post('/api/cleanup-tools/open-settings', dict(tool_id='browser_cache', index=index))
         self.assert_files_unchanged()
 

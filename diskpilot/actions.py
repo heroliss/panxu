@@ -42,6 +42,31 @@ class SimulationBackend:
             return bool(batch['status'] == 'simulated' and row and row['active'] == 1
                         and row['signature'] == entry['signature'] and row['action'] == entry['action'])
 
+    def entry_state(self, entry, batch_id):
+        """Read the current effect of this exact receipt, not its whole batch.
+
+        A batch can contain restored and permanently purged siblings. Historical
+        success remains immutable; recovery/overlay records describe today.
+        """
+        if not batch_id:
+            return dict(current_state='unverified')
+        with self.state.lock:
+            retained = self.state.db.execute('''SELECT id,status FROM recovery_entries
+                WHERE batch_id=? AND item_id=? AND signature=?''',
+                (batch_id, entry['id'], entry['signature'])).fetchone()
+            overlay = self.state.db.execute('''SELECT signature,action,active FROM overlay
+                WHERE batch_id=? AND item_id=?''', (batch_id, entry['id'])).fetchone()
+            recovery = dict(recovery_entry_id=retained['id'], recovery_status=retained['status']) if retained else {}
+            if retained and retained['status'] == 'purged':
+                return dict(current_state='purged', **recovery)
+            if retained and retained['status'] == 'restored':
+                return dict(current_state='undone', **recovery)
+            if overlay and overlay['signature'] == entry['signature'] and overlay['action'] == entry['action']:
+                return dict(current_state='recorded' if overlay['active'] else 'undone', **recovery)
+            # For pre-journal operations only an explicit undone batch is known.
+            batch = self.state.db.execute('SELECT status FROM batches WHERE id=?', (batch_id,)).fetchone()
+            return dict(current_state='undone' if batch and batch['status'] == 'undone' else 'unverified', **recovery)
+
 
 class ActionRuntime:
     """Intent is durable before apply; receipt and virtual changes commit together.
@@ -171,7 +196,11 @@ class ActionRuntime:
         items = []
         for row in rows:
             data = json.loads(row['payload'])
-            if hasattr(self.backend, 'current_state'):
+            current = {}
+            if hasattr(self.backend, 'entry_state'):
+                current = self.backend.entry_state(data['entry'], data.get('batch_id'))
+                current_state = current['current_state']
+            elif hasattr(self.backend, 'current_state'):
                 current_state = self.backend.current_state(data.get('batch_id'))
             else:
                 with self.state.lock:
@@ -180,7 +209,8 @@ class ActionRuntime:
             items.append(dict(id=data['entry']['id'], name=data['entry']['name'], status=row['status'],
                               message=data.get('message', ''), verified=data['verified'], backend=data['backend'],
                               batch_id=data.get('batch_id'), action=data['entry']['action'],
-                              current_state=current_state))
+                              current_state=current_state,
+                              **{key: value for key, value in current.items() if key != 'current_state'}))
         succeeded = sum(x['status'] == 'succeeded' for x in items)
         status = 'succeeded' if items and succeeded == len(items) else 'partial' if succeeded else 'failed'
         if not succeeded and any(x['status'] in ('running', 'unverified') for x in items):
@@ -189,18 +219,21 @@ class ActionRuntime:
             status = 'cancelled'
         action_results = {}
         for item in items:
-            group = action_results.setdefault(item['action'], dict(total=0, succeeded=0, failed=0, cancelled=0, unverified=0, undone=0))
+            group = action_results.setdefault(item['action'], dict(total=0, succeeded=0, failed=0, cancelled=0, unverified=0, undone=0, purged=0))
             group['total'] += 1
             outcome = 'unverified' if item['status'] == 'running' else item['status']
             if outcome in group:
                 group[outcome] += 1
             group['undone'] += item['current_state'] == 'undone'
+            group['purged'] += item['current_state'] == 'purged'
         return dict(plan_version=version, backend=self.backend.name, status=status, items=items,
                     succeeded=succeeded, total=len(items), actual_reclaimed_bytes=0,
                     failed=sum(x['status'] == 'failed' for x in items),
                     unverified=sum(x['status'] in ('unverified', 'running') for x in items),
                     cancelled=sum(x['status'] == 'cancelled' for x in items),
                     undone=sum(x['current_state'] == 'undone' for x in items),
+                    purged=sum(x['current_state'] == 'purged' for x in items),
                     action_results=action_results,
                     actions=dict(Counter(item['action'] for item in items)),
-                    undone_actions=dict(Counter(item['action'] for item in items if item['current_state'] == 'undone')))
+                    undone_actions=dict(Counter(item['action'] for item in items if item['current_state'] == 'undone')),
+                    purged_actions=dict(Counter(item['action'] for item in items if item['current_state'] == 'purged')))

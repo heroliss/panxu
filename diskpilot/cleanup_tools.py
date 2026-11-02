@@ -1,7 +1,7 @@
 """Shared cleanup capability registry and durable simulation plans.
 
-No entry in this module runs a command, opens a setting, reads browser data,
-or changes a file/system setting. Real adapters remain a separate milestone.
+Inspection uses bounded read-only adapters. This module never submits cleanup
+commands or changes files/system settings; execution remains virtual.
 """
 from __future__ import annotations
 
@@ -17,6 +17,8 @@ from .actions import ActionRuntime, now
 from .execution_control import ExecutionControl
 from .simulation import AppError
 from .system_evidence import system_configuration, volume_snapshot
+from .tool_inspection import inspect_metadata, memory_presentation, volume_presentation
+from .tool_launch import entry_definition, resolve_entry
 
 
 REGISTRY_VERSION = 1
@@ -54,8 +56,7 @@ SETTINGS = 'https://learn.microsoft.com/en-us/windows/apps/develop/launch/launch
 
 def _tool(ident, title, category, description, impact, recovery, *, parameters=(),
           uri=None, url=SPACE, common=False, read=None):
-    settings = ([dict(kind='settings', target=uri, label='打开Windows设置')] if uri else [])
-    settings.append(dict(kind='official_method', target=url, label='查看官方方法'))
+    settings = []  # Native destinations are registered below, separately from sources.
     return dict(id=ident, tool_id=ident, version=1, title=title, category=category,
         description=description, impact=impact, recovery=recovery, common=common,
         parameters=copy.deepcopy(list(parameters)), settings=settings,
@@ -158,15 +159,94 @@ _ROWS = [
         parameters=(_field('virtual_disk_path', '虚拟磁盘位置', required=True, format='path'),),
         url='https://learn.microsoft.com/en-us/windows/wsl/disk-space'),
 ]
+_ROWS.extend([
+    _tool('thumbnail_cache', '资源管理器缩略图缓存', 'windows', '统计缩略图数据库，再由系统清理机制处理。',
+        '下次浏览图片或视频时会重新生成预览。', '可重新生成，不是恢复原缓存。',
+        url='https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/cleanmgr'),
+    _tool('storage_sense', '存储感知', 'windows', '查看所选卷空间，调整Windows自动清理规则。',
+        '规则会影响将来的临时文件、回收站和所选类别，开启规则与立即清理不同。', '关闭规则不能恢复此前已删除的内容。',
+        parameters=(VOLUME,), read='volume'),
+    _tool('file_history', '文件历史记录旧版本', 'system', '通过文件历史记录管理已有备份版本。',
+        '旧版本是恢复材料，需明确保留期限和备份目标。', '重新开启备份不能恢复已经清掉的历史版本。',
+        url='https://learn.microsoft.com/en-us/windows/win32/devnotes/fhmanagew-exe'),
+    _tool('printer_queue', '打印队列与暂存文件', 'windows', '核对打印状态和可读暂存目录。',
+        '打印中的任务应先在原队列确认；不把暂存文件直接当作无用内容。', '重新打印需要原始文档。'),
+    _tool('browser_models', '浏览器本地模型', 'applications', '查看浏览器下载的本地基础模型占用。',
+        '模型可能支持离线AI功能，清理后相关功能可能不可用或再次下载。', '可下载的官方模型可能重建，不代表自定义资源可恢复。',
+        parameters=(_field('browser', '浏览器', choices=('edge', 'chrome'), default='edge'),), url='https://learn.microsoft.com/en-us/deployedge/microsoft-edge-policies/GenAILocalFoundationalModelSettings'),
+    _tool('gpu_cache', '显卡着色器缓存', 'applications', '检查已知DirectX及显卡着色器缓存位置。',
+        '首次进入游戏或应用可能重新编译着色器并短暂卡顿。', '缓存可重建，不改变驱动安装。'),
+    _tool('steam_cache', 'Steam网页与下载缓存', 'applications', '检查可识别的Steam缓存并打开原程序。',
+        '下载缓存清理可能需要重新登录，不包含游戏安装与存档。', '缓存可重建，账号登录需自行完成。',
+        url='https://help.steampowered.com/en/faqs/view/6AD7-820D-8BE5-E51F'),
+    _tool('adobe_cache', 'Adobe媒体缓存', 'applications', '统计已知媒体缓存位置，保留素材、工程与自动保存。',
+        '部分产品共享缓存，重新打开工程可能需要重建。', '可重建缓存不等于工程文件备份。',
+        url='https://helpx.adobe.com/premiere/desktop/troubleshooting/media-issues/clear-media-cache-using-preferences.html'),
+    _tool('conda_cache', 'Conda包缓存', 'development', '检查已知Conda包缓存位置。',
+        '软链接环境可能依赖包缓存，不能无差别清空包目录。', '离线与自定义包不保证可重新下载。',
+        url='https://docs.conda.io/projects/conda/en/latest/commands/clean.html'),
+    _tool('nuget_cache', 'NuGet缓存', 'development', '检查全局包和已知NuGet缓存位置。',
+        '后续构建可能需要重新还原依赖。', '私有源或离线包不保证可重新取得。',
+        url='https://learn.microsoft.com/en-us/dotnet/core/tools/dotnet-nuget-locals'),
+    _tool('cargo_cache', 'Cargo项目构建产物', 'development', '检查所选Rust项目的target构建目录。',
+        '下次构建可能耗时；不会把源码和清单当缓存。', '可重新构建不等于原有二进制可恢复。',
+        parameters=(_field('project_path', '项目位置', required=True, format='path'),),
+        url='https://doc.rust-lang.org/cargo/commands/cargo-clean.html'),
+    _tool('docker_cache', 'Docker构建缓存与镜像', 'development', '在Docker Desktop中核对本机构建缓存、镜像和容器。',
+        '停止的容器仍可能有重要可写数据；远程context不按本机处理。', '重新拉取镜像不能恢复容器未导出的数据。',
+        url='https://docs.docker.com/engine/manage-resources/pruning/'),
+    _tool('docker_volumes', 'Docker数据卷', 'development', '单独核对数据卷用途和数据库备份。',
+        '未被容器引用不代表无用，不与普通缓存混选。', '数据卷需独立备份，不保证恢复。',
+        url='https://docs.docker.com/engine/manage-resources/pruning/'),
+    _tool('wsl_storage', 'WSL存储与发行版', 'migration', '区分Linux内部文件清理与宿主虚拟磁盘回收。',
+        '注销发行版会删除数据，不能作为普通压缩步骤。', '发行版数据需要单独备份。',
+        url='https://learn.microsoft.com/en-us/windows/wsl/disk-space'),
+    _tool('hf_cache', 'Hugging Face模型缓存', 'development', '检查已知Hub模型缓存，不读取权重内容。',
+        '模型版本可能共享文件，自建或离线权重不能按可重下缓存处理。', '私有或已下架模型不保证恢复。',
+        url='https://huggingface.co/docs/huggingface_hub/guides/cli'),
+    _tool('ollama_models', 'Ollama模型占用', 'applications', '检查已知模型存储，不读取模型内容。',
+        '停止运行释放内存与删除模型释放磁盘是不同动作。', '自定义模型不保证可重新拉取。',
+        url='https://docs.ollama.com/cli'),
+    _tool('search_history', 'Windows搜索历史', 'privacy', '分别处理本机搜索记录与账号云端历史。',
+        '清本机记录不表示已删除云端记录。', '历史记录清掉后不保证可恢复。'),
+    _tool('activity_history', 'Windows活动历史', 'privacy', '核对本机活动记录及后续收集开关。',
+        '关闭后续记录与清除已有记录是两种操作。', '重新打开记录不能找回已删除历史。'),
+    _tool('diagnostic_privacy', 'Windows诊断数据', 'privacy', '在系统界面核对诊断数据及隐私选项。',
+        '删除已有数据不等于停止未来收集。', '不把诊断正文另存到操作记录。'),
+    _tool('app_reset', '应用修复与重置', 'applications', '优先修复，必要时再考虑重置应用数据。',
+        '重置可能丢失本机设置和登录状态，不是普通清缓存。', '重新安装不能保证恢复原配置。'),
+    _tool('background_services', '后台服务', 'system', '打开Windows服务管理，核对状态、用途和依赖。',
+        '停止当前服务与禁用启动方式不同，可能影响依赖功能。', '重新启动服务不能恢复所有中断业务。'),
+    _tool('startup_apps', '开机启动应用', 'system', '在系统界面核对登录时自动启动的应用。',
+        '关闭启动不卸载程序，也不结束当前进程。', '可重新启用，但不会自动恢复先前会话。'),
+    _tool('memory_usage', '内存与提交压力', 'system', '查看当前物理内存、提交量和分页快照。',
+        '不把强制缩工作集包装成解决泄漏；一次快照不代表长期负载。', '正常关闭应用前需保存工作。', read='memory'),
+])
 REGISTRY = {row['id']: row for row in _ROWS}
+_TOOL_ENTRIES = {
+    'windows_temp': ('disk_cleanup', 'storage'), 'recycle_bin': ('recycle_bin',),
+    'component_store': ('disk_cleanup',), 'delivery_optimization': ('delivery_optimization',),
+    'windows_upgrade': ('disk_cleanup',), 'store_cache': ('store',), 'hibernation': ('power_options',),
+    'pagefile': ('advanced_system',), 'system_restore': ('system_protection',),
+    'clipboard_history': ('clipboard',), 'recent_history': ('folder_options', 'recent'),
+    'diagnostic_files': ('disk_cleanup',), 'known_folder_move': ('explorer',),
+    'software_uninstall': ('uninstall_programs',), 'optional_features': ('optional_features',),
+    'thumbnail_cache': ('disk_cleanup',), 'storage_sense': ('storage_sense',),
+    'file_history': ('file_history',), 'printer_queue': ('printers',),
+    'steam_cache': ('steam',), 'docker_cache': ('docker',), 'docker_volumes': ('docker',),
+    'search_history': ('search_privacy',), 'activity_history': ('activity_privacy',),
+    'diagnostic_privacy': ('diagnostic_privacy',), 'app_reset': ('apps',),
+    'background_services': ('services',), 'startup_apps': ('startup',), 'memory_usage': ('task_manager',),
+}
+for _ident, _entries in _TOOL_ENTRIES.items():
+    REGISTRY[_ident]['settings'] = [entry_definition(entry) for entry in _entries]
 for _ident in ('browser_cache', 'browser_privacy'):
-    REGISTRY[_ident]['settings'] = [
-        dict(kind='official_method', target=url, label=label + '官方清理方法')
-        for label, url in (
-            ('Chrome', 'https://support.google.com/chrome/answer/2392709?co=GENIE.Platform%3DDesktop&hl=en'),
-            ('Edge', 'https://support.microsoft.com/en-us/edge/view-and-delete-browser-history-in-microsoft-edge'),
-            ('Firefox', 'https://support.mozilla.org/en-US/kb/how-clear-firefox-cache'))]
-    REGISTRY[_ident]['sources'] = [dict(title=x['label'], url=x['target']) for x in REGISTRY[_ident]['settings']]
+    REGISTRY[_ident]['settings'] = [dict(entry_definition(browser + '_clear'), browser=browser)
+                                  for browser in ('edge', 'chrome', 'firefox')]
+REGISTRY['browser_models']['settings'] = [dict(entry_definition(browser + '_settings'), browser=browser)
+                                        for browser in ('edge', 'chrome')]
+for _row in _ROWS:
+    _row['capabilities']['open_settings'] = bool(_row['settings'])
 
 
 def _digest(value):
@@ -264,9 +344,22 @@ class CleanupToolkit:
             raise AppError('此专项工具不可用，请重新选择。', 'unknown_cleanup_tool', 404)
         result = copy.deepcopy(REGISTRY[tool_id])
         result.pop('read', None)
+        result['settings'] = [dict(resolve_entry(entry['entry_id']),
+                                   **({'browser': entry['browser']} if entry.get('browser') else {}))
+                              for entry in result['settings']]
         return result
 
-    def validate_reference(self, ref):
+    def entrypoint(self, tool_id, index=0, parameters=None):
+        reference = self.validate_reference(dict(tool_id=tool_id, parameters={} if parameters is None else parameters), allow_missing=True)
+        entries = REGISTRY[reference['tool_id']]['settings']
+        if type(index) is not int or not 0 <= index < len(entries):
+            raise AppError('这个程序入口暂不可用。', 'entrypoint_unavailable')
+        entry = entries[index]
+        launch_parameters = {'volume': reference['parameters']['volume']} if entry['entry_id'] == 'disk_cleanup' and reference['parameters'].get('volume') else {}
+        return dict(resolve_entry(entry['entry_id'], launch_parameters),
+                    **({'browser': entry['browser']} if entry.get('browser') else {}))
+
+    def validate_reference(self, ref, *, allow_missing=False):
         if not isinstance(ref, dict) or set(ref) - {'tool_id', 'parameters'} or 'tool_id' not in ref:
             raise AppError('专项工具引用格式不正确。', 'invalid_tool_reference')
         tool = self.detail(ref['tool_id'])
@@ -277,7 +370,7 @@ class CleanupToolkit:
         for field in tool['parameters']:
             name = field['name']
             if name not in params and 'default' not in field:
-                if field.get('required'):
+                if field.get('required') and not allow_missing:
                     raise AppError('请填写' + field['label'] + '。', 'missing_tool_parameter')
                 continue
             value = params.get(name, field.get('default'))
@@ -301,16 +394,34 @@ class CleanupToolkit:
         return dict(tool_id=tool['id'], parameters=normalized)
 
     def inspect(self, tool_id, parameters=None):
-        ref = self.validate_reference(dict(tool_id=tool_id, parameters={} if parameters is None else parameters))
+        ref = self.validate_reference(dict(tool_id=tool_id, parameters={} if parameters is None else parameters), allow_missing=True)
         tool = self.detail(tool_id)
-        evidence = dict(status='unknown', reason='尚无该产品或配置的专用读取器；不能据此判断未安装、为空或可安全清理。')
+        missing = [field['label'] for field in tool['parameters'] if field.get('required') and field['name'] not in ref['parameters']]
+        if missing:
+            return dict(tool_id=tool_id, read_only=True, at=now(), parameters=ref['parameters'],
+                evidence=dict(status='needs_input'), simulation_only=True,
+                presentation=dict(kind='status', status='needs_input', complete=False,
+                    summary='请先选择' + '、'.join(missing), metrics=[], items=[], warnings=[]))
+        evidence = {}
         read = REGISTRY[tool_id]['read']
         if read == 'memory':
             evidence = system_configuration()
-        elif read == 'volume':
+            presentation = memory_presentation(tool_id, evidence)
+        elif read == 'volume' or tool_id == 'recycle_bin':
             evidence = volume_snapshot(ref['parameters']['volume'] + '\\')
+            presentation = volume_presentation(tool_id, ref['parameters'], evidence)
+        else:
+            evidence, presentation = inspect_metadata(tool_id, ref['parameters'])
+        if tool_id == 'windows_temp':
+            measured, cache_presentation = inspect_metadata(tool_id, ref['parameters'])
+            evidence['temporary_files'] = measured
+            presentation['items'] = cache_presentation['items']
+            presentation['metrics'] += cache_presentation['metrics']
+            presentation['warnings'] = cache_presentation['warnings']
+            presentation['complete'] = presentation['complete'] and cache_presentation['complete']
         return dict(tool_id=tool_id, read_only=True, at=now(), evidence=evidence, parameters=ref['parameters'],
                     impact=tool['impact'], recovery=tool['recovery'], simulation_only=True,
+                    presentation=presentation,
                     note='检查不会修改系统；工具安装情况、清理量和可恢复性未核实的部分保持未知。')
 
     def _source(self, source):
@@ -395,6 +506,7 @@ class CleanupToolkit:
             'known_folder_move': ('folder',), 'cache_location': ('program',),
             'software_uninstall': ('application',), 'old_drivers': ('published_name',),
             'optional_features': ('feature_name',), 'unity_cache': ('project_path',),
+            'cargo_cache': ('project_path',), 'browser_models': ('browser',),
             'cloud_local_copy': ('provider', 'target_path'), 'virtual_disk': ('virtual_disk_path',),
         }
         for row in entries:

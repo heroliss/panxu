@@ -179,7 +179,7 @@ window.PanxuDeveloperView = (() => {
 
 function initializePanxu() {
   const $ = (id) => document.getElementById(id);
-  const names = { overview: '整理助手', files: '我的文件', background: '后台与软件', software: '后台与软件', history: '操作记录', model: '设置', duplicates: '查找重复文件', cleanup: '清理工具' };
+  const names = { overview: '首页', current: '当前任务', files: '文件清理', recovery: '已删除文件', background: '后台与软件', software: '后台与软件', history: '操作记录', model: '设置', duplicates: '查找重复文件', cleanup: '清理工具' };
   const kindNames = { file: '文件', directory: '目录汇总', startup: '启动项', service: '服务', process: '进程', software: '软件' };
   const state = { csrf: '', version: '', view: 'overview', items: [], summary: {}, settings: {}, history: [], disks: [], source: 'demo', warnings: [], selected: new Set(), focused: null, query: '', risk: 'all', origin: 'all', subtype: 'all', limit: 50, busy: false, job: null, plan: null, scanPath: '', inspector: false, assistant: null, recommendations: [], checked: false, analyzing: false, filesExpanded: false, backgroundExpanded: false, inventoryTarget: 'startup', checkDestination: 'overview', showAllCards: new Set() };
   let toastTimer;
@@ -207,7 +207,7 @@ function initializePanxu() {
     const query = filter || (state.view === 'files' ? window.PanxuFiles.filters() : {query: state.query, risk: state.risk, kind: state.subtype === 'all' ? undefined : state.subtype});
     await task(async () => {
       const data = await api('/api/tasks/analyze', {section: state.view === 'files' ? 'files' : state.view === 'software' ? 'software' : 'background', depth: analysisDepth, ...query, ...(ids.length ? {ids} : {})});
-      window.PanxuTasks.accept(data.task); setView('overview');
+      window.PanxuTasks.accept(data.task); setView('current');
     });
   }
   async function showAdvice(item) {
@@ -320,7 +320,12 @@ function initializePanxu() {
   function notify(message, error = false) { const target = $('global-message'); target.textContent = message; target.hidden = !message; target.classList.toggle('error', error); }
   function toast(message) { clearTimeout(toastTimer); $('toast').textContent = message; $('toast').hidden = false; toastTimer = setTimeout(() => { $('toast').hidden = true; }, 4500); }
   async function api(path, body, timeout = 60000) {
+    const options=typeof timeout==='object'?timeout:{};
+    timeout=typeof timeout==='number'?timeout:options.timeout ?? 60000;
     const control = new AbortController();
+    const abort=()=>control.abort();
+    options.signal?.addEventListener('abort',abort,{once:true});
+    if(options.signal?.aborted)control.abort();
     const timer = setTimeout(() => control.abort(), timeout);
     try {
       const response = await fetch(path, { method: body === undefined ? 'GET' : 'POST', headers: body === undefined ? {} : { 'Content-Type': 'application/json', 'X-CSRF-Token': state.csrf }, body: body === undefined ? undefined : JSON.stringify(body), signal: control.signal, credentials: 'same-origin' });
@@ -329,8 +334,8 @@ function initializePanxu() {
       const notice=data?.analysis_notice || data?.result?.analysis_notice;
       if(notice?.status==='retained_previous'&&notice.new_advice_accepted===false)toast(text(notice.message || '本次未取得新建议，保留上次建议。'));
       return data;
-    } catch (error) { if (error.name === 'AbortError') throw new Error('请求超时，请确认本地服务或模型接口后重试。'); throw error; }
-    finally { clearTimeout(timer); }
+    } catch (error) { if (error.name === 'AbortError'&&!options.signal?.aborted) throw new Error('请求超时，请确认本地服务或模型接口后重试。'); throw error; }
+    finally { clearTimeout(timer);options.signal?.removeEventListener('abort',abort); }
   }
   function accept(data, autoSelect = false) {
     if (Object.hasOwn(data, 'latest_task')) {
@@ -373,6 +378,7 @@ function initializePanxu() {
   function chosen() { return state.items.filter((item) => state.selected.has(item.id)); }
 
   const navigationStack=[];
+  const navigationSnapshots=new Map();let fileTaskId=null,backgroundTaskId=null;
   let cleanupReference=null,cleanupReturn=null;
   const locationSnapshot=()=>({view:state.view,query:state.query,risk:state.risk,origin:state.origin,subtype:state.subtype,limit:state.limit,scroll_y:window.scrollY || 0});
   async function openSpecialist(value) {
@@ -401,8 +407,8 @@ function initializePanxu() {
   }
   function renderCleanupTools(root) {
     const context={api,source:cleanupReference?.source || {},onReturn:returnFromCleanup,toast,setContextBack,
-      onOpenSettings:async(tool_id,entry,index)=>{
-        const result=await api('/api/cleanup-tools/open-settings',{tool_id,index,source:cleanupReference?.source || {}});
+      onOpenSettings:async(tool_id,entry,index,parameters)=>{
+        const result=await api('/api/cleanup-tools/open-settings',{tool_id,index,parameters,source:cleanupReference?.source || {}});
         toast(result.message);
         return result;
       },
@@ -420,6 +426,7 @@ function initializePanxu() {
     back.hidden=!label||!contextBack;back.textContent=label?'← '+label:'返回';back.setAttribute('aria-label',label || '返回');
   }
   function defaultBack() {
+    if(['overview','current','files','recovery','background','software','cleanup','history','model'].includes(state.view)){setContextBack('',null);return;}
     const previous=navigationStack.at(-1);
     if(previous)setContextBack('返回'+names[previous.view],()=>{
       navigationStack.pop();setView(previous.view,false,previous);
@@ -429,6 +436,7 @@ function initializePanxu() {
   }
   function setView(view,remember=true,snapshot=null) {
     if (!names[view]) return;
+    if(view!==state.view){navigationSnapshots.set(state.view,locationSnapshot());if(!snapshot)snapshot=navigationSnapshots.get(view);}
     if(view!==state.view&&remember){
       navigationStack.push({view:state.view,query:state.query,risk:state.risk,origin:state.origin,subtype:state.subtype,limit:state.limit});
       if(navigationStack.length>12)navigationStack.shift();
@@ -440,13 +448,15 @@ function initializePanxu() {
     toggleInspector(false); render();
   }
   function render() {
+    window.PanxuRecovery?.unmount?.();
+    window.PanxuFileWorkspace?.unmount?.();
     window.PanxuCleanupTools?.unmount?.();
     window.PanxuFiles?.unmount();
     window.PanxuTasks?.unmountLive?.();
     window.PanxuDuplicates?.unmount();
     defaultBack();
     const root = $('workspace'); root.replaceChildren();
-    const renderers = { overview: renderOverview, files: renderFiles, background: renderBackground, software: renderSoftware, history: renderHistory, model: renderModel, duplicates: renderDuplicates, cleanup: renderCleanupTools };
+    const renderers = { overview: renderOverview, current: renderCurrentTask, files: renderFiles, recovery:renderRecovery, background: renderBackground, software: renderSoftware, history: renderHistory, model: renderModel, duplicates: renderDuplicates, cleanup: renderCleanupTools };
     renderers[state.view](root);
     renderInspector(); renderSelection();
     $('connection-status').textContent = '本机检查 · 文件正文不会发送';
@@ -461,19 +471,30 @@ function initializePanxu() {
       append(card, title, meter); append(grid, card);
     }); return grid;
   }
-  function renderOverview(root) {
-    window.PanxuTasks.render(root, {
+  function openTaskResults(task) {
+    if(!task)return;
+    const application=task.scope_kind==='applications'||['background','software'].includes(task.analysis?.section);
+    if(application){backgroundTaskId=task.id;setView('background',false);}
+    else{fileTaskId=task.id;window.PanxuFileWorkspace.open(task.scopes?.[0]?.path || '',{suggestions:true});setView('files',false);}
+  }
+  function taskHelpers(page) {
+    return {
       api, heading, bytes, defaultPath: state.scanPath, disks: state.disks, providerPresets:state.providers, modelProfile: {provider:state.settings.provider,model:state.settings.model,protocol:state.settings.protocol},
       modelConfigured: Boolean(state.settings.base_url && state.settings.model),
-      redraw: render, isActive: () => state.view === 'overview',
-      openSettings: () => setView('model'), openFiles: () => setView('files'),
-      openAssistant: () => setView('overview'),
+      page,embeddedResult:page==='results',redraw: render, isActive: () => page==='home'?state.view==='overview':page==='task'?state.view==='current':['files','background'].includes(state.view),
+      renderHomeInfo:host=>window.PanxuRecovery.home(host,{api,bytes,open:()=>setView('recovery')}),
+      openSettings: () => setView('model'), openFiles: () => {fileTaskId=null;window.PanxuFileWorkspace.open('',{suggestions:true});setView('files');},
+      openAssistant: () => setView('current'),openHome:()=>setView('overview'),
+      onTaskCreated:()=>setView('current',false),onTaskReady:task=>{if(state.view==='current')openTaskResults(task);},openResults:openTaskResults,
       openDuplicates:()=>setView('duplicates'),setContextBack,
       showItem,openSpecialist,
       autoSelectFour:window.PanxuAppearance.get().cleanup_auto_select_four,
       refreshCatalog: async () => { accept(await api('/api/bootstrap?compact=1')); }
-    });
+    };
   }
+  function renderOverview(root) {window.PanxuTasks.render(root,taskHelpers('home'));}
+  function renderCurrentTask(root) {window.PanxuTasks.render(root,taskHelpers('task'));}
+  function renderRecovery(root) {window.PanxuRecovery.render(root,{api,bytes,heading,changed:async()=>{accept(await api('/api/bootstrap?compact=1'));},providerPresets:state.providers});}
   function renderDuplicates(root) {
     window.PanxuDuplicates.render(root,{api,heading,bytes,defaultPath:state.scanPath,disks:state.disks,setContextBack,redraw:render});
   }
@@ -530,21 +551,26 @@ function initializePanxu() {
     append(controls, disk, path, button('检查这个位置', () => { state.checkDestination = 'files'; startScan(path.value, false); }, 'button primary')); append(details, controls); append(root, details);
   }
   function renderFiles(root) {
-    append(root, heading('我的文件', '先看清理建议，再决定哪些文件可以删除。'));
+    append(root, heading('文件清理', '按位置查看，按需分析，再选择要清理的内容。'));
     const advanced=el('div','file-advanced-controls');locationPicker(advanced);analysisOptions(advanced);appendJob(root);
     const prepare=async payload=>{
       const data=await api('/api/assessments/plan',payload);
       if(!window.PanxuTasks.acceptPickedPlan(data))throw new Error('返回的删除清单与选择不一致，请刷新后重试。');
-      setView('overview');
+      openTaskResults(data.task);
       return data;
     };
-    window.PanxuFiles.render(root, {
+    const current=window.PanxuTasks.currentTask(),taskScoped=current?.id===fileTaskId;
+    if(taskScoped){append(root,el('p','field-help','本次任务：'+current.goal),button('查看所有已有建议',()=>{fileTaskId=null;render();},'plain-button'));}
+    const fileHost=el('section','file-workspace');root.append(fileHost);
+    window.PanxuFileWorkspace.render(fileHost, {
       api,revision: state.catalogRevision, disks: state.disks, bytes, ingest,advanced,
       changed:renderSelection,analyze:(item)=>analyzeList(item),show:showItem,
       analyzeItems:async(items)=>{
         const ids=[...new Set(items.filter(canAnalyze).map(item=>item.id))];if(!ids.length)return;
-        await task(async()=>{const data=await api('/api/tasks/analyze',{section:'files',depth:analysisDepth,ids});window.PanxuTasks.accept(data.task);setView('overview');});
+        await task(async()=>{const data=await api('/api/tasks/analyze',{section:'files',depth:analysisDepth,ids});window.PanxuTasks.accept(data.task);setView('current');});
       },
+      analyzePath:async path=>task(async()=>{const data=await api('/api/tasks',{preset:'directory_cleanup',path});window.PanxuTasks.accept(data.task);setView('current');}),
+      renderTaskResults:taskScoped?host=>window.PanxuTasks.renderResultWorkspace(host,taskHelpers('results')):null,
       prepare,prepareLogical:prepare,latestTask:()=>window.PanxuTasks.currentTask(),
       adviceChanged:()=>{if(state.inspector&&state.focused)renderInspector();}
     });
@@ -554,6 +580,8 @@ function initializePanxu() {
     append(row, check, append(el('div', 'simple-item-copy'), itemTitle(item, el('strong', '', item.name)), el('small', '', item.owner || item.category || '')), el('span', 'simple-item-size', `约 ${bytes(item.size_bytes || itemSize(item))}`), button('查看详情', () => showItem(item), 'plain-button')); return row;
   }
   function renderBackground(root) {
+    const current=window.PanxuTasks.currentTask();
+    if(current?.id===backgroundTaskId){append(root,heading('后台与软件',current.goal),button('查看全部后台与软件',()=>{backgroundTaskId=null;render();},'plain-button'));window.PanxuTasks.renderResultWorkspace(root,taskHelpers('results'));return;}
     append(root, heading('后台与软件', '了解开机启动、后台应用和已经安装的软件。'));
     appendJob(root);
     if (!state.backgroundExpanded) {
@@ -657,8 +685,8 @@ function initializePanxu() {
     const description={...item,...rec,assessment:modelAdvice?undefined:item.assessment,purpose:rec.purpose || itemPurpose(item),impact:rec.impact || item.impact};
     append(host,window.PanxuAdvicePresentation.render(description,{direct:Boolean(modelAdvice)}));
     const sourceTaskId=assessment?.source_ref?.task_id || assessment?.inherited_from?.task_id;
-    if(sourceTaskId)append(host,button('查看来源任务',()=>task(async()=>{const data=await api('/api/tasks/'+encodeURIComponent(sourceTaskId));window.PanxuTasks.accept(data.task);setView('overview');}),'button primary'));
-    else if (modelAdvice) append(host,button(window.PanxuTasks.currentTask()?.plan?.items.some(entry=>entry.id===item.id)?'查看操作方案':'返回整理任务',()=>setView('overview'),'button primary'));
+    if(sourceTaskId)append(host,button('查看来源任务',()=>task(async()=>{const data=await api('/api/tasks/'+encodeURIComponent(sourceTaskId));window.PanxuTasks.accept(data.task);setView('current');}),'button primary'));
+    else if (modelAdvice) append(host,button(window.PanxuTasks.currentTask()?.plan?.items.some(entry=>entry.id===item.id)?'查看操作方案':'返回整理任务',()=>setView('current'),'button primary'));
     else if (canAnalyze(item)) append(host, button('分析这项', () => analyzeList(item), 'button primary'));
     append(host, button('以后保留这项', () => protectItem(item), 'plain-button'));
     const detail = el('details', 'inspector-advanced'); append(detail, el('summary', '', '更多详情'));
@@ -792,13 +820,13 @@ function initializePanxu() {
     if (!state.history.length) { append(root,emptyHistory); return; }
     const list = el('div', 'history-list'); state.history.forEach((batch) => {
       const card = el('article', 'history-card'); const top = el('div', 'history-top'); const date = new Date(batch.created_at); const when = Number.isNaN(date.getTime()) ? text(batch.created_at) : date.toLocaleString('zh-CN', { hour12: false });
-      append(top, el('h3', '', `已记录 ${batch.item_count ?? batch.items?.length ?? 0} 项操作`), badge(batch.status === 'undone' ? '已撤销' : '已记录')); append(card, top, el('p', '', when));
+      append(top, el('h3', '', `已记录 ${batch.item_count ?? batch.items?.length ?? 0} 项操作`), badge(batch.status === 'undone' ? '已撤销' : batch.status==='partially_undone'?'部分记录已更新':'已记录')); append(card, top, el('p', '', when));
       const detail = el('details', 'history-details'); append(detail, el('summary', '', '查看具体操作')); const entries = el('ul'); (batch.items || []).forEach((item) => append(entries, append(el('li'), itemTitle(item, el('span', '', `${window.PanxuActionCopy.label(item.action,item.kind)} · ${item.name || item.id}`))))); append(detail, entries); append(card, detail);
-      const footer = el('div', 'history-footer'); append(footer, el('span', '', '撤销后可重新选择相关项目。')); const restore = button('撤销', () => undoBatch(batch.id), 'button small'); restore.disabled = batch.status === 'undone'; append(footer, restore); append(card, footer); append(list, card);
+      const footer = el('div', 'history-footer'); append(footer, el('span', '', batch.recovery_counts?.purged?'永久删除的项目无法还原，其余可恢复项仍可撤销。':'撤销后可重新选择相关项目。')); const restore = button('撤销', () => undoBatch(batch.id), 'button small'); restore.disabled = batch.status === 'undone'; append(footer, restore); if((batch.items || []).some(item=>item.action==='delete'&&['file','directory'].includes(item.kind)))footer.append(button('查看已删除文件',()=>setView('recovery'),'plain-button'));append(card, footer); append(list, card);
     }); append(root, list);
   }
   async function undoBatch(id) {
-    await task(async () => { const batch = state.history.find((entry) => entry.id === id); accept(await api('/api/undo', { batch_id: id })); accept(await api('/api/bootstrap?compact=1')); state.selected = new Set((batch?.items || []).map((item) => item.id).filter((key) => canSelect(state.items.find((item) => item.id === key)))); state.checked = state.items.length > 0; render(); toast('已撤销，相关项目可重新选择。'); });
+    await task(async () => { const batch = state.history.find((entry) => entry.id === id); accept(await api('/api/undo', { batch_id: id })); accept(await api('/api/bootstrap?compact=1')); state.selected = new Set((batch?.items || []).map((item) => item.id).filter((key) => canSelect(state.items.find((item) => item.id === key)))); state.checked = state.items.length > 0; render(); toast(state.history.find(entry=>entry.id===id)?.status==='partially_undone'?'已撤销可恢复项；其余项目保留原状态，请查看已删除文件。':'已撤销，相关项目可重新选择。'); });
   }
   function settingsPayload(overrides = {}) { return { provider: state.settings.provider || 'custom', protocol: state.settings.protocol || 'chat_completions', reasoning_effort: state.settings.reasoning_effort || 'default', base_url: state.settings.base_url || '', model: state.settings.model || '', stream: state.settings.stream !== false, send_paths: state.settings.send_paths === true, protect_patterns: Array.isArray(state.settings.protect_patterns) ? state.settings.protect_patterns : [], ...overrides }; }
   function renderModel(root) {
