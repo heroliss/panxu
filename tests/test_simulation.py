@@ -33,6 +33,22 @@ class SimulationTests(unittest.TestCase):
             result = self.state.undo(result['batch']['id'])
         self.assertEqual(result['summary']['simulated_items'], 0)
 
+    def test_publish_preserves_independent_public_view_and_can_omit_unused_copy(self):
+        folder = self.root / 'owned-publish'
+        folder.mkdir()
+        path = folder / 'cache.tmp'
+        path.write_bytes(b'owned publication fixture')
+        items = scan_directory(str(folder))['items']
+        result = self.state.publish(items, 'owned-public')
+        result['items'][0]['name'] = 'caller mutation'
+        self.assertNotEqual(self.state.snapshot()['items'][0]['name'], 'caller mutation')
+        revision = self.state.revision
+        with patch.object(self.state, 'view', side_effect=AssertionError('unused full view')):
+            self.assertIsNone(self.state.publish(items, 'owned-internal', include_view=False))
+        self.assertEqual(self.state.revision, revision + 1)
+        self.assertEqual({item['id'] for item in self.state.snapshot()['items']}, {item['id'] for item in items})
+        self.assertEqual(path.read_bytes(), b'owned publication fixture')
+
     def test_protection_and_bad_action_block(self):
         for key in ('demo-personal', 'demo-system', 'demo-privacy', 'demo-project'):
             with self.assertRaises(AppError):

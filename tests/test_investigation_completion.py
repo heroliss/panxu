@@ -227,11 +227,17 @@ class InvestigationCompletionTests(unittest.TestCase):
         self.assertNotIn('检查模型连接', result['summary'])
 
     def test_plain_first_reply_is_saved_without_reading_an_unassigned_execution_result(self):
-        self.queue = [response(text='请说明希望保留哪些后台功能。')]
+        self.queue = [response(text='请说明希望保留哪些后台功能。'),
+            call('ask_user', {'question': '请说明希望保留哪些后台功能。', 'options': [
+                {'id': 'sync', 'label': '保留同步功能'},
+                {'id': 'analyze', 'label': '先看分析建议'}]}, 'question')]
         result = self.run_turn()
         self.assertEqual(result['status'], 'needs_input')
         self.assertEqual(result['summary'], '请说明希望保留哪些后台功能。')
         self.assertEqual(result['last_public_reply']['text'], result['summary'])
+        self.assertEqual(len(result['question']['options']), 2)
+        self.assertEqual(result['usage']['model_requests'], 2)
+        self.assertEqual(self.inventory_mock.call_count, 0)
         self.assertIsNone(result['last_result'])
         self.assertIsNone(result['investigation_notice'])
 
@@ -296,10 +302,17 @@ class InvestigationCompletionTests(unittest.TestCase):
         self.queue += [call('record_advice', self.ratings(), 'rating'),
                       response(text='已保存6项建议，还有2项未逐项确认，需要继续。')]
         result = self.run_turn()
-        self.assertEqual(result['status'], 'needs_input')
+        self.assertEqual(result['status'], 'budget_exhausted')
         self.assertEqual(result['advice_total'], 6)
         self.assertEqual(self.harness._coverage(self.harness._get(self.task['id']))['remaining_count'], 2)
+        self.assertIsNone(result['question'])
+        self.assertEqual(result['usage']['model_requests'], 6)
+        self.assertEqual(len(self.requests), 6)
+        self.assertEqual(result['investigation_notice']['code'], 'round_budget')
+        self.assertEqual(result['handoff']['reason'], 'budget_exhausted')
+        self.assertEqual(result['last_public_reply']['text'], '已保存6项建议，还有2项未逐项确认，需要继续。')
         self.assertIsNone(result['last_result'])
+        self.assertFalse(self.state.history())
 
     def test_cancel_during_failed_output_does_not_start_a_finalization_request(self):
         cancel = threading.Event()

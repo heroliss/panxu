@@ -184,9 +184,13 @@ class DirectoryBrowser:
 
     def _publish(self, session, rows, offset):
         with self.state.lock:
-            existing = {row['id']: row for row in self.state._rows()}
+            incoming_rows = [session.root_item, *rows]
+            ids = list(dict.fromkeys(row['id'] for row in incoming_rows))
+            placeholders = ','.join('?' for _ in ids)
+            existing = {row['id']: json.loads(row['payload']) for row in self.state.db.execute(
+                f'SELECT id,payload FROM catalog WHERE id IN ({placeholders})', ids)}
             changed = []
-            for incoming in [session.root_item, *rows]:
+            for incoming in incoming_rows:
                 old = existing.get(incoming['id'])
                 same = self._same_metadata(old, incoming)
                 promoted = incoming['risk'] == 'protected' and old and old.get('risk') != 'protected'
@@ -194,7 +198,7 @@ class DirectoryBrowser:
                     continue  # Browsing must not erase a richer scan snapshot.
                 changed.append(incoming)
             if changed:
-                self.state.publish(changed, f'browser:{session.ident}:{offset}:{session.seen}')
+                self.state.publish(changed, f'browser:{session.ident}:{offset}:{session.seen}', include_view=False)
 
     def _new(self, absolute, info):
         try:

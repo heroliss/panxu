@@ -131,7 +131,7 @@ class TaskInteractionTests(unittest.TestCase):
             context = parse_host_data(payload['messages'][1]['content'])
             self.assertEqual(context['user_feedback'][-1]['answer']['option_id'], 'offline')
             self.assertFalse(context['user_feedback'][-1]['answer']['execution_authorized'])
-            return model_call('present_findings', dict(summary='先保留离线版本。', needs_input=True))
+            return model_call('present_findings', dict(summary='先保留离线版本。', needs_input=False))
 
         self.queue = [next_turn]
         self.harness.claim(self.task['id'])
@@ -228,7 +228,7 @@ class TaskInteractionTests(unittest.TestCase):
     def test_skill_guidance_has_versions_in_context_and_distinct_persisted_source(self):
         self.assistant.save_settings({'base_url': 'http://127.0.0.1:12345/v1', 'model': 'fixture'})
         self.queue = [model_call('read_skill', dict(skill_id='application-caches')),
-                      model_call('present_findings', dict(summary='需要继续核对本机位置。', needs_input=True))]
+                      model_call('present_findings', dict(summary='已取得经验指南，未修改本机设置。', needs_input=False))]
         self.harness.claim(self.task['id'])
         value = self.harness.investigate(self.task['id'])
         loaded = value['loaded_skills'][0]

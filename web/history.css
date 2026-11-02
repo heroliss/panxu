@@ -1,0 +1,32 @@
+/* Receipts keep the object and result visible; pagination bounds long histories. */
+.ordinary-history,.specialist-history,.attempt-history{margin:26px 0 0}
+.history-section-title{font-size:var(--type-section);font-weight:650;line-height:1.5;margin:0 0 14px}
+.history-section-heading{margin-bottom:14px}
+.history-section-heading .history-section-title{margin-bottom:3px}
+.history-page{display:grid;gap:18px}
+.history-card{max-width:none;padding:22px}
+.history-top{align-items:start}
+.history-top .source-badge{flex-shrink:0}
+.history-card .history-date{font-size:var(--type-meta);font-variant-numeric:tabular-nums;margin:5px 0 18px}
+.history-entry{display:flex;align-items:start;gap:24px;padding:14px 0;border-top:1px solid var(--line)}
+.history-entry-copy{flex:1;min-width:0}
+.history-entry-title{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
+.history-action{color:var(--blue);font-size:var(--type-label);font-weight:650;flex-shrink:0}
+.history-entry-name{font-size:var(--type-body);font-weight:600;overflow-wrap:anywhere}
+.history-entry-title .item-title-line{min-width:0}
+.history-card .history-entry-path{font-size:var(--type-meta);line-height:1.7;color:var(--muted);margin:5px 0 0;overflow-wrap:anywhere}
+.history-card .history-entry-message{font-size:var(--type-meta);line-height:1.7;margin:6px 0 0;overflow-wrap:anywhere}
+.history-entry-time{font-size:var(--type-meta);font-variant-numeric:tabular-nums;color:var(--muted);margin:5px 0 0}
+.history-entry-actions{display:flex;align-items:center;justify-content:flex-end;gap:12px;flex-wrap:wrap;max-width:340px}
+.history-entry-actions>.button{flex-shrink:0}
+.history-card .history-group-summary{font-size:var(--type-meta);color:var(--muted);margin:-8px 0 14px;line-height:1.7}
+.history-entry-state{max-width:230px;font-size:var(--type-meta);line-height:1.7;color:var(--muted);background:var(--surface-soft);border-radius:6px;padding:3px 9px;overflow-wrap:anywhere;flex-shrink:0}
+.history-entry-state[data-tone="attention"]{color:var(--red);background:var(--danger-bg)}
+.history-entry-state[data-tone="review"]{color:var(--ink)}
+.history-card .history-note{font-size:var(--type-meta);line-height:1.7;margin:12px 0;color:var(--muted)}
+.history-footer{flex-wrap:wrap;gap:12px}
+.history-footer-actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:14px}
+.history-footer .history-footer-actions{margin:0}
+.history-pagination{display:flex;align-items:center;justify-content:flex-end;gap:12px;flex-wrap:wrap;margin-top:14px}
+.history-page-count{font-size:var(--type-meta);color:var(--muted);font-variant-numeric:tabular-nums}
+@media(max-width:900px){.history-card{padding:18px}.history-entry{gap:12px;flex-direction:column}.history-entry-state{max-width:none}.history-entry-actions{max-width:none;justify-content:flex-start}.history-entry-title{gap:8px 12px}}

@@ -22,6 +22,9 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 VERIFY = ROOT / "verification"
+MODEL_SOURCE_FILES = ('diskpilot/tasks.py', 'diskpilot/simulation.py', 'diskpilot/llm.py',
+                      'diskpilot/duplicates.py', 'diskpilot/activity.py', 'diskpilot/cleanup_tools.py',
+                      'diskpilot/server.py')
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
@@ -211,7 +214,26 @@ def release_files(release: Path) -> list[Path]:
     return sorted(result)
 
 
-def finalize(*, tests_run: int, health_url: str) -> dict:
+def source_model_evidence(path: Path | None) -> dict | None:
+    if path is None:
+        return None
+    path = path.resolve()
+    require(path.is_relative_to(VERIFY.resolve()) and path.is_file() and not linked(path),
+            'Source model report must be an owned verification file')
+    data = json.loads(path.read_text(encoding='utf-8-sig'))
+    require(data.get('passed') is True and data.get('real_provider_used') is True
+            and data.get('real_fixture_unchanged') is True and data.get('actual_reclaimed_bytes') == 0
+            and data.get('scope') == 'source_harness' and data.get('final_exe_attribution') is False,
+            'Source model report did not establish scoped real-model acceptance')
+    files = data.get('source_sha256', {})
+    for name in MODEL_SOURCE_FILES:
+        require(files.get(name) == sha(ROOT / name), 'Source model evidence is stale: ' + name)
+    return dict(file=path.relative_to(VERIFY.resolve()).as_posix(), sha256=sha(path), reported_passed=True,
+                scope='source_harness', source_attribution_verified=True, final_exe_attribution=False,
+                provider=data.get('provider'), model=data.get('model'), protocol=data.get('protocol'))
+
+
+def finalize(*, tests_run: int, health_url: str, source_model_report: Path | None = None) -> dict:
     require(tests_run > 0, "--tests-run must be the count from the completed current test run")
     app_version = version()
     release = inside_project(ROOT / "dist" / "PanXu")
@@ -231,7 +253,7 @@ def finalize(*, tests_run: int, health_url: str) -> dict:
     require(exe.is_file() and sha(exe) == package.get("package", {}).get("exe_sha256"), "Executable differs from static report")
     require((release / "README.txt").is_file() and sha(release / "README.txt") == sha(ROOT / "README.txt"),
             "Release README differs from current source")
-    for name in ("index.html", "style.css", "app.js", "tasks.js", "files.js", "icons.js", "icons.css", "hierarchy.css", "stream-view.js", "stream-channel.js", "duplicates.js", "cleanup-tools.js", "cleanup-tools.css", "specialist-links.js", "file-workspace.js", "file-workspace.css", "recovery.js", "recovery.css", "user-tools.js", "user-tools.css", "orchestration-ui.js", "orchestration-ui.css"):
+    for name in ("index.html", "style.css", "app.js", "tasks.js", "files.js", "icons.js", "icons.css", "hierarchy.css", "stream-view.js", "stream-channel.js", "duplicates.js", "cleanup-tools.js", "cleanup-tools.css", "specialist-links.js", "file-workspace.js", "file-workspace.css", "recovery.js", "recovery.css", "user-tools.js", "user-tools.css", "orchestration-ui.js", "orchestration-ui.css", "history-presentation.js", "history.css"):
         require(sha(ROOT / "web" / name) == sha(release / "_internal" / "web" / name), "Packaged web asset differs from source")
     required_modules = ('diskpilot.file_browser', 'diskpilot.tool_inspection', 'diskpilot.tool_launch', 'diskpilot.recovery', 'diskpilot.context_memory', 'diskpilot.activity', 'diskpilot.dispositions', 'diskpilot.user_tools', 'diskpilot.task_jobs', 'diskpilot.orchestration', 'diskpilot.diagnostics', 'diskpilot.agent_budget')
     require(all(package.get('required_modules', {}).get(name) is True for name in required_modules),
@@ -261,6 +283,7 @@ def finalize(*, tests_run: int, health_url: str) -> dict:
     require(native.get('passed') is True and native.get('version') == app_version
             and native.get('exe_sha256') == sha(exe) and native.get('real_fixture_unchanged') is True,
             'Native agent acceptance does not identify this executable or did not pass')
+    model_evidence = source_model_evidence(source_model_report)
     screenshots = screenshot_evidence()
     manifest = source_snapshot(app_version)
     # Exclusive creation preserves all existing archives. No existing evidence,
@@ -288,6 +311,7 @@ def finalize(*, tests_run: int, health_url: str) -> dict:
                              "fixture_unchanged": True, "observed_system_items_unchanged": True,
                              "package_version_attribution_verified": False},
         "real_provider_tested": False, "mock_provider_tool_loop_passed": True,
+        "source_real_model_acceptance": model_evidence,
         "agent_ui_acceptance": {"file": agent_path.name, "sha256": sha(agent_path), "reported_passed": True},
         "native_agent_acceptance": {"file": native_path.name, "sha256": sha(native_path), "reported_passed": True,
                                     "executable_attribution_verified": True},
@@ -295,7 +319,7 @@ def finalize(*, tests_run: int, health_url: str) -> dict:
         "release": {"exe_sha256": sha(exe), "zip_name": archive.name, "zip_bytes": archive.stat().st_size,
                     "zip_sha256": sha(archive), "zip_entries": archive_count},
         "limitations": ["No real executor exists in this build.",
-                        "Real provider authentication and compatibility have not been tested.",
+                        "Cloud-provider operation of the final executable was not tested; source harness evidence is attributed separately when supplied.",
                         "Screenshot presence does not establish that each native UI flow passed.",
                         "Test count is supplied by the caller; the finalizer does not run or fabricate test results.",
                         "Local report integrity is checked without claiming packaged-version attribution.",
@@ -318,16 +342,17 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tests-run", type=int, help="Count from the completed current test run")
     parser.add_argument("--health-url", help="Current packaged process /api/health loopback URL")
+    parser.add_argument("--source-model-report", type=Path, help="Optional separately attributed real-model source harness report")
     parser.add_argument("--archive-previous", action="store_true", help="Preview preservation of previous package/evidence")
     parser.add_argument("--apply", action="store_true", help="Apply archive preview after source freeze; never deletes/overwrites")
     args = parser.parse_args()
     if args.archive_previous:
-        require(args.tests_run is None and args.health_url is None, "Archiving and finalization are separate steps")
+        require(args.tests_run is None and args.health_url is None and args.source_model_report is None, "Archiving and finalization are separate steps")
         print(json.dumps(archive_previous(apply=args.apply), ensure_ascii=False, indent=2))
         return
     require(not args.apply, "--apply is only valid with --archive-previous")
     require(args.tests_run is not None and args.health_url is not None, "--tests-run and --health-url are required")
-    report = finalize(tests_run=args.tests_run, health_url=args.health_url)
+    report = finalize(tests_run=args.tests_run, health_url=args.health_url, source_model_report=args.source_model_report)
     print(json.dumps({"passed": report["passed"], "version": report["version"],
                       "tests_run": args.tests_run, **report["release"]}, ensure_ascii=False))
 

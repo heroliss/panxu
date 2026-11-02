@@ -684,6 +684,8 @@ class CleanupToolkit:
                             (json.dumps(receipt, ensure_ascii=False), operation_id))
             result = self.runtime.result(plan_id, plan['version'])
             result.update(plan_id=plan_id, source=plan['source'], simulation_only=True)
+            if plan['status'] != 'undone':
+                plan['undone_at'] = now()
             plan.update(status='undone', result=result)
             self._save(plan)
             return copy.deepcopy(plan)

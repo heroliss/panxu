@@ -50,7 +50,8 @@ class ContinuityTests(unittest.TestCase):
 
     def test_usage_is_cumulative_partial_and_survives_reconstruction(self):
         self.queue = [call('list_items', {}, usage={'prompt_tokens': 11, 'completion_tokens': 7}),
-                      call('present_findings', {'summary': '保留并继续核对。', 'needs_input': True})]
+                      call('ask_user', {'question': '是否需要保留离线副本？', 'options': [
+                          {'id': 'keep', 'label': '保留'}, {'id': 'later', 'label': '稍后决定'}]})]
         result = self.run_turn()
         self.assertEqual(result['usage']['model_requests'], 2)
         self.assertEqual(result['usage']['reported_usage_calls'], 1)
@@ -60,7 +61,8 @@ class ContinuityTests(unittest.TestCase):
         recovered = TaskHarness(self.state, self.assistant).public(self.task['id'])
         self.assertEqual(recovered['usage'], result['usage'])
         self.assertEqual(recovered['handoff']['reason'], 'needs_input')
-        self.queue = [call('present_findings', {'summary': '等待你的选择。', 'needs_input': True})]
+        self.harness.answer(self.task['id'], {'version': recovered['question']['version'], 'skip': True})
+        self.queue = [call('present_findings', {'summary': '建议已保存，具体项目由你勾选。', 'needs_input': False})]
         self.assertEqual(self.run_turn()['usage']['model_requests'], 3)
 
     def test_model_switch_within_turn_rebuilds_from_facts_without_opaque_state(self):
@@ -74,7 +76,7 @@ class ContinuityTests(unittest.TestCase):
             context = parse_host_data(payload['messages'][1]['content'])
             self.assertTrue(context['connection_changed'])
             self.assertGreater(context['facts']['total'], 0)
-            return call('present_findings', {'summary': '已使用历史事实继续。', 'needs_input': True})
+            return call('present_findings', {'summary': '已使用历史事实继续。', 'needs_input': False})
         self.queue = [first, second]
         result = self.run_turn()
         self.assertTrue(result['connection_changed'])
@@ -85,7 +87,7 @@ class ContinuityTests(unittest.TestCase):
         self.assertNotIn('_continuation', stored)
 
     def test_facts_have_sources_and_cannot_be_borrowed_from_another_task(self):
-        self.queue = [call('list_items', {}), call('present_findings', {'summary': '这些资料由你决定。', 'needs_input': True})]
+        self.queue = [call('list_items', {}), call('present_findings', {'summary': '这些资料由你决定。', 'needs_input': False})]
         self.run_turn()
         fact = self.harness.facts_page(self.task['id'])['items'][0]
         self.assertEqual(fact['tool'], 'list_items')

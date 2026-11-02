@@ -180,7 +180,8 @@ class TaskTests(unittest.TestCase):
         def recover(payload):
             self.assertIn('error', parse_host_data(payload['messages'][-1]['content']))
             return call('survey_scope', {'scope_id': 'root'}, 'scan')
-        self.steps += [recover, call('present_findings', {'summary': '需要你确认是否保留安装包。', 'needs_input': True}, 'question')]
+        self.steps += [recover, call('ask_user', {'question': '是否需要保留离线安装包？', 'options': [
+            {'id': 'keep', 'label': '保留离线安装包'}, {'id': 'unused', 'label': '已经不需要'}]}, 'question')]
         result = self.run_turn()
         self.assertEqual(result['status'], 'needs_input')
         self.assertEqual(len(self.requests), 3)
@@ -251,7 +252,7 @@ class TaskTests(unittest.TestCase):
         self.assistant.save_settings({'api_key': key})
         self.harness.feedback(self.task_id, f'这项请保留，路径 {self.scope}，Bearer {key}')
         self.steps = [call('survey_scope', {'scope_id': 'root'}),
-                      call('present_findings', {'summary': '已查看，尚需确认。', 'needs_input': True}, 'end')]
+                      call('present_findings', {'summary': '已查看，具体项目由你勾选。', 'needs_input': False}, 'end')]
         self.run_turn()
         sent = json.dumps(self.requests, ensure_ascii=False)
         self.assertNotIn(str(self.scope), sent)

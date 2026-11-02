@@ -55,7 +55,12 @@ class FileCatalog:
         if not isinstance(ids, list) or len(ids) > 100 or any(not isinstance(i, str) for i in ids):
             raise AppError('每次只能查看当前层1至100个观察。')
         with self.state.lock:
-            global_rows = {row['id']: row for row in self._selection_rows()}
+            # Assessment and tree indexing retain their full evidence context,
+            # but a 50-row browser page need not copy/decorate the other 5,000
+            # observations merely to discard them immediately afterward.
+            self._index()
+            global_rows = {ident: self._nodes[ident] for ident in ids if ident in self._nodes
+                           and self._nodes[ident]['kind'] in FILE_KINDS and not self._nodes[ident].get('navigation_only')}
             scoped = {row['id']: row for row in self._selection_rows(task)} if task else global_rows
             result = []
             for ident in ids:
@@ -66,6 +71,8 @@ class FileCatalog:
                 if row is None:
                     continue
                 row = copy.deepcopy(row)
+                if task is None or outside:
+                    self._decorate_selection(row, None, {})
                 row['in_task_scope'] = not outside
                 if outside:
                     row.update(can_prepare=False, can_logical_select=False, can_auto_select=False,
@@ -243,24 +250,28 @@ class FileCatalog:
         result = copy.deepcopy(rows)
         resolved = self.assessments.resolve(self.state.snapshot(self.patterns())['items'], task=task) if task and self.assessments else {}
         for row in result:
-            if row['id'] in resolved:
-                row['assessment'] = self._browser_assessment(row, copy.deepcopy(resolved[row['id']]))
-                row['assessment'].update(analysis_state=row['assessment']['state'], cleanup_rating=row['assessment']['rating'])
-                row['can_prepare'] = bool(row['can_select'] and row['action'] and not row['assessment'].get('blocked_reasons')
-                                          and not row['assessment'].get('stale'))
-            row['can_logical_select'] = not self._manual_blockers(row)
-            row['user_kept'] = self._task_holds(task, row)
-            assessment = row['assessment']
-            source = assessment.get('inherited_from') or assessment.get('source_ref') or {}
-            current_source = task is not None and source.get('task_id') == task['id']
-            assessment['from_current_task'] = current_source
-            row['can_auto_select'] = bool(row['can_logical_select'] and row['can_prepare'] and not row['user_kept']
-                and current_source and assessment.get('state') in ('explicit', 'inherited') and assessment.get('rating') in (4, 5)
-                and not assessment.get('stale'))
+            self._decorate_selection(row, task, resolved)
         self._selection_cache[cache_key] = result
         if len(self._selection_cache) > 2:
             self._selection_cache.pop(next(iter(self._selection_cache)))
         return result
+
+    def _decorate_selection(self, row, task, resolved):
+        """Apply identical selection semantics to a full list or one copied row."""
+        if row['id'] in resolved:
+            row['assessment'] = self._browser_assessment(row, copy.deepcopy(resolved[row['id']]))
+            row['assessment'].update(analysis_state=row['assessment']['state'], cleanup_rating=row['assessment']['rating'])
+            row['can_prepare'] = bool(row['can_select'] and row['action'] and not row['assessment'].get('blocked_reasons')
+                                      and not row['assessment'].get('stale'))
+        row['can_logical_select'] = not self._manual_blockers(row)
+        row['user_kept'] = self._task_holds(task, row)
+        assessment = row['assessment']
+        source = assessment.get('inherited_from') or assessment.get('source_ref') or {}
+        current_source = task is not None and source.get('task_id') == task['id']
+        assessment['from_current_task'] = current_source
+        row['can_auto_select'] = bool(row['can_logical_select'] and row['can_prepare'] and not row['user_kept']
+            and current_source and assessment.get('state') in ('explicit', 'inherited') and assessment.get('rating') in (4, 5)
+            and not assessment.get('stale'))
 
     @staticmethod
     def _category(row):

@@ -71,7 +71,7 @@ class Application:
         self.cleanup_tools = self.harness.cleanup_tools
         for plan in self.cleanup_tools.history():
             if plan.get('result'):
-                self.harness.record_specialist_result(plan)
+                self.harness.record_specialist_result(plan, reconcile=True)
         self.catalog = self.harness.catalog
         self.user_tools = self.harness.user_tools
         self.diagnostics = self.harness.diagnostics
@@ -485,7 +485,7 @@ class Application:
         if path == '/api/health':
             return {'status': 'ok', 'mode': 'simulation', 'version': __version__, 'live_executor_available': False}
         if path == '/api/history':
-            return {'history': self.state.history()}
+            return {'history': self.harness.runtime.history(), **self.harness.runtime.incomplete_history()}
         if path == '/api/recommendations':
             return self.recommendations()
         if path == '/api/tasks':
@@ -922,7 +922,8 @@ def create_server(data_dir, port=0, *, developer_fixtures=False):
                 if parsed.path not in names:
                     names.update({f'/{name}': (name, 'text/javascript; charset=utf-8' if name.endswith('.js') else 'text/css; charset=utf-8')
                                   for name in ('file-workspace.js', 'file-workspace.css', 'recovery.js', 'recovery.css',
-                                               'user-tools.js', 'user-tools.css', 'orchestration-ui.js', 'orchestration-ui.css')})
+                                               'user-tools.js', 'user-tools.css', 'orchestration-ui.js', 'orchestration-ui.css',
+                                               'history-presentation.js', 'history.css')})
                 if parsed.path not in names:
                     raise AppError('页面不存在。', 'not_found', 404)
                 name, mime = names[parsed.path]

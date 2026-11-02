@@ -46,6 +46,14 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(value['mode'], 'simulation')
         self.assertFalse(value['live_executor_available'])
 
+    def test_history_includes_incomplete_attempts_without_changing_batch_contract(self):
+        expected = dict(attempts=[dict(id='test-attempt', status='failed')], attempts_has_more=False)
+        with patch.object(self.server.app.harness.runtime, 'incomplete_history', return_value=expected):
+            value = self.get('/api/history')
+        self.assertIsInstance(value['history'], list)
+        self.assertEqual(value['attempts'], expected['attempts'])
+        self.assertFalse(value['attempts_has_more'])
+
     def test_specialist_assets_are_served_with_the_application(self):
         for asset, mime in [('/cleanup-tools.js', 'text/javascript'), ('/specialist-links.js', 'text/javascript'),
                             ('/cleanup-tools.css', 'text/css')]:

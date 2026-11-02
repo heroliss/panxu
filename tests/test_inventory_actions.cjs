@@ -57,19 +57,21 @@ test('full filter selection over500 items is atomic and leaves previous picks in
   assert.deepEqual([...selected],['existing']);assert.equal(messages.length,1);assert.ok(messages[0].includes('原有选择保留'));
 });
 test('large inventory replaces fixed50-row pages instead of accumulating DOM and keeps off-page selections',async()=>{
-  const host=new Element('section'),rows=Array.from({length:1200},(_,i)=>entry('app-'+i)),selected=new Set(['app-0']);
+  const host=new Element('section'),rows=Array.from({length:1200},(_,i)=>entry('app-'+i)),selected=new Set(['app-0']),reveals=[];
   const create=(tag,cls='',value)=>{const node=new Element(tag);node.className=cls;if(value!=null)node.textContent=value;return node;};
   const environment={state:{view:'background',inventoryOffset:0,limit:50000},$:()=>host,visibleItems:()=>rows,sectionItems:()=>rows,canAnalyze:()=>true,
     analysisIds:()=>selected,analysisSelected:item=>selected.has(item.id),selectionBox:()=>create('input'),append:(parent,...children)=>{parent.append(...children);return parent;},el:create,
     button:(label,callback,cls)=>{const node=create('button',cls,label);node.addEventListener('click',callback);return node;},
     itemTitle:(_,node)=>node,kindNames:{startup:'启动项'},bytes:value=>value,itemSize:()=>0,api(){},showAdvice(){},showItem(){},analyzeList(){},
-    window:{PanxuTasks:{adviceFor(){},lookupAdvice:async()=>{}},PanxuAssessment:{render:()=>create('span')},PanxuAdvicePresentation:{render:()=>create('p')}}};
+    window:{PanxuTasks:{adviceFor(){},lookupAdvice:async()=>{}},PanxuAssessment:{render:()=>create('span')},PanxuAdvicePresentation:{render:()=>create('p')},PanxuListNavigation:{capture:root=>({root}),reveal:(target,intent,label)=>reveals.push({target,intent,label})}}};
   runInNewContext(extract('  function renderInventoryAdvice(','  function renderSelection()')+'this.run=renderResults;',environment);
   environment.run();await new Promise(setImmediate);
-  assert.equal(host.all().filter(node=>node.className==='item-row').length,50);
+  assert.equal(host.all().filter(node=>node.className==='item-row').length,50);assert.equal(reveals.length,0);
   const next=host.all().find(node=>node.tag==='button'&&node.textContent==='下一页');next.handlers.click();await new Promise(setImmediate);
   assert.equal(environment.state.inventoryOffset,50);assert.equal(host.all().filter(node=>node.className==='item-row').length,50);assert.deepEqual([...selected],['app-0']);
   assert.ok(host.textContent.includes('51–100 / 1200 项'));
+  assert.equal(reveals.length,1);assert.equal(reveals[0].target.className,'table-scroll');assert.ok(reveals[0].target.textContent.includes('app-50'));assert.equal(reveals[0].intent.root,host);
+  environment.run();await new Promise(setImmediate);assert.equal(reveals.length,1,'an ordinary inventory repaint does not navigate the viewport');
 });
 test('desktop shell bounds the scroll region and gives list and Inspector independent scroll containers',()=>{
   const css=readFileSync(join(__dirname,'..','web','style.css'),'utf8');

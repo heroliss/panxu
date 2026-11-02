@@ -122,7 +122,11 @@ def policy_hash(patterns):
 
 def logical_estimate(items):
     """Count observed shared entities once, without claiming allocation savings."""
-    roots = top_level_items(items)
+    # An invalidated container has no trustworthy aggregate. Its known children
+    # remain independent observations and must not disappear behind an unknown
+    # parent total.
+    roots = top_level_items([item for item in items if not (
+        item['kind'] == 'directory' and item.get('details', {}).get('aggregate_stale'))])
     total, identities = 0, {}
     for item in roots:
         total += item.get('size_bytes', 0) or 0
@@ -209,7 +213,13 @@ class SimulationState:
             self.plans.clear()
         return self.view()
 
-    def publish(self, items, group):
+    def publish(self, items, group, *, include_view=True):
+        """Publish observations, optionally omitting the independent public view.
+
+        Internal bounded readers already project their requested page. They must
+        not copy the entire inventory merely to discard that return value.
+        Public callers keep the existing independent snapshot by default.
+        """
         with self.lock, self.db:
             if self.source() == 'demo':
                 self.db.execute('DELETE FROM catalog')
@@ -219,10 +229,35 @@ class SimulationState:
                     if old['kind'] not in ('file', 'directory'):
                         continue
                     ancestor = within(scope, old['path']) and canonical(scope) != canonical(old['path'])
-                    if ancestor or within(old['path'], scope):
+                    if within(old['path'], scope):
                         self.db.execute('DELETE FROM catalog WHERE id=?', (old['id'],))
                     if ancestor:
-                        # A nested rescan invalidates an older simulated parent.
+                        # Nested observations invalidate subtree eligibility,
+                        # not the ancestor's explainable identity. Dropping the
+                        # row made already-returned opaque IDs unusable by the
+                        # model and lost the visible path to its children.
+                        old.update(size_bytes=None, allocated_bytes=None, actions=[],
+                            recommendation='子目录已重新检查，旧统计失效；整目录处理前需重新核查。')
+                        details = old.setdefault('details', {})
+                        for field in ('logical_bytes_all_paths', 'unique_logical_bytes', 'hardlink_duplicate_bytes',
+                                      'unique_file_entities', 'file_count', 'directory_count', 'protected_entries',
+                                      'reparse_skipped', 'error_count', 'observed_allocated_bytes', 'hardlink_entities',
+                                      'hardlink_entities_complete', 'has_external_hardlinks'):
+                            details.pop(field, None)
+                        details.update(complete=False, subtree_complete=False, can_simulate_delete=False,
+                            aggregate_stale=True, requires_subtree_validation=True, allocated_known=False,
+                            auto_select=False, verified_cache=False, contains_personal_or_unknown=True,
+                            indexed_state='stale', signature_kind='aggregate_invalidated')
+                        if isinstance(details.get('decision_context'), dict):
+                            details['decision_context'].update(auto_select=False, regenerable=False,
+                                personal_choice_required=True, advisory_only=True)
+                        if not old['signature'].startswith('stale-subtree-sha256:'):
+                            old['signature'] = 'stale-subtree-sha256:' + hashlib.sha256(
+                                old['signature'].encode('utf-8')).hexdigest()
+                        self.db.execute('UPDATE catalog SET payload=? WHERE id=?',
+                                        (json.dumps(old, ensure_ascii=False), old['id']))
+                        # A nested rescan also invalidates an older simulated
+                        # parent's active effect, as before this identity fix.
                         self.db.execute('UPDATE overlay SET active=0 WHERE item_id=?', (old['id'],))
             self.db.execute('DELETE FROM catalog WHERE grp=?', (group,))
             for item in items:
@@ -233,7 +268,7 @@ class SimulationState:
             self.db.execute("INSERT OR REPLACE INTO meta VALUES('source','local')")
             self.revision += 1
             self.plans.clear()
-        return self.view()
+        return self.view() if include_view else None
 
     def snapshot(self, patterns=()):
         """Internal read-only snapshot. Call view() for an independent copy."""

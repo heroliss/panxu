@@ -76,7 +76,7 @@ class WorkspaceRouteTests(unittest.TestCase):
         self.assertEqual(self.hashes(), self.before)
 
     def test_new_static_assets_are_served_by_fixed_allowlist(self):
-        for name, mime in [('file-workspace.js', 'text/javascript'), ('file-workspace.css', 'text/css'), ('recovery.js', 'text/javascript'), ('recovery.css', 'text/css')]:
+        for name, mime in [('file-workspace.js', 'text/javascript'), ('file-workspace.css', 'text/css'), ('recovery.js', 'text/javascript'), ('recovery.css', 'text/css'), ('history-presentation.js', 'text/javascript'), ('history.css', 'text/css')]:
             with self.subTest(name=name), urllib.request.urlopen(self.url + '/' + name, timeout=10) as response:
                 self.assertEqual(response.status, 200)
                 self.assertTrue(response.headers['Content-Type'].startswith(mime))

@@ -17,9 +17,12 @@ _CHUNK = 1024 * 1024
 
 def _stamp(info, *, cross_api=False):
     # On current Windows Python, path lstat and handle fstat can expose
-    # different ctime semantics. Retain ctime for path-to-path validation and
-    # compare all stable identity/content fields across path and handle APIs.
-    return (info.st_dev, info.st_ino, info.st_mode, info.st_size,
+    # different ctime semantics. Path stat also synthesizes executable mode
+    # bits from .exe/.bat suffixes, which handle fstat cannot do. Keep strict
+    # path/path and handle/handle checks; across APIs compare file type and
+    # stable identity/content fields instead of those synthesized bits.
+    mode = stat.S_IFMT(info.st_mode) if cross_api and os.name == 'nt' else info.st_mode
+    return (info.st_dev, info.st_ino, mode, info.st_size,
             info.st_mtime_ns, None if cross_api and os.name == 'nt' else info.st_ctime_ns,
             info.st_nlink, getattr(info, 'st_file_attributes', 0))
 

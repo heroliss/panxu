@@ -224,7 +224,7 @@ class HarnessSystemEvidenceTests(unittest.TestCase):
             return {'choices': [{'message': {'role': 'assistant', 'content': None, 'tool_calls': [
                 {'id': 'call-' + name, 'type': 'function', 'function': {'name': name, 'arguments': json.dumps(args)}}]}}]}
 
-        self.queue = [call('collect_system_configuration', {}), call('present_findings', {'summary': '已取得有限配置。', 'needs_input': True})]
+        self.queue = [call('collect_system_configuration', {}), call('present_findings', {'summary': '已取得有限配置。', 'needs_input': False})]
         report = system_configuration(backend=Backend(), platform='nt')
         with patch('diskpilot.tasks.system_configuration', return_value=report):
             self.harness.claim(self.task['id'])

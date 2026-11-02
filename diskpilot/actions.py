@@ -190,6 +190,85 @@ class ActionRuntime:
             emit('这一批已结束，操作记录已核对。')
         return result
 
+    def history(self):
+        """Project immutable outcomes together with each receipt's current effect.
+
+        Fetch receipt states in two bounded queries rather than an inventory
+        scan or one database query per history item. No journal is rewritten.
+        """
+        with self.state.lock:
+            history = self.state.history()
+            ids = [batch['id'] for batch in history]
+            if not ids:
+                return history
+            marks = ','.join('?' for _ in ids)
+            overlays = {(row['batch_id'], row['item_id']): row for row in self.state.db.execute(
+                f'SELECT batch_id,item_id,action,active FROM overlay WHERE batch_id IN ({marks})', ids)}
+            retained = {(row['batch_id'], row['item_id']): row for row in self.state.db.execute(
+                f'SELECT id,batch_id,item_id,status FROM recovery_entries WHERE batch_id IN ({marks})', ids)}
+            attempts, groups, ambiguous = {}, {}, set()
+            for row in self.state.db.execute(f'''SELECT receipts.batch_id,attempt.status,attempt.payload,
+                    attempt.task_id,attempt.plan_version
+                    FROM operation_receipts receipts JOIN action_attempts attempt ON attempt.id=receipts.operation_id
+                    WHERE receipts.batch_id IN ({marks})''', ids):
+                if row['status'] != 'succeeded':
+                    data = json.loads(row['payload'])
+                    attempts[(row['batch_id'], data['entry']['id'])] = row['status']
+                task_id, version = row['task_id'], row['plan_version']
+                if isinstance(task_id, str) and 0 < len(task_id) <= 160 and type(version) is int and 1 <= version <= 2**53 - 1:
+                    group = dict(task_id=task_id, plan_version=version)
+                    if row['batch_id'] in groups and groups[row['batch_id']] != group:
+                        ambiguous.add(row['batch_id'])
+                    groups[row['batch_id']] = group
+            for batch in history:
+                if batch['id'] in groups and batch['id'] not in ambiguous:
+                    batch['operation_group'] = groups[batch['id']]
+                for item in batch.get('items', []):
+                    key = (batch['id'], item['id'])
+                    if key in attempts:
+                        item['verification_status'] = attempts[key]
+                    recovery, overlay = retained.get(key), overlays.get(key)
+                    if recovery:
+                        item.update(recovery_status=recovery['status'], recovery_entry_id=recovery['id'])
+                    if recovery and recovery['status'] in ('restored', 'purged'):
+                        current = 'undone' if recovery['status'] == 'restored' else 'purged'
+                    elif overlay and overlay['action'] == item.get('action'):
+                        current = 'recorded' if overlay['active'] else 'undone'
+                    else:
+                        current = 'undone' if batch['status'] == 'undone' else 'unverified'
+                    item['current_state'] = current
+            return history
+
+    def incomplete_history(self, limit=100):
+        """Read ordinary attempts that a success-only batch history cannot show.
+
+        A failed verification can still have an atomic receipt. Keep the
+        attempted outcome separate from its current recorded/recovery state.
+        Specialist attempts have their own history and are excluded here.
+        """
+        limit = max(1, min(100, limit))
+        with self.state.lock:
+            rows = self.state.db.execute('''SELECT * FROM action_attempts
+                WHERE status != 'succeeded'
+                  AND json_extract(payload,'$.backend') = 'simulation'
+                  AND json_extract(payload,'$.entry.kind') != 'cleanup_tool'
+                ORDER BY created_at DESC, id DESC LIMIT ?''', (limit + 1,)).fetchall()
+            items = []
+            for row in rows[:limit]:
+                data = json.loads(row['payload'])
+                entry = data['entry']
+                receipt = self.state.receipt(row['id']) if not data.get('batch_id') else None
+                batch_id = data.get('batch_id') or (receipt['id'] if receipt else None)
+                current = self.backend.entry_state(entry, batch_id) if batch_id else dict(current_state='not_applied')
+                items.append(dict(id=row['id'], task_id=row['task_id'],
+                    plan_version=row['plan_version'], status=row['status'],
+                    created_at=row['created_at'], updated_at=row['updated_at'],
+                    item={key: entry[key] for key in ('id', 'name', 'path', 'kind', 'action', 'signature') if key in entry},
+                    message=data.get('message', ''), verified=data.get('verified', False),
+                    batch_id=batch_id, mode='simulation',
+                    actual_reclaimed_bytes=0, **current))
+        return dict(attempts=items, attempts_has_more=len(rows) > limit)
+
     def result(self, task_id, version):
         with self.state.lock:
             rows = self.state.db.execute('SELECT * FROM action_attempts WHERE task_id=? AND plan_version=? ORDER BY rowid',

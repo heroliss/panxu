@@ -57,6 +57,26 @@ class FileBrowserTests(unittest.TestCase):
         self.assertFalse(page['coverage']['subtree_complete'])
         self.assertEqual(self.state.history(), [])
 
+    def test_bounded_page_does_not_build_an_unused_independent_inventory_view(self):
+        self.files(123)
+        with patch.object(self.state, 'view', side_effect=AssertionError('unused global inventory copy')):
+            first = self.page()
+            second = self.page(cursor=first['next_cursor'])
+        self.assertEqual(len(first['items']), 50)
+        self.assertEqual(len(second['items']), 50)
+        self.assertTrue(second['has_more'])
+        self.assertEqual(self.state.history(), [])
+
+    def test_browser_publication_compares_only_incoming_ids_not_every_stored_payload(self):
+        self.files(2)
+        parent = self.browser._entry(str(self.scope), os.lstat(self.scope), str(self.scope), None)
+        child_path = self.scope / '0000.bin'
+        child = self.browser._entry(str(child_path), os.lstat(child_path), str(self.scope), None, parent_id=parent['id'])
+        session = SimpleNamespace(root_item=parent, ident='owned-bounded-publication', seen=2)
+        with patch.object(self.state, '_rows', side_effect=AssertionError('unrelated inventory payload read')):
+            self.browser._publish(session, [child], 0)
+        self.assertEqual(self.state.db.execute('SELECT COUNT(*) FROM catalog').fetchone()[0], 2)
+
     def test_pages_are_disjoint_and_current_layer_completion_is_not_subtree_completion(self):
         self.files(123)
         child = self.scope / 'child'
@@ -247,6 +267,21 @@ class FileBrowserTests(unittest.TestCase):
         for row in self.page()['items']:
             self.assertEqual(row['assessment']['state'], 'inherited')
             self.assertEqual(row['assessment']['rating'], 5)
+
+    def test_bounded_global_projection_matches_full_selection_semantics_without_copying_it(self):
+        self.files(2)
+        self.state.publish(scan_directory(str(self.scope))['items'], 'scan-fixture')
+        task = self.harness.create_analysis({'section': 'files', 'scope': str(self.scope)})
+        parent = next(item for item in self.state.snapshot([])['items'] if item['path'] == str(self.scope))
+        self.harness.tool(task['id'], 'record_advice', {'items': [dict(id=parent['id'], conclusion='recommend',
+            cleanup_rating=5, inheritance='subtree', purpose='Owned directory', reason='fixture', impact='fixture')]}, cancel=threading.Event())
+        expected = {row['id']: copy.deepcopy(row) for row in self.catalog._selection_rows()}
+        with patch.object(self.catalog, '_selection_rows', side_effect=AssertionError('unrelated selection copies')):
+            actual = self.page()['items']
+        for row in actual:
+            for key in ('assessment', 'can_prepare', 'can_logical_select', 'can_auto_select', 'user_kept', 'user_disposition'):
+                self.assertEqual(row[key], expected[row['id']][key], key)
+            self.assertEqual(row['assessment']['state'], 'inherited')
 
     def test_old_directory_advice_does_not_score_a_new_browse_only_child(self):
         self.files(2)

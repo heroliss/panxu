@@ -326,6 +326,37 @@ class SelectedFileTests(unittest.TestCase):
         with self.assertRaises(AppError):
             verify_duplicates(self.items * 51)
 
+    def test_installer_suffixes_hash_without_false_path_handle_mode_changes(self):
+        content = b'owned inert installer placeholder, never executable'
+        for name in ('setup.exe', 'setup-copy.exe', 'setup.bat'):
+            (self.scope / name).write_bytes(content)
+        items = [i for i in scan_directory(str(self.scope))['items']
+                 if i['kind'] == 'file' and i['name'].startswith('setup')]
+        result = verify_duplicates(items)
+        self.assertFalse(result['partial'])
+        self.assertEqual(result['bytes_read'], len(content) * 3)
+        self.assertEqual(result['hashed_files'], 3)
+        self.assertEqual(len(result['groups']), 1)
+        self.assertEqual(len(result['groups'][0]['items']), 3)
+
+    def test_changed_handle_file_type_still_rejects_before_content_read(self):
+        import stat
+        original = os.fstat
+
+        def handle_stat(fd):
+            info = original(fd)
+            fields = {key: getattr(info, key) for key in ('st_dev', 'st_ino', 'st_mode', 'st_size',
+                'st_mtime_ns', 'st_ctime_ns', 'st_nlink')}
+            fields['st_file_attributes'] = getattr(info, 'st_file_attributes', 0)
+            fields['st_mode'] = stat.S_IFDIR | (info.st_mode & 0o777)
+            return SimpleNamespace(**fields)
+
+        with patch('diskpilot.duplicates.os.fstat', side_effect=handle_stat):
+            result = verify_duplicates(self.items)
+        self.assertFalse(result['groups'])
+        self.assertEqual(result['bytes_read'], 0)
+        self.assertEqual(result['skipped']['changed'], 2)
+
     def test_stale_scan_signature_is_rejected_before_reading_file(self):
         target = self.scope / 'a.bin'
         before = target.stat()

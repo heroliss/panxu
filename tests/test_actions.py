@@ -71,9 +71,67 @@ class ActionTests(unittest.TestCase):
     def test_changed_target_fails_before_virtual_apply(self):
         file = Path(self.entries[0]['path'])
         file.write_bytes(b'changed-after-review')
-        result = ActionRuntime(self.state).run('task', 1, self.entries[:1])
+        runtime = ActionRuntime(self.state)
+        result = runtime.run('task', 1, self.entries[:1])
         self.assertEqual(result['items'][0]['status'], 'failed')
         self.assertEqual(self.state.history(), [])
+        attempt = runtime.incomplete_history()['attempts'][0]
+        self.assertEqual(attempt['status'], 'failed')
+        self.assertEqual(attempt['item']['name'], self.entries[0]['name'])
+        self.assertIsNone(attempt['batch_id'])
+
+    def test_history_keeps_incomplete_outcomes_and_current_receipts_distinct(self):
+        runtime = ActionRuntime(self.state, fault=lambda item, phase: phase == 'after')
+        pending = runtime.run('unverified-task', 1, self.entries[:1])
+        event = threading.Event()
+        event.set()
+        runtime.run('cancelled-task', 1, self.entries[1:], cancel=event)
+        rows = runtime.incomplete_history()['attempts']
+        self.assertEqual({r['status'] for r in rows}, {'unverified', 'cancelled'})
+        recorded = next(r for r in rows if r['status'] == 'unverified')
+        self.assertEqual(recorded['current_state'], 'recorded')
+        self.assertEqual(next(r for r in rows if r['status'] == 'cancelled')['current_state'], 'not_applied')
+        self.assertEqual(runtime.history()[0]['items'][0]['verification_status'], 'unverified')
+        self.assertEqual(recorded['item']['path'], self.entries[0]['path'])
+        self.assertEqual(recorded['actual_reclaimed_bytes'], 0)
+        self.state.undo(pending['items'][0]['batch_id'])
+        self.assertEqual(next(r for r in runtime.incomplete_history()['attempts']
+                              if r['status'] == 'unverified')['current_state'], 'undone')
+        self.assertEqual([p.read_bytes() for p in self.scope.iterdir()], [b'keep-real-bytes'] * 2)
+
+    def test_history_is_bounded_and_excludes_success_and_specialist_attempts(self):
+        runtime = ActionRuntime(self.state)
+        runtime.run('success-task', 1, self.entries[:1])
+        cancelled = threading.Event()
+        cancelled.set()
+        for index in range(3):
+            runtime.run('cancel-task-' + str(index), 1, self.entries[1:], cancel=cancelled)
+        runtime._save('specialist', 'specialist-task', 1, 'failed',
+                      {'entry': dict(self.entries[0], kind='cleanup_tool'), 'backend': 'simulation'})
+        limited = runtime.incomplete_history(2)
+        self.assertEqual(len(limited['attempts']), 2)
+        self.assertTrue(limited['attempts_has_more'])
+        all_rows = runtime.incomplete_history()
+        self.assertEqual(len(all_rows['attempts']), 3)
+        self.assertFalse(all_rows['attempts_has_more'])
+        self.assertTrue(all(row['status'] == 'cancelled' for row in all_rows['attempts']))
+
+    def test_history_resolves_partial_restore_and_purge_per_item_without_rewriting_outcome(self):
+        runtime = ActionRuntime(self.state)
+        plan = self.state.prepare([item['id'] for item in self.entries])
+        self.state.execute(plan['id'])
+        store = self.state.recovery_store
+        records = store.list()['items']
+        for row, action in zip(records, ('restore', 'purge')):
+            recovery_plan = store.prepare([row['id']], action)
+            store.execute(recovery_plan['id'], recovery_plan['confirmation'])
+        original = self.state.history()[0]
+        before = dict(original)
+        projected = runtime.history()[0]
+        self.assertEqual({i['current_state'] for i in projected['items']}, {'undone', 'purged'})
+        self.assertTrue(all(i['status'] == 'simulated' for i in projected['items']))
+        self.assertEqual(self.state.history()[0], before)
+        self.assertTrue(all('current_state' not in i for i in original['items']))
 
     def test_receipt_is_atomic_with_overlay_and_idempotent(self):
         entry = self.entries[0]

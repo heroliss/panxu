@@ -12,7 +12,7 @@ const plain=value=>JSON.parse(JSON.stringify(value));
 const record=(id,rating=4,state='explicit',extra={})=>({id,name:id+'.txt',path:'E:\\fixture\\'+id+'.txt',kind:'file',signature:'sig-'+id,size_bytes:10,can_prepare:true,actions:['delete'],assessment:{state,rating,eligible_direct:state==='explicit',eligible_with_inherited:state==='inherited',stale:false,blocked_reasons:[]},...extra});
 // Browser/HTTP boundary only: all state transitions below come from production modules.
 async function fixture(rows,respond,{intercept}={}){
-  let root;
+  let root;const reveals=[];
   class Element{
     constructor(tag){this.tag=tag;this.className='';this.dataset={};this.children=[];this.handlers=new Map();this.parent=null;this.attrs={};this._text='';this.disabled=false;}
     get textContent(){return this._text+this.children.map(child=>child.textContent).join('');}
@@ -23,6 +23,8 @@ async function fixture(rows,respond,{intercept}={}){
     replaceChildren(...children){this.children.forEach(child=>child.parent=null);this.children=[];this._text='';this.append(...children);}
     remove(){if(this.parent)this.parent.children=this.parent.children.filter(child=>child!==this);this.parent=null;}
     setAttribute(name,value){this.attrs[name]=String(value);}
+    focus(options){this.focusOptions=options;document.activeElement=this;}
+    scrollIntoView(options){reveals.push({target:this,options});}
     addEventListener(name,handler){this.handlers.set(name,[...(this.handlers.get(name)||[]),handler]);}
     all(){return this.children.flatMap(child=>[child,...child.all()]);}
     matches(selector){if(selector.startsWith('.'))return this.className.split(' ').includes(selector.slice(1));if(selector.startsWith('[data-')){const key=selector.slice(6,-1).replace(/-([a-z])/g,(_,letter)=>letter.toUpperCase());return Object.hasOwn(this.dataset,key);}return this.tag===selector;}
@@ -55,9 +57,9 @@ async function fixture(rows,respond,{intercept}={}){
   runInNewContext(tasks,environment);runInNewContext(files,environment);
   const advanced=new Element('div');advanced.className='file-advanced-controls';const location=new Element('details');location.className='location-picker';location.append(new Element('summary'));advanced.append(location);
   const context={revision:'initial',disks:[],advanced,bytes:value=>value+' B',ingest(){},changed(){},adviceChanged(){adviceRefreshes++;},show:item=>actions.push(['show',item.id]),analyze:item=>actions.push(['analyze',item.id]),analyzeItems:items=>actions.push(['analyze-many',items.map(item=>item.id)]),prepare:async payload=>actions.push(['prepare',plain(payload)]),prepareLogical:async payload=>{actions.push(['prepareLogical',plain(payload)]);return {task:{id:'prepared-owned'},plan:{version:1,items:currentRows.filter(item=>payload.selected_ids.includes(item.id)).slice(0,500)}};}};
-  context.api=async(path,body)=>{const response=await environment.fetch(path,{method:'POST',body:JSON.stringify(body)});return response.json();};
+  context.api=async(path,body,options)=>{const response=await environment.fetch(path,{method:'POST',body:JSON.stringify(body),...(options?.signal?{signal:options.signal}:{})});return response.json();};
   window.PanxuFiles.render(root,context);await flush();
-  return {root,window,environment,context,requests,actions,setRows(value,nextRevision=revision){currentRows=value;revision=nextRevision;},
+  return {root,window,environment,context,requests,actions,reveals,setRows(value,nextRevision=revision){currentRows=value;revision=nextRevision;},
     button:label=>root.all().find(node=>node.tag==='button'&&node.textContent===label),check:id=>root.all().find(node=>node.dataset.reviewCheck===id),
     async pick(id,value=true){const check=this.check(id);check.checked=value;await check.fire('change');},
     all:()=>root.querySelector('[data-filter-select-all]'),async toggleAll(value){const check=this.all();check.checked=value;await check.fire('change');},
@@ -237,4 +239,31 @@ test('a successful retry clears an obsolete candidate-read error without discard
   assert.ok(f.root.textContent.includes('Owned transient read failure'));assert.equal(f.all().disabled,true);
   f.context.api=api;await f.window.PanxuFiles.refreshAdvice();assert.equal(f.all().disabled,false);assert.ok(!f.root.textContent.includes('Owned transient read failure'));
   await f.pick('one');assert.equal(f.check('one').checked,true);
+});
+
+test('global suggestions remain individually selectable while a separate full-filter read is pending',async()=>{
+ let finish;const pending=new Promise(resolve=>{finish=resolve;});const rows=[record('one'),record('two')];
+ const f=await fixture(rows,null,{intercept(_url,body){if(body?.representation==='rows')return pending;}});
+ assert.equal(f.check('one').disabled,false);assert.equal(f.all().disabled,true);assert.match(f.root.textContent,/正在准备跨页全选/);
+ assert.equal(f.root.querySelector('.item-disposition').disabled,false,'a displayed row must allow saving a user decision while cross-page candidates load');
+ await f.pick('one');assert.equal(f.root.querySelector('[data-prepare-picked]').disabled,false);
+ finish({revision:'rev-1',selection_revision:'select-rev-1',items:rows,has_more:false,counts:{total_targets:2}});await flush();await flush();
+ assert.equal(f.all().disabled,false);assert.equal(f.check('one').checked,true);
+});
+
+test('global suggestions reuse full-filter candidates when paging the same version',async()=>{
+ const rows=Array.from({length:620},(_,index)=>record('cache-'+index)),f=await fixture(rows);
+ const reads=()=>f.requests.filter(call=>call.options?.body&&JSON.parse(call.options.body).representation==='rows');assert.equal(reads().length,2);
+ await f.button('下一页').fire('click');assert.ok(f.check('cache-50'));assert.equal(reads().length,2);
+ await f.window.PanxuFiles.refreshAdvice();assert.equal(reads().length,4,'explicit refresh rereads rather than trusting an old candidate cache');
+});
+
+test('global suggestion paging reveals new first rows but selecting a row does not reposition the list',async()=>{
+ const rows=Array.from({length:75},(_,i)=>record('page-'+i)),f=await fixture(rows);assert.equal(f.reveals.length,0);await f.button('下一页').fire('click');
+ assert.equal(f.reveals.length,1);assert.match(f.reveals[0].target.textContent,/page-50/);assert.equal(f.reveals[0].options.behavior,'instant');await f.pick('page-51');assert.equal(f.reveals.length,1);
+});
+
+test('a failed global suggestion page does not move the viewport to old content',async()=>{
+ const rows=Array.from({length:75},(_,i)=>record('page-'+i)),f=await fixture(rows,url=>{if(url.searchParams.get('offset')==='50')throw new Error('Owned failed page');});
+ await f.button('下一页').fire('click');assert.equal(f.reveals.length,0);assert.match(f.root.textContent,/Owned failed page/);
 });

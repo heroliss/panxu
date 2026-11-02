@@ -26,15 +26,17 @@ window.PanxuFileWorkspace = (() => {
     const q=new URLSearchParams({path:state.path,limit:'50',...extra});
     return t.helpers.api('/api/file-browser?'+q,undefined,{signal:t.abort?.signal});
   }
-  async function load(t,refresh=false){
+  async function load(t,refresh=false,navigation=null){
     if(!active(t))return;t.abort?.abort();t.abort=new AbortController();const run=++serial;t.busy=true;t.error='';paint(t);
+    let ready=false;
     try{
       const data=state.path?await requestPage(t,{...(state.cursor?{cursor:state.cursor}:{}),...(refresh?{refresh:'1'}:{})}):await t.helpers.api('/api/file-browser/drives');
       if(!active(t)||run!==serial)return;
       state.page=data;state.layer=null;
       if(state.path&&(state.query||state.rating!=='all'))await collectLayer(t,run);
+      ready=true;
     }catch(e){if(active(t)&&run===serial&&e.name!=='AbortError')t.error=e.message;}
-    finally{if(active(t)&&run===serial){t.busy=false;paint(t);}}
+    finally{if(active(t)&&run===serial){t.busy=false;paint(t);if(ready)window.PanxuListNavigation?.reveal(t.host.querySelector('.workspace-file-list'),navigation,'当前目录的文件列表');}}
   }
   async function collectLayer(t,run=serial){
     if(state.layer)return state.layer;
@@ -116,8 +118,8 @@ window.PanxuFileWorkspace = (() => {
     }
     if(!rows.length&&!t.busy&&!t.error)list.append(node('p','empty-state','本层没有匹配内容。'));t.host.append(list);
     const pager=node('div','file-pagination');
-    if(state.layer){const prev=button('上一页',()=>{state.filterOffset=Math.max(0,state.filterOffset-50);paint(t);});prev.disabled=t.busy||!state.filterOffset;const next=button('下一页',()=>{state.filterOffset+=50;paint(t);});next.disabled=t.busy||state.filterOffset+50>=filtered.length;pager.append(prev,node('span','',`第 ${Math.floor(state.filterOffset/50)+1} / ${Math.max(1,Math.ceil(filtered.length/50))} 页`),next);}
-    else{const prev=button('上一页',()=>{state.cursor=state.previous.pop() || null;load(t);});prev.disabled=t.busy||!state.previous.length;const next=button('下一页',()=>{state.previous.push(state.cursor);state.cursor=state.page.next_cursor;load(t);});next.disabled=t.busy||!state.page?.has_more;pager.append(prev,next);}t.host.append(pager);
+    if(state.layer){const change=delta=>{const navigation=window.PanxuListNavigation?.capture(t.host);state.filterOffset=Math.max(0,state.filterOffset+delta*50);paint(t);window.PanxuListNavigation?.reveal(t.host.querySelector('.workspace-file-list'),navigation,`当前目录，第 ${Math.floor(state.filterOffset/50)+1} 页`);};const prev=button('上一页',()=>change(-1));prev.disabled=t.busy||!state.filterOffset;const next=button('下一页',()=>change(1));next.disabled=t.busy||state.filterOffset+50>=filtered.length;pager.append(prev,node('span','',`第 ${Math.floor(state.filterOffset/50)+1} / ${Math.max(1,Math.ceil(filtered.length/50))} 页`),next);}
+    else{const prev=button('上一页',()=>{const navigation=window.PanxuListNavigation?.capture(t.host);state.cursor=state.previous.pop() || null;load(t,false,navigation);});prev.disabled=t.busy||!state.previous.length;const next=button('下一页',()=>{const navigation=window.PanxuListNavigation?.capture(t.host);state.previous.push(state.cursor);state.cursor=state.page.next_cursor;load(t,false,navigation);});next.disabled=t.busy||!state.page?.has_more;pager.append(prev,next);}t.host.append(pager);
     const footer=node('footer','workspace-selection-footer'),count=selected().length;
     const summary=node('span','',count?`已勾选 ${count} 项或目录`:'勾选后可分析或删除');summary.setAttribute('role','status');
     const analyse=button(count?`分析勾选的 ${count} 项`:'分析此目录',()=>analyze(t),'button');analyse.disabled=t.busy;

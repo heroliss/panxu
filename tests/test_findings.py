@@ -42,7 +42,11 @@ class FindingsTests(unittest.TestCase):
         return self.harness.tool(self.key, name, args, cancel=threading.Event(), provenance=source)
 
     def present(self, **changes):
-        args = dict(summary='请先查看这些安装包的去留建议。', needs_input=True, briefing=copy.deepcopy(self.modules))
+        if not self.harness._get(self.key)['observations']:
+            task = self.harness._get(self.key)
+            task['observations'] = [dict(tool='list_items', result=self.tool('list_items', {}))]
+            self.harness._save(task)
+        args = dict(summary='请先查看这些安装包的去留建议。', needs_input=False, briefing=copy.deepcopy(self.modules))
         args.update(changes)
         self.tool('present_findings', args, source=self.source)
         return self.harness.public(self.key)
@@ -80,7 +84,7 @@ class FindingsTests(unittest.TestCase):
 
     def test_legacy_full_summary_is_preserved_without_invented_modules(self):
         text = '原始结论与完整依据。' * 95
-        self.tool('present_findings', dict(summary=text, needs_input=True))
+        self.present(summary=text, briefing={})
         restored = self.harness.public(self.key)
         self.assertEqual(restored['summary'], text)
         self.assertEqual(restored['briefing'], {})
@@ -263,12 +267,17 @@ class PublicReplyTests(unittest.TestCase):
 
     def reply(self, text='完整公开回复，仅供阅读。', *, source=None, **changes):
         value = dict(role='assistant', content=text, tool_calls=[dict(id='present', type='function', function=dict(
-            name='present_findings', arguments=json.dumps(dict(summary='已保存简短结论。', needs_input=True))))],
+            name='present_findings', arguments=json.dumps(dict(summary='已保存简短结论。', needs_input=False))))],
             _provenance=copy.deepcopy(source or self.source), _usage={})
         value.update(changes)
         return value
 
     def run_reply(self, value, *, cancel=None):
+        if not self.harness._get(self.key)['observations']:
+            task = self.harness._get(self.key)
+            task['observations'] = [dict(tool='list_items', result=self.harness.tool(
+                self.key, 'list_items', {}, cancel=threading.Event()))]
+            self.harness._save(task)
         with patch.object(self.assistant, 'agent_turn', side_effect=value if callable(value) else [value]):
             self.harness.claim(self.key)
             return self.harness.investigate(self.key, cancel=cancel)

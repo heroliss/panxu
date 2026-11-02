@@ -914,7 +914,8 @@ class ModelAssistant:
                   "kind": self._privacy_text(item.get("kind", "unknown"), settings, key, 32),
                   "category": self._privacy_text(item.get("category", "unknown"), settings, key, 80),
                   "risk": item.get("risk") if item.get("risk") in ("low", "review", "protected") else "review",
-                  "size_bytes": self._bytes(item), "simulated": bool(item.get("simulated"))}
+                  "size_bytes": None if item.get("size_bytes", 0) is None else self._bytes(item),
+                  "simulated": bool(item.get("simulated"))}
         result.update(self._observation_metadata(item, settings, key, detailed=detailed))
         path = str(item.get("path", "")).replace("\\", "/").lower()
         result["user_protected"] = any(fnmatch.fnmatchcase(path, p.replace("\\", "/").lower())

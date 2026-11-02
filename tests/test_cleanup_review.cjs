@@ -31,11 +31,12 @@ async function fixture({auto=[high],autoFour=true,rows=[parent,folder,leaf,high,
     querySelectorAll(selector){return this.all().filter(child=>child.matches(selector));}querySelector(selector){return this.querySelectorAll(selector)[0] || null;}
     async fire(name){if(this.disabled)return;for(const handler of this.handlers.get(name)||[])await handler({preventDefault(){}});await flush();}
     showModal(){this.open=true;this.scrollTop=900;events.push('modal');}close(){this.open=false;for(const handler of this.handlers.get('close')||[])handler();}
-    focus(options){this.focusOptions=options;events.push(['focus',this.tag,this.textContent]);let owner=this;while(owner&&owner.tag!=='dialog')owner=owner.parent;if(owner&&!options?.preventScroll)owner.scrollTop=900;}
+    focus(options){this.focusOptions=options;document.activeElement=this;events.push(['focus',this.tag,this.textContent]);let owner=this;while(owner&&owner.tag!=='dialog')owner=owner.parent;if(owner&&!options?.preventScroll)owner.scrollTop=900;}
+    scrollIntoView(options){events.push(['list-reveal',this.textContent,options]);}
     set innerHTML(_){throw new Error('HTML interpolation forbidden');}
   }
   root=new Element('main');const window={},document={createElement:tag=>new Element(tag),createElementNS:(_ns,tag)=>new Element(tag),getElementById:id=>root.all().find(item=>item.id===id),querySelector:selector=>root.querySelector(selector)};
-  const environment={window,document,URLSearchParams,setTimeout:(run,delay)=>{timers.set(++timerId,{run,delay});return timerId;},clearTimeout:id=>timers.delete(id)};
+  const environment={window,document,URLSearchParams,AbortController,setTimeout:(run,delay)=>{timers.set(++timerId,{run,delay});return timerId;},clearTimeout:id=>timers.delete(id)};
   runInNewContext(tasks,environment);runInNewContext(source,environment);const subject=window.PanxuCleanupReview;
   let currentRows=rows,execution=null,controlNext=null,pollOverride=null;
   const analysis={id:'analysis-one',status:'completed',scope_kind:scopeKind,...(scopeKind==='applications'?{analysis:{section:'background'}}:{}),summary:'测试分析结论',briefing:{highlights:['测试重点']},last_public_reply:{text:'原分析完整正文'}};
@@ -54,8 +55,8 @@ async function fixture({auto=[high],autoFour=true,rows=[parent,folder,leaf,high,
     if(query)values=values.filter(item=>(item.name+' '+item.path).toLowerCase().includes(query.toLowerCase()));
     return values;
   }
-  async function api(path,payload){
-    calls.push({path,payload:payload===undefined?undefined:plain(payload)});
+  async function api(path,payload,options){
+    calls.push({path,payload:payload===undefined?undefined:plain(payload),...(options?.signal?{signal:options.signal}:{})});
     const replacement=await intercept?.(path,payload,calls);if(replacement!==undefined)return replacement;
     if(path.startsWith('/api/files?')){
       const url=new URL(path,'http://fixture'),values=filtered({...Object.fromEntries(url.searchParams),category:url.searchParams.get('rating') || 'all'});
@@ -336,4 +337,63 @@ test('embedded direct selections remain visible as exact task rows without inven
  f.helpers.singleSuggestions=true;f.helpers.task={id:'direct-visible',scope_kind:'filesystem',status:'awaiting_review',plan:{version:1,origin:'user_direct',items:[owned]}};
  f.root.replaceChildren();f.subject.render(f.root,f.helpers);await flush();await flush();
  assert.ok(f.calls.filter(call=>call.path.startsWith('/api/files?')).at(-1).path.includes('view=all'));assert.ok(f.check(owned.id));assert.equal(f.root.querySelector('.file-view-tabs').hidden,true);
+});
+
+test('a ready page permits individual review and confirmation while cross-page candidates are still loading',async()=>{
+ let finish;const pending=new Promise(resolve=>{finish=resolve;});
+ const f=await fixture({intercept(path,payload){if(path==='/api/assessments/select'&&payload.representation==='rows')return pending;}});
+ assert.equal(f.check('high').disabled,false);assert.equal(f.all().disabled,true);assert.match(f.root.textContent,/正在准备跨页全选/);
+ await f.pick('neutral',true);assert.equal(f.check('neutral').checked,true);assert.equal(f.button('删除勾选项').disabled,false);
+ await f.button('删除勾选项').fire('click');assert.ok(f.root.querySelector('dialog').open);assert.equal(f.calls.filter(call=>call.path.endsWith('/approve')).length,0);
+ finish({revision:'r1',selection_revision:'s1',items:[high,neutral].map(item=>({...item,category:String(item.assessment.rating)})),has_more:false,counts:{total_targets:2}});await flush();await flush();
+ assert.ok(f.root.querySelector('dialog').open,'background checkbox readiness cannot dismiss an explicit confirmation');assert.equal(f.check('neutral').checked,true);
+});
+
+test('paging reuses complete filter candidates but a new selection revision requires a fresh snapshot',async()=>{
+ const rows=Array.from({length:620},(_,index)=>row('cached-'+index,'cached-'+index,4));let changed=false;
+ const f=await fixture({rows,auto:[],intercept(path,payload){
+   if(!changed)return;
+   if(path.startsWith('/api/files?'))return {revision:'r2',selection_revision:'s2',offset:0,total:rows.length,items:rows.slice(0,50),has_more:true,breadcrumbs:[]};
+   if(path==='/api/assessments/select'&&payload.representation==='rows')return {revision:'r2',selection_revision:'s2',items:[rows[0]],has_more:false,counts:{total_targets:1}};
+ }});
+ const reads=()=>f.calls.filter(call=>call.payload?.representation==='rows');assert.equal(reads().length,2);
+ await f.button('下一页').fire('click');assert.ok(f.check('cached-50'));assert.equal(reads().length,2,'paging must not repeat a complete 620-row candidate read');
+ changed=true;await f.subject.refresh();await flush();assert.equal(reads().length,3);assert.equal(reads().at(-1).payload.selection_revision,'s2');
+});
+
+test('abandoning a slow candidate read aborts it and keeps the new filter independently usable',async()=>{
+ let finish;const pending=new Promise(resolve=>{finish=resolve;});
+ const f=await fixture({auto:[],intercept(path,payload){if(path==='/api/assessments/select'&&payload.representation==='rows'&&payload.category==='4')return pending;}});
+ await f.filter('4');const abandoned=f.calls.find(call=>call.payload?.representation==='rows'&&call.payload.category==='4');assert.equal(abandoned.signal.aborted,false);
+ await f.filter('5');assert.equal(abandoned.signal.aborted,true);assert.equal(f.check('parent').disabled,false);assert.equal(f.all().disabled,false);
+ finish({revision:'r1',selection_revision:'s1',items:[high],has_more:false,counts:{total_targets:1}});await flush();await flush();
+ await f.toggleAll(true);assert.equal(f.check('parent').checked,true);assert.equal(f.root.textContent.includes('正在准备跨页全选'),false);
+});
+
+test('a changed background candidate snapshot refreshes once without reseeding or losing an individual choice',async()=>{
+ let reject;const pending=new Promise((_resolve,fail)=>{reject=fail;});let first=true;
+ const f=await fixture({intercept(path,payload){if(first&&path==='/api/assessments/select'&&payload.representation==='rows'){first=false;return pending;}}});
+ await f.pick('neutral',true);reject(Object.assign(new Error('Owned catalog changed'),{code:'catalog_changed'}));await flush();await flush();await flush();
+ assert.equal(f.calls.filter(call=>call.path.startsWith('/api/files?')).length,2);assert.equal(f.calls.filter(call=>call.payload?.mode==='automatic').length,1);
+ assert.equal(f.check('neutral').checked,true);assert.equal(f.all().disabled,false);
+});
+
+test('task-list paging focuses its first page content once while checkbox and candidate updates do not jump',async()=>{
+ const rows=Array.from({length:75},(_,i)=>row('page-'+i,'page-'+i,4)),f=await fixture({rows,auto:[]});
+ const reveals=()=>f.events.filter(event=>Array.isArray(event)&&event[0]==='list-reveal');assert.equal(reveals().length,0);
+ await f.button('下一页').fire('click');assert.equal(reveals().length,1);assert.match(reveals()[0][1],/page-50/);assert.equal(reveals()[0][2].behavior,'instant');
+ await f.pick('page-51',true);assert.equal(reveals().length,1);assert.equal(f.check('page-51').checked,true);
+});
+
+test('failed task-list page does not move focus to stale rows',async()=>{
+ const rows=Array.from({length:75},(_,i)=>row('page-'+i,'page-'+i,4));
+ const f=await fixture({rows,auto:[],intercept(path){if(path.startsWith('/api/files?')&&new URL(path,'http://fixture').searchParams.get('offset')==='50')throw new Error('Owned failed page');}});
+ await f.button('下一页').fire('click');assert.equal(f.events.some(event=>Array.isArray(event)&&event[0]==='list-reveal'),false);assert.match(f.root.textContent,/Owned failed page/);
+});
+
+test('a superseded task-list page cannot reveal over a newer filter',async()=>{
+ let finish;const pending=new Promise(resolve=>{finish=resolve;});const rows=Array.from({length:75},(_,i)=>row('page-'+i,'page-'+i,4));
+ const f=await fixture({rows,auto:[],intercept(path){if(path.startsWith('/api/files?')&&new URL(path,'http://fixture').searchParams.get('offset')==='50')return pending;}});
+ await f.button('下一页').fire('click');await f.filter('5');finish({revision:'r1',selection_revision:'s1',offset:50,total:rows.length,items:rows.slice(50),has_more:false});await flush();await flush();
+ assert.equal(f.events.some(event=>Array.isArray(event)&&event[0]==='list-reveal'),false);assert.equal(f.check('page-50'),undefined);
 });

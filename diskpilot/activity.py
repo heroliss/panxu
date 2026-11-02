@@ -53,7 +53,7 @@ class ToolActivity:
                 and re.fullmatch(r'[A-Za-z0-9_-]{1,160}', value[key])}
 
     def record(self, event_key, tool_id, title, status, *, source=None, parameters=None,
-               result=None, option_label=None):
+               result=None, option_label=None, occurred_at=None):
         """Record one event once; retrying never runs a tool or changes its receipt.
 
         event_key identifies a single transition (for example plan-ID:completed),
@@ -75,7 +75,17 @@ class ToolActivity:
         # A user opening an actual program is still only an opened event.
         # In this build only mutation receipts use the simulation backend.
         backend = 'simulation' if status in ('completed', 'interrupted', 'undone') else 'host'
-        entry = dict(id=ident, time=datetime.now(timezone.utc).isoformat(), tool_id=tool_id,
+        if occurred_at is not None:
+            try:
+                stamp = datetime.fromisoformat(occurred_at)
+                if not stamp.tzinfo:
+                    raise ValueError()
+                stamp = stamp.astimezone(timezone.utc).isoformat()
+            except (TypeError, ValueError, OverflowError):
+                raise AppError('工具活动时间无效。', 'invalid_activity_time') from None
+        else:
+            stamp = datetime.now(timezone.utc).isoformat()
+        entry = dict(id=ident, time=stamp, tool_id=tool_id,
                      title=REGISTRY[tool_id]['title'], status=status, backend=backend,
                      simulation_only=True, applied=False, actual_reclaimed_bytes=0)
         counts = self._counts(result)
@@ -126,6 +136,6 @@ class ToolActivity:
             parameters.extend(statuses)
         where = ' WHERE ' + ' AND '.join(clauses) if clauses else ''
         with self.state.lock:
-            rows = self.state.db.execute('SELECT payload FROM tool_activity' + where + ' ORDER BY rowid DESC LIMIT ?',
+            rows = self.state.db.execute('SELECT payload FROM tool_activity' + where + ' ORDER BY at DESC,rowid DESC LIMIT ?',
                                          [*parameters, limit]).fetchall()
             return [self._public(json.loads(row['payload'])) for row in rows]

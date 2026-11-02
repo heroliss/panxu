@@ -110,3 +110,11 @@ HTTP与原生窗口证据分别记录。活动后台取消的竞态/事务由单
 ## 0.23.1 整理进度
 
 `serve_v0231_fixture.py` 创建可丢弃文件、无密钥本地SSE peer和分离的源码/原生profile。8个演示状态供窗口核对，另有两个checker任务专用于接口继续/回答；不使用用户资料。`check_v0231_release.py --base-url <回环应用> --metadata verification/<目录>/fixture-meta.json --output verification/agent-ui-acceptance.json --artifact dist/PanXu/PanXu.exe` 包含只读10项及两个独立checker交互共12项；加`--read-only`保留所有演示状态。先运行checker，再在原生窗口继续/回答演示任务；初始状态的严格断言不在事后静默放宽。真实云模型、真实执行与全DPI/主题矩阵不由这些报告代替。
+
+## 0.24系统审查验收
+
+`serve_v0240_fixture.py --data-dir verification/<新的目录>/profile --native-profile verification/<新的目录>/native --bulk-history 50 --port <空闲端口>`提供人工文件、真实模拟收据、混合恢复/核验状态与任务清单。`check_v0240_release.py --base-url <最终EXE地址> --metadata verification/<目录>/fixture-meta.json --output verification/agent-ui-acceptance.json --artifact dist/PanXu/PanXu.exe`先于原生文件删除流程运行，避免把已隐藏的模拟删除项误当成范围丢失。源码服务和EXE应使用独立数据库副本，模型只用离线peer。
+
+真实模型为显式自选流程：`run_real_model_review.py --source-profile <既有资料目录> --data-dir verification/<新的隔离目录>`只在内存使用既有凭据，发送人工元数据，系统采集注入/拒绝，操作仅模拟。`--resume-from <既有人工验收目录>`备份同一任务状态到新目录续接，不能迁移个人扫描资料；开始前核对脚本参数与输出范围。
+
+最终归档可附`--source-model-report verification/real-model-acceptance.json`；finalizer核对7份核心源码散列，只把真实模型证据归到源码harness，不能由此声明最终EXE调用了云模型。最小窗口/所有主题/全部系统工具采集器/实际删除仍按明确证据和能力边界，不从passed推断。

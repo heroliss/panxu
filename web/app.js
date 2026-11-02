@@ -495,6 +495,7 @@ function initializePanxu() {
   }
   function setView(view,remember=true,snapshot=null) {
     if (!names[view]) return;
+    state.navigationRevision=(state.navigationRevision || 0)+1;
     if(view!==state.view){navigationSnapshots.set(state.view,locationSnapshot());if(!snapshot)snapshot=navigationSnapshots.get(view);}
     if(view!==state.view&&remember){
       navigationStack.push({view:state.view,query:state.query,risk:state.risk,origin:state.origin,subtype:state.subtype,limit:state.limit});
@@ -531,11 +532,12 @@ function initializePanxu() {
       append(card, title, meter); append(grid, card);
     }); return grid;
   }
+  function taskWorkspaceId(task){return task?.cleanup_source_task_id || task?.id || null;}
   function openTaskResults(task) {
     if(!task)return;
     const application=task.scope_kind==='applications'||['background','software'].includes(task.analysis?.section);
-    if(application){backgroundTaskId=task.id;setView('background',false);}
-    else{fileTaskId=task.id;window.PanxuFileWorkspace.open(task.scopes?.[0]?.path || '',{suggestions:true});setView('files',false);}
+    if(application){backgroundTaskId=taskWorkspaceId(task);setView('background',false);}
+    else{fileTaskId=taskWorkspaceId(task);window.PanxuFileWorkspace.open(task.scopes?.[0]?.path || '',{suggestions:true});setView('files',false);}
   }
   function updateTaskNavigation(task){
     const label=$('current-task-state');if(!label)return;
@@ -584,10 +586,12 @@ function initializePanxu() {
     protectedFiles = state.items.filter((item) => item.risk === 'protected');
     unitCache = new Map();
   }
-  async function loadApplications(sectionName) {
+  async function loadApplications(sectionName, current=()=>true) {
     const data = await api('/api/applications?section=' + sectionName);
+    if(!current())return false;
     if(data.revision || data.catalog_revision)state.catalogRevision=data.revision || data.catalog_revision;
     ingest(data.items);
+    return true;
   }
   function sectionItems() {
     if (state.view === 'files') return state.items.filter((item) => ['file', 'directory'].includes(item.kind));
@@ -627,8 +631,8 @@ function initializePanxu() {
       openTaskResults(data.task);
       return data;
     };
-    const current=window.PanxuTasks.currentTask(),taskScoped=current?.id===fileTaskId;
-    if(taskScoped){append(root,el('p','field-help','本次任务：'+current.goal),button('查看所有已有建议',()=>{fileTaskId=null;render();},'plain-button'));}
+    const current=window.PanxuTasks.currentTask(),taskScoped=Boolean(fileTaskId&&taskWorkspaceId(current)===fileTaskId);
+    if(taskScoped){const source=window.PanxuCleanupReview.sourceFor(current) || current;append(root,el('p','field-help','本次任务：'+source.goal),button('查看所有已有建议',()=>{fileTaskId=null;render();},'plain-button'));}
     const fileHost=el('section','file-workspace');root.append(fileHost);
     window.PanxuFileWorkspace.render(fileHost, {
       api,revision: state.catalogRevision, disks: state.disks, bytes, ingest,advanced,
@@ -649,7 +653,7 @@ function initializePanxu() {
   }
   function renderBackground(root) {
     const current=window.PanxuTasks.currentTask();
-    if(current?.id===backgroundTaskId){append(root,heading('后台与软件',current.goal),button('查看全部后台与软件',()=>{backgroundTaskId=null;render();},'plain-button'));window.PanxuTasks.renderResultWorkspace(root,taskHelpers('results'));return;}
+    if(backgroundTaskId&&taskWorkspaceId(current)===backgroundTaskId){const source=window.PanxuCleanupReview.sourceFor(current) || current;append(root,heading('后台与软件',source.goal),button('查看全部后台与软件',()=>{backgroundTaskId=null;render();},'plain-button'));window.PanxuTasks.renderResultWorkspace(root,taskHelpers('results'));return;}
     append(root, heading('后台与软件', '了解开机启动、后台应用和已经安装的软件。'));
     appendJob(root);
     if (!state.backgroundExpanded) {
@@ -664,9 +668,12 @@ function initializePanxu() {
     append(root, button('重新检查', () => { state.inventoryTarget = state.subtype; startInventory('background'); }, 'plain-button')); listToolbar(root); const results = el('div'); results.id = 'results-container'; append(root, results); renderResults();
   }
   async function openInventory(kind) {
+    const request=state.inventoryOpenRequest=(state.inventoryOpenRequest || 0)+1;
+    const origin=state.view,revision=state.navigationRevision || 0;
+    const current=()=>state.inventoryOpenRequest===request&&state.view===origin&&(state.navigationRevision || 0)===revision;
     state.inventoryTarget = kind; state.backgroundExpanded = true;
     const target = kind === 'software' ? 'software' : 'background';
-    try { await loadApplications(target); } catch (error) { notify(error.message, true); return; }
+    try { if(!await loadApplications(target,current)||!current())return; } catch (error) { if(current())notify(error.message, true); return; }
     if (state.items.some((item) => item.kind === kind && !synthetic(item))) { setView(target); state.subtype = kind === 'software' ? 'all' : kind; render(); }
     else await startInventory(target);
   }
@@ -725,7 +732,7 @@ function initializePanxu() {
       renderInventoryAdvice(explanation,item,result);append(explanationCell,explanation);append(explanationRow,explanationCell);append(body,explanationRow);
     });
     append(table, body); append(scroll, table); append(panel, scroll, el('p', 'result-note', '勾选后可分析，也可直接执行所选操作；执行前会确认范围和影响。'));
-    if(items.length>pageSize){const pager=el('nav','file-pagination');pager.setAttribute('aria-label','后台与软件列表分页');const previous=button('上一页',()=>{state.inventoryOffset=Math.max(0,offset-pageSize);renderResults();},'button'),next=button('下一页',()=>{state.inventoryOffset=offset+pageSize;renderResults();},'button');previous.disabled=offset===0;next.disabled=offset+pageSize>=items.length;append(pager,previous,el('span','',`${offset+1}–${Math.min(offset+pageSize,items.length)} / ${items.length} 项`),next);append(panel,pager);}
+    if(items.length>pageSize){const pager=el('nav','file-pagination');pager.setAttribute('aria-label','后台与软件列表分页');const change=nextOffset=>{const navigation=window.PanxuListNavigation?.capture(host);state.inventoryOffset=nextOffset;renderResults();window.PanxuListNavigation?.reveal(host.querySelector('.table-scroll'),navigation,`后台与软件，第 ${Math.floor(nextOffset/pageSize)+1} 页`);};const previous=button('上一页',()=>change(Math.max(0,offset-pageSize)),'button'),next=button('下一页',()=>change(offset+pageSize),'button');previous.disabled=offset===0;next.disabled=offset+pageSize>=items.length;append(pager,previous,el('span','',`${offset+1}–${Math.min(offset+pageSize,items.length)} / ${items.length} 项`),next);append(panel,pager);}
     const adviceNote=el('p','result-note');adviceNote.hidden=true;append(panel,adviceNote);append(host, panel);
     window.PanxuTasks.lookupAdvice(renderedItems,api).then(()=>{
       if(!panel.isConnected || host.firstChild!==panel) return;
@@ -813,10 +820,12 @@ function initializePanxu() {
   }
   async function startInventory(sectionName) {
     if (state.job?.status === 'running') { notify('正在检查，请稍等或先取消。'); return; }
+    const origin=state.view,revision=state.navigationRevision || 0;
     await task(async () => {
       state.checkDestination = sectionName;
       const data = await api('/api/inventory', { section: sectionName, compact: true }); state.job = { id: data.job_id, status: 'running', progress: {}, kind: sectionName };
-      setView(sectionName); state.backgroundExpanded = true; state.subtype = sectionName === 'software' ? 'all' : state.inventoryTarget || 'startup'; render(); pollJob(data.job_id);
+      if(state.view===origin&&(state.navigationRevision || 0)===revision){setView(sectionName); state.backgroundExpanded = true; state.subtype = sectionName === 'software' ? 'all' : state.inventoryTarget || 'startup'; render();}
+      pollJob(data.job_id);
     });
   }
   function appendJob(root) { if (state.job && (state.job.status !== 'completed' || state.job.result?.summary?.partial || state.job.result?.warnings?.length)) append(root, jobElement()); }
@@ -839,7 +848,10 @@ function initializePanxu() {
       if (data.status === 'running') { setTimeout(() => pollJob(id), 600); return; }
       if (data.status === 'completed' && data.result) {
         accept(data.result.catalog || data.result, false); state.warnings = data.result.warnings || []; state.selected.clear(); state.focused = null;
-        if (['background', 'software'].includes(state.checkDestination)) await loadApplications(state.checkDestination);
+        if (['background', 'software'].includes(state.checkDestination)&&state.view===state.checkDestination) {
+          const destination=state.checkDestination,revision=state.navigationRevision || 0;
+          await loadApplications(destination,()=>state.job?.id===id&&state.view===destination&&(state.navigationRevision || 0)===revision);
+        }
         render();
       } else if (data.status === 'failed') { state.analyzing = false; notify(cleanCopy(data.error || '检查没有完成，请重试。'), true); render(); }
       else if (data.status === 'cancelled') { state.analyzing = false; render(); toast('已取消，之前的检查结果会保留。'); }
@@ -877,49 +889,45 @@ function initializePanxu() {
     }); target.disabled = false; target.textContent = copy.button;
   }
   function renderHistory(root) {
-    append(root, heading('操作记录', '查看已确认的操作及其结果。'));
+    append(root, heading('操作记录', '查看每次操作的项目、结果和还原状态。'));
     window.PanxuTasks?.renderHistory(root);
     const emptyHistory=empty('还没有操作记录','确认操作后，结果会显示在这里。');emptyHistory.hidden=true;
     const ordinary=el('section','ordinary-history'),reading=el('p','field-help','正在读取最新操作记录…');
     const status=el('div','history-read-status');reading.setAttribute?.('role','status');status.append(reading);root.append(status,ordinary);
-    let ordinaryReady=false,specialistReady=false,specialistCount=0,ordinaryRequest=0;
-    const updateEmpty=()=>{emptyHistory.hidden=!(ordinaryReady&&specialistReady&&!state.history.length&&!specialistCount);};
+    let ordinaryReady=false,specialistReady=false,specialistCount=0,ordinaryRequest=0,specialistRequest=0;
+    const updateEmpty=()=>{emptyHistory.hidden=!(ordinaryReady&&specialistReady&&!state.history.length&&!state.historyAttempts?.length&&!specialistCount);};
     function paintOrdinary(history){
-      ordinary.replaceChildren();if(!history.length)return;
-      const list = el('div', 'history-list'); history.forEach((batch) => {
-        const card = el('article', 'history-card'); const top = el('div', 'history-top'); const date = new Date(batch.created_at); const when = Number.isNaN(date.getTime()) ? text(batch.created_at) : date.toLocaleString('zh-CN', { hour12: false });
-        append(top, el('h3', '', `已记录 ${batch.item_count ?? batch.items?.length ?? 0} 项操作`), badge(batch.status === 'undone' ? '已撤销' : batch.status==='partially_undone'?'部分记录已更新':'已记录')); append(card, top, el('p', '', when));
-        const detail = el('details', 'history-details'); append(detail, el('summary', '', '查看具体操作')); const entries = el('ul'); (batch.items || []).forEach((item) => append(entries, append(el('li'), itemTitle(item, el('span', '', `${window.PanxuActionCopy.label(item.action,item.kind)} · ${item.name || item.id}`))))); append(detail, entries); append(card, detail);
-        const footer = el('div', 'history-footer'); append(footer, el('span', '', batch.recovery_counts?.purged?'永久删除的项目无法还原，其余可恢复项仍可撤销。':'撤销后可重新选择相关项目。')); const restore = button('撤销', () => undoBatch(batch.id), 'button small'); restore.disabled = batch.status === 'undone'; append(footer, restore); if((batch.items || []).some(item=>item.action==='delete'&&['file','directory'].includes(item.kind)))footer.append(button('查看已删除文件',()=>setView('recovery'),'plain-button'));append(card, footer); append(list, card);
-      });ordinary.append(list);
+      window.PanxuHistoryPresentation.renderOrdinary(ordinary,history,{itemTitle,actionLabel:(action,kind)=>window.PanxuActionCopy.label(action,kind),onUndo:undoBatch,onRecovery:()=>setView('recovery')});
+      if(state.historyAttempts?.length){const attempts=el('section','attempt-history');window.PanxuHistoryPresentation.renderAttempts(attempts,state.historyAttempts,{itemTitle,actionLabel:(action,kind)=>window.PanxuActionCopy.label(action,kind),hasMore:state.historyAttemptsHasMore});ordinary.append(attempts);}
     }
     function loadOrdinary(){
-      const request=++ordinaryRequest;ordinaryReady=false;updateEmpty();reading.textContent='正在读取最新操作记录…';status.replaceChildren(reading);paintOrdinary(state.history);
+      const request=++ordinaryRequest;ordinaryReady=false;updateEmpty();reading.textContent='正在读取最新操作记录…';status.replaceChildren(reading);
+      // Bootstrap receipts lack grouping/current-state projection. Wait for
+      // that projection instead of briefly flashing dozens of internal batches.
+      if(state.history.every(batch=>(batch.items || []).every(item=>item.current_state)))paintOrdinary(state.history);
       api('/api/history').then(data=>{
         if(!ordinary.isConnected||request!==ordinaryRequest)return;
         if(!Array.isArray(data.history))throw new Error('操作记录未完整读取，请重试。');
-        state.history=data.history;ordinaryReady=true;paintOrdinary(data.history);status.replaceChildren();updateEmpty();
+        if(data.attempts!==undefined&&!Array.isArray(data.attempts))throw new Error('未完成的操作记录未完整读取，请重试。');
+        state.history=data.history;state.historyAttempts=data.attempts || [];state.historyAttemptsHasMore=data.attempts_has_more===true;ordinaryReady=true;paintOrdinary(data.history);status.replaceChildren();updateEmpty();
       }).catch(error=>{
         if(!ordinary.isConnected||request!==ordinaryRequest)return;
+        paintOrdinary(state.history);
         status.replaceChildren(el('p','field-error',error.message),button('重新读取操作记录',loadOrdinary,'plain-button'));updateEmpty();
       });
     }
     const specialist=el('section','specialist-history');root.append(specialist);
     loadOrdinary();
-    api('/api/cleanup-tools/history').then(({history})=>{
-      if(!specialist.isConnected)return;
-      if(!Array.isArray(history))throw new Error('专项操作记录未完整读取，请重试。');
-      specialistReady=true;specialistCount=history.length;updateEmpty();
-      if(!history.length)return;
-      specialist.append(section('专项操作','查看工具方案、选择和核验结果。'));
-      const labels={awaiting_review:'待确认',completed:'已记录',cancelled:'已取消',interrupted:'中断待核实',undone:'已撤销记录',executing:'进行中'};
-      history.forEach(plan=>{
-        const line=el('article','history-card');append(line,el('h3','',plan.title),el('p','field-help',labels[plan.status] || '待核实'),
-          button('查看方案与结果',()=>openSpecialist({plan_id:plan.id,source:plan.source}),'button small'));
-        if(plan.result&&['completed','interrupted'].includes(plan.status))line.append(button('撤销记录',()=>task(async()=>{await api('/api/cleanup-tools/undo',{plan_id:plan.id});render();}),'plain-button'));
-        specialist.append(line);
-      });
-    }).catch(error=>{if(specialist.isConnected)specialist.append(el('p','field-error',error.message));});
+    function loadSpecialist(){
+      const request=++specialistRequest;specialistReady=false;updateEmpty();specialist.replaceChildren(el('p','field-help','正在读取专项操作记录…'));
+      api('/api/cleanup-tools/history').then(({history})=>{
+        if(!specialist.isConnected||request!==specialistRequest)return;
+        if(!Array.isArray(history))throw new Error('专项操作记录未完整读取，请重试。');
+        specialistReady=true;specialistCount=history.length;updateEmpty();
+        window.PanxuHistoryPresentation.renderSpecialist(specialist,history,{itemTitle,onOpen:plan=>openSpecialist({plan_id:plan.id,source:plan.source}),onUndo:id=>task(async()=>{await api('/api/cleanup-tools/undo',{plan_id:id});render();})});
+      }).catch(error=>{if(specialist.isConnected&&request===specialistRequest)specialist.replaceChildren(el('p','field-error',error.message),button('重新读取专项记录',loadSpecialist,'plain-button'));});
+    }
+    loadSpecialist();
     root.append(emptyHistory);
   }
   async function undoBatch(id) {

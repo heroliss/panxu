@@ -81,6 +81,16 @@ class ToolActivityTests(unittest.TestCase):
         self.assertEqual(len(self.activity.recent(2)), 2)
         self.assertEqual(self.activity.recent(task_id='missing'), [])
 
+    def test_historical_backfill_keeps_original_time_and_does_not_become_latest(self):
+        newer = self.record('newer', status='completed', occurred_at='2026-01-02T08:00:00+08:00')
+        older = self.record('older', status='cancelled', occurred_at='2026-01-01T00:00:00+00:00')
+        self.assertEqual(newer['time'], '2026-01-02T00:00:00+00:00')
+        self.assertEqual(self.activity.recent(), [newer, older])
+        self.assertEqual(self.record('older', status='cancelled', occurred_at='2099-01-01T00:00:00+00:00'), older)
+        with self.assertRaises(AppError) as raised:
+            self.record('invalid', occurred_at='unknown')
+        self.assertEqual(raised.exception.code, 'invalid_activity_time')
+
     def test_events_survive_reopening_and_do_not_create_files_outside_the_store(self):
         before = set(Path(self.temp.name).iterdir())
         entry = self.record(status='completed', result={'succeeded': 2, 'failed': 0})

@@ -14,7 +14,7 @@ const page=(items,extra={})=>({path:'E:\\fixture',items,breadcrumbs:[],has_more:
 // Only the DOM, scheduler and HTTP boundary are faked. Workspace selection,
 // pagination, assessment and navigation run the production modules together.
 function fixture(respond){
- let root,nextTimer=0;const timers=new Map();
+ let root,nextTimer=0;const timers=new Map(),reveals=[];
  class Element{
   constructor(tag){this.tag=tag;this.children=[];this.handlers=new Map();this.parent=null;this.attrs={};this.dataset={};this.className='';this._text='';this.disabled=false;this.hidden=false;this.value='';}
   get textContent(){return this._text+this.children.map(child=>child.textContent).join('');}set textContent(value){this._text=String(value);this.children.forEach(child=>child.parent=null);this.children=[];}
@@ -29,7 +29,7 @@ function fixture(respond){
   matches(selector){const attr=selector.match(/^\[([^=\]]+)(?:="([^"]*)")?\]$/);if(attr)return attr[2]===undefined?Object.hasOwn(this.attrs,attr[1]):this.attrs[attr[1]]===attr[2];if(selector.startsWith('.'))return this.className.split(' ').includes(selector.slice(1));return this.tag===selector;}
   querySelectorAll(selector){return this.all().filter(child=>child.matches(selector));}querySelector(selector){return this.querySelectorAll(selector)[0]||null;}
   async fire(name='click',event={}){if(this.disabled)return;for(const handler of this.handlers.get(name)||[])await handler({preventDefault(){},...event});await flush();}
-  focus(){document.activeElement=this;}setSelectionRange(start,end){this.selectionStart=start;this.selectionEnd=end;}
+  focus(options){this.focusOptions=options;document.activeElement=this;}scrollIntoView(options){reveals.push({target:this,options});}setSelectionRange(start,end){this.selectionStart=start;this.selectionEnd=end;}
   set innerHTML(_){throw new Error('Untrusted content must stay literal.');}
  }
  root=new Element('main');const window={},requests=[],actions=[],document={activeElement:null,createElement:tag=>new Element(tag),createElementNS:(_,tag)=>new Element(tag),getElementById:id=>root.all().find(n=>n.id===id),querySelector:selector=>root.querySelector(selector)};
@@ -44,7 +44,7 @@ function fixture(respond){
  };
  const helpers={api,bytes:value=>value+' B',show:entry=>actions.push(['show',entry.id]),analyzeItems:async entries=>actions.push(['analyzeItems',entries.map(entry=>entry.id)]),analyzePath:async path=>actions.push(['analyzePath',path]),prepareLogical:async payload=>actions.push(['prepareLogical',plain(payload)])};
  const workspace=window.PanxuFileWorkspace;
- return {root,window,document,environment,requests,actions,helpers,api,Element,timers,
+ return {root,window,document,environment,requests,actions,helpers,api,Element,timers,reveals,
   async open(path='E:\\fixture',options={}){workspace.open(path,options);workspace.render(root,helpers);await flush();},
   all:()=>root.all(),button:label=>root.all().find(n=>n.tag==='button'&&n.textContent===label),input:label=>root.querySelector('[aria-label="'+label+'"]'),
   async select(id,checked=true){const check=this.input('选择 '+id+'.txt');assert.ok(check,'checkbox '+id);check.checked=checked;await check.fire('change');},
@@ -223,4 +223,18 @@ test('a failed preference save preserves the previous decision and selection wit
 test('a user-direct handoff labels its selected list without calling it AI advice',async()=>{
  const f=fixture();f.helpers.latestTask=()=>({plan:{origin:'user_direct'}});f.helpers.renderTaskResults=root=>root.append(new f.Element('p'));
  await f.open('',{suggestions:true});assert.ok(f.button('本次勾选'));assert.equal(f.root.textContent.includes('已有建议'),false);assert.ok(f.button('全部文件'));assert.equal(f.actions.length,0);
+});
+
+test('successful directory paging reveals the first new files while checkbox repaints keep the viewport',async()=>{
+ const rows=Array.from({length:75},(_,i)=>item('page-'+i));const f=fixture(url=>url.pathname==='/api/file-browser'?page(url.searchParams.get('cursor')?rows.slice(50):rows.slice(0,50),{has_more:!url.searchParams.get('cursor'),next_cursor:url.searchParams.get('cursor')?null:'next'}):undefined);
+ await f.open();await f.select('page-0');assert.equal(f.reveals.length,0);await f.button('下一页').fire();assert.equal(f.reveals.length,1);assert.match(f.reveals[0].target.textContent,/page-50\.txt/);assert.equal(f.document.activeElement,f.reveals[0].target);assert.equal(f.reveals[0].options.behavior,'instant');
+ await f.select('page-51');assert.equal(f.reveals.length,1);await f.button('上一页').fire();assert.equal(f.reveals.length,2);assert.match(f.reveals[1].target.textContent,/page-0\.txt/);assert.deepEqual(f.selected().sort(),['page-0','page-51']);
+});
+
+test('failed or superseded directory paging cannot scroll or focus a new location',async()=>{
+ for(const fail of [false,true]){
+  const old=deferred(),f=fixture(url=>{if(url.pathname!=='/api/file-browser')return;if(url.searchParams.get('path')==='E:\\new')return page([item('new')],{path:'E:\\new'});if(url.searchParams.get('cursor'))return old.promise;return page([item('old')],{has_more:true,next_cursor:'next'});});await f.open();await f.button('下一页').fire();
+  if(fail)old.reject(new Error('Owned failed page'));else{const input=f.input('文件位置');input.value='E:\\new';await input.fire('keydown',{key:'Enter'});old.resolve(page([item('late')]));}
+  await flush();assert.equal(f.reveals.length,0);if(!fail)assert.match(f.root.textContent,/new\.txt/);
+ }
 });

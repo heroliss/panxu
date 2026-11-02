@@ -62,7 +62,7 @@ class TaskProvenanceTests(unittest.TestCase):
 
     def advice_turn(self):
         return response(('record_advice', {'items': [self.advice()]}),
-                        ('present_findings', {'summary': '已保存本次建议。', 'needs_input': True}))
+                        ('present_findings', {'summary': '已保存本次建议。', 'needs_input': False}))
 
     def assert_llm(self, value, model, provider='custom'):
         self.assertEqual(set(value), {'source', 'provider', 'model', 'protocol', 'generated_at'})

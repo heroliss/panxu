@@ -7,6 +7,7 @@ const {join}=require('node:path');
 const {runInNewContext}=require('node:vm');
 const app=readFileSync(join(__dirname,'..','web','app.js'),'utf8');
 const tasks=readFileSync(join(__dirname,'..','web','tasks.js'),'utf8');
+const history=readFileSync(join(__dirname,'..','web','history-presentation.js'),'utf8');
 
 class Element {
   constructor(tag,cls='',value=''){this.tag=tag;this.className=cls;this.textContent=value;this.children=[];this.dataset={};this.hidden=false;this.disabled=false;}
@@ -16,6 +17,7 @@ class Element {
   querySelector(selector){return this.all().find(node=>selector.startsWith('.')?node.className.split(' ').includes(selector.slice(1)):node.tag===selector);}
   remove(){if(this.parent)this.parent.children=this.parent.children.filter(node=>node!==this);}
   addEventListener(name,handler){this.handlers=this.handlers || new Map();this.handlers.set(name,handler);}
+  setAttribute(name,value){this.attributes=this.attributes || {};this.attributes[name]=value;}
   set innerHTML(_){throw Error('copy must remain literal text');}
 }
 
@@ -34,6 +36,7 @@ function fixture(items=[]){
     api:async(path,payload)=>{calls.push({path,payload});throw Error('fixture rejection');},Date,Set};
   const helperEnd=tasks.indexOf('// Task UI owns presentation');assert.ok(helperEnd>0);
   runInNewContext(tasks.slice(0,helperEnd),context);
+  runInNewContext(history,context);
   context.window.PanxuTasks={renderHistory:()=>{}};
   const taskStart=app.indexOf('  async function task('),taskEnd=app.indexOf('  function heading(',taskStart);
   const start=app.indexOf('  function planActionCopy('),end=app.indexOf('  function settingsPayload(',start);
@@ -82,12 +85,12 @@ test('execution rejection preserves plan and restores the precise action button'
 
 test('history presents ordinary receipts and undo without inventing actual deletion',()=>{
   const f=fixture(),root=new Element('main');
-  f.state.history=[{id:'batch',status:'simulated',created_at:'2026-11-02',items:[item('delete')]}];
+  f.state.history=[{id:'batch',status:'simulated',created_at:'2026-11-02',items:[{...item('delete'),current_state:'recorded'}]}];
   f.subject.renderHistory(root);
   const text=f.text(root);
   assert.ok(text.includes('1 项操作'));assert.ok(!text.includes('模拟'));
   assert.ok(text.includes('撤销后可重新选择相关项目'));assert.ok(root.all().some(node=>node.tag==='button'&&node.textContent==='撤销'));
-  assert.ok(!text.includes('处理了'));assert.ok(!text.replace('查看已删除文件','').includes('已删除'));assert.ok(!text.includes('删除成功'));
+  assert.ok(!text.includes('处理了'));assert.ok(!text.replaceAll('已删除文件','').includes('已删除'));assert.ok(!text.includes('删除成功'));
 });
 
 test('one global mode notice covers ordinary confirmation and no simulation-only reset control',()=>{
