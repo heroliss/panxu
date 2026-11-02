@@ -190,6 +190,20 @@ test('the latest complete public reply stays visible during another turn and is 
   assert.equal(f.root.querySelector('.task-last-complete').hidden,false,'review state still shows the last complete reply');
 });
 
+test('tool-only completion remains in the shared recent-state reader across task redraws without hiding the last complete public reply',async()=>{
+  const f=fixture(task([],{status:'investigating',plan:null})),packets=new Map();let receiver;
+  runInNewContext(readFileSync(join(__dirname,'..','web','stream-view.js'),'utf8'),f.environment);
+  f.environment.window.PanxuStreamView.create=()=>({reset(){},dispose(){},update(){}});
+  f.environment.window.PanxuStreamChannel={subscribe(id,callback){receiver=callback;if(packets.has(id))callback(packets.get(id));return ()=>{};}};
+  f.helpers.redraw();await flush();
+  function send(turn,status,text,events,tool_pending=false){const packet={stream:{epoch:'fixed',turn_id:turn,status,text,tool_pending},activity:{events,omitted:0}};packets.set('copy-task',packet);receiver(packet);}
+  const events=[{id:'reply',kind:'reply_received',label:'本轮公开回复已接收。'}];send('one','completed','持续保留的完整回复',events);
+  events.push({id:'tool',kind:'tool_received',label:'模型的工具请求已接收。'});send('two','completed','',events,true);
+  assert.equal(f.root.querySelector('.task-complete-body').textContent,'持续保留的完整回复');assert.ok(f.root.querySelector('.task-stream-activity').textContent.includes('工具请求已接收'));assert.equal(f.root.querySelector('.task-live-reply').hidden,false);
+  f.helpers.redraw();await flush();assert.ok(f.root.querySelector('.task-stream-activity').textContent.includes('工具请求已接收'));assert.equal(f.root.querySelector('.task-complete-body').textContent,'持续保留的完整回复');
+  f.ui.accept(task([],{id:'different-task',status:'investigating',plan:null}));f.helpers.redraw();await flush();assert.equal(f.root.querySelector('.task-stream-activity').hidden,true);assert.ok(!f.root.textContent.includes('工具请求已接收'));assert.ok(!f.root.textContent.includes('持续保留的完整回复'));
+});
+
 test('host and durable complete-reply recovery is task scoped and does not leak a previous task into a new task',async()=>{
   const f=fixture(task([],{status:'investigating',plan:null,last_public_reply:{text:'任务甲持久正文',truncated:false,completed_at:'2026-11-02T04:00:00Z'}}));
   const callbacks=[];

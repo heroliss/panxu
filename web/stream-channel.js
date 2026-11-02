@@ -3,9 +3,27 @@
 // Share volatile local SSE snapshots. No storage or model credentials live here.
 window.PanxuStreamChannel = (() => {
   const channels=new Map(),maxChannels=4;
+  const histories=new Map(),maxHistories=8,maxEvents=32;
   const statuses=new Set(['streaming','completed','error','cancelled']);
   let watching=false;
-  function snapshot(channel){return {stream:channel.stream?{...channel.stream,last_complete:channel.stream.last_complete?{...channel.stream.last_complete}:null}:null,connection:channel.connection,incomplete:Boolean(channel.stream&&(channel.stream.status==='error'||(channel.stream.status==='streaming'&&['reconnecting','stopped','unavailable'].includes(channel.connection))))};}
+  function activity(taskId){const history=histories.get(taskId);return {events:history?history.events.map(event=>({...event})):[],omitted:history?.omitted || 0};}
+  function event(channel,kind,label,key){
+    let history=histories.get(channel.id);
+    if(!history){
+      if(histories.size>=maxHistories){const old=[...histories.keys()].find(id=>!channels.has(id)) || histories.keys().next().value;histories.delete(old);}
+      history={events:[],seen:new Set(),omitted:0};histories.set(channel.id,history);
+    }
+    if(history.seen.has(key))return;
+    // at is this browser's observation time, not the host task's event time.
+    history.events.push({id:key,label,kind,at:Date.now()});history.seen.add(key);
+    if(history.events.length>maxEvents){const removed=history.events.shift();history.seen.delete(removed.id);history.omitted++;}
+  }
+  function streamEvent(channel,value){
+    const kind=value.status==='error'?'error':value.status==='cancelled'?'cancelled':value.tool_pending?(value.status==='completed'?'tool_received':'tool_receiving'):(value.status==='completed'?'reply_received':'reply_receiving');
+    const labels={error:'回复中断，收到的公开内容已保留。',cancelled:'本轮回复已停止，已有记录保留。',tool_received:'模型的工具请求已接收。',tool_receiving:'正在接收工具请求，尚未执行。',reply_received:value.text.trim()?'本轮公开回复已接收。':'本轮模型请求已结束。',reply_receiving:'正在接收公开回复。'};
+    event(channel,kind,labels[kind],`${value.epoch}:${value.turn_id}:${kind}`);
+  }
+  function snapshot(channel){return {stream:channel.stream?{...channel.stream,last_complete:channel.stream.last_complete?{...channel.stream.last_complete}:null}:null,activity:activity(channel.id),connection:channel.connection,incomplete:Boolean(channel.stream&&(channel.stream.status==='error'||(channel.stream.status==='streaming'&&['reconnecting','stopped','unavailable'].includes(channel.connection))))};}
   function completed(value){
     if(!value || typeof value!=='object' || typeof value.text!=='string' || value.text.length>16000 || Array.from(value.text).length>8000)return null;
     return {text:value.text,epoch:typeof value.epoch==='string'?value.epoch.slice(0,120):'',turn_id:typeof value.turn_id==='string'?value.turn_id.slice(0,120):'',
@@ -28,14 +46,16 @@ window.PanxuStreamChannel = (() => {
       channel.generationEpoch=stream.epoch;
       if(channel.lastEpoch===stream.epoch&&stream.sequence<=channel.lastSequence){channel.errors=0;channel.connection='open';notify(channel);return true;}
       channel.lastEpoch=stream.epoch;channel.lastSequence=stream.sequence;
-      channel.stream={epoch:stream.epoch,sequence:stream.sequence,turn_id:typeof stream.turn_id==='string'?stream.turn_id:'',protocol:typeof stream.protocol==='string'?stream.protocol:'',text:stream.text,tool_pending:stream.tool_pending===true,status:stream.status,delivery:typeof stream.delivery==='string'?stream.delivery.slice(0,24):'',updated_at:typeof stream.updated_at==='string'?stream.updated_at:'',truncated:stream.truncated===true,last_complete:completed(stream.last_complete)};
+      channel.stream={epoch:stream.epoch,sequence:stream.sequence,turn_id:typeof stream.turn_id==='string'?stream.turn_id.slice(0,120):'',protocol:typeof stream.protocol==='string'?stream.protocol.slice(0,40):'',text:stream.text,tool_pending:stream.tool_pending===true,status:stream.status,delivery:typeof stream.delivery==='string'?stream.delivery.slice(0,24):'',updated_at:typeof stream.updated_at==='string'?stream.updated_at.slice(0,64):'',truncated:stream.truncated===true,last_complete:completed(stream.last_complete)};
+      streamEvent(channel,channel.stream);
     }else channel.stream=null;
     channel.errors=0;channel.connection='open';notify(channel);return true;
   }
   function failed(channel,generation){
     if(!current(channel,generation))return;
     stopTransport(channel);channel.errors++;
-    channel.connection=channel.errors>=3?'stopped':'reconnecting';notify(channel);
+    channel.connection=channel.errors>=3?'stopped':'reconnecting';
+    event(channel,channel.connection,channel.connection==='stopped'?'实时显示连接已停止，可以重新打开此任务重试。':'实时显示暂时断开，正在重连。',`${channel.lastEpoch || 'connection'}:${channel.lastSequence}:${channel.connection}:${channel.errors}`);notify(channel);
     if(channel.errors<3)channel.timer=window.setTimeout(()=>start(channel),Math.min(1500,250*channel.errors));
   }
   async function poll(channel,generation){
@@ -67,7 +87,7 @@ window.PanxuStreamChannel = (() => {
         source.onerror=()=>failed(channel,generation);
       }catch(_){failed(channel,generation);}
     }else if(typeof window.fetch==='function')poll(channel,generation);
-    else{channel.connection='unavailable';notify(channel);}
+    else{channel.connection='unavailable';event(channel,'unavailable','暂时无法显示实时回复，已有记录会保留。','connection:unavailable');notify(channel);}
   }
   function visibility(){
     for(const channel of channels.values()){

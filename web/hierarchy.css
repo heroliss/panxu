@@ -330,3 +330,11 @@ body { line-height: 1.7; }
 @media (forced-colors: active) {
   .semantic-tag, .connection-test-status:not(:empty), .risk-badge { border: 1px solid CanvasText; }
 }
+
+/* Public activity is a readable log, independent from text streaming. */
+.stream-activity{margin-top:14px;padding-top:12px;border-top:1px solid var(--line);min-width:0}
+.stream-activity-events{list-style:none;padding:0;margin:8px 0;max-height:7.5rem;overflow-y:auto;overscroll-behavior:contain;scrollbar-gutter:stable}
+.stream-activity-events li{padding:5px 0;font-size:12px;line-height:1.65;color:var(--muted);overflow-wrap:anywhere}
+.stream-activity-urgent{padding:9px 12px;margin:8px 0;border:1px solid var(--warning-line);border-radius:6px;background:var(--warning-bg);color:var(--amber);font-size:12px;line-height:1.7}
+.stream-activity-urgent[data-kind=error],.stream-activity-urgent[data-kind=unavailable]{border-color:var(--danger-line);background:var(--danger-bg);color:var(--red)}
+.developer-stream-activity .stream-activity-events{max-height:9rem}

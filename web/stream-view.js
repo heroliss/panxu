@@ -2,6 +2,42 @@
 
 // A reader for cumulative public text, independent of transport and task state.
 window.PanxuStreamView = (() => {
+  function createActivity(host,options={}){
+    const doc=host.ownerDocument || document,minimum=Number.isFinite(options.minimumVisibleMs)?Math.max(0,Math.min(10000,options.minimumVisibleMs)):4000;
+    const heading=doc.createElement('p'),urgent=doc.createElement('p'),list=doc.createElement('ol'),toggle=doc.createElement('button'),hint=doc.createElement('p');
+    heading.className='task-live-caption';heading.textContent='最近动态';urgent.className='stream-activity-urgent';urgent.setAttribute('role','status');
+    list.className='task-events stream-activity-events';list.tabIndex=0;list.setAttribute('aria-label','最近公开状态，可滚动阅读');
+    toggle.className='plain-button';toggle.type='button';hint.className='field-help';host.className+=' stream-activity';host.setAttribute('aria-label','本次会话的最近公开动态');
+    host.replaceChildren(heading,urgent,list,toggle,hint);
+    let events=[],omitted=0,expanded=false,timer=null,disposed=false,lastKey='';const seen=new Map();
+    const clock=()=>window.performance?.now?.() ?? Date.now();
+    const clearTimer=()=>{if(timer!==null)window.clearTimeout?.(timer);timer=null;};
+    function paint(){
+      if(disposed)return;clearTimer();host.hidden=!events.length;if(!events.length)return;
+      const now=clock(),latest=events.at(-1),criticalKinds=['error','cancelled','stopped','unavailable'];
+      const critical=[...events].reverse().find(event=>criticalKinds.includes(event.kind)&&(event===latest||now-seen.get(event.id)<minimum));
+      urgent.hidden=!critical;urgent.textContent=critical?.label || '';urgent.dataset.kind=critical?.kind || '';
+      const recent=events.filter((event,index)=>index>=events.length-3||now-seen.get(event.id)<minimum);
+      const shown=expanded?events:recent.slice(-8);
+      list.replaceChildren(...shown.map(event=>{const entry=doc.createElement('li');entry.textContent=event.label;entry.dataset.activityId=event.id;return entry;}));
+      toggle.hidden=events.length<=3&&!omitted;toggle.textContent=expanded?'收起状态记录':`查看最近 ${events.length} 条状态`;toggle.setAttribute('aria-expanded',String(expanded));
+      hint.hidden=!omitted;hint.textContent=omitted?`仅保留本次会话最近 32 条公开状态，较早 ${omitted} 条已省略。`:'';
+      if(typeof window.setTimeout==='function'){
+        const due=events.filter((event,index)=>!expanded&&index<events.length-3||criticalKinds.includes(event.kind)).map(event=>minimum-(now-seen.get(event.id))).filter(delay=>delay>0);
+        if(due.length)timer=window.setTimeout(paint,Math.min(...due)+1);
+      }
+    }
+    function update(value={}){
+      if(disposed)return;const allowed=new Set(['reply_receiving','reply_received','tool_receiving','tool_received','error','cancelled','reconnecting','stopped','unavailable']);
+      const next=Array.isArray(value.events)?value.events.slice(-32).filter(event=>event&&typeof event.id==='string'&&event.id.length<=300&&typeof event.label==='string'&&event.label.length<=180&&allowed.has(event.kind)).map(event=>({id:event.id,label:event.label,kind:event.kind})):[];
+      const count=Number.isSafeInteger(value.omitted)&&value.omitted>=0?value.omitted:0,key=JSON.stringify([next,count]);
+      if(key===lastKey)return;lastKey=key;const ids=new Set(next.map(event=>event.id));for(const id of seen.keys())if(!ids.has(id))seen.delete(id);
+      next.forEach(event=>{if(!seen.has(event.id))seen.set(event.id,clock());});events=next;omitted=count;paint();
+    }
+    function reset(){clearTimer();events=[];omitted=0;expanded=false;lastKey='';seen.clear();host.hidden=true;list.replaceChildren();urgent.textContent='';hint.textContent='';}
+    function dispose(){reset();disposed=true;host.replaceChildren();}
+    toggle.addEventListener('click',()=>{expanded=!expanded;paint();});reset();return {update,reset,dispose};
+  }
   function create(host, options = {}) {
     const doc=host.ownerDocument || document;
     const body=doc.createElement('div'),notice=doc.createElement('p');
@@ -92,5 +128,5 @@ window.PanxuStreamView = (() => {
     }
     feedback();return {update,reset,dispose};
   }
-  return {create};
+  return {create,createActivity};
 })();

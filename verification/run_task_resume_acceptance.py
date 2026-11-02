@@ -114,9 +114,11 @@ class FixtureModel:
         self.restored_fact_ids = []
         self.read_old_facts = False
         self.saved_scan_id = None
+        self.completed_scan_checkpointed = False
 
     def answer(self, payload):
         messages = payload["messages"]
+        available = {tool["function"]["name"] for tool in payload.get("tools", [])}
         context = parse_host_data(messages[1]["content"])
         model = payload["model"]
         if model not in (MODEL_A, MODEL_B) or context["goal"] != self.goal:
@@ -152,19 +154,31 @@ class FixtureModel:
                 found = {item["id"] for item in result.get("items", [])}
                 self.read_old_facts |= bool(found.intersection(self.restored_fact_ids))
 
-        last_tool = results[-1][0] if results else None
-        if model == MODEL_B and not self.tools["read_facts"] and self.restored_fact_ids:
+        scans = list(context.get("scans", []))
+        scans += [result for _, result in results if result.get("scan_id")]
+        scan = scans[-1] if scans else None
+        scan_complete = bool(scan and scan.get("coverage", {}).get("complete", False)
+            and scan.get("published_count", 0) >= scan.get("coverage", {}).get("observed_entries", 0) + 1)
+        # Confirm the checkpoint's actual result, not merely that the fake
+        # provider requested one. Incomplete scans cannot earn this milestone.
+        if scan_complete and any(name == "checkpoint_task" for name, _ in results):
+            self.completed_scan_checkpointed = True
+        if "continue_scan" not in available:
+            if "present_findings" not in available:
+                raise ValueError("fixture_has_no_allowed_conclusion_tool")
+            name, args = "present_findings", {
+                "summary": ("测试目录的元数据采集和交接已完成；尚未逐项评估文件用途，实际文件未改变。"
+                    if scan_complete and self.completed_scan_checkpointed else
+                    "已保存本段元数据、个人选择和已有事实；采集或交接仍需继续，尚未逐项评估文件用途，实际文件未改变。"),
+                "needs_input": not (scan_complete and self.completed_scan_checkpointed)}
+        elif model == MODEL_B and not self.tools["read_facts"] and self.restored_fact_ids:
             name, args = "read_facts", {"ids": self.restored_fact_ids[:2]}
         else:
-            scans = list(context.get("scans", []))
-            scans += [result for _, result in results if result.get("scan_id")]
-            scan = scans[-1] if scans else None
             if not scan:
                 name, args = "survey_scope", {"scope_id": context["scopes"][0]["id"]}
-            elif (not scan.get("coverage", {}).get("complete", False)
-                  or scan.get("published_count", 0) < scan.get("coverage", {}).get("observed_entries", 0) + 1):
+            elif not scan_complete:
                 name, args = "continue_scan", {"scan_id": scan["scan_id"], "max_entries": 512}
-            elif last_tool == "checkpoint_task":
+            elif self.completed_scan_checkpointed:
                 name, args = "present_findings", {
                     "summary": "测试目录的元数据采集已完成。保留选择和历史事实仍可继续使用；尚未逐项评估文件用途，实际文件未改变。",
                     "needs_input": False}
@@ -173,6 +187,8 @@ class FixtureModel:
                     "summary": "目录元数据已采集，保留选择已保存。",
                     "next_steps": ["如需整理，继续逐项调查用途并提出可审阅建议。"],
                     "unresolved": ["元数据采集完成不表示每个文件的用途已分析。"]}
+        if name not in available:
+            raise ValueError("fixture_requested_unavailable_tool")
         self.tools[name] += 1
         call_id = f"fixture_{len(self.requests)}_{name}"
         return {"choices": [{"message": {
@@ -253,7 +269,7 @@ def run(goal):
                     created = client.request("/api/tasks", {"goal": goal, "path": str(scope)})
                     task_id = created["task"]["id"]
                     first = client.wait(created["job_id"])
-                    report["checks"]["initial_turn_exhausted_budget"] = first["status"] == "budget_exhausted"
+                    report["checks"]["initial_turn_needs_continuation"] = first["status"] in ("needs_input", "budget_exhausted")
                     report["checks"]["initial_scan_incomplete"] = bool(first["scans"]) and not first["scans"][0]["coverage"]["complete"]
                     model.saved_scan_id = first["scans"][0]["scan_id"]
                     rows = client.request("/api/files?limit=50")["items"]
@@ -287,7 +303,7 @@ def run(goal):
                         continued = client.request(f"/api/tasks/{task_id}/continue", {})
                         task = client.wait(continued["job_id"])
                         continuations += 1
-                        if task["status"] not in ("completed", "budget_exhausted"):
+                        if task["status"] not in ("completed", "budget_exhausted", "needs_input"):
                             raise RuntimeError("unexpected_task_status_" + task["status"])
                     public = client.request(f"/api/tasks/{task_id}")["task"]
                     health = client.request("/api/health")
@@ -316,7 +332,7 @@ def run(goal):
                         "usage_accumulated": public["usage"]["model_requests"] > old_usage,
                         "facts_accumulated": final_facts["total"] > old_facts["total"],
                         "checkpoint_executed": model.tools["checkpoint_task"] >= 1,
-                        "findings_executed": model.tools["present_findings"] == 1,
+                        "findings_executed": model.tools["present_findings"] >= 1,
                         "no_tool_failures": public["usage"]["tool_failures"] == 0,
                         "simulation_only": health["mode"] == "simulation" and health["live_executor_available"] is False,
                         "no_action_batches": not history,

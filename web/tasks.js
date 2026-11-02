@@ -230,7 +230,7 @@ window.PanxuTasks = (() => {
 
   function stopLivePreview() {
     if (!livePreview) return;
-    livePreview.off?.(); livePreview.view.dispose(); livePreview = null;
+    livePreview.off?.();livePreview.view.dispose();livePreview.activity?.dispose();livePreview = null;
   }
   function renderLivePreview(panel,sourceTask=current) {
     if (!window.PanxuStreamView || !window.PanxuStreamChannel || !sourceTask?.id) return;
@@ -244,13 +244,14 @@ window.PanxuTasks = (() => {
     const body = node('div', 'task-live-body');body.tabIndex=0;
     body.setAttribute('aria-label','公开回复全文，可在此滚动阅读');
     const caption = node('p', 'task-live-caption', '助手正在回复');
-    add(receiving,caption,body);add(section,complete,receiving);add(panel,section);
-    const token = {id: sourceTask.id,ownerId:current.id,view: window.PanxuStreamView.create(body), off: null, turn: '',partialText:''};
+    const activityHost=node('div','task-stream-activity'),activity=window.PanxuStreamView.createActivity?.(activityHost);
+    add(receiving,caption,body);add(section,complete,receiving,activityHost);add(panel,section);
+    const token = {id: sourceTask.id,ownerId:current.id,view:window.PanxuStreamView.create(body),activity,off:null,turn:'',partialText:''};
     livePreview = token;
     function paintComplete(){
       const last=completedReplies.get(token.id);complete.hidden=!last;
       if(last){completeBody.textContent=last.text;completeCaption.textContent='最近完整回复'+(last.truncated?' · 可见内容已达 8000 字上限':'');}
-      section.hidden=complete.hidden&&receiving.hidden;
+      section.hidden=complete.hidden&&receiving.hidden&&(!activity||activityHost.hidden);
     }
     if(sourceTask.last_public_reply)rememberReply(token.id,sourceTask.last_public_reply,'durable');
     paintComplete();
@@ -258,6 +259,7 @@ window.PanxuTasks = (() => {
       if (livePreview !== token || !section.isConnected) return;
       token.off = window.PanxuStreamChannel.subscribe(token.id, packet => {
         if (livePreview !== token || current?.id !== token.ownerId || !section.isConnected) return;
+        if(packet.activity)activity?.update(packet.activity);
         const value = packet.stream;
         if (!value) {
           if (['stopped', 'unavailable'].includes(packet.connection)) {
@@ -282,7 +284,7 @@ window.PanxuTasks = (() => {
         if (value.truncated) phase += ' · 仅展示最近一轮的前 8000 字';
         caption.textContent = phase;
         receiving.hidden=value.status==='completed' || !partialText.trim()&&!value.tool_pending&&!interrupted;
-        section.hidden=complete.hidden&&receiving.hidden;
+        section.hidden=complete.hidden&&receiving.hidden&&(!activity||activityHost.hidden);
         token.view.update({text: partialText, phase: value.tool_pending ? 'tool_pending' : '', status: interrupted ? 'incomplete' : value.status});
       });
     });

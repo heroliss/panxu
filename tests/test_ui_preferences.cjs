@@ -120,7 +120,7 @@ class Element {
   fire(name) { return Promise.all((this.handlers.get(name) || []).map((handler) => handler({ preventDefault() {} }))); }
 }
 
-function developer({ payload, kind = 'request', streaming = false } = {}) {
+function developer({ payload, kind = 'request', streaming = false, activity = false } = {}) {
   const root = new Element('section'); root.root = true;
   const timers = new Map(), calls = [], listeners = new Map();
   let timerId = 0, seq = 1, capture = false;
@@ -132,7 +132,7 @@ function developer({ payload, kind = 'request', streaming = false } = {}) {
   ] });
   const document = { hidden: false, addEventListener: (name, handler) => listeners.set(name, handler),
     removeEventListener: (name) => listeners.delete(name) };
-  const streamState={taskId:'stream-fixture',subscriptions:[],listeners:new Map(),unsubscribes:0,resets:0,disposes:0,updates:[]};
+  const streamState={taskId:'stream-fixture',subscriptions:[],listeners:new Map(),unsubscribes:0,resets:0,disposes:0,updates:[],activityUpdates:[],activityDisposes:0};
   const context = {
     window: { PanxuAppearance: { get: () => preferences } }, document, state: { view: 'model' }, developerCleanup: null,
     el: (tag, className, text) => new Element(tag, className, text),
@@ -158,6 +158,10 @@ function developer({ payload, kind = 'request', streaming = false } = {}) {
       reset:()=>{streamState.resets++;host.textContent='';},
       dispose:()=>{streamState.disposes++;host.textContent='';},
     })};
+    if(activity)context.window.PanxuStreamView.createActivity=host=>({
+      update:value=>{streamState.activityUpdates.push(value);host.textContent=(value?.events || []).map(event=>event.label).join(' ');host.hidden=!value?.events?.length;},
+      dispose:()=>{streamState.activityDisposes++;host.textContent='';host.hidden=true;},
+    });
   }
   const viewStart = source.indexOf('window.PanxuDeveloperView = (() => {');
   const viewEnd = source.indexOf('function initializePanxu()', viewStart);
@@ -305,6 +309,19 @@ test('developer stream updates preserve historical DOM and mark a broken connect
   const resets=f.streamState.resets;f.emitStream({stream:{...value,turn_id:'turn-two',text:'新一轮'},connection:'open',incomplete:false});assert.equal(f.streamState.resets,resets+1);
   f.emitStream({stream:{...value,status:'cancelled'},connection:'open',incomplete:false});assert.equal(f.root.all().find(node=>node.className==='developer-stream').hidden,true);
   f.context.developerCleanup();assert.equal(f.timers.size,0);
+});
+
+test('developer activity survives tool-only completion and cancellation, while task switches clear the prior reader',async()=>{
+  const f=developer({streaming:true,activity:true});await f.open();await f.check('developer-live',true);
+  const activity={events:[{id:'turn-a:tool',kind:'tool_received',label:'模型的工具请求已接收。'}],omitted:0};
+  const stream={epoch:'one',turn_id:'turn-a',text:'',status:'completed',tool_pending:true};
+  f.emitStream({stream,activity,connection:'open',incomplete:false});
+  const panel=f.root.all().find(node=>node.className==='developer-stream');assert.equal(panel.hidden,false);
+  assert.match(panel.querySelector('.developer-stream-activity').textContent,/工具请求已接收/);
+  f.emitStream({stream:{...stream,status:'cancelled'},activity,connection:'open',incomplete:false});assert.equal(panel.hidden,false,'public activity remains readable after the current text stops');
+  f.streamState.taskId='other-task';await f.tick();assert.equal(f.streamState.activityDisposes,1);
+  assert.equal(panel.querySelector('.developer-stream-activity').textContent,'');
+  f.context.developerCleanup();assert.equal(f.streamState.activityDisposes,2);
 });
 
 test('developer switches streaming task IDs without accepting a stale prior-task callback',async()=>{

@@ -10,13 +10,62 @@ import copy
 import json
 
 
-MAX_WIRE_BYTES = 512 * 1024
+# SSE repeats provider IDs, model names and JSON scaffolding for each delta.
+# At 8192 output tokens, one/two short deltas per token can legitimately exceed
+# the former 512-KiB/4096-frame cap. Allow bounded framing headroom (under 2.5
+# frames/token and 16 MiB total); assembled meaning still has its own 2-MiB cap,
+# a 128-KiB event cap, 8 calls, and the transport's unchanged 180-second deadline.
+MAX_GENERATION_TOKENS = 8192
+MAX_WIRE_BYTES = 16 * 1024 * 1024
 MAX_EVENT_BYTES = 128 * 1024
-MAX_FRAMES = 4096
-MAX_ASSEMBLED_BYTES = 256 * 1024
+MAX_FRAMES = 20000
+MAX_ASSEMBLED_BYTES = 2 * 1024 * 1024
 MAX_TEXT = 64000
-MAX_ARGUMENTS = 16000
+# Meaning is measured after JSON parsing/canonical encoding. A literal astral
+# character and its escaped surrogate pair must have the same argument budget.
+MAX_ARGUMENTS = 128000
+MAX_ARGUMENT_WIRE_CHARS = 12 * MAX_ARGUMENTS
 MAX_CALLS = 8
+
+
+class ResponseBudgetExceeded(ValueError):
+    """Safe numeric diagnostics only; never a failed frame or private thought."""
+    def __init__(self, boundary, observed, limit):
+        super().__init__('response_budget')
+        self.budget = dict(boundary=boundary, observed=observed, limit=limit)
+
+
+def check_generation_limit(protocol, value, *, max_output_tokens=None):
+    """Classify only explicit provider token-limit signals, not disconnects.
+
+    Missing token usage stays unknown. The requested token ceiling is supplied
+    by the caller so custom peers' 3500 and named providers' 8192 are distinct.
+    """
+    if not isinstance(value, dict):
+        return
+    signal, usage, output_fields = None, {}, ()
+    if protocol == 'chat_completions':
+        choices = value.get('choices')
+        if isinstance(choices, list) and any(isinstance(row, dict) and row.get('finish_reason') == 'length' for row in choices):
+            signal, usage, output_fields = 'length', value.get('usage') or {}, ('completion_tokens',)
+    elif protocol == 'responses':
+        response = value.get('response') if isinstance(value.get('response'), dict) else value
+        details = response.get('incomplete_details')
+        if (response.get('status') == 'incomplete' or value.get('type') == 'response.incomplete') and isinstance(details, dict) and details.get('reason') == 'max_output_tokens':
+            signal, usage, output_fields = 'max_output_tokens', response.get('usage') or {}, ('output_tokens',)
+    elif protocol == 'anthropic' and value.get('stop_reason') == 'max_tokens':
+        signal, usage, output_fields = 'max_tokens', value.get('usage') or {}, ('output_tokens',)
+    elif protocol == 'gemini':
+        candidates = value.get('candidates')
+        if isinstance(candidates, list) and any(isinstance(row, dict) and row.get('finishReason') == 'MAX_TOKENS' for row in candidates):
+            signal, usage, output_fields = 'MAX_TOKENS', value.get('usageMetadata') or {}, ('candidatesTokenCount',)
+    if signal:
+        observed = next((usage[name] for name in output_fields if isinstance(usage, dict)
+                         and type(usage.get(name)) is int and usage[name] >= 0), None)
+        failure = ResponseBudgetExceeded('generation_tokens', observed,
+            max_output_tokens if type(max_output_tokens) is int else None)
+        failure.budget['signal'] = signal
+        raise failure
 
 
 def _check(cancel):
@@ -35,7 +84,7 @@ def frames(chunks, *, cancel=None):
                 raise ValueError('invalid_stream')
             wire += len(chunk)
             if wire > MAX_WIRE_BYTES:
-                raise ValueError('response_budget')
+                raise ResponseBudgetExceeded('sse_wire_bytes', wire, MAX_WIRE_BYTES)
             buffer += decoder.decode(chunk)
             while True:
                 positions = [i for i in (buffer.find('\r'), buffer.find('\n')) if i >= 0]
@@ -48,12 +97,12 @@ def frames(chunks, *, cancel=None):
                 line, buffer = buffer[:end], buffer[end + skip:]
                 event_bytes += len(line.encode()) + 1
                 if event_bytes > MAX_EVENT_BYTES:
-                    raise ValueError('response_budget')
+                    raise ResponseBudgetExceeded('sse_event_bytes', event_bytes, MAX_EVENT_BYTES)
                 if not line:
                     if lines:
                         count += 1
                         if count > MAX_FRAMES:
-                            raise ValueError('response_budget')
+                            raise ResponseBudgetExceeded('sse_frames', count, MAX_FRAMES)
                         yield event, '\n'.join(lines)
                     lines, event, event_bytes = [], '', 0
                 elif line.startswith('data:'):
@@ -61,13 +110,13 @@ def frames(chunks, *, cancel=None):
                 elif line.startswith('event:'):
                     event = line[6:].removeprefix(' ')
             if len(buffer.encode()) + event_bytes > MAX_EVENT_BYTES:
-                raise ValueError('response_budget')
+                raise ResponseBudgetExceeded('sse_event_bytes', len(buffer.encode()) + event_bytes, MAX_EVENT_BYTES)
         _check(cancel)
         decoder.decode(b'', final=True)
         if buffer == '\r' and lines:
             count += 1
             if count > MAX_FRAMES:
-                raise ValueError('response_budget')
+                raise ResponseBudgetExceeded('sse_frames', count, MAX_FRAMES)
             yield event, '\n'.join(lines)
             buffer, lines = '', []
         # No dispatch of an unterminated event: a disconnect is not completion.
@@ -86,20 +135,27 @@ def _index(value, maximum=32):
 def _append(value, addition, limit=MAX_TEXT):
     if addition is None:
         return value
-    if not isinstance(addition, str) or len(value) + len(addition) > limit:
-        raise ValueError('response_budget' if isinstance(addition, str) else 'invalid_stream')
+    if not isinstance(addition, str):
+        raise ValueError('invalid_stream')
+    if len(value) + len(addition) > limit:
+        raise ResponseBudgetExceeded('arguments_wire_chars' if limit == MAX_ARGUMENT_WIRE_CHARS else 'text_chars', len(value) + len(addition), limit)
     return value + addition
 
 
 def _arguments(value):
-    if not isinstance(value, str) or len(value) > MAX_ARGUMENTS:
+    if not isinstance(value, str):
         raise ValueError('invalid_tool_arguments')
+    if len(value) > MAX_ARGUMENT_WIRE_CHARS:
+        raise ResponseBudgetExceeded('arguments_wire_chars', len(value), MAX_ARGUMENT_WIRE_CHARS)
     try:
         parsed = json.loads(value)
     except ValueError:
         raise ValueError('invalid_tool_arguments') from None
     if not isinstance(parsed, dict):
         raise ValueError('invalid_tool_arguments')
+    semantic_chars = len(json.dumps(parsed, ensure_ascii=False, separators=(',', ':')))
+    if semantic_chars > MAX_ARGUMENTS:
+        raise ResponseBudgetExceeded('arguments_chars', semantic_chars, MAX_ARGUMENTS)
     return parsed
 
 
@@ -116,7 +172,7 @@ def _merge_object(target, addition):
             raise ValueError('invalid_tool_arguments')
 
 
-def assemble(protocol, chunks, *, on_preview=None, cancel=None):
+def assemble(protocol, chunks, *, on_preview=None, cancel=None, max_output_tokens=None):
     raw, public, pending, complete = {}, '', False, False
     chat = {'role': 'assistant', 'content': ''}
     calls, outputs, blocks, argument_parts, open_blocks = {}, {}, {}, {}, set()
@@ -145,6 +201,7 @@ def assemble(protocol, chunks, *, on_preview=None, cancel=None):
                 raise ValueError('invalid_stream') from None
             if not isinstance(value, dict) or 'error' in value:
                 raise ValueError('provider_unavailable')
+            check_generation_limit(protocol, value, max_output_tokens=max_output_tokens)
             kind = value.get('type') or event
             if protocol == 'chat_completions':
                 if isinstance(value.get('usage'), dict):
@@ -181,7 +238,7 @@ def assemble(protocol, chunks, *, on_preview=None, cancel=None):
                         if function.get('name') and entry['function']['name'] != function['name']:
                             entry['function']['name'] = _append(entry['function']['name'], function['name'], 80)
                         if 'arguments' in function:
-                            entry['function']['arguments'] = _append(entry['function']['arguments'], function['arguments'], MAX_ARGUMENTS)
+                            entry['function']['arguments'] = _append(entry['function']['arguments'], function['arguments'], MAX_ARGUMENT_WIRE_CHARS)
                         preview(tool=True)
                     if choice.get('finish_reason') is not None:
                         raw['finish_reason'] = choice['finish_reason']
@@ -213,7 +270,7 @@ def assemble(protocol, chunks, *, on_preview=None, cancel=None):
                     preview(value.get('delta'))
                 elif kind == 'response.function_call_arguments.delta':
                     item = outputs.setdefault(_index(value.get('output_index')), dict(type='function_call', arguments=''))
-                    item['arguments'] = _append(item.get('arguments', ''), value.get('delta'), MAX_ARGUMENTS)
+                    item['arguments'] = _append(item.get('arguments', ''), value.get('delta'), MAX_ARGUMENT_WIRE_CHARS)
                     preview(tool=True)
                 elif kind == 'response.function_call_arguments.done':
                     item = outputs.setdefault(_index(value.get('output_index')), dict(type='function_call'))
@@ -250,7 +307,7 @@ def assemble(protocol, chunks, *, on_preview=None, cancel=None):
                         if field == 'text' and block.get('type') == 'text':
                             preview(delta.get(field))
                     elif delta.get('type') == 'input_json_delta':
-                        argument_parts[index] = _append(argument_parts.get(index, ''), delta.get('partial_json'), MAX_ARGUMENTS)
+                        argument_parts[index] = _append(argument_parts.get(index, ''), delta.get('partial_json'), MAX_ARGUMENT_WIRE_CHARS)
                         preview(tool=True)
                     else:
                         raise ValueError('invalid_stream')
@@ -264,6 +321,7 @@ def assemble(protocol, chunks, *, on_preview=None, cancel=None):
                 elif kind == 'message_delta':
                     raw.update(value.get('delta') or {})
                     usage.update(value.get('usage') or {})
+                    check_generation_limit(protocol, dict(raw, usage=usage), max_output_tokens=max_output_tokens)
                 elif kind == 'message_stop':
                     if open_blocks or raw.get('stop_reason') not in ('end_turn', 'tool_use', 'stop_sequence'):
                         raise ValueError('stream_incomplete')
@@ -313,7 +371,7 @@ def assemble(protocol, chunks, *, on_preview=None, cancel=None):
                                     raise ValueError('invalid_tool_arguments')
                                 ident = ('anonymous', len(gemini_calls))
                             if len(gemini_calls) >= MAX_CALLS and ident not in gemini_calls:
-                                raise ValueError('response_budget')
+                                raise ResponseBudgetExceeded('tool_calls', len(gemini_calls) + 1, MAX_CALLS)
                             if ident not in gemini_calls:
                                 gemini_calls[ident] = dict(functionCall=dict(name=call.get('name', ''), args={}))
                                 gemini_parts.append(gemini_calls[ident])
@@ -327,7 +385,7 @@ def assemble(protocol, chunks, *, on_preview=None, cancel=None):
                                 function['name'] = call['name']
                             if isinstance(call.get('args', {}), str):
                                 if native_id:
-                                    argument_parts[ident] = _append(argument_parts.get(ident, ''), call['args'], MAX_ARGUMENTS)
+                                    argument_parts[ident] = _append(argument_parts.get(ident, ''), call['args'], MAX_ARGUMENT_WIRE_CHARS)
                                 else:
                                     # A complete JSON object can be accepted as
                                     # one compatibility part. Guessing which
@@ -364,8 +422,9 @@ def assemble(protocol, chunks, *, on_preview=None, cancel=None):
                 for call in chat['tool_calls']:
                     _arguments(call['function']['arguments'])
             raw = dict(choices=[dict(message=chat, finish_reason=raw.get('finish_reason'))], usage=usage)
-        if len(json.dumps(raw, ensure_ascii=False).encode()) > MAX_ASSEMBLED_BYTES:
-            raise ValueError('response_budget')
+        assembled_bytes = len(json.dumps(raw, ensure_ascii=False).encode())
+        if assembled_bytes > MAX_ASSEMBLED_BYTES:
+            raise ResponseBudgetExceeded('assembled_bytes', assembled_bytes, MAX_ASSEMBLED_BYTES)
         return raw
     except (KeyError, TypeError, AttributeError, IndexError):
         raise ValueError('invalid_stream') from None

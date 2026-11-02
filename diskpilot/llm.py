@@ -36,7 +36,10 @@ MAX_ROUNDS = 4
 MAX_TOOL_CALLS = 8
 MAX_ITEMS = 5000
 MAX_REQUEST_BYTES = 192 * 1024
-MAX_RESPONSE_BYTES = 256 * 1024
+MAX_RESPONSE_BYTES = streaming.MAX_ASSEMBLED_BYTES
+# Native continuation intentionally retains the original response beside the
+# normalized public/tools projection. It is not a second provider response.
+MAX_NORMALIZED_RESPONSE_BYTES = 3 * MAX_RESPONSE_BYTES
 REQUEST_TIMEOUT = 20
 MAX_STREAM_SECONDS = 180
 _TOOLS = ("list_items", "inspect_items", "summarize_inventory")
@@ -230,7 +233,7 @@ def _http_transport(url: str, payload: dict, headers: dict, timeout: int):
         # Exceptions may contain request headers, URLs or provider body text.
         raise ValueError("provider_unavailable") from None
     if len(raw) > MAX_RESPONSE_BYTES:
-        raise ValueError("response_budget")
+        raise streaming.ResponseBudgetExceeded('json_wire_bytes', len(raw), MAX_RESPONSE_BYTES)
     try:
         value = json.loads(raw)
     except (ValueError, UnicodeError):
@@ -406,20 +409,30 @@ class ModelAssistant:
                 if isinstance(response, (bytes, bytearray)):
                     response = [bytes(response)]
                 response = streaming.assemble(settings.get('protocol', 'chat_completions'), response,
-                    on_preview=on_preview, cancel=cancel)
+                    on_preview=on_preview, cancel=cancel, max_output_tokens=payload.get('max_tokens'))
             elif on_preview:
                 # A compatibility peer may ignore stream=true. This is a whole
                 # JSON result, not invented incremental network delivery.
                 on_preview(None, False, 'json_fallback')
-            if not isinstance(response, dict) or len(json.dumps(response, ensure_ascii=False).encode()) > MAX_RESPONSE_BYTES:
-                raise ValueError('response_budget')
+            if not isinstance(response, dict):
+                raise ValueError('invalid_response')
+            response_bytes = len(json.dumps(response, ensure_ascii=False).encode())
+            if response_bytes > MAX_RESPONSE_BYTES:
+                raise streaming.ResponseBudgetExceeded('native_response_bytes', response_bytes, MAX_RESPONSE_BYTES)
+            streaming.check_generation_limit(settings.get('protocol', 'chat_completions'), response,
+                max_output_tokens=payload.get('max_tokens'))
         except Exception as exc:
             known = {'provider_auth', 'provider_model', 'provider_parameters', 'provider_rate_limit',
                      'provider_unavailable', 'request_budget', 'response_budget', 'invalid_response'}
             known |= {'stream_cancelled', 'stream_disconnected', 'stream_incomplete', 'stream_timeout', 'invalid_stream', 'invalid_tool_arguments'}
             code = str(exc) if isinstance(exc, ValueError) and str(exc) in known else 'provider_unavailable'
-            self._emit_trace('error', settings, endpoint, {'code': code}, key)
-            raise ValueError(code) from None
+            diagnostic = getattr(exc, 'budget', None)
+            self._emit_trace('error', settings, endpoint,
+                             dict(code=code, **({'budget': diagnostic} if diagnostic else {})), key)
+            failure = ValueError(code)
+            if diagnostic:
+                failure.budget = copy.deepcopy(diagnostic)
+            raise failure from None
         self._emit_trace('response', settings, endpoint, response, key)
         return providers.normalize(settings, response)
 
@@ -594,7 +607,7 @@ class ModelAssistant:
                 safe['_continuation'] = copy.deepcopy(message['_continuation'])
         payload = dict(model=settings['model'], messages=safe_messages, tools=tools,
                        tool_choice=tool_choice, stream=stream,
-                       max_tokens=3500 if settings.get('provider', 'custom') in ('custom', 'ollama') else 8192)
+                       max_tokens=3500 if settings.get('provider', 'custom') in ('custom', 'ollama') else streaming.MAX_GENERATION_TOKENS)
         if len(_json_text(payload).encode()) > MAX_REQUEST_BYTES:
             raise ValueError('request_budget')
         headers = {'Content-Type': 'application/json', 'Accept': 'application/json'}
@@ -605,7 +618,8 @@ class ModelAssistant:
         response = self._completion(payload, settings, key, on_preview=on_preview, cancel=cancel)
         if cancel is not None and cancel.is_set():
             raise ValueError('stream_cancelled')
-        if not isinstance(response, dict) or len(json.dumps(response).encode()) > MAX_RESPONSE_BYTES:
+        if (not isinstance(response, dict)
+                or len(json.dumps(response, ensure_ascii=False).encode()) > MAX_NORMALIZED_RESPONSE_BYTES):
             raise ValueError('invalid_response')
         try:
             message = response['choices'][0]['message']
@@ -618,7 +632,7 @@ class ModelAssistant:
         content, public_text_truncated = self._privacy_text(message.get('content') or '', settings, key, 8000,
                                                           report_truncation=True)
         calls = message.get('tool_calls', [])
-        if not isinstance(calls, list) or len(calls) > 8:
+        if not isinstance(calls, list) or len(calls) > streaming.MAX_CALLS:
             raise ValueError('invalid_response')
         cleaned, seen = [], set()
         for call in calls:
@@ -628,11 +642,13 @@ class ModelAssistant:
                 raise ValueError('invalid_tool')
             function = call['function']
             if (not isinstance(function.get('name'), str) or len(function['name']) > 80
-                    or not isinstance(function.get('arguments'), str) or len(function['arguments']) > 16000):
+                    or not isinstance(function.get('arguments'), str)):
                 raise ValueError('invalid_tool')
             seen.add(call['id'])
             try:
-                arguments = json.loads(function['arguments'])
+                arguments = streaming._arguments(function['arguments'])
+            except streaming.ResponseBudgetExceeded:
+                raise
             except ValueError:
                 raise ValueError('invalid_tool_arguments') from None
             if not isinstance(arguments, dict):

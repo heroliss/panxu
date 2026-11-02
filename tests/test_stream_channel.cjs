@@ -127,3 +127,21 @@ test('fallback timeout is bounded and missing transports honestly report unavail
   const off=f.subject.subscribe('one',value=>events.push(value));assert.equal(await f.tick(),4000);assert.equal(events.at(-1).connection,'reconnecting');off();assert.equal(f.timers.size,0);
   const none=fixture({sse:false});let value;const stop=none.subject.subscribe('one',snapshot=>{value=snapshot;});assert.equal(value.connection,'unavailable');assert.equal(value.stream,null);assert.equal(none.timers.size,0);stop();
 });
+
+test('tool-only events survive rapid next turns and remounts while closed transport is never reported as an active stream',()=>{
+  const f=fixture(),received=[];let off=f.subject.subscribe('one',value=>received.push(value));const connection=f.connections[0];
+  connection.message({stream:stream(1,'',{tool_pending:true})});connection.message({stream:stream(2,'',{tool_pending:true,status:'completed'})});connection.message({stream:stream(3,'新片段',{turn_id:'turn-two'})});
+  assert.deepEqual(Array.from(received.at(-1).activity.events,event=>event.kind),['tool_receiving','tool_received','reply_receiving']);assert.equal(received.at(-1).activity.events[1].label,'模型的工具请求已接收。');assert.ok(!received.at(-1).activity.events[1].label.includes('已执行'));assert.ok(!received.at(-1).activity.events[1].label.includes('将'));
+  received.at(-1).activity.events[0].label='consumer mutation';off();assert.equal(connection.closed,true);assert.equal(f.timers.size,0);
+  off=f.subject.subscribe('one',value=>received.push(value));assert.equal(received.at(-1).stream,null);assert.equal(received.at(-1).activity.events.length,3);assert.notEqual(received.at(-1).activity.events[0].label,'consumer mutation');off();
+  const other=[];const stop=f.subject.subscribe('two',value=>other.push(value));assert.equal(other.at(-1).activity.events.length,0);stop();
+  const empty=f.subject.subscribe('empty',value=>other.push(value));f.connections.at(-1).message({stream:stream(1,'',{status:'completed'})});assert.equal(other.at(-1).activity.events[0].label,'本轮模型请求已结束。');empty();
+});
+
+test('public activity has bounded per-task and task-count memory and cannot project tool arguments or private fields',()=>{
+  const f=fixture(),received=[];let off=f.subject.subscribe('one',value=>received.push(value));const connection=f.connections[0];
+  for(let index=0;index<40;index++)connection.message({stream:stream(index+1,'public',{turn_id:'turn-'+index,status:'completed',tool_pending:true,arguments:'must-not-project',reasoning:'private',api_key:'secret'})});
+  const activity=received.at(-1).activity;assert.equal(activity.events.length,32);assert.equal(activity.omitted,8);assert.ok(!JSON.stringify(activity).includes('must-not-project'));assert.ok(!JSON.stringify(activity).includes('private'));assert.ok(!JSON.stringify(activity).includes('secret'));off();
+  for(let index=0;index<8;index++){off=f.subject.subscribe('other-'+index,value=>received.push(value));f.connections.at(-1).message({stream:stream(1)});off();}
+  off=f.subject.subscribe('one',value=>received.push(value));assert.equal(received.at(-1).activity.events.length,0,'the ninth inactive task evicts the oldest volatile status history');off();
+});

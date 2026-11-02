@@ -149,14 +149,29 @@ class FindingsTests(unittest.TestCase):
             self.assertEqual(self.harness.public(self.key)['briefing'], before['briefing'])
             self.assertEqual(self.harness.public(self.key)['briefing_provenance'], before['briefing_provenance'])
 
-    def test_modern_summary_limit_does_not_silently_truncate(self):
+    def test_summary_limits_match_schema_and_modules_do_not_add_a_hidden_limit(self):
+        definitions = {row['function']['name']: row['function']['parameters'] for row in tool_specs()}
+        for name, host_limit, apply in (('present_findings', 1000, self.present), ('propose_plan', 600, self.proposal)):
+            with self.subTest(tool=name):
+                self.assertEqual(definitions[name]['properties']['summary']['maxLength'], host_limit)
+                text = '完整结论' * (host_limit // 4)
+                modules = {'coverage': ['完整保留实际短句']}
+                result = apply(summary=text, briefing=modules)
+                self.assertEqual(result['summary'], text)
+                self.assertEqual(result['briefing'], modules)
+                self.assertEqual(result['briefing_provenance'], self.source)
+                if name == 'propose_plan':
+                    self.assertEqual(result['plan']['summary'], text)
+                with self.assertRaises(AppError):
+                    apply(summary='长' * (host_limit + 1), briefing=modules)
+                self.assertEqual(self.harness.public(self.key)['summary'], text)
+
+    def test_long_valid_summary_does_not_bypass_invalid_module_validation(self):
+        before = self.present(summary='长' * 500)
         with self.assertRaises(AppError):
-            self.present(summary='长' * 161, briefing={})
-        with self.assertRaises(AppError):
-            self.proposal(summary='长' * 161)
-        result = self.present(summary='长' * 160, briefing={'coverage': ['完整保留实际短句']})
-        self.assertEqual(len(result['summary']), 160)
-        self.assertEqual(result['briefing'], {'coverage': ['完整保留实际短句']})
+            self.present(summary='长' * 500, briefing={'coverage': ['长' * 161]})
+        self.assertEqual(self.harness.public(self.key)['summary'], before['summary'])
+        self.assertEqual(self.harness.public(self.key)['briefing'], before['briefing'])
 
     def test_model_cannot_supply_briefing_identity_or_operation(self):
         for extra in ({'briefing_provenance': self.source}, {'briefing_binding': {}}, {'action': 'delete'}):

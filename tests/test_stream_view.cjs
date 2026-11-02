@@ -8,22 +8,25 @@ const {runInNewContext}=require('node:vm');
 const source=readFileSync(join(__dirname,'..','web','stream-view.js'),'utf8');
 
 function fixture({reduced=false,segmenter=true,options={}}={}) {
-  const frames=new Map(),listeners=new Map(),motion=new Map();let frameId=0,clock=0;
+  const frames=new Map(),timers=new Map(),listeners=new Map(),motion=new Map();let frameId=0,timerId=0,clock=0;
   class Element {
-    constructor(){this.children=[];this.dataset={};this.textContent='';this.ownerDocument=doc;}
+    constructor(){this.children=[];this.dataset={};this.textContent='';this.ownerDocument=doc;this.handlers=new Map();this.className='';}
     setAttribute(name,value){this[name]=value;}
     replaceChildren(...children){this.children=children;}
+    addEventListener(name,run){this.handlers.set(name,run);}
+    fire(name){this.handlers.get(name)?.();}
     set innerHTML(_){throw new Error('stream content must never be parsed as HTML');}
   }
   const doc={hidden:false,createElement:()=>new Element(),addEventListener:(event,handler)=>listeners.set(event,handler),removeEventListener:event=>listeners.delete(event)};
   const media={matches:reduced,addEventListener:(event,handler)=>motion.set(event,handler),removeEventListener:event=>motion.delete(event)};
   const window={performance:{now:()=>clock},matchMedia:()=>media,
+    setTimeout:(run,delay)=>{timers.set(++timerId,{run,at:clock+delay});return timerId;},clearTimeout:id=>timers.delete(id),
     requestAnimationFrame:handler=>{frames.set(++frameId,handler);return frameId;},cancelAnimationFrame:id=>frames.delete(id)};
   runInNewContext(source,{window,document:doc,Intl:segmenter?Intl:{},Date});
   const host=new Element(),subject=window.PanxuStreamView.create(host,options);
   const body=host.children[0],notice=host.children[1];
-  return {host,body,notice,subject,frames,listeners,motion,doc,media,
-    tick(ms=16){clock+=ms;const scheduled=[...frames];frames.clear();scheduled.forEach(([,handler])=>handler(clock));},
+  return {host,body,notice,subject,frames,timers,listeners,motion,doc,media,activity(){const host=new Element();return {host,reader:window.PanxuStreamView.createActivity(host)};},
+    tick(ms=16){clock+=ms;const scheduled=[...frames];frames.clear();scheduled.forEach(([,handler])=>handler(clock));for(const [id,timer] of [...timers])if(timer.at<=clock){timers.delete(id);timer.run();}},
     settle(){for(let i=0;i<160&&frames.size;i++)this.tick();assert.equal(frames.size,0,'animation must converge in bounded time');},
   };
 }
@@ -79,4 +82,20 @@ test('cancel/reset clears a switched task and dispose releases all callbacks',()
   f.subject.update({text:'再开始'.repeat(100),status:'streaming'});f.subject.dispose();
   assert.equal(f.host.children.length,0);assert.equal(f.frames.size,0);assert.equal(f.listeners.size,0);assert.equal(f.motion.size,0);
   f.subject.update({text:'已释放不再更新'});assert.equal(f.host.children.length,0);
+});
+
+test('rapid public states remain readable for four seconds without delaying newer urgent states or background work',()=>{
+  const f=fixture(),{host,reader}=f.activity(),events=Array.from({length:4},(_,index)=>({id:'event-'+index,label:'工具请求状态 '+index,kind:index%2?'tool_received':'tool_receiving',at:0}));
+  reader.update({events,omitted:0});const list=host.children[2],urgent=host.children[1],toggle=host.children[3];assert.equal(list.children.length,4);assert.equal(f.frames.size,0);assert.equal(urgent.hidden,true);
+  f.tick(100);events.push({id:'error',label:'回复中断，收到的内容已保留。',kind:'error',at:100});reader.update({events});assert.equal(urgent.hidden,false);assert.match(urgent.textContent,/中断/);assert.equal(list.children.length,5,'errors are immediate while earlier normal states remain visible');
+  events.push({id:'next',label:'正在接收下一轮公开回复。',kind:'reply_receiving'});reader.update({events});assert.equal(urgent.hidden,false,'a fast following normal status cannot instantly hide an important interruption');
+  f.tick(3890);assert.equal(list.children.length,6);f.tick(20);assert.equal(list.children.length,3);assert.equal(urgent.hidden,false);
+  toggle.fire('click');assert.equal(list.children.length,6);assert.equal(toggle['aria-expanded'],'true');f.tick(10000);assert.equal(list.children.length,6);assert.equal(urgent.hidden,true);
+  toggle.fire('click');assert.equal(list.children.length,3);reader.reset();assert.equal(host.hidden,true);assert.equal(list.children.length,0);assert.equal(f.timers.size,0);reader.dispose();assert.equal(host.children.length,0);
+});
+
+test('activity history is bounded, literal, and retained after completion without inventing a successful operation',()=>{
+  const f=fixture(),{host,reader}=f.activity(),events=Array.from({length:40},(_,index)=>({id:'event-'+index,label:index===39?'<img src=x> 模型的工具请求已接收。':'收到公开状态 '+index,kind:'tool_received'}));
+  reader.update({events,omitted:12});const list=host.children[2];assert.equal(list.children.length,8);assert.equal(list.children.at(-1).textContent,events.at(-1).label);assert.match(host.children[4].textContent,/较早 12 条已省略/);
+  host.children[3].fire('click');assert.equal(list.children.length,32);f.tick(10000);assert.equal(host.hidden,false);assert.equal(list.children.length,32);assert.equal(host.children[1].hidden,true);reader.dispose();assert.equal(f.timers.size,0);
 });

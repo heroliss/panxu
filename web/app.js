@@ -980,8 +980,8 @@ function initializePanxu() {
     const next=button('下一页',()=>{offset+=10;load(true);});const pageLabel=el('span','field-help');append(paging,previous,pageLabel,next);
     const viewer=el('div','developer-viewer');append(viewer,controls,updated,list,paging);
     const streaming=el('section','developer-stream');streaming.hidden=true;
-    const streamHeading=el('h3','','正在接收的公开回复'),streamHost=el('div','developer-stream-body'),streamConnection=el('p','developer-note');streamConnection.setAttribute('role','status');
-    append(streaming,streamHeading,streamHost,streamConnection);
+    const streamHeading=el('h3','','正在接收的公开回复'),streamHost=el('div','developer-stream-body'),streamActivityHost=el('div','developer-stream-activity'),streamConnection=el('p','developer-note');streamConnection.setAttribute('role','status');
+    append(streaming,streamHeading,streamHost,streamActivityHost,streamConnection);
     const displayNote=el('p','field-help','显示已关闭。打开“实时显示通信”后可查看记录；只有此面板可见时才会自动刷新。');
     append(body,intro,switches,filters,status,error,displayNote,streaming,viewer);
     let offset=0,fetching=false,recordBusy=false,loaded=false,active=true,dockVisible=false,refreshAfterRead=false,timer=null,readSequence=0,lastData=null,pendingData=null,renderedData=null;
@@ -990,10 +990,10 @@ function initializePanxu() {
     function visible(){return active&&dockVisible&&panel.isConnected&&!document.hidden;}
     function stopPolling(){clearTimeout(timer);timer=null;}
     function schedule(){stopPolling();if(visible()&&live.input.checked&&offset===0&&lastData?.enabled)timer=setTimeout(()=>load(false),2500);}
-    let streamTimer=null,streamUnsubscribe=null,streamTaskId='',streamView=null,streamGeneration=0,streamEpoch='',streamTurn='';
+    let streamTimer=null,streamUnsubscribe=null,streamTaskId='',streamView=null,streamActivity=null,streamGeneration=0,streamEpoch='',streamTurn='';
     function stopStream(clear=false){
       clearTimeout(streamTimer);streamTimer=null;streamGeneration++;streamUnsubscribe?.();streamUnsubscribe=null;
-      if(clear){streamView?.reset();streaming.hidden=true;streamEpoch='';streamTurn='';}
+      if(clear){streamView?.reset();streamActivity?.dispose();streamActivity=null;streamActivityHost.replaceChildren();streaming.hidden=true;streamEpoch='';streamTurn='';}
     }
     function syncStream(){
       clearTimeout(streamTimer);streamTimer=null;
@@ -1002,15 +1002,18 @@ function initializePanxu() {
       if(id!==streamTaskId){stopStream(true);streamTaskId=id;}
       if(id&&!streamUnsubscribe){
         if(!streamView)streamView=window.PanxuStreamView.create(streamHost);
+        if(!streamActivity&&window.PanxuStreamView.createActivity)streamActivity=window.PanxuStreamView.createActivity(streamActivityHost);
         const run=++streamGeneration;
         streamUnsubscribe=window.PanxuStreamChannel.subscribe(id,snapshot=>{
           if(run!==streamGeneration||!visible()||!live.input.checked||!conversation.input.checked)return;
           const value=snapshot.stream;
-          if(!value){streamView.reset();streaming.hidden=!['reconnecting','stopped','unavailable'].includes(snapshot.connection);}
-          else if(value.status==='cancelled'){streamView.reset();streaming.hidden=true;return;}
+          streamActivity?.update(snapshot.activity);
+          const hasActivity=Boolean(snapshot.activity?.events?.length);
+          if(!value){streamView.reset();streaming.hidden=!hasActivity&&!['reconnecting','stopped','unavailable'].includes(snapshot.connection);}
+          else if(value.status==='cancelled'){streamView.reset();streaming.hidden=!hasActivity;streamHeading.textContent='最近任务动态';}
           else{
             if(value.epoch!==streamEpoch||value.turn_id!==streamTurn){streamView.reset();streamEpoch=value.epoch;streamTurn=value.turn_id;}
-            streaming.hidden=false;streamHeading.textContent=value.status==='streaming'?'正在接收的公开回复':value.status==='completed'?'本轮公开回复':'未完成的公开回复';
+            streaming.hidden=false;streamHeading.textContent=!value.text&&hasActivity?'最近任务动态':value.status==='streaming'?'正在接收的公开回复':value.status==='completed'?'本轮公开回复':'未完成的公开回复';
             streamView.update({text:value.text,status:snapshot.incomplete?'incomplete':value.status,phase:value.tool_pending?'tool_pending':''});
           }
           const connection={reconnecting:'连接暂时中断，正在重连；已收到的内容会保留。',stopped:'实时连接未恢复，已收到的内容会保留。可点“刷新记录”重试。',unavailable:'暂时无法实时接收回复，可点“刷新记录”重试。'}[snapshot.connection] || '';
