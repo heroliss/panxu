@@ -102,7 +102,7 @@ test('plan ratings lead every row with direct explanations and unchanged persona
     assessment:{state:'explicit',rating:index===0?5:4},personal_choice_required:index===4,default_selected:true}));
   const f=fixture(task(rows)),cards=f.root.querySelectorAll('.task-plan-item');
   assert.equal(cards[0].children[1],cards[0].querySelector('.task-plan-rating'));
-  assert.equal(cards[0].querySelector('.cleanup-rating-value').textContent,'5');
+  assert.equal(cards[0].querySelector('.cleanup-rating-value'),null);assert.match(cards[0].querySelector('.task-plan-rating')['aria-label'],/5\/5/);
   assert.ok(cards[0].querySelector('.task-plan-rating').className.includes('cleanup-rating-primary'));
   assert.equal(f.root.querySelector('.task-plan-more'),null);assert.equal(cards.length,5);assert.ok(cards.every(card=>card.querySelectorAll('.advice-explanation-part').length===4));
   assert.equal(f.get('task-approve').textContent,'删除 4 个文件');assert.equal(f.get('pick-row-4').checked,false,'personal row is never auto-selected');
@@ -144,7 +144,7 @@ test('a task without an operation plan shows only three concise scored advice pr
   const advice=Array.from({length:6},(_,index)=>({...item('advice-'+index),cleanup_rating:5,conclusion:'recommend',purpose:'完整用途',reason:'很长的原因'.repeat(50)}));
   const f=fixture(task([],{status:'paused',plan:null,advice,advice_total:6}));
   const preview=f.root.querySelector('.task-advice-preview');assert.equal(preview.querySelectorAll('.task-advice-item').length,3);
-  assert.equal(preview.querySelectorAll('.cleanup-rating-value').length,3);
+  assert.equal(preview.querySelectorAll('.cleanup-rating-value').length,0);assert.equal(preview.querySelectorAll('.cleanup-rating-scale').length,3);
   assert.equal(preview.querySelectorAll('.advice-explanation-grid').length,3);assert.ok(preview.querySelectorAll('.advice-explanation-grid').every(node=>node.textContent.includes('很长的原因'.repeat(50))));
   assert.ok(preview.querySelectorAll('.task-detail').every(node=>node.open===false));assert.equal(f.requests.length,0);
 });
@@ -230,8 +230,8 @@ test('software table leads with the saved global rating and viewing it does not 
   const openStart=app.indexOf('  async function showAdvice('),openEnd=app.indexOf('  function analysisOptions(',openStart);
   runInNewContext(app.slice(openStart,openEnd)+app.slice(start,end)+';this.renderRows=renderResults;',f.environment);f.environment.renderRows();await flush();
   const row=host.querySelector('.item-row');assert.equal(row.children[1],row.querySelector('.result-rating-cell'));
-  assert.equal(row.querySelector('.cleanup-rating-value').textContent,'4','older active-task advice cannot replace saved global rating');
-  assert.match(row.querySelector('.result-rating-cell').textContent,/4\/5.*倾向清理/);
+  assert.equal(row.querySelector('.cleanup-rating-value'),null);assert.match(row.querySelector('.cleanup-rating')['aria-label'],/4\/5/,'older active-task advice cannot replace saved global rating');
+  assert.equal(row.querySelector('.result-rating-cell').textContent,'倾向清理');
   const view=row.querySelectorAll('button').find(button=>button.textContent==='查看建议');await view.fire('click');
   assert.deepEqual(calls,[['show','software']]);
 });

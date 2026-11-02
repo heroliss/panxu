@@ -7,6 +7,7 @@ const { join } = require('node:path');
 const { createContext, runInContext, runInNewContext } = require('node:vm');
 
 const source = readFileSync(join(__dirname, '..', 'web', 'app.js'), 'utf8');
+const taskSource = readFileSync(join(__dirname, '..', 'web', 'tasks.js'), 'utf8');
 const flush = () => new Promise(setImmediate);
 
 function appearance({ serverTheme = 'system', cached, systemDark = false, storageFails = false } = {}) {
@@ -130,7 +131,7 @@ function developer({ payload, kind = 'request', streaming = false, activity = fa
       messages: [{ role: 'user', content: 'fixture dialogue' }], tools: [{ name: 'fixture tool definition' }],
     } },
   ] });
-  const document = { hidden: false, addEventListener: (name, handler) => listeners.set(name, handler),
+  const document = { hidden: false, createElement: tag => new Element(tag), addEventListener: (name, handler) => listeners.set(name, handler),
     removeEventListener: (name) => listeners.delete(name) };
   const streamState={taskId:'stream-fixture',subscriptions:[],listeners:new Map(),unsubscribes:0,resets:0,disposes:0,updates:[],activityUpdates:[],activityDisposes:0};
   const context = {
@@ -169,6 +170,7 @@ function developer({ payload, kind = 'request', streaming = false, activity = fa
   const end = source.indexOf('  function analysisOutput(data)', start);
   assert.ok(start !== -1 && end > start, 'developer module remains available to its lifecycle test');
   createContext(context);
+  runInContext(taskSource.slice(taskSource.indexOf('window.PanxuAssessment ='), taskSource.indexOf('// Provenance is host-owned')), context);
   runInContext(source.slice(viewStart, viewEnd), context);
   runInContext(source.slice(start, end) + ';this.renderDeveloper=renderDeveloper;', context);
   const controller = context.renderDeveloper(root);
@@ -419,7 +421,11 @@ for (const protocol of ['chat_completions', 'responses', 'anthropic', 'gemini'])
     await fixture.open(); await fixture.check('developer-live', true);
     const entry = fixture.root.all().find((node) => node.className === 'developer-entry');
     const text = entry.all().map((node) => node.textContent || '').join('\n');
-    for (const value of ['公开结论', '公开本轮重点','公开留意事项','公开检查范围','清理倾向 1/5','公开方案', '公开原因', '公开影响', '公开问题', '公开选项说明', '公开用途', '公开保留依据', '公开交接', '公开下一步', '公开未决事项']) assert.ok(text.includes(value), value);
+    for (const value of ['公开结论', '公开本轮重点','公开留意事项','公开检查范围','建议保留','公开方案', '公开原因', '公开影响', '公开问题', '公开选项说明', '公开用途', '公开保留依据', '公开交接', '公开下一步', '公开未决事项']) assert.ok(text.includes(value), value);
+    const rating = entry.querySelector('.developer-advice-rating');
+    assert.match(rating['aria-label'], /清理倾向 1\/5/);
+    assert.equal(rating.querySelectorAll('.cleanup-rating-segment').filter(node => node.dataset.active === 'true').length, 1);
+    assert.ok(!text.includes('1/5'), 'readable advice avoids a duplicate numeric fraction');
     assert.ok(text.includes('不代表操作或审批结果'));
     for (const value of ['private-opaque-canary', 'auto_approve', 'hidden-investigation-arguments', '"action"']) assert.ok(!text.includes(value), value);
     assert.equal(entry.querySelector('pre'), null);

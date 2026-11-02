@@ -157,7 +157,7 @@ test('batch limits and nonselectable rows are visible rather than described as a
   const protectedRow={...leaf,id:'protected',can_logical_select:false,risk:'protected'};
   const f=await fixture({rows:[high,protectedRow],selectionHasMore:true});
   assert.equal(f.check('protected').disabled,true);assert.ok(f.root.textContent.includes('分批'));
-  assert.equal(f.root.querySelector('.cleanup-rating-value').textContent,'4');assert.equal(f.calls.filter(call=>call.path.endsWith('/approve')).length,0);
+  assert.equal(f.root.querySelector('.cleanup-rating-value'),null);assert.match(f.root.querySelector('.cleanup-rating').attrs['aria-label'],/4\/5/);assert.equal(f.calls.filter(call=>call.path.endsWith('/approve')).length,0);
 });
 
 test('returning after a partial batch removes verified successful rules and recompiles only the remaining choices',async()=>{

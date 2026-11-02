@@ -1068,7 +1068,7 @@ function initializePanxu() {
         if(message.items?.length)message.items.forEach(item=>{
           const advice=el('div','developer-public-advice');advice.dataset.purpose='recommendation';
           if(item.name||item.id)append(advice,el('strong','developer-advice-name',item.name || item.id));
-          if(Number.isInteger(item.cleanup_rating))append(advice,el('p','developer-text',`清理倾向 ${item.cleanup_rating}/5`));
+          if(Number.isInteger(item.cleanup_rating))append(advice,window.PanxuAssessment.render(item,{direct:true,cls:'developer-advice-rating'}));
           for(const key of ['purpose','conclusion','reason','impact'])if(item[key]){
             const field=el('p','developer-text developer-advice-field');field.dataset.field=key;
             const value=el('span','developer-field-value',({keep:'建议保留',review:'需要确认',recommend:'建议处理'})[item[key]] || item[key]);

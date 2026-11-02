@@ -55,7 +55,7 @@ test('five score levels remain advisory and missing/skip/no-advice states never 
   for(let rating=1;rating<=5;rating++){
     const ui=score.render(record('value',rating));assert.equal(ui.querySelectorAll('.cleanup-rating-segment').length,5);
     assert.equal(ui.querySelectorAll('.cleanup-rating-segment').filter(node=>node.dataset.active==='true').length,rating);
-    assert.match(ui.textContent,new RegExp(rating+'/5'));assert.equal(ui.querySelectorAll('button').length,0);
+    assert.ok(!/[1-5]\/5/.test(ui.textContent));assert.match(ui.attrs['aria-label'],new RegExp(rating+'/5'));assert.equal(ui.attrs.role,'img');assert.equal(ui.querySelectorAll('button').length,0);
   }
   for(const state of ['unanalysed','skipped','no_advice'])assert.equal(score.read(record('value',5,state)).rating,null);
   assert.equal(score.read({conclusion:'recommend'},{direct:true}).rating,null);
@@ -70,8 +70,8 @@ test('file ratings occupy the leading independent column and keep name, measurem
   const f=await fixture([record('rated',5),record('unknown',null,'unanalysed',{can_prepare:false})]);
   const rows=f.root.querySelectorAll('.paged-file-row'),rating=rows[0].querySelector('.file-primary-rating');
   assert.equal(rows[0].children[1],rating);assert.ok(rating.className.includes('cleanup-rating-primary'));
-  assert.equal(rating.querySelector('.cleanup-rating-value').textContent,'5');
-  assert.equal(rating.querySelector('.cleanup-rating-copy').textContent,'5/5 · 建议清理');
+  assert.equal(rating.querySelector('.cleanup-rating-value'),null);assert.match(rating.attrs['aria-label'],/5\/5/);
+  assert.equal(rating.querySelector('.cleanup-rating-copy').textContent,'建议清理');assert.equal(rating.children[0].className,'cleanup-rating-scale');
   assert.equal(rows[0].querySelector('.paged-file-meta').querySelector('.cleanup-rating'),null);
   assert.equal(rows[0].querySelector('.file-name-button').textContent,'rated.txt');
   assert.equal(rows[1].querySelector('.cleanup-rating-value'),null);assert.equal(rows[1].querySelector('.cleanup-rating-copy').textContent,'尚未分析');
@@ -86,12 +86,23 @@ test('suggestions use global catalog assessment and lazy tree navigation only re
   assert.equal(f.root.querySelector('.file-coverage-note'),null);assert.ok(f.root.querySelector('.file-page-status').textContent.includes('仅已扫描'));
   assert.equal(f.root.querySelector('.file-pagination').hidden,true,'a single page keeps its item count without disabled pagination controls');
   assert.equal(f.root.querySelector('.file-review-selection').children.filter(node=>node.className==='field-help').length,0,'empty selection does not repeat the helper sentence');
-  assert.ok(f.root.textContent.includes('内部尚未完整读取'));assert.equal(f.root.querySelector('.cleanup-rating-copy').textContent,'4/5 · 倾向清理');
+  assert.ok(f.root.textContent.includes('内部尚未完整读取'));assert.equal(f.root.querySelector('.cleanup-rating-copy').textContent,'倾向清理');
   await f.button('目录结构（已扫描）').fire('click');
   const before=f.requests.length,expand=f.root.querySelector('.file-tree-expand');await expand.fire('click');
   const params=new URL(f.requests.at(-1).path,'http://local').searchParams;
   assert.equal(params.get('view'),'tree');assert.equal(params.get('parent_id'),'folder');assert.equal(params.get('limit'),'50');assert.equal(f.requests.length,before+1);
   assert.ok(f.requests.every(call=>call.path.startsWith('/api/files?')));assert.ok(f.root.textContent.includes('不会开始新的磁盘扫描'));
+});
+
+test('rating accessibility retains exact values and inheritance while visible text stays number-free and stale advice draws no scale',async()=>{
+  const f=await fixture([]),rating=f.window.PanxuAssessment;
+  for(const primary of [false,true]){
+    const inherited=rating.render(record('child',4,'inherited',{assessment:{state:'inherited',rating:4,inherited_from_name:'上级目录'}}),{primary});
+    assert.equal(inherited.querySelector('.cleanup-rating-copy').textContent,'倾向清理 · 继承');assert.match(inherited.attrs['aria-label'],/4\/5.*继承自上级目录.*未逐项分析/);assert.match(inherited.title,/4\/5/);assert.ok(!inherited.textContent.includes('/5'));
+    const stale=rating.render(record('old',5,'inherited',{assessment:{state:'inherited',rating:5,stale:true,inherited_from_name:'旧目录'}}),{primary});
+    assert.equal(stale.dataset.rating,'5');assert.equal(stale.dataset.stale,'true');assert.equal(stale.querySelectorAll('.cleanup-rating-segment').length,0);assert.equal(stale.textContent,'建议需重新核对');assert.match(stale.attrs['aria-label'],/旧清理倾向 5\/5.*过期.*旧目录/);
+  }
+  const labels=['未评分','尚未分析','已跳过评分','暂无建议'];['explicit','unanalysed','skipped','no_advice'].forEach((state,index)=>{const value=rating.render(record('none',null,state));assert.equal(value.textContent,labels[index]);assert.equal(value.querySelectorAll('.cleanup-rating-segment').length,0);assert.ok(!value.attrs['aria-label'].includes('/5'));});
 });
 
 test('quick selection defaults to eligible direct high scores and inheritance requires explicit opt in',async()=>{

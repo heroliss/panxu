@@ -68,7 +68,7 @@ window.PanxuAdvicePresentation = (() => {
     }
     const fields=[['purpose','用途',purpose?(analysed?purpose:local(purpose)):'暂未说明用途。'],['suggestion','建议',advice],
       ['reason','原因',reason?(analysed||operationAdvice?reason:local(reason)):'暂无分析依据。'],['impact','影响',impact || text(record.action_effect) || '影响尚未说明，执行前需要核对。']];
-    const group=document.createElement('section');group.className='advice-explanation-grid';group.setAttribute('aria-label','用途、建议、原因与影响');
+    const group=document.createElement('section');group.className='advice-explanation-grid';group.dataset.rating=value.rating===null?'':String(value.rating);group.dataset.assessmentState=value.state;if(value.stale)group.dataset.stale='true';group.setAttribute('aria-label','用途、建议、原因与影响');
     for(const [key,label,body] of fields){const block=document.createElement('div'),heading=document.createElement('span'),content=document.createElement('p');block.className='advice-explanation-part';block.dataset.advicePart=key;heading.className='advice-explanation-label';heading.textContent=label;content.textContent=body;block.append(heading,content);group.append(block);}
     return group;
   }
@@ -102,15 +102,11 @@ window.PanxuAssessment = (() => {
       box.append(scale);
     }
     const copy=document.createElement('span');copy.className='cleanup-rating-copy';
-    if(primary&&value.rating!==null&&!value.stale){
-      const number=document.createElement('strong');number.className='cleanup-rating-value';number.textContent=String(value.rating);
-      const denominator=document.createElement('span');denominator.className='cleanup-rating-denominator';denominator.textContent='/5';
-      const divider=document.createElement('span');divider.className='cleanup-rating-divider';divider.textContent=' · ';
-      const description=document.createElement('span');description.className='cleanup-rating-description';description.textContent=labels[value.rating]+(value.state==='inherited'?' · 继承':'');
-      copy.append(number,denominator,divider,description);
-    }else copy.textContent=label(record,{direct});
+    copy.textContent=value.stale?'建议需重新核对':value.rating!==null?labels[value.rating]+(value.state==='inherited'?' · 继承':''):label(record,{direct});
     box.append(copy);
-    box.title='清理倾向，不代表危险程度或操作授权';
+    const inherited=value.state==='inherited'?`，继承自${value.inherited_from_name || '上级目录'}，未逐项分析`:'';
+    const accessible=value.stale?`${value.rating!==null?`旧清理倾向 ${value.rating}/5，`:''}建议已过期，需要重新核对${inherited}`:value.rating!==null?`清理倾向 ${value.rating}/5，${labels[value.rating]}${inherited}`:copy.textContent+inherited;
+    box.setAttribute('role','img');box.setAttribute('aria-label',accessible+'；不代表危险程度或操作授权。');box.title=accessible+'；颜色表示清理倾向，不保证操作安全。';
     return box;
   }
   function blocked(record) {
@@ -843,7 +839,7 @@ window.PanxuTasks = (() => {
       if(!context.setContextBack)add(root,action(returnLabel,()=>reviewPane(returnPane),'plain-button task-new'));
       return;
     }
-    add(root,context.heading(listTitle,'按评分查看用途、建议与影响，勾选后核对具体操作。'));
+    const heading=context.heading(listTitle,'按评分查看用途、建议与影响，勾选后核对具体操作。');heading.classList?.add('cleanup-page-heading');add(root,heading);
     const summary=node('div','cleanup-task-summary');add(root,summary);
     const list=node('div','cleanup-task-list');add(root,list);
     const explanation=node('div','cleanup-task-explanation');add(root,explanation);
