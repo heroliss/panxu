@@ -20,12 +20,12 @@
   --tone-neutral-bg: var(--surface-soft);
 }
 :root,[data-theme="dark"] {
-  --rating-1:#a1d9bd; --rating-1-bg:#1e3c34;
-  --rating-2:#91cdd6; --rating-2-bg:#203c49;
-  --rating-3:#b5c4dd; --rating-3-bg:#293952;
-  --rating-4:#e0c28a; --rating-4-bg:#433a2b;
-  --rating-5:#e4b4c0; --rating-5-bg:#45323f;
-  --impact-1-bg:#203847; --impact-2-bg:#283c4c; --impact-3-bg:#323c4c; --impact-4-bg:#3c3b49; --impact-5-bg:#463b46;
+  --rating-1:#a1d9bd; --rating-1-bg:#183127;
+  --rating-2:#91cdd6; --rating-2-bg:#1a2e39;
+  --rating-3:#b5c4dd; --rating-3-bg:#222f42;
+  --rating-4:#e0c28a; --rating-4-bg:#342d21;
+  --rating-5:#e4b4c0; --rating-5-bg:#352530;
+  --impact-1-bg:#1a2b36; --impact-2-bg:#1f2c38; --impact-3-bg:#252d3a; --impact-4-bg:#2c2d38; --impact-5-bg:#332c36;
 }
 [data-theme="light"] {
   --rating-1:#256650; --rating-1-bg:#e1f2e9;
