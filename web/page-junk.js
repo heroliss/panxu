@@ -123,7 +123,9 @@
     const sizeText = res.size === null ? '—' : (blocked && blocked.startsWith('需要') && !res.size) ? '—' : fmt.bytes(res.size);
     const el = h('div.row.junk-row' + (blocked ? '.disabled' : ''), {
       onclick: () => { state.expanded.has(rule.id) ? state.expanded.delete(rule.id) : state.expanded.add(rule.id); rerender(true); },
-    }, box, h('div.cell-main', h('div.name', rule.name), h('div.desc', rule.description)), flags, h('div.size', sizeText));
+    }, box, h('div.cell-main', h('div.name', rule.name), h('div.desc', rule.description)), flags, h('div.size', sizeText),
+    h('button.btn.quiet.small', { type: 'button', title: '问 AI', onclick: (e) => { e.stopPropagation(); PX.ask({ type: 'rule', id: rule.id }, rule.name); } },
+      PX.icon('spark'), '问 AI'));
     const out = [el];
     if (state.expanded.has(rule.id)) {
       const detail = h('div.junk-detail');
@@ -200,7 +202,7 @@
         if (state.openGroups.has(g.id)) {
           for (const r of inGroup.filter((x) => !visible(x))) {
             list.appendChild(h('div.row.junk-row.disabled', h('span'), h('div.cell-main', h('div.name', r.name), h('div.desc', r.description)),
-              h('div.flags'), h('div.size.faint', '未发现')));
+              h('div.flags'), h('div.size.faint', '未发现'), h('span')));
           }
         } else {
           list.appendChild(h('button.fold', { type: 'button', onclick: () => { state.openGroups.add(g.id); rerender(true); } },

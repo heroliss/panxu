@@ -615,6 +615,21 @@ class Backend:
         except ValueError as exc:
             raise UserError(str(exc)) from None
 
+    def m_apps_measure_all(self):
+        """Measure every program folder that has no size yet (background job)."""
+        def run(job):
+            todo = [a for a in self.apps.list() if a['location_exists'] and a['size_source'] != 'measured' and not a['size']]
+            out = {}
+            for i, a in enumerate(todo):
+                fsops.check_cancel(job.cancel)
+                job.update(done=i, total=len(todo), current=a['name'])
+                try:
+                    out[a['id']] = self.apps.measure(a['id'])['size']
+                except (ValueError, OSError):
+                    continue
+            return out
+        return self.jobs.start('apps_measure', run, group='apps')
+
     def m_app_uninstall(self, app_id: str):
         try:
             result = self.apps.uninstall(str(app_id))

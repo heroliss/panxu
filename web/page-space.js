@@ -19,7 +19,7 @@
     const cautions = ok.filter((c) => c.caution);
     let mode = defaultMode;
     const list = h('div.confirm-list');
-    for (const c of ok.slice(0, 300)) list.appendChild(h('div.row', h('div.name.mono-path', c.path), h('div.size', fmt.bytes(c.size))));
+    for (const c of ok.slice(0, 300)) list.appendChild(h('div.row', h('div.name.mono-path', PX.displayPath(c.path)), h('div.size', fmt.bytes(c.size))));
     if (ok.length > 300) list.appendChild(h('div.row.muted', `另有 ${ok.length - 300} 项`));
     const choices = h('div');
     const drawChoices = () => {
@@ -134,7 +134,7 @@
     for (const d of PX.state.init.drives) {
       const on = state.target && state.target.toLowerCase() === d.root.toLowerCase();
       bar.appendChild(h('button.btn' + (on ? '.on' : ''), { type: 'button', disabled: state.status === 'scanning', onclick: () => start(d.root) },
-        PX.icon('drive'), d.root.replace(/\\$/, '')));
+        PX.icon('drive'), d.letter || d.root.replace(/\\$/, '')));
     }
     bar.appendChild(h('button.btn', { type: 'button', disabled: state.status === 'scanning', onclick: pickFolder }, PX.icon('folder'), '选择文件夹…'));
     return bar;
@@ -142,8 +142,8 @@
 
   function draw(container) {
     const stats = state.result && state.result.stats;
-    const sub = state.status === 'scanning' ? '正在扫描 ' + state.target
-      : stats ? `${state.result.root.path}：${fmt.count(stats.dirs)} 个文件夹，${fmt.count(stats.files)} 个文件，用时 ${fmt.seconds(stats.seconds)}`
+    const sub = state.status === 'scanning' ? '正在扫描 ' + PX.displayPath(state.target)
+      : stats ? `${PX.displayPath(state.result.root.path)}：${fmt.count(stats.dirs)} 个文件夹，${fmt.count(stats.files)} 个文件，用时 ${fmt.seconds(stats.seconds)}`
         : '选择要分析的磁盘或文件夹';
     container.appendChild(h('div.page-head', h('div.grow', h('h1', '空间分析'), h('div.sub', sub)), locationBar()));
 
@@ -194,7 +194,7 @@
     const crumbs = h('div.crumbs');
     data.crumbs.forEach((c, i) => {
       if (i) crumbs.appendChild(h('i', '›'));
-      crumbs.appendChild(h('button', { type: 'button', onclick: () => open(c.id) }, c.name));
+      crumbs.appendChild(h('button', { type: 'button', onclick: () => open(c.id) }, i ? c.name : PX.displayPath(c.name)));
     });
     container.appendChild(crumbs);
 
@@ -406,7 +406,7 @@
           onchange: (e) => { e.target.checked ? ai.selected.add(s.path) : ai.selected.delete(s.path); rerender(true); } });
         list.appendChild(h('div.row.ai-row', box,
           h('div.cell-main',
-            h('div.name.mono-path', s.path),
+            h('div.name.mono-path', PX.displayPath(s.path)),
             h('div.label', s.app && s.app !== '未知' ? PX.tag(s.app, 'info') : null, s.source === 'cache' ? PX.tag('缓存结果') : null,
               s.blocked ? PX.tag(s.blocked, 'bad') : s.caution ? PX.tag(s.caution, 'warn') : null),
             h('div.why', s.reason), s.effect ? h('div.eff', '删除后：' + s.effect) : null,

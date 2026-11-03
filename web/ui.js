@@ -100,6 +100,15 @@
       const d = new Date(ts * 1000);
       return PX.fmt.date(ts) + ' ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
     },
+    ago(ts) {
+      if (!ts) return '—';
+      const days = (Date.now() / 1000 - ts) / 86400;
+      if (days < 1) return '今天';
+      if (days < 30) return Math.floor(days) + ' 天前';
+      if (days < 365) return Math.floor(days / 30) + ' 个月前';
+      const years = days / 365;
+      return (years < 10 ? years.toFixed(1).replace(/\.0$/, '') : Math.floor(years)) + ' 年前';
+    },
     seconds(s) {
       s = Math.round(s || 0);
       return s < 60 ? s + ' 秒' : Math.floor(s / 60) + ' 分 ' + (s % 60) + ' 秒';
@@ -107,9 +116,9 @@
     pct(a, b) { return b ? Math.round((a / b) * 100) : 0; },
     // 'C:\Users\me\Documents\项目A' -> '文档\项目A' (names as Explorer shows them); other paths unchanged
     place(path, home) {
-      if (!path || !home) return path || '';
+      if (!path || !home) return PX.displayPath(path || '');
       const h = home.replace(/[\\/]+$/, '');
-      if (path.toLowerCase() !== h.toLowerCase() && !path.toLowerCase().startsWith(h.toLowerCase() + '\\')) return path;
+      if (path.toLowerCase() !== h.toLowerCase() && !path.toLowerCase().startsWith(h.toLowerCase() + '\\')) return PX.displayPath(path);
       const parts = path.slice(h.length + 1).split('\\').filter(Boolean);
       if (!parts.length) return '用户文件夹';
       const names = { desktop: '桌面', documents: '文档', downloads: '下载', pictures: '图片', videos: '视频', music: '音乐' };
@@ -117,6 +126,36 @@
       return parts.join('\\');
     },
   };
+  // In the 演练环境 the drives are folders; show 'C:\Users\demo' rather than the folder's real location.
+  // Drives carry a 'letter' only there, so real paths pass through unchanged.
+  PX.displayPath = function (path) {
+    const drives = (PX.state.init && PX.state.init.drives) || [];
+    if (!path) return path || '';
+    const low = path.toLowerCase();
+    for (const d of drives) {
+      if (!d.letter) continue;
+      const root = d.root.replace(/[\\/]+$/, '');
+      if (low === root.toLowerCase()) return d.letter + '\\';
+      if (low.startsWith(root.toLowerCase() + '\\')) return d.letter + path.slice(root.length);
+    }
+    return path;
+  };
+
+  // the same inside free text such as a command line ("C:\...\sb\C\Program Files\x.exe" /tray)
+  PX.displayText = function (text) {
+    let out = text || '';
+    for (const d of (PX.state.init && PX.state.init.drives) || []) {
+      if (!d.letter) continue;
+      const root = d.root.replace(/[\\/]+$/, '');
+      let i = out.toLowerCase().indexOf(root.toLowerCase());
+      while (i >= 0) {
+        out = out.slice(0, i) + d.letter + out.slice(i + root.length);
+        i = out.toLowerCase().indexOf(root.toLowerCase(), i + d.letter.length);
+      }
+    }
+    return out;
+  };
+
   // 建议清理度 0-100: a small bar plus the number, coloured by how strongly removal is suggested
   PX.scoreLevel = (s) => (s >= 80 ? 'hi' : s >= 50 ? 'mid' : 'lo');
   PX.scoreLabel = (s) => (s >= 80 ? '建议清理' : s >= 50 ? '可以考虑' : '看你需要');

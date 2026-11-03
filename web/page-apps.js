@@ -34,6 +34,17 @@
     draw();
   }
 
+  async function measureAll() {
+    state.measuring = { done: 0, total: 0 };
+    draw();
+    try {
+      const sizes = await PX.api.run('apps_measure_all', {}, (p) => { state.measuring = p; draw(); });
+      for (const a of state.apps) if (sizes[a.id] !== undefined) { a.size = sizes[a.id]; a.size_source = 'measured'; }
+    } catch (e) { if (!e.cancelled) PX.fail(e); }
+    state.measuring = null;
+    draw();
+  }
+
   async function measure(app) {
     try {
       const r = await PX.api.call('app_measure', { app_id: app.id });
@@ -64,14 +75,15 @@
   function appRow(list, a) {
     const info = state.ai[a.id];
     const [label, kind] = info ? (SUGGEST[info.suggestion] || SUGGEST.keep) : [];
-    const used = !a.usage_known ? '' : a.last_used ? fmt.date(a.last_used) : '没有记录';
+    const used = !a.usage_known ? '' : a.last_used ? fmt.ago(a.last_used) : '没有记录';
+    const idle = a.usage_known && a.kind !== 'runtime' && a.kind !== 'driver' && (!a.last_used || Date.now() / 1000 - a.last_used > 180 * 86400);
     list.appendChild(h('div.row.app-row',
       h('div.cell-main', h('div.name', a.name), h('div.sub', [a.publisher || '未知发布者', a.version].filter(Boolean).join(' · ')),
         info ? h('div.ai-note', PX.tag(label, kind, 'spark'), h('span', info.what), h('span.muted', info.reason)) : null),
       h('div', PX.tag(a.kind_label || '应用')),
       h('div.size', a.size ? fmt.bytes(a.size) : a.location_exists ? h('button.btn.quiet.small', { type: 'button', onclick: () => measure(a) }, '计算') : '—'),
       h('div.small.muted', a.installed ? fmt.date(a.installed) : '—'),
-      h('div.small' + (a.last_used ? '.muted' : '.faint'), used || '—'),
+      h('div.small' + (idle ? '.idle' : a.last_used ? '.muted' : '.faint'), { title: a.last_used ? fmt.datetime(a.last_used) : '' }, used || '—'),
       h('div.row-actions',
         a.location_exists ? h('button.btn.quiet.small', { type: 'button', title: '打开安装位置', onclick: () => PX.api.call('reveal', { path: a.location }).catch(PX.fail) }, PX.icon('open')) : null,
         h('button.btn.quiet.small', { type: 'button', onclick: () => PX.ask({ type: 'app', id: a.id }, a.name) }, PX.icon('spark'), '问 AI'),
@@ -99,6 +111,8 @@
         h('input', { type: 'text', placeholder: '搜索程序', value: state.query, 'aria-label': '搜索程序', oninput: (e) => {
           state.query = e.target.value; const pos = e.target.selectionStart; draw();
           const i = root.querySelector('input[type=text]'); if (i) { i.focus(); i.setSelectionRange(pos, pos); } } }),
+        state.apps && state.apps.some((a) => !a.size && a.location_exists) ? h('button.btn', { type: 'button', disabled: !!state.measuring, onclick: measureAll },
+          state.measuring ? `正在计算 ${state.measuring.done || 0}/${state.measuring.total || '…'}` : '计算全部大小') : null,
         h('button.btn', { type: 'button', disabled: state.aiBusy || !state.apps || !state.apps.length, onclick: explain }, PX.icon('spark'), state.aiBusy ? '正在分析…' : 'AI 解释这些程序'),
         h('button.btn', { type: 'button', onclick: () => load(true) }, PX.icon('refresh'), '刷新'))));
     if (!state.apps) { c.appendChild(PX.progressBar(null)); return; }

@@ -160,7 +160,7 @@
       list.appendChild(h('li' + (n < at ? '.done' : n === at ? '.on' : ''), n < at ? PX.icon('check') : h('span.n', String(n)), s.label));
     });
     box.appendChild(PX.progressBar(p.steps ? (at - 1) / p.steps : null));
-    box.appendChild(h('div.cur', p.detail || p.stage_label || '准备中…'));
+    box.appendChild(h('div.cur', p.detail ? PX.displayPath(p.detail) : p.stage ? '' : '准备中…'));
   }
 
   function reportBox(c) {
@@ -210,10 +210,10 @@
           h('ul', (it.basis || []).map((line) => h('li', line)))));
       }
       if (it.caution) d.appendChild(h('div', PX.tag('注意', 'warn'), ' ', it.caution));
-      if (it.keep) d.appendChild(h('div', h('b', '保留：'), h('span.mono-path', it.keep)));
+      if (it.keep) d.appendChild(h('div', h('b', '保留：'), h('span.mono-path', PX.displayPath(it.keep))));
       const where = (it.paths && it.paths.length ? it.paths : it.location ? [it.location] : it.locations || []).slice(0, 6);
       for (const p of where) {
-        d.appendChild(h('div.path-line', h('span.mono-path', p), h('button.btn.quiet.small', { type: 'button',
+        d.appendChild(h('div.path-line', h('span.mono-path', PX.displayPath(p)), h('button.btn.quiet.small', { type: 'button',
           onclick: () => PX.api.call('reveal', { path: p }).catch(PX.fail) }, '打开位置')));
       }
       if (it.paths && it.paths.length > 6) d.appendChild(h('div.faint', `另有 ${it.paths.length - 6} 项`));
@@ -268,6 +268,16 @@
       else if (p.ai && !p.ai.used) {
         c.appendChild(PX.notice('这次体检没有使用 AI。配置模型后，AI 会帮你判断陌生的大文件夹和你的文件。', 'info',
           h('button.btn.small', { type: 'button', onclick: () => PX.go('settings') }, '去设置')));
+      }
+      if (!state.report && state.status === 'done') {
+        const s = p.summary;
+        const pending = items().filter((it) => it.status === 'pending');
+        if (pending.some((it) => it.action !== 'none')) {
+          c.appendChild(h('div.result.neutral', h('span.big', fmt.bytes(s.safe.selected_size)),
+            h('div.grow', h('div', s.safe.selected ? `体检完成：${s.safe.selected} 项可以放心清理，已经替你勾好。` : '体检完成：没有可以直接清理的项目。'),
+              h('div.small.muted', (s.review.count ? `另有 ${s.review.count} 项（${fmt.bytes(s.review.size)}）建议你看看，不会自动处理。` : '')
+                + (s.safe.selected ? '确认无误后点下方的「执行选中的项目」。' : '')))));
+        }
       }
       c.appendChild(h('div.score-legend', PX.score(90), PX.score(60), PX.score(30),
         h('span', '每项右边的数字是「建议清理度」：越高越建议清理。展开一项能看到评分依据；是否自动勾选只由盘序的规则决定，个人文件从不自动勾选。')));

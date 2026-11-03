@@ -87,9 +87,10 @@
       list.appendChild(h('div.row.su-row', sw,
         h('div.cell-main', h('div.name', it.display_name), h('div.sub', [it.publisher || '未知发布者', it.source_label].join('，')),
           aiNote(state.ai.startup[it.id])),
-        h('div.sub', { title: it.command }, it.exists ? it.command : '文件不存在：' + it.command),
-        h('div', { style: { textAlign: 'right' } }, it.exists ? h('button.btn.quiet.small', { type: 'button',
-          onclick: () => PX.api.call('reveal', { path: it.location }).catch(PX.fail) }, '打开位置') : PX.tag('文件不存在', 'warn'))));
+        h('div.sub', { title: PX.displayText(it.command) }, (it.exists ? '' : '文件不存在：') + PX.displayText(it.command)),
+        h('div.row-actions', it.exists ? h('button.btn.quiet.small', { type: 'button', title: '打开位置',
+          onclick: () => PX.api.call('reveal', { path: it.location }).catch(PX.fail) }, PX.icon('open')) : PX.tag('文件不存在', 'warn'),
+        h('button.btn.quiet.small', { type: 'button', onclick: () => PX.ask({ type: 'startup', id: it.id }, it.display_name) }, PX.icon('spark'), '问 AI'))));
     }
   }
 
@@ -111,7 +112,7 @@
       c.appendChild(PX.notice('修改服务的启动方式需要管理员权限。', 'info',
         h('button.btn.small', { type: 'button', onclick: PX.restartAsAdmin }, '以管理员身份重启')));
     }
-    c.appendChild(h('div.thead.svc-row', h('span', '服务'), h('span', '程序'), h('span', '状态'), h('span', '启动方式')));
+    c.appendChild(h('div.thead.svc-row', h('span', '服务'), h('span', '程序'), h('span', '状态'), h('span', '启动方式'), h('span')));
     const list = c.appendChild(h('div.list'));
     for (const s of rows) {
       let control;
@@ -126,9 +127,10 @@
       }
       list.appendChild(h('div.row.svc-row',
         h('div.cell-main', h('div.name', s.display_name), h('div.sub', { title: s.description }, s.description || s.name), aiNote(state.ai.services[s.name])),
-        h('div.cell-main', h('div.sub', s.publisher || '未知发布者'), h('div.sub', { title: s.binpath }, s.exe || s.binpath)),
+        h('div.cell-main', h('div.sub', s.publisher || '未知发布者'), h('div.sub', { title: PX.displayText(s.binpath) }, PX.displayText(s.exe || s.binpath))),
         h('div.small', s.status === 'running' ? PX.tag(s.status_label, 'good') : h('span.muted', s.status_label)),
-        control));
+        control,
+        h('button.btn.quiet.small', { type: 'button', title: '问 AI', onclick: () => PX.ask({ type: 'service', id: s.name }, s.display_name) }, PX.icon('spark'))));
     }
     if (!rows.length) list.appendChild(PX.empty('没有匹配的服务', ''));
   }

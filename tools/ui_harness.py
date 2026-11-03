@@ -5,7 +5,7 @@
 Serves the app's HTML bundle on http://127.0.0.1:PORT/ with a shim that sends
 ``pywebview.api.call`` to ``Bridge.call`` over HTTP, so pages, jobs and the
 backend can be checked together without pywebview. Without --live a scripted
-model answers (no network). The simulation is kept in %TEMP%\\panxu-ui-harness
+model answers (no network). The simulation is kept in %LOCALAPPDATA%\\PanXu\\ui-harness
 (rebuild it from the banner). This is a test tool: the app itself never runs a
 web server (see docs/DESIGN.md). Folder pickers and window functions are not
 available here.
@@ -17,7 +17,6 @@ import json
 import os
 import secrets
 import sys
-import tempfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -46,8 +45,9 @@ def main():
     parser.add_argument('--live', action='store_true', help='use the configured real model')
     args = parser.parse_args()
 
-    # one reusable folder: the server is usually stopped by killing it, so nothing would clean up a new one
-    sb = sandbox.Sandbox(args.sandbox or os.path.join(tempfile.gettempdir(), 'panxu-ui-harness'))
+    # one reusable folder (the server is usually stopped by killing it), inside PanXu's own protected data
+    # folder rather than %TEMP%, where its tens of GB of sparse files would inflate a real junk scan
+    sb = sandbox.Sandbox(args.sandbox or os.path.join(default_data_dir(), 'ui-harness'))
     sandbox.activate(sb)
     backend = Backend(os.path.join(sb.root, 'data'), sandbox=sb)
     if args.live:

@@ -26,14 +26,14 @@
     const c = PX.clear(largeRoot);
     const space = PX.space.state;
     c.appendChild(h('div.page-head', h('div.grow', h('h1', '大文件'),
-      h('div.sub', space.result ? `来自对 ${space.result.root.path} 的扫描，最多列出 5000 个最大的文件` : '列出磁盘上最大的文件'))));
+      h('div.sub', space.result ? `来自对 ${PX.displayPath(space.result.root.path)} 的扫描，最多列出 5000 个最大的文件` : '列出磁盘上最大的文件'))));
     if (space.status === 'scanning') {
       c.appendChild(PX.notice('正在扫描，完成后这里会列出最大的文件。', 'info', h('button.btn.small', { type: 'button', onclick: () => PX.go('space') }, '查看进度')));
       return;
     }
     if (!space.result) {
       const drives = PX.state.init.drives.map((d) => h('button.btn' + (d.system ? '.primary' : ''), { type: 'button',
-        onclick: () => PX.space.start(d.root).then(() => { if (PX.isCurrent('space')) PX.go('large'); }) }, PX.icon('drive'), '扫描 ' + d.root.replace(/\\$/, '')));
+        onclick: () => PX.space.start(d.root).then(() => { if (PX.isCurrent('space')) PX.go('large'); }) }, PX.icon('drive'), '扫描 ' + (d.letter || d.root.replace(/\\$/, ''))));
       c.appendChild(PX.empty('需要先扫描一个磁盘', '大文件列表来自空间分析的扫描结果。', drives));
       return;
     }
@@ -56,7 +56,7 @@
         'aria-label': '选择 ' + f.name,
         onchange: (e) => { e.target.checked ? large.selected.add(f.path) : large.selected.delete(f.path); bar(); } });
       list.appendChild(h('div.row.file-row' + (f.blocked ? '.disabled' : ''), box,
-        h('div.cell-main', h('div.name', f.name), h('div.sub', f.blocked ? f.blocked + '：' + f.path : f.path)),
+        h('div.cell-main', h('div.name', f.name), h('div.sub', (f.blocked ? f.blocked + '：' : '') + PX.displayPath(f.path))),
         h('div.sub', f.category_label), h('div.size.muted.small', fmt.date(f.mtime)), h('div.size', fmt.bytes(f.size))));
     }
     const barEl = c.appendChild(h('div.actionbar'));
@@ -172,7 +172,7 @@
             } else dup.selected.delete(f.path);
             drawDups(true);
           } });
-        grp.appendChild(h('div.row.dup-file' + (checked ? '' : '.keep'), box, h('div.cell-main', h('div.name.mono-path', f.path)),
+        grp.appendChild(h('div.row.dup-file' + (checked ? '' : '.keep'), box, h('div.cell-main', h('div.name.mono-path', PX.displayPath(f.path))),
           h('div.size.muted.small', '修改于 ' + fmt.date(f.mtime))));
       }
     }

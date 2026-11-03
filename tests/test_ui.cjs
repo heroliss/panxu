@@ -32,4 +32,15 @@ assert.strictEqual(PX.fmt.place(R`c:\users\ME\Downloads`, R`C:\Users\me\ `.trim(
 assert.strictEqual(PX.fmt.place(R`C:\Users\me`, R`C:\Users\me`), '用户文件夹');
 assert.strictEqual(PX.fmt.place(R`C:\Users\meme\x`, R`C:\Users\me`), R`C:\Users\meme\x`);
 assert.strictEqual(PX.fmt.place(R`D:\资料`, R`C:\Users\me`), R`D:\资料`);
+// 演练环境: simulated drive folders read as drive letters; real paths are untouched
+PX.state.init = { drives: [{ root: R`C:\Temp\sb\C\ `.trim(), letter: 'C:' }, { root: R`D:\ `.trim() }] };
+assert.strictEqual(PX.displayPath(R`C:\Temp\sb\C\Users\demo`), R`C:\Users\demo`);
+assert.strictEqual(PX.displayPath(R`c:\temp\SB\c`), R`C:\ `.trim());
+assert.strictEqual(PX.displayPath(R`C:\Temp\sb\Cx\y`), R`C:\Temp\sb\Cx\y`);
+assert.strictEqual(PX.displayPath(R`D:\资料`), R`D:\资料`);
+assert.strictEqual(PX.fmt.place(R`C:\Temp\sb\C\data`, R`C:\Temp\sb\C\Users\demo`), R`C:\data`);
+assert.strictEqual(PX.scoreLevel(80), 'hi');
+assert.strictEqual(PX.scoreLevel(79), 'mid');
+assert.strictEqual(PX.scoreLevel(49), 'lo');
+PX.state.init = null;
 console.log('ui tests passed');

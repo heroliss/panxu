@@ -100,7 +100,7 @@
         if (!rows.length) list.appendChild(h('div.row.muted', '演练回收站是空的'));
         for (const r of rows) {
           list.appendChild(h('div.row', { style: { gridTemplateColumns: 'minmax(0,1fr) auto auto' } },
-            h('div.cell-main', h('div.name', r.name), h('div.sub', r.original)), h('span.num.small', PX.fmt.bytes(r.size)),
+            h('div.cell-main', h('div.name', r.name), h('div.sub', PX.displayPath(r.original))), h('span.num.small', PX.fmt.bytes(r.size)),
             h('button.btn.small', { type: 'button', onclick: async () => {
               try { await PX.api.call('sandbox_restore', { item_id: r.id }); rows = rows.filter((x) => x !== r); fill(); PX.sandbox.refresh(); PX.toast('已还原：' + r.name); } catch (e) { PX.fail(e); }
             } }, '还原')));
