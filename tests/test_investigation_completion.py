@@ -137,6 +137,7 @@ class InvestigationCompletionTests(unittest.TestCase):
         self.assertFalse(self.state.history())
 
     def test_tool_ceiling_pairs_unexecuted_calls_and_saves_resumable_checkpoint(self):
+        self.harness.agent_budget.save_session({'tool_calls': 12})
         self.queue = [response(('collect', 'collect_apps', {'section': 'background'}),
             *[(f'first-{n}', 'list_items', {}) for n in range(7)]),
             response(*[(f'second-{n}', 'list_items', {}) for n in range(8)])]
@@ -292,6 +293,7 @@ class InvestigationCompletionTests(unittest.TestCase):
         self.assertFalse(result['investigation_notice']['recovered'])
 
     def test_plain_finalization_cannot_hide_unfinished_detailed_coverage(self):
+        self.harness.agent_budget.save_session({'model_requests': 6})
         real_metadata = copy.deepcopy(self.rows)
         for row in real_metadata:
             row['details']['synthetic'] = False
@@ -308,7 +310,7 @@ class InvestigationCompletionTests(unittest.TestCase):
         self.assertIsNone(result['question'])
         self.assertEqual(result['usage']['model_requests'], 6)
         self.assertEqual(len(self.requests), 6)
-        self.assertEqual(result['investigation_notice']['code'], 'round_budget')
+        self.assertEqual(result['investigation_notice']['code'], 'session_requests')
         self.assertEqual(result['handoff']['reason'], 'budget_exhausted')
         self.assertEqual(result['last_public_reply']['text'], '已保存6项建议，还有2项未逐项确认，需要继续。')
         self.assertIsNone(result['last_result'])

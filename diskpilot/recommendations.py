@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 import fnmatch
 import re
 
+from .state_advice import normalize as normalize_state_advice, operation_allowed, present as present_state_advice
+
 _ACTION = {"file": "delete", "directory": "delete", "startup": "disable_startup",
            "service": "stop_service", "process": "stop_process", "software": "uninstall"}
 _GROUPS = (("recommended", "建议处理"), ("personal", "你的文件，等你选择"),
@@ -245,7 +247,7 @@ def _validated_suggestions(value, items):
     seen, accepted = set(), []
     for row in value:
         expected = {"id", "recommend", "suggested_action", "reason", "impact"}
-        if not isinstance(row, dict) or not expected.issubset(row) or set(row) - expected - {'cleanup_rating', 'impact_rating'}:
+        if not isinstance(row, dict) or not expected.issubset(row) or set(row) - expected - {'cleanup_rating', 'impact_rating', 'state_recommendation', 'state_scope'}:
             raise ValueError("invalid_recommendations")
         rating = row.get('cleanup_rating')
         if rating is not None and (type(rating) is not int or not 1 <= rating <= 5):
@@ -270,7 +272,8 @@ def _validated_suggestions(value, items):
                     or any(ord(c) < 32 for c in text)
                     or re.search(r"已(?:经)?(?:成功)?(?:删除|卸载|停止|禁用|清理|移动)", text)):
                 raise ValueError("invalid_recommendations")
-        accepted.append(dict(copy.deepcopy(row), cleanup_rating=rating, impact_rating=impact_rating))
+        state_fields = normalize_state_advice(scoped[key], row)
+        accepted.append(dict(copy.deepcopy(row), cleanup_rating=rating, impact_rating=impact_rating, **state_fields))
     return accepted
 
 
@@ -336,6 +339,13 @@ def build_recommendations(items, assistant=None, *, use_model=False):
                         item["advice"]["provenance"] = copy.deepcopy(provenance)
                         item["advice"]["cleanup_rating"] = row['cleanup_rating']
                         item["advice"]["impact_rating"] = row['impact_rating']
+                        if row.get('state_recommendation') is not None:
+                            item['advice'].update(state_recommendation=row['state_recommendation'], state_scope=row['state_scope'],
+                                                 state_advice=present_state_advice(item, row))
+                            if not operation_allowed(item, row, row['suggested_action']):
+                                item['advice'].update(auto_select=False, suggested_action=None)
+                                item['advice']['group'] = ('keep' if row['state_recommendation'] in
+                                    ('keep_disabled', 'keep_enabled', 'keep_current') else 'review')
                 else:
                     warnings.append("模型未配置、请求失败或建议未通过校验，保留本地规则结果。")
             except Exception:

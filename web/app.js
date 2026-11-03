@@ -1134,7 +1134,7 @@ function initializePanxu() {
   function renderCleanupSelectionPreference(panel) {
     const section=el('div','cleanup-selection-preference'),line=el('label','check-line'),choice=el('input');
     choice.type='checkbox';choice.id='cleanup-auto-select-four';choice.checked=window.PanxuAppearance.get().cleanup_auto_select_four!==false;
-    const description=el('p','field-help','5 分项仍会预选；只影响新分析，不改变当前勾选。');description.id='cleanup-auto-select-four-help';
+    const description=el('p','field-help','5 分项仍会预选，但仅限可执行的清理建议；只影响新分析，不改变当前勾选。');description.id='cleanup-auto-select-four-help';
     choice.setAttribute('aria-describedby',description.id);
     const status=el('p','field-help');status.hidden=true;status.setAttribute('role','status');
     choice.addEventListener('change',async()=>{

@@ -12,6 +12,8 @@ import json
 
 from .simulation import canonical, within, _parent
 from .dispositions import DispositionStore
+from .action_semantics import primary_action
+from .state_advice import BLOCKED_REASON, operation_allowed, present as present_state_advice
 
 
 UNKNOWN_PROVENANCE = dict(source='unknown', provider=None, model=None, protocol=None, generated_at=None)
@@ -186,7 +188,8 @@ class AssessmentStore:
     def _empty():
         return dict(state='unanalysed', rating=None, impact_rating=None, conclusion=None, purpose=None, reason=None, impact=None,
                     inheritance='none', provenance=copy.deepcopy(UNKNOWN_PROVENANCE), source_ref=None,
-                    inherited_from=None, stale=False, blocked_reasons=[])
+                    inherited_from=None, stale=False, blocked_reasons=[], state_recommendation=None,
+                    state_scope=None, state_advice=None)
 
     def _direct(self, record, item):
         result = self._empty()
@@ -202,6 +205,12 @@ class AssessmentStore:
         for key in ('specialist', 'extra_suggestion_id'):
             if key in record:
                 result[key] = copy.deepcopy(record[key])
+        state_advice = present_state_advice(item or {'kind': record.get('kind')}, record, stale=stale)
+        if state_advice is not None:
+            result.update(state_recommendation=state_advice['recommendation'], state_scope=state_advice['scope'],
+                          state_advice=state_advice)
+        if not operation_allowed(item or {'kind': record.get('kind')}, record):
+            result['blocked_reasons'].append(BLOCKED_REASON)
         if (record.get('specialist') or {}).get('mode') == 'replace' or record.get('extra_suggestion_id'):
             result['blocked_reasons'].append('specialist_required')
         if stale:
@@ -259,6 +268,14 @@ class AssessmentStore:
             disposition = dispositions.get(item['id'])
             if disposition and not disposition['stale'] and disposition['value'] == 'direct_keep':
                 value['blocked_reasons'].append('user_direct_keep')
+            elif (disposition and not disposition['stale'] and disposition['value'] == 'direct_clean'
+                    and BLOCKED_REASON in value['blocked_reasons']
+                    and operation_allowed(item, value, primary_action(item), explicit_user_override=True)):
+                # An explicit current user instruction can override model intent.
+                # Keep the model's original direction readable; only its implicit
+                # cleanup veto is removed, never protection/identity/state checks.
+                value['blocked_reasons'].remove(BLOCKED_REASON)
+                value['state_recommendation_overridden'] = True
             if task and any(choice['choice'] in ('keep', 'defer') and (key == item['id'] or
                     choice.get('kind') == 'directory' and within(item['path'], choice['path'])) for key, choice in task.get('choices', {}).items()):
                 value['blocked_reasons'].append('user_kept')

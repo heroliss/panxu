@@ -8,7 +8,7 @@ window.PanxuAnalysisProgress = (() => {
   const node = (tag, cls = '', text) => {const value = document.createElement(tag); value.className = cls; if(text !== undefined)value.textContent = String(text); return value;};
   const add = (host, ...children) => {children.filter(Boolean).forEach(child => host.append(child)); return host;};
   const write = (target, text) => {if(target.textContent !== text)target.textContent = text;};
-  const labels = {ready:'准备分析',collecting:'正在检查',analyzing:'正在分析',finalizing:'正在整理建议',paused:'分析已暂停',waiting:'等待补充信息',completed:'分析已结束',limited:'本轮分析已到上限',error:'分析暂未完成'};
+  const labels = {ready:'准备分析',collecting:'正在检查',analyzing:'正在分析',finalizing:'正在整理建议',paused:'分析已暂停',waiting:'等待补充信息',completed:'分析已结束',limited:'连续分析已暂停',error:'分析暂未完成'};
   const scoreLabels = {1:'建议保留',2:'倾向保留',3:'待你决定',4:'倾向清理',5:'建议清理'};
   function phase(task) {
     if(labels[task?.analysis_progress?.phase])return task.analysis_progress.phase;
@@ -31,6 +31,22 @@ window.PanxuAnalysisProgress = (() => {
   }
   function unmount(host) {
     for(const [key,value] of [...mounts])if(!host || key === host)value.unmount();
+  }
+  function sessionResources(task) {
+    const session=task?.analysis_session || task?.analysis_progress?.session;
+    if(!session || typeof session!=='object')return null;
+    const used=session.used || {},limits=session.limits || {},reported=number(used.reported_usage_calls);
+    const resources=[['model_requests','模型请求','次'],['tool_calls','工具调用','次']].map(([key,label,unit])=>({label,unit,used:number(used[key]),limit:number(limits[key])}));
+    if(number(used.elapsed_ms)!==null&&number(limits.elapsed_minutes)!==null)resources.push({label:'分析用时',unit:'分钟',used:used.elapsed_ms/60000,limit:limits.elapsed_minutes});
+    if(reported>0&&number(used.input_tokens)!==null&&number(used.output_tokens)!==null)resources.push({label:'已报告 token',unit:'token',used:used.input_tokens+used.output_tokens,limit:number(limits.total_tokens)});
+    return {session,resources:resources.filter(value=>value.used!==null&&value.limit>0).sort((a,b)=>b.used/b.limit-a.used/a.limit)};
+  }
+  function limitMessage(task) {
+    const session=sessionResources(task)?.session,reason=session?.stop_reason;
+    if(reason==='no_progress')return '连续检查没有取得新信息，已暂停以避免重复消耗。已有结果保留，可调整要求后继续。';
+    if(reason==='repeated_failures')return '连续请求未能完成，已暂停。已有结果保留，请检查连接或补充要求后重试。';
+    if(session)return '已达到本次连续分析的资源额度。已有结果保留，继续分析会开始新的额度。';
+    return '本轮资源已用完，已有建议保留；继续分析不会丢失进度。';
   }
   function mount(host, helpers = {}) {
     unmount(host);
@@ -66,7 +82,7 @@ window.PanxuAnalysisProgress = (() => {
       if(determinate) {progress.max = stats.target; progress.value = stats.covered; progress.setAttribute('aria-valuetext',`已有结论 ${stats.covered} 项目标，共 ${stats.target} 项明确目标`);}
       else {progress.removeAttribute('value'); progress.removeAttribute('aria-valuetext'); progress.max = 1;}
       let text = stopping ? '正在停止后续请求；已接收的结果会保留。' : busy ? (stats.target === null ? '按需检查中，已有建议会逐项出现在下方。' : '已有建议会逐项出现在下方，可以先查看。') :
-        state === 'limited' ? '本轮按模型请求、工具调用等资源设上限，和项目数量不同。已有建议已保留，可以继续分析。' :
+        state === 'limited' ? limitMessage(task) :
         state === 'paused' ? '已有建议与进度已保留，可以继续分析。' :
         task.question ? '回答后会继续分析；已有建议仍可查看。' :
         state === 'error' ? '已有建议已保留，可以重试或检查模型连接。' :
@@ -90,11 +106,11 @@ window.PanxuAnalysisProgress = (() => {
         write(legend,`${scoreLabels[score]} ${n}`); names.push(`${scoreLabels[score]} ${n} 项`);
       }
       scoreBar.setAttribute('aria-label',(stats.partial ? '已显示建议的评分分布：' : '评分分布：') + names.join('，'));
-      const availableBudgets = [['model_requests','模型请求'],['tool_calls','工具调用']].map(([key,label]) => {
-        const value = task.analysis_progress?.budget?.[key]; return {label,used:number(value?.used),limit:number(value?.limit)};
+      const session=sessionResources(task),availableBudgets = session?.resources || [['model_requests','模型请求'],['tool_calls','工具调用']].map(([key,label]) => {
+        const value = task.analysis_progress?.budget?.[key]; return {label,unit:'次',used:number(value?.used),limit:number(value?.limit)};
       }).filter(value => value.used !== null && value.limit !== null && value.limit > 0).sort((a,b) => b.used / b.limit - a.used / a.limit), resource = availableBudgets[0];
       budget.hidden = state==='completed' || !resource || state !== 'limited' && resource.used / resource.limit < .75;
-      if(!budget.hidden) {write(budgetLabel,`本轮${resource.label} ${resource.used} / ${resource.limit} 次`); budgetMeter.max = resource.limit; budgetMeter.value = Math.min(resource.used,resource.limit); budgetMeter.setAttribute('aria-label','本轮' + resource.label + '额度'); budgetMeter.setAttribute('aria-valuetext',`${resource.used} 次${resource.label}，额度 ${resource.limit} 次；不是项目数量`);}
+      if(!budget.hidden) {const scope=session?'本次连续分析':'本轮',amount=resource.unit==='分钟'?resource.used.toFixed(1):resource.used.toLocaleString('zh-CN');write(budgetLabel,`${scope} · ${resource.label} ${amount} / ${resource.limit.toLocaleString('zh-CN')} ${resource.unit}`); budgetMeter.max = resource.limit; budgetMeter.value = Math.min(resource.used,resource.limit); budgetMeter.setAttribute('aria-label',scope + resource.label + '额度'); budgetMeter.setAttribute('aria-valuetext',`${amount} ${resource.unit}，额度 ${resource.limit} ${resource.unit}；不是项目数量`);}
       write(error,token.error); error.hidden = !token.error;
     }
     function update(task) {
@@ -125,5 +141,5 @@ window.PanxuAnalysisProgress = (() => {
     if(typeof helpers.subscribe === 'function')token.off = helpers.subscribe(update);
     return {update,unmount:token.unmount,element:section};
   }
-  return {mount,unmount,statistics};
+  return {mount,unmount,statistics,sessionResources,limitMessage};
 })();

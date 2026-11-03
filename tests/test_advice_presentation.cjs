@@ -19,6 +19,24 @@ function fixture(){
   return {render,fields};
 }
 
+test('service state recommendation separates stopped runtime from disabled startup and cleanup score',()=>{
+  const f=fixture(),node=f.render({kind:'service',assessment:{state:'explicit',rating:1,conclusion:'keep',state_advice:{recommendation:'keep_disabled',scope:'runtime',label:'保持停止',current_label:'当前已停止',actionable:false,reason:'当前无需再次停止。'}}});
+  assert.equal(f.fields(node).suggestion,'保持停止。');assert.match(node.textContent,/当前运行 · 当前已停止/);assert.match(node.textContent,/当前无需再次停止/);assert.equal(node.dataset.rating,'1');
+});
+test('enable recommendation is explicit and never rendered as a stop or cleanup command',()=>{
+  const f=fixture(),node=f.render({kind:'service',assessment:{state:'explicit',rating:1,state_advice:{recommendation:'enable',scope:'service_startup',label:'建议启用服务启动',current_label:'当前启动方式已禁用',actionable:false,reason:'需要单独调整服务启动方式。'}}});
+  assert.equal(f.fields(node).suggestion,'建议启用服务启动。');assert.match(node.textContent,/服务启动方式/);assert.equal(node.textContent.includes('建议停止'),false);
+});
+test('legacy low cleanup score does not invent a service state recommendation',()=>{
+  const f=fixture(),node=f.render({kind:'service',assessment:{state:'explicit',rating:1,conclusion:'keep'}});
+  assert.match(f.fields(node).suggestion,/尚未说明具体状态建议/);assert.equal(node.textContent.includes('保持停止'),false);
+});
+test('explicit manual action and stale state advice stay distinguishable from the model direction',()=>{
+  const f=fixture(),record={kind:'startup',origin:'user_direct',action:'disable_startup',assessment:{state:'explicit',rating:1,state_advice:{recommendation:'enable',scope:'login',label:'建议开启登录自启',current_label:'当前自启已关闭',actionable:false}}};
+  assert.equal(f.fields(f.render(record,{suggestion:'禁用开机启动，待你确认。'})).suggestion,'禁用开机启动，待你确认。');
+  record.assessment.stale=true;assert.equal(f.fields(f.render(record)).suggestion,'已有建议需要重新核对。');
+});
+
 test('shared explanations show all four complete labelled fields and prefer the saved assessment over older raw inventory text',()=>{
   const f=fixture(),reason='<img src=x>很长的分析依据。'.repeat(40),node=f.render({kind:'file',purpose:'旧用途',reason:'旧原因',assessment:{state:'explicit',rating:4,purpose:'最新用途',reason,impact:'重新下载后可再生成。'}});
   assert.equal(node.children.length,4);assert.deepEqual(node.children.map(child=>child.children[0].textContent),['用途','建议','原因','影响']);

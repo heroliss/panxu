@@ -1,6 +1,6 @@
 {
   "product": "盘序",
-  "version": "0.26.0",
+  "version": "0.27.0",
   "mode": "simulation",
   "root": "E:\\GPT-Projects\\win11-disk-assistant",
   "safety": "This build has NO real executor. All apply/undo/reset operations modify only SQLite simulation records. Never unlink/move/kill/control services/edit startup outside app-owned data.",
@@ -118,7 +118,7 @@
     "GET /api/recovery/plans/{id}": "durable frozen restore/purge plan; simulation only",
     "POST /api/recovery/prepare": "{ids,action:restore|purge}; freeze exact currently eligible dedicated retention records; no operation approval or real I/O",
     "POST /api/recovery/execute": "{plan_id,confirmation}; separate exact confirmation for restore or permanent purge intent; simulation records only. Purged records cannot be resurrected by legacy undo/reset",
-    "GET /api/agent-budget": "{model_requests,tool_calls}; per-turn hard limits, soft model hints",
+    "GET /api/agent-budget": "{model_requests,tool_calls}; legacy internal checkpoint size, not an ordinary user-visible stop",
     "POST /api/agent-budget": "partial {model_requests?,tool_calls?} -> saved flat budget; strict integer bounds",
     "GET /api/user-tools": "?query= -> {items,total,truncated}; saved versions and drafts",
     "GET /api/user-tools/{id}": "?version=N optional exact saved definition version",
@@ -135,7 +135,9 @@
     "POST /api/cleanup-tools/assess": "{tool_id,parameters?,refresh?}; read-only bounded inspection, exact parameter identity, inspection_id/signature, 96-entry cache with 60-second freshness. Logical bytes are not actual savings; partial/subset observations cannot claim full cleanup size.",
     "POST /api/cleanup-tools/assessments/summary": "{items:[{tool_id,parameters?,inspection_id?}]}; cache-only summary up to64 references; unknown coverage and overlapping roots/file identities are not summed as confirmed reclaimed space.",
     "POST /api/cleanup-tools/prepare-selection": "{items:[{tool_id,parameters,inspection_id}],source?};1-40 fresh checked executable nonoverlapping operations through existing prepare_many/ActionRuntime. No model call or real mutation.",
-    "POST /api/tasks/tool-analysis": "{items:[{tool_id,parameters,inspection_id}],goal?,reanalyze?,skip_analyzed?};1-64 exact cached diagnostic snapshots, task-private kind cleanup_tool, scope_kind/analysis.section cleanup_tools; existing agent job/facts/advice loop. No file catalog insertion, parameter changes or execution. Public cleanup_tool_targets retains frozen assessments and genuine advice/provenance, including stale historical results."
+    "POST /api/tasks/tool-analysis": "{items:[{tool_id,parameters,inspection_id}],goal?,reanalyze?,skip_analyzed?};1-64 exact cached diagnostic snapshots, task-private kind cleanup_tool, scope_kind/analysis.section cleanup_tools; existing agent job/facts/advice loop. No file catalog insertion, parameter changes or execution. Public cleanup_tool_targets retains frozen assessments and genuine advice/provenance, including stale historical results.",
+    "GET /api/analysis-budget": "{model_requests,tool_calls,elapsed_minutes,total_tokens,no_progress_requests,consecutive_failures}; persisted whole continuous-analysis allowance",
+    "POST /api/analysis-budget": "partial integer settings -> full saved settings; applies to new allowance sessions, never resets current consumption or grants actions"
   },
   "mutations": "Require X-CSRF-Token from bootstrap. Errors are JSON {error,code}. Relative same-origin fetch only. Input limits apply.",
   "summary": "{total_items,visible_items,simulated_items,logical_bytes,simulated_bytes,process_memory_bytes,by_kind,source,mode}. Real disks separate; no simulated_bytes shown as actual freed space.",
@@ -306,12 +308,27 @@
       "remaining_count",
       "rating_counts",
       "budget",
-      "stale_count"
+      "stale_count",
+      "session"
     ],
     "unknown": "target_count and remaining_count remain null for open-ended tasks; legacy round usage is null without evidence",
-    "budget": "model_requests/tool_calls have used/limit; limits measure requests and calls, never number of analyzed objects; normal default6/12 remains bounded with soft early-save guidance",
+    "budget": "Legacy checkpoint counters retained. Ordinary6/12 checkpoints save evidence and continue iteratively with semantic progress; the persisted analysis_session owns cumulative resources across checkpoints and pause/resume.",
     "completion": "finite frozen application/tool analysis targets require score or explicit skip/no_advice before completed; file auto may retain sparse/inherited assessment",
     "ui": "same task accept/poll pipeline broadcasts advice_revision updates; list-local progress/pause/resume; keyed list refresh preserves filters, focus, scroll and user selection",
     "historical_tools": "Completed frozen-tool advice remains in saved/rated counts after cache TTL or restart; stale_count, row badges and prepare validation independently require a fresh check before execution."
+  },
+  "analysis_session": {
+    "public": "id,status,limits,used,checkpoints,meaningful_results,no_progress_requests,consecutive_failures,stop_reason,token_usage_complete,cost_estimate=null",
+    "resume": "Pause, interrupted process or connection recovery keeps the same resource allowance; explicit user continuation after completed/exhausted allowance creates a new one and retains history. Internal checkpoints cannot renew resources.",
+    "progress": "New semantic observations or saved advice; timestamps/fact IDs/cursors alone do not count. Repeated observations and consecutive errors pause separately.",
+    "tokens": "Only provider-reported usage is counted. Missing usage remains unknown or incomplete; cost is not guessed.",
+    "time": "Active analysis time only, checked before the next request/tool. An in-flight request may finish within its provider timeout."
+  },
+  "state_advice": {
+    "fields": "optional state_recommendation=keep_disabled|enable|disable|keep_enabled|keep_current|investigate and state_scope=runtime|login|service_startup",
+    "scores": "cleanup_rating1..5 retains cleanup inclination; enable/maintain recommendations do not become high-score cleanup actions. No second generic strength score.",
+    "facts": "Service runtime and startup mode are independent. Unknown/legacy status does not imply enabled/disabled. UI shows actual state, recommendation, stale/conflict/unknown explanation.",
+    "selection": "Enable/no-op/scope-mismatched advice is excluded from automatic and implicit cleanup. A separate valid direct_clean intent or exact user action may override model direction after actual-action validation and confirmation.",
+    "execution": "No new enable/start/configuration executor; all existing actions remain simulated."
   }
 }

@@ -187,6 +187,7 @@ class TaskTests(unittest.TestCase):
         self.assertEqual(len(self.requests), 3)
 
     def test_budget_and_provider_failure_are_not_reported_as_success(self):
+        self.harness.agent_budget.save_session({'model_requests': 6})
         self.steps = [call('list_items', {}) for _ in range(6)]
         result = self.run_turn()
         self.assertEqual(result['status'], 'budget_exhausted')

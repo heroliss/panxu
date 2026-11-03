@@ -73,12 +73,12 @@ test('a rejected pause keeps old results visible and offers a genuine retry',asy
 });
 test('limited state distinguishes request allowance from object totals and can continue',async()=>{
   const seen=[],f=fixture({task:task({status:'budget_exhausted',job_id:null,analysis_progress:{target_count:50,saved_count:12,rated_count:12,rating_counts:{1:2,2:2,3:2,4:3,5:3},budget:{model_requests:{used:8,limit:8}}}}),onPause:()=>{},onContinue:async t=>{seen.push(t.id);return {task:task({advice_total:12,analysis:{target_count:50}})};}});
-  assert.match(f.text(),/和项目数量不同/);assert.match(f.text(),/本轮模型请求 8 \/ 8 次/);assert.equal(f.find('analysis-progress-budget-meter').value,8);
+  assert.match(f.text(),/本轮资源已用完/);assert.match(f.text(),/本轮 · 模型请求 8 \/ 8 次/);assert.equal(f.find('analysis-progress-budget-meter').value,8);
   const button=f.find('analysis-progress-actions').children[0];assert.equal(button.textContent,'继续分析');await button.click();assert.deepEqual(seen,['owned-analysis']);assert.equal(button.textContent,'暂停分析');
 });
 test('a tool-call limit highlights actual exhausted resource rather than a mostly unused model request allowance',()=>{
   const f=fixture({task:task({status:'budget_exhausted',analysis_progress:{target_count:12,saved_count:2,remaining_count:10,budget:{model_requests:{used:2,limit:24},tool_calls:{used:64,limit:64}}}})});
-  assert.match(f.text(),/本轮工具调用 64 \/ 64 次/);assert.equal(f.find('analysis-progress-budget-meter').value,64);assert.equal(f.find('analysis-progress-budget-meter').attributes['aria-label'],'本轮工具调用额度');
+  assert.match(f.text(),/本轮 · 工具调用 64 \/ 64 次/);assert.equal(f.find('analysis-progress-budget-meter').value,64);assert.equal(f.find('analysis-progress-budget-meter').attributes['aria-label'],'本轮工具调用额度');
 });
 test('question and model settings use supplied navigation callbacks without issuing requests',async()=>{
   const calls=[],f=fixture({task:task({status:'needs_input',question:{id:'owned-question'}}),onQuestion:t=>calls.push(['question',t.id]),onContinue:()=>calls.push(['continue']),onSettings:t=>calls.push(['settings',t.id])});
@@ -100,4 +100,20 @@ test('subscription is scoped, unsubscribed once, and mounting again leaves one r
 test('an operation task is not misrepresented as an analysis and missing task hides the region',()=>{
   const f=fixture({task:task({task_kind:'operation',status:'executing'})});assert.equal(f.view.element.hidden,true);
   f.view.update(null);assert.equal(f.view.element.hidden,true);
+});
+
+test('internal checkpoints do not appear as a nearly exhausted whole-task budget',()=>{
+  const f=fixture({onPause:()=>{},task:task({analysis_session:{limits:{model_requests:96,tool_calls:256,elapsed_minutes:30,total_tokens:1000000},used:{model_requests:6,tool_calls:12,elapsed_ms:12000,reported_usage_calls:0,input_tokens:null,output_tokens:null},checkpoints:1},analysis_progress:{target_count:12,saved_count:5,remaining_count:7,budget:{model_requests:{used:6,limit:6}}}})});
+  assert.equal(f.find('analysis-progress-budget').hidden,true);
+  assert.equal(f.find('analysis-progress-actions').children[0].textContent,'暂停分析');
+  assert.equal(f.text().includes('费用'),false);
+});
+test('session resource meter uses actual overall consumption and preserves unknown token usage',()=>{
+  const f=fixture({task:task({analysis_session:{limits:{model_requests:96,tool_calls:256,elapsed_minutes:30,total_tokens:1000000},used:{model_requests:80,tool_calls:30,elapsed_ms:60000,reported_usage_calls:0,input_tokens:null,output_tokens:null}}})});
+  assert.equal(f.find('analysis-progress-budget').hidden,false);assert.match(f.text(),/本次连续分析 · 模型请求 80 \/ 96 次/);
+  assert.equal(f.find('analysis-progress-budget-meter').max,96);
+});
+test('repeated observations pause with an explanation rather than claiming a numerical item limit',()=>{
+  const f=fixture({task:task({status:'budget_exhausted',analysis_session:{stop_reason:'no_progress',limits:{model_requests:96},used:{model_requests:8}},analysis_progress:{target_count:12,saved_count:3,remaining_count:9}})});
+  assert.match(f.text(),/没有取得新信息/);assert.match(f.text(),/已保存 3 项建议/);assert.match(f.text(),/还有 9 项目标待分析/);
 });

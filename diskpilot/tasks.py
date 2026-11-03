@@ -34,8 +34,10 @@ from .diagnostics import DiagnosticsStore
 from .tool_assessments import ToolAssessments
 from . import task_tool_analysis
 from .user_tools import UserToolStore
-from .agent_budget import AgentBudget, budget_hint, finalization_due
+from .agent_budget import AgentBudget, finalization_due
 from .analysis_progress import summarize_analysis
+from . import analysis_session
+from . import state_advice
 from .orchestration import Orchestration, orchestration_definitions
 from .prompt_text import render_host_text
 from .knowledge import SkillRegistry
@@ -60,6 +62,7 @@ SYSTEM = '''你是盘序的Windows整理智能体。理解用户目标，按需�
 大目录按需逐层调查，scan_id用continue_scan续采集、read_scan分页读；索引完成不等于整目录可删，整体操作前validate_directory。depth=overview只概览，auto按需展开，detailed分批逐项并诚实报告未覆盖范围。
 record_advice保存稀疏判断：明确倾向尽量评分1–5（1偏保留、3已分析中立、5偏清理），分数不表示安全概率或授权；未知/旧缺分不填3，skip本轮跳过，no_advice调查后无法建议，两者不评分。
 impact_rating独立表示所述操作的后果程度：1很小、2轻微、3明显、4较大、5重大或难逆；不表示发生概率或清理倾向。证据不足填null，不由cleanup_rating推算，不影响操作权限或勾选。
+后台对象另用state_recommendation区分保持关闭、建议开启、建议关闭、保持开启、保持现状、需核实；服务必须用state_scope区分当前运行(runtime)与启动方式(service_startup)，Stopped不表示Disabled。cleanup_rating仍只表示减负/清理倾向，开启建议不与关闭建议共用高分自动勾选；开启或维持建议仅说明，不据此产生关闭动作。
 目录默认只针对自身，仅inheritance=subtree才让未独立分析的已观察后代沿用倾向/解释；不继承动作或许可。具体子项、保留、跳过、未知及失效记录优先，有冲突改选具体项。
 按需用list_skills/read_skill取得经验与来源；指导不是本机事实或额外权限。系统占用用collect_system_configuration/inspect_volume核查已有范围的有限配置统计，不能据此证明可恢复、健康或扩大范围。工具用法可discover_tools。需要专项清理时按需discover_cleanup_tools/inspect_cleanup_tool，建议正文直接说明；record_advice可附specialist入口，mode=replace表示用专项替代普通动作，不能再把高分目录提议整删。特殊情况用record_specialist_suggestions提供可读说明及选项；用户回答不等于执行授权。
 先读已有目标、用户选择、事实和结果，避免重复调查。working_evidence是压缩后保留的有限事实正文，不是全库或新的扫描；不足时在read_facts可用的阶段回读本任务事实。最后结论阶段只基于已给出的内容，不把未覆盖当成没有问题。checkpoint_task保存下一步与缺口；有关键偏好用ask_user一次问一个易懂问题。
@@ -67,7 +70,7 @@ impact_rating独立表示所述操作的后果程度：1很小、2轻微、3明�
 程序默认跳过已有有效建议及用户已决定直接清理/直接保留的对象；无需再问使用频率或重复分析。user_disposition中的倾向作为判断偏好，不代替证据、保护规则或执行确认。直接清理只是用户意图，程序仍需勾选和执行确认。
 输出结论清晰简短，建议按重要性分批提交；字段长度和每批数量遵循工具协议，不需要固定推荐项数。用途、原因和影响各自说明有用信息，避免重复。按需用briefing展示重点、影响和范围，用户可打开详情。
 评分保存后用present_findings(needs_input=false)结束调查，程序会显示勾选清单，不必再问是否生成方案；这不批准执行。只有影响调查判断的必要信息缺口才用ask_user提出具体问题。
-本轮预算由宿主提供，可配置并续接；接近上限时保存建议或检查点。没有足够证据就说明缺口，不为结束流程编造评分、处理结果或完整覆盖。'''
+宿主定期保存分析检查点；有新事实或建议时会自动续接，不必为检查点提前结束。整体资源接近上限时保存建议和缺口；没有足够证据就说明未知，不编造评分、处理结果或完整覆盖。'''
 
 
 def tool_specs():
@@ -155,6 +158,8 @@ def tool_specs():
           'properties': {'id': ident, 'conclusion': {'type': 'string', 'enum': ['keep', 'review', 'recommend', 'skip', 'no_advice']},
             'cleanup_rating': {'type': ['integer', 'null'], 'minimum': 1, 'maximum': 5},
             'impact_rating': {'type': ['integer', 'null'], 'minimum': 1, 'maximum': 5},
+            'state_recommendation': {'type': 'string', 'enum': list(state_advice.RECOMMENDATIONS)},
+            'state_scope': {'type': 'string', 'enum': list(state_advice.SCOPES)},
             'inheritance': {'type': 'string', 'enum': ['none', 'subtree']},
             'specialist': specialist, 'extra_suggestion_id': {'type': 'string', 'maxLength': 80},
             **{field: {'type': 'string', 'maxLength': 400} for field in ('purpose', 'reason', 'impact')},
@@ -960,7 +965,8 @@ class TaskHarness(Orchestration):
         if task.get('diagnostic_snapshot_id'):
             value['diagnostics'] = self._diagnostic_brief(key, task['diagnostic_snapshot_id'])
         value['budget'] = dict(per_turn=self.agent_budget.get(),
-                               cumulative=copy.deepcopy(task['usage']), note='按轮预算用于续接，不代表任务已经完成。')
+                               cumulative=copy.deepcopy(task['usage']), note='按轮设置仅用于内部检查点；整体分析资源另行计量。')
+        value['analysis_session'] = analysis_session.public(task.get('analysis_session'))
         value['handoff'] = copy.deepcopy(task['handoff'])
         fact_preview = self.facts_page(key, limit=5, detail=False)
         value['facts'] = {'total': fact_preview['total'], 'preview': fact_preview['items']}
@@ -978,6 +984,8 @@ class TaskHarness(Orchestration):
             if advice.get('kind') == 'cleanup_tool':
                 advice['stale'] = not self.tool_assessments.is_current(
                     advice.get('tool_ref'), advice.get('inspection_id'), advice.get('signature'))
+            advice['state_advice'] = state_advice.present(current.get(advice['id'], advice), advice,
+                stale=advice['stale'])
         if task.get('analysis'):
             value['analysis'] = copy.deepcopy(task['analysis'])
             value['analysis'].update(self._coverage(task, current))
@@ -988,6 +996,7 @@ class TaskHarness(Orchestration):
                          advice.get('inspection_id'), advice.get('signature'))]
         value['analysis_progress'] = summarize_analysis(task, current, self.agent_budget.get(),
             coverage=value.get('analysis'), stale_ids=stale_ids)
+        value['analysis_progress']['session'] = copy.deepcopy(value['analysis_session'])
         return value
 
     @staticmethod
@@ -1665,7 +1674,7 @@ class TaskHarness(Orchestration):
             current = {i['id']: i for i in self._items(task)}
             additions = {}
             for index, row in enumerate(rows):
-                self._args(row, ['id', 'conclusion', 'purpose', 'reason', 'impact', 'impact_rating', 'evidence_ids', 'cleanup_rating', 'inheritance', 'specialist', 'extra_suggestion_id'], ['id', 'conclusion', 'purpose', 'reason', 'impact'])
+                self._args(row, ['id', 'conclusion', 'purpose', 'reason', 'impact', 'impact_rating', 'evidence_ids', 'cleanup_rating', 'inheritance', 'specialist', 'extra_suggestion_id', 'state_recommendation', 'state_scope'], ['id', 'conclusion', 'purpose', 'reason', 'impact'])
                 if not isinstance(row['id'], str) or row['id'] not in current or row['id'] in additions:
                     duplicate = isinstance(row['id'], str) and row['id'] in additions
                     raise AppError(f'第{index + 1}项的id重复，请只保留一次。' if duplicate else
@@ -1674,6 +1683,10 @@ class TaskHarness(Orchestration):
                 if row['conclusion'] not in ('keep', 'review', 'recommend', 'skip', 'no_advice') or any(not isinstance(row[f], str) or not 1 <= len(row[f]) <= 400 for f in ('purpose', 'reason', 'impact')):
                     raise AppError('请按格式提供结论、用途、原因和影响。')
                 item = current[row['id']]
+                try:
+                    state_fields = state_advice.normalize(item, row)
+                except ValueError as exc:
+                    raise AppError('请明确后台状态建议；服务需区分当前运行与启动方式。', str(exc)) from None
                 if item['kind'] == 'cleanup_tool' and ('specialist' in row or 'extra_suggestion_id' in row):
                     raise AppError('专项工具建议只针对原选择，不能更换工具或参数。', 'outside_scope')
                 if (item['kind'] == 'cleanup_tool' and row['conclusion'] not in ('skip', 'no_advice')
@@ -1700,6 +1713,7 @@ class TaskHarness(Orchestration):
                     cleanup_rating=value, impact_rating=impact_rating, inheritance=inheritance,
                     signature=item['signature'], at=now(), evidence_ids=self._evidence(task, row.get('evidence_ids')),
                     provenance=self._provenance(provenance),
+                    **state_fields,
                     **{f: self.clean(row[f], 400) for f in ('purpose', 'reason', 'impact')})
                 additions[item['id']].update(self._specialist_link(task, row, item))
                 if item['kind'] == 'cleanup_tool':
@@ -1759,6 +1773,10 @@ class TaskHarness(Orchestration):
                 raise AppError('方案包含未知、重复或已处理项目，请更新。')
             seen.add(row['id'])
             item = current[row['id']]
+            saved_advice = task.get('advice', {}).get(item['id'])
+            if (origin != 'user_direct' and saved_advice and saved_advice.get('signature') == item['signature']
+                    and not state_advice.operation_allowed(item, saved_advice, row['action'])):
+                raise AppError('这项状态建议没有对应的关闭操作，请在清单核对具体动作。', state_advice.BLOCKED_REASON, 409)
             if origin != 'user_direct' and self._specialist_replaces(task, item):
                 raise AppError('这项建议应进入专项工具，不能按普通文件或后台动作处理。', 'specialist_required', 409)
             if not self._action_target(task, item):
@@ -1886,6 +1904,16 @@ class TaskHarness(Orchestration):
             for ident in ids:
                 self._guard_directory({'choices': {}}, items[ident], respect_advice=False)
             selected = [items[ident] for ident in ids]
+            resolved = self.assessments.resolve(list(items.values()), task=source if source_task_id is not None else None)
+            dispositions = self.assessments.dispositions.resolve(selected)
+            for item in selected:
+                assessment = resolved.get(item['id']) or {}
+                disposition = dispositions.get(item['id']) or {}
+                explicit = disposition.get('value') == 'direct_clean' and not disposition.get('stale')
+                if not assessment.get('stale') and not state_advice.operation_allowed(item, assessment,
+                        action=primary_action(item), explicit_user_override=explicit):
+                    raise AppError('这项建议不能由勾选自动推导为关闭；若你确定要执行列表标明的操作，请先把清理意愿设为“直接清理”，再勾选并确认。',
+                        state_advice.BLOCKED_REASON, 409)
             actions = {item['id']: primary_action(item) for item in selected}
             self._preflight_actions(selected, actions)
             kinds = {item['kind'] for item in selected}
@@ -1994,6 +2022,7 @@ class TaskHarness(Orchestration):
             if len(staged['known_ids']) > 50000:
                 raise AppError('当前任务保存的对象已到上限，请为这些项目单独建立更小范围的任务。', 'task_item_limit')
             rows = []
+            overrides = {}
             saved_assessments = self.assessments.resolve(list(current.values()), task=task)
             for ident in ids:
                 item = current[ident]
@@ -2002,6 +2031,13 @@ class TaskHarness(Orchestration):
                 saved = saved_assessments.get(ident) or {}
                 reusable = saved.get('state') in ('explicit', 'inherited') and not saved.get('stale')
                 explanation = advice if fresh else saved if reusable else {}
+                state_view = state_advice.present(item, explanation)
+                if state_view and not state_advice.operation_allowed(item, explanation, actions[ident]):
+                    detail = action_details(actions[ident])
+                    overrides[ident] = dict(label=state_view['label'], state_scope=state_view['scope'],
+                        requested_action=actions[ident])
+                    explanation = dict(reason=f'你明确选择了{detail["action_label"]}，与助手的“{state_view["label"]}”建议不同。',
+                        impact=detail['action_effect'], impact_rating=None)
                 rows.append(dict(id=ident, action=actions[ident],
                     reason=explanation.get('reason') or '你在界面中明确选择了这项操作。',
                     impact=explanation.get('impact') or action_details(actions[ident])['action_effect'],
@@ -2011,6 +2047,9 @@ class TaskHarness(Orchestration):
             self._propose_plan(staged, dict(summary='按你的明确选择处理这些项目。', items=rows), current=current,
                                origin='user_direct', save=False,
                                provenance=dict(source='local', generated_at=now()))
+            for entry in staged['plan']['items']:
+                if entry['id'] in overrides:
+                    entry['state_advice_override'] = overrides[entry['id']]
             self._preflight_actions([current[ident] for ident in ids], actions)
             staged['feedback'].append(dict(role='user', content='我在界面中明确选择了这些项目与操作，请记录结果；是否继续调查由我决定。',
                 direct_action=dict(ids=ids, actions=actions, **({'action': action} if action else {}), plan_version=staged['plan_version'], at=now())))
@@ -2256,7 +2295,6 @@ class TaskHarness(Orchestration):
                         last_user_action=user_action, recent_host_actions=self._recent_host_actions(task),
                         loaded_skills=list(task['loaded_skills'].values())[-20:],
                         scans=[self._scan_summary(s) for s in list(task.get('scans', {}).values())[:20]])
-        optional['work_budget'] = self.agent_budget.get()
         if task.get('diagnostic_snapshot_id'):
             optional['diagnostics'] = self._diagnostic_brief(task['id'], task['diagnostic_snapshot_id'])
         optional['background_work'] = [{k: v for k, v in work.items() if k in ('id', 'kind', 'status', 'summary', 'snapshot_id', 'error')} for work in self.task_jobs.recent(task['id'])]
@@ -2342,6 +2380,20 @@ class TaskHarness(Orchestration):
         cancel = cancel or threading.Event()
         budget = self.agent_budget.get()
         max_rounds, max_calls = budget['model_requests'], budget['tool_calls']
+        session_started, session_elapsed = None, 0
+
+        def tick(current):
+            if session_started is not None and isinstance(current.get('analysis_session'), dict):
+                current['analysis_session']['used']['elapsed_ms'] = session_elapsed + max(
+                    0, round((time.monotonic() - session_started) * 1000))
+
+        def finish_step(made_progress=False):
+            current = self._get(key)
+            tick(current)
+            session = current['analysis_session']
+            session['no_progress_requests'] = 0 if made_progress else session['no_progress_requests'] + 1
+            self._save(current)
+
         try:
             task = self._get(key)
             if execute:
@@ -2396,6 +2448,10 @@ class TaskHarness(Orchestration):
                 task.update(status='paused', summary='已停止，已取得的结果会保留。')
                 self._save(task)
                 return self.public(key)
+            session = analysis_session.begin(task, self.agent_budget.get_session())
+            session_elapsed = session['used']['elapsed_ms']
+            session_started = time.monotonic()
+            self._save(task)
             self._ensure_system_diagnostics(key, cancel, progress)
             task = self._get(key)
             if cancel.is_set():
@@ -2439,9 +2495,36 @@ class TaskHarness(Orchestration):
                       'continue_scan': '正在继续采集目录元数据', 'read_scan': '正在分页核对已采集内容', 'validate_directory': '正在核对目录当前完整子树'}
             force_finalization = False
             recovery_used = False
-            for round_index in range(max_rounds):
+            round_index = -1
+            stop = None
+            checkpoint_progress = session['meaningful_results']
+            while True:
                 if cancel.is_set():
                     break
+                task = self._get(key)
+                tick(task)
+                session = task['analysis_session']
+                stop = analysis_session.stop_reason(session)
+                if stop:
+                    break
+                if round_index >= max_rounds - 1 or calls_used >= max_calls:
+                    # A checkpoint is an internal context boundary, not a user
+                    # interruption or a fresh resource allowance. Every native
+                    # call in the preceding response already has its result.
+                    if session['meaningful_results'] <= checkpoint_progress:
+                        stop = 'no_progress'
+                        break
+                    session['checkpoints'] += 1
+                    checkpoint_progress = session['meaningful_results']
+                    task['turn_budget']['used'] = dict(model_requests=0, tool_calls=0)
+                    task['analysis_stage'] = 'analyzing'
+                    self._checkpoint(task, 'automatic_checkpoint')
+                    self._save(task)
+                    messages = self._turn_messages(task, 'automatic_checkpoint')
+                    calls_used, round_index = 0, -1
+                    self._event(task, 'checkpoint', '已保存分析检查点，正在继续剩余调查。')
+                round_index += 1
+                request_progress = False
                 new_activity = [row for row in self.tool_activity.recent(limit=6) if row['id'] not in activity_seen]
                 if new_activity:
                     messages.append({'role': 'user', 'content': render_host_text(dict(tool_activity_update=self._prompt_activity(self._get(key), list(reversed(new_activity))),
@@ -2483,21 +2566,29 @@ class TaskHarness(Orchestration):
                 # Truncated-output recovery reserves a conclusion slot.
                 # Ordinary turns retain their declared allowance and tools.
                 # Rejected calls still receive paired native results below.
-                call_limit = max_calls if not force_finalization or finish_only else max_calls - 1
+                session = task['analysis_session']
+                remaining_tools = max(0, session['limits']['tool_calls'] - session['used']['tool_calls'])
+                call_limit = calls_used + remaining_tools
+                if force_finalization and not finish_only:
+                    call_limit = min(call_limit, max_calls - 1)
                 if finalizing:
                     messages.append({'role': 'user', 'content':
                         ('现在收束本轮：只依据已取得的事实，不重新采集；可用read_facts时允许回读已保存正文。' if force_finalization else
-                         '本轮资源接近用尽，优先根据已有证据保存评分和结论；必要时仍可使用现有工具核对，不必逐项重复读取。')
+                         '即将保存内部检查点；有新进展会自动续接。先保存已有依据的建议，未覆盖目标继续调查，不必重复已有读取。')
                         + ('本次只提交present_findings短结论，或用ask_user询问一个真正阻塞的选择。' if finish_only else
-                           '先用record_advice保存已核对且有依据的对象评分，每次最多6项；同一条回复可提交多批，不必为每批重新调查。再用present_findings提交短结论。')
+                           'record_advice每批最多6项；同一条回复可提交多批，目标确已完成才用present_findings结束。')
                         + '说清已检查范围和未覆盖部分；没有检查不等于没问题。不能宣称系统已优化或实际处理。'})
-                    task['summary'] = '正在整理已检查内容的评分与结论…'
+                    task['summary'] = '正在保存已检查内容，继续分析剩余目标…' if not force_finalization else '正在整理已检查内容的评分与结论…'
                     if progress:
                         progress({'message': task['summary']})
-                messages[0] = {'role': 'system', 'content': self._system(task) + '\n\n' + render_host_text({'work_budget': budget_hint(budget, model_requests_used=round_index, tool_calls_used=calls_used)})}
-                task['analysis_stage'] = 'finalizing' if finalizing else 'analyzing'
+                messages[0] = {'role': 'system', 'content': self._system(task) + '\n\n' + render_host_text({
+                    'analysis_resources': dict(remaining_requests=session['limits']['model_requests'] - session['used']['model_requests'],
+                        remaining_tools=remaining_tools, checkpoints_continue_automatically=True)})}
+                task['analysis_stage'] = 'finalizing' if force_finalization else 'analyzing'
                 task['usage']['model_requests'] += 1
                 task['turn_budget']['used']['model_requests'] += 1
+                session['used']['model_requests'] += 1
+                tick(task)
                 self._save(task)
                 try:
                     message = self.assistant.agent_turn(messages, specs, cancel=cancel)
@@ -2505,6 +2596,7 @@ class TaskHarness(Orchestration):
                     if str(exc) not in ('response_budget', 'invalid_tool_arguments') or cancel.is_set():
                         raise
                     task = self._get(key)
+                    task['analysis_session']['consecutive_failures'] += 1
                     can_recover = not recovery_used and round_index < max_rounds - 1
                     task['investigation_notice'] = dict(code=str(exc), at=now(), recovered=False,
                         recovery_attempted=recovery_used or can_recover,
@@ -2518,11 +2610,14 @@ class TaskHarness(Orchestration):
                     force_finalization = True
                     recovery_used = True
                     messages = self._turn_messages(task, 'output_recovery')
+                    finish_step()
                     continue
                 response_provenance = self._provenance(message.pop('_provenance', None))
                 public_text_truncated = message.pop('_public_text_truncated', False) is True
                 task = self._get(key)
                 self._account_usage(task, message.get('_usage'))
+                analysis_session.account_tokens(task['analysis_session'], message.get('_usage'))
+                tick(task)
                 if not cancel.is_set():
                     self._remember_public_reply(task, message.get('content'), response_provenance,
                                                 truncated=public_text_truncated)
@@ -2542,6 +2637,7 @@ class TaskHarness(Orchestration):
                         messages.append(message)
                         messages.append({'role': 'user', 'content':
                             '若确实缺少影响判断的信息，请用ask_user提出具体问题；否则保存已有建议并用present_findings(needs_input=false)结束，用户会在清单勾选。'})
+                        finish_step()
                         continue
                     try:
                         self.tool(key, 'present_findings', args, cancel=cancel, provenance=response_provenance)
@@ -2551,6 +2647,7 @@ class TaskHarness(Orchestration):
                         messages.append(message)
                         messages.append({'role': 'user', 'content':
                             '逐项调查尚未覆盖完整；请继续调查，或用ask_user提出一个实际阻塞的问题。不要把未覆盖范围说成已完成。'})
+                        finish_step()
                         continue
                     task = self._get(key)
                     if task.get('investigation_notice'):
@@ -2562,6 +2659,16 @@ class TaskHarness(Orchestration):
                 for call in calls:
                     if cancel.is_set():
                         break
+                    task = self._get(key)
+                    tick(task)
+                    current_stop = analysis_session.stop_reason(task['analysis_session'])
+                    if current_stop and current_stop != 'session_requests':
+                        # Complete the native pairing without submitting an
+                        # unbounded tool after a time/token/failure boundary.
+                        messages.append({'role': 'tool', 'tool_call_id': call['id'], 'content': json.dumps(
+                            {'error': '整体分析资源或停滞保护已触发；此调用未执行，已有结果保留。'}, ensure_ascii=False)})
+                        stop = current_stop
+                        continue
                     if calls_used >= call_limit:
                         messages.append({'role': 'tool', 'tool_call_id': call['id'], 'content': json.dumps(
                             {'error': '本轮工具额度已用完；此调用未执行。已有事实会保留，可继续调查。'}, ensure_ascii=False)})
@@ -2572,12 +2679,14 @@ class TaskHarness(Orchestration):
                     task = self._get(key)
                     task['usage']['tool_calls'] += 1
                     task['turn_budget']['used']['tool_calls'] += 1
+                    task['analysis_session']['used']['tool_calls'] += 1
                     task['analysis_stage'] = ('finalizing' if finalizing else 'analyzing' if name in
                         ('record_advice', 'propose_plan', 'present_findings', 'ask_user') else 'collecting')
                     task['summary'] = label + '…'
                     self._save(task)
                     if progress:
                         progress({'message': label})
+                    args = {}
                     try:
                         args = json.loads(call['function']['arguments'])
                         if self.trace:
@@ -2601,6 +2710,9 @@ class TaskHarness(Orchestration):
                             code=exc.code if isinstance(exc, AppError) else 'invalid_tool_arguments',
                             next_step='按照当前工具参数说明修正，不要扩大范围；当前阶段不可用的工具请改用已提供的工具。')
                     task = self._get(key)
+                    tick(task)
+                    request_progress = analysis_session.observe(task['analysis_session'], name,
+                        args if isinstance(args, dict) else {}, result) or request_progress
                     if 'error' in result:
                         task['usage']['tool_failures'] += 1
                     elif name in ('survey_scope', 'inspect_directory', 'validate_directory', 'list_items', 'inspect_items', 'collect_apps', 'compare_files', 'cache_experience', 'continue_scan', 'read_scan', 'read_skill', 'collect_system_configuration', 'inspect_volume', 'inspect_cleanup_tool', 'read_cleanup_diagnostics', 'read_duplicate_groups', 'read_duplicate_members', 'inspect_user_tool'):
@@ -2636,18 +2748,22 @@ class TaskHarness(Orchestration):
                         self._event(task, 'summary', task['summary'])
                         return self.public(key)
                     messages.append({'role': 'tool', 'tool_call_id': call['id'], 'content': json.dumps(result, ensure_ascii=False)})
-                if calls_used >= max_calls:
+                finish_step(request_progress)
+                if stop:
                     break
             task = self._get(key)
             if not cancel.is_set():
                 task['investigation_notice'] = dict(task.get('investigation_notice') or {},
                     code=(task.get('investigation_notice') or {}).get('code') or
-                        ('tool_budget' if calls_used >= max_calls else 'round_budget'),
+                        (stop or 'no_progress'),
                     at=now(), recovered=False)
             task.update(status='paused' if cancel.is_set() else 'budget_exhausted',
                         summary='已停止，调查结果已保留。' if cancel.is_set() else
-                            ('本轮工具调用已到上限' if calls_used >= max_calls else '本轮模型调用已到上限')
-                            + f'，已保存 {len(task.get("advice", {}))} 项建议，可以继续。')
+                            ({'session_requests': '本次分析请求达到设置的上限', 'session_tools': '本次分析工具调用达到设置的上限',
+                              'session_time': '本次分析达到设置的时长', 'session_tokens': '已报告的token用量达到设置的上限',
+                              'repeated_failures': '连续工具失败，已暂停重复尝试', 'no_progress': '连续调查没有新增有效信息，已暂停'}
+                             .get(stop, '本次分析已暂停'))
+                            + f'；已保存 {len(task.get("advice", {}))} 项建议，已有结果可以查看或继续。')
             self._checkpoint(task, 'cancelled' if cancel.is_set() else 'budget')
             self._save(task)
             return self.public(key)
@@ -2679,4 +2795,11 @@ class TaskHarness(Orchestration):
             self._save(task)
             return self.public(key)
         finally:
+            if session_started is not None:
+                task = self._get(key)
+                tick(task)
+                session = task.get('analysis_session')
+                if session:
+                    session.update(status=task['status'], stop_reason=(task.get('investigation_notice') or {}).get('code'))
+                    self._save(task)
             self.release(key)

@@ -96,24 +96,25 @@ window.PanxuOrchestration = (() => {
     }catch(e){if(active(t)&&t.dialog&&request===t.detailRequest){ui.status.textContent=e.message;ui.status.setAttribute('role','alert');ui.host.replaceChildren(button('重试',()=>diagnosticPage(t,offset),'button'));ui.back.disabled=offset===0;}}
   }
   function renderBudget(root,helpers={}){
-    const t=token(root,helpers,'budget'),details=node('details','orchestration-budget-settings');t.panel=details;details.append(node('summary','','助手工作额度'));
-    const form=node('form','orchestration-budget-form'),intro=node('p','field-help','提高额度可让助手调查更多内容，也会使用更多时间与模型额度。'),fields=node('div','orchestration-budget-fields');
+    const t=token(root,helpers,'budget'),details=node('details','orchestration-budget-settings');t.panel=details;details.append(node('summary','','连续分析资源（高级）'));
+    const form=node('form','orchestration-budget-form'),intro=node('p','field-help','助手有新进展就会自动继续。以下是一次连续分析的总额度，达到后会保存结果并暂停；你也可以随时暂停。'),fields=node('div','orchestration-budget-fields');t.fields={};
     const make=(name,label,min,max)=>{const line=node('label'),input=node('input');input.type='number';input.name=name;input.min=min;input.max=max;input.step=1;input.disabled=true;input.setAttribute('aria-label',label);add(line,node('span','field-label',label),input,node('small','field-help',`${min}–${max}`));fields.append(line);return input;};
-    t.requests=make('model_requests','每轮最多模型请求',4,32);t.calls=make('tool_calls','每轮最多工具调用',6,128);
+    for(const [name,label,min,max] of budgetFields)t.fields[name]=make(name,label,min,max);
     const status=node('p','connection-test-status','正在读取当前额度…');status.setAttribute('role','status');t.status=status;t.save=button('保存额度',()=>{},'button');t.save.type='submit';t.save.disabled=true;
     form.addEventListener('submit',event=>{event.preventDefault();saveBudget(t);});add(form,intro,fields,t.save,status);details.append(form);root.append(details);loadBudget(t);return details;
   }
-  function budget(value){const d=value?.budget || value;return d&&Number.isInteger(d.model_requests)&&d.model_requests>=4&&d.model_requests<=32&&Number.isInteger(d.tool_calls)&&d.tool_calls>=6&&d.tool_calls<=128?{model_requests:d.model_requests,tool_calls:d.tool_calls}:null;}
+  const budgetFields=[['model_requests','最多模型请求',6,1024],['tool_calls','最多工具调用',12,4096],['elapsed_minutes','分析时间额度（分钟）',1,240],['total_tokens','最多累计 token',1000,20000000]];
+  function budget(value){const d=value?.budget || value;if(!d||!budgetFields.every(([key,,min,max])=>Number.isInteger(d[key])&&d[key]>=min&&d[key]<=max))return null;const result=Object.fromEntries(budgetFields.map(([key])=>[key,d[key]]));for(const [key,min,max] of [['no_progress_requests',3,30],['consecutive_failures',2,12]]){if(!Number.isInteger(d[key])||d[key]<min||d[key]>max)return null;result[key]=d[key];}return result;}
   async function loadBudget(t){
     const request=++t.request;
-    try{const data=await t.helpers.api('/api/agent-budget');if(!active(t)||request!==t.request)return;const value=budget(data);if(!value)throw new Error('工作额度尚未完整读取，请重试。');t.requests.value=value.model_requests;t.calls.value=value.tool_calls;t.requests.disabled=false;t.calls.disabled=false;t.save.disabled=false;t.loaded=true;t.status.textContent='额度只影响助手的调查工作，不会自动批准清理。';}
+    try{const data=await t.helpers.api('/api/analysis-budget');if(!active(t)||request!==t.request)return;const value=budget(data);if(!value)throw new Error('分析额度尚未完整读取，请重试。');t.values=value;for(const [key,input] of Object.entries(t.fields)){input.value=value[key];input.disabled=false;}t.save.disabled=false;t.loaded=true;t.status.textContent='保存后用于新的分析额度，不改变正在进行的分析。部分服务不报告 token，仍会按请求和时间控制；费用需以服务商账单为准。';}
     catch(e){if(active(t)&&request===t.request){t.status.textContent=e.message;t.status.setAttribute('role','alert');const retry=button('重新读取',()=>{retry.remove();t.status.textContent='正在读取当前额度…';loadBudget(t);},'plain-button');t.status.append(retry);}}
   }
   async function saveBudget(t){
-    if(!active(t)||!t.loaded||t.saving)return;const value=budget({model_requests:Number(t.requests.value),tool_calls:Number(t.calls.value)});
-    if(!value){t.status.textContent='请填写范围内的整数：模型请求4–32，工具调用6–128。';t.status.dataset.tone='warning';return;}
+    if(!active(t)||!t.loaded||t.saving)return;const value=budget({...t.values,...Object.fromEntries(Object.entries(t.fields).map(([key,input])=>[key,Number(input.value)]))});
+    if(!value){t.status.textContent='请填写各项范围内的整数；当前输入已保留。';t.status.dataset.tone='warning';return;}
     const request=++t.request;t.saving=true;t.save.disabled=true;t.status.textContent='正在保存额度…';t.status.dataset.tone='info';
-    try{const data=await t.helpers.api('/api/agent-budget',value);if(!active(t)||request!==t.request)return;if(!budget(data))throw new Error('未收到完整保存结果，请重新读取核对。');const unchanged=Number(t.requests.value)===value.model_requests&&Number(t.calls.value)===value.tool_calls;t.status.textContent=unchanged?'工作额度已保存。':'刚才的额度已保存；还有新修改尚未保存。';t.status.dataset.tone=unchanged?'neutral':'warning';changed(t,data);}
+    try{const data=await t.helpers.api('/api/analysis-budget',value);if(!active(t)||request!==t.request)return;const saved=budget(data);if(!saved)throw new Error('未收到完整保存结果，请重新读取核对。');t.values=saved;const unchanged=Object.entries(t.fields).every(([key,input])=>Number(input.value)===saved[key]);t.status.textContent=unchanged?'连续分析额度已保存，下次使用新额度时生效。':'刚才的额度已保存；还有新修改尚未保存。';t.status.dataset.tone=unchanged?'neutral':'warning';changed(t,data);}
     catch(e){if(active(t)&&request===t.request){t.status.textContent=e.message;t.status.dataset.tone='warning';}}
     finally{if(active(t)&&request===t.request){t.saving=false;t.save.disabled=false;}}
   }

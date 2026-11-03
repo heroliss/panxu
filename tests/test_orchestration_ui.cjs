@@ -3,6 +3,7 @@ const {test}=require('node:test'),assert=require('node:assert/strict'),{readFile
 const source=readFileSync(join(__dirname,'..','web','orchestration-ui.js'),'utf8');
 const flush=async()=>{await new Promise(setImmediate);await new Promise(setImmediate);};const plain=v=>JSON.parse(JSON.stringify(v));
 const deferred=()=>{let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no;});return {promise,resolve,reject};};
+const sessionBudget={model_requests:96,tool_calls:256,elapsed_minutes:30,total_tokens:1000000,no_progress_requests:6,consecutive_failures:3};
 const diagnostics={snapshot_id:'snapshot-1',status:'completed',counts:{observed:3,unknown:30,needs_input:5},coverage:{tool_count:48,complete_tools:3,unknown_tools:30,needs_input:5,all_tools_fully_diagnosed:false},signals:[{title:'已知临时位置',summary:'取得了部分元数据，仍需判断是否清理。'}]};
 const work=(extra={})=>({id:'work-1',kind:'duplicates',status:'running',can_cancel:true,progress:{phase:'scanning',scanned_entries:500,max_entries:25000,message:'正在按大小筛选候选'},updated_at:'2026-11-02T00:00:01Z',...extra});
 function fixture(respond,task={id:'task-1',diagnostics,background_work:[]}){
@@ -19,7 +20,7 @@ function fixture(respond,task={id:'task-1',diagnostics,background_work:[]}){
  }
  root=new Element('main');const window={},document={activeElement:null,createElement:tag=>new Element(tag)};
  runInNewContext(source,{window,document,setTimeout:(run,delay)=>{const id=++timerId;timers.set(id,{run,delay});return id;},clearTimeout:id=>timers.delete(id)});
- const helpers={task,api:async(path,body)=>{calls.push({path,body:body===undefined?undefined:plain(body)});const value=await respond?.(path,body);if(value!==undefined)return value;if(path==='/api/agent-budget')return {model_requests:6,tool_calls:12};if(path.includes('/diagnostics/'))return {items:[{title:'临时文件',status:'partial',summary:'仅观察了少量位置。'}],offset:0,total:48,has_more:true};if(path.endsWith('/cancel'))return {work:work({status:'cancelling',can_cancel:false,updated_at:'2026-11-02T00:00:02Z'})};if(path.includes('/work/'))return {work:work({status:'completed',can_cancel:false,summary:{duplicate_groups:3},updated_at:'2026-11-02T00:00:03Z'})};throw new Error('Unexpected API '+path);},onChange:data=>changed.push(plain(data))};
+ const helpers={task,api:async(path,body)=>{calls.push({path,body:body===undefined?undefined:plain(body)});const value=await respond?.(path,body);if(value!==undefined)return value;if(path==='/api/analysis-budget')return body || {...sessionBudget};if(path.includes('/diagnostics/'))return {items:[{title:'临时文件',status:'partial',summary:'仅观察了少量位置。'}],offset:0,total:48,has_more:true};if(path.endsWith('/cancel'))return {work:work({status:'cancelling',can_cancel:false,updated_at:'2026-11-02T00:00:02Z'})};if(path.includes('/work/'))return {work:work({status:'completed',can_cancel:false,summary:{duplicate_groups:3},updated_at:'2026-11-02T00:00:03Z'})};throw new Error('Unexpected API '+path);},onChange:data=>changed.push(plain(data))};
  const subject=window.PanxuOrchestration;
  return {root,window,document,helpers,subject,timers,calls,changed,all:()=>root.all(),button:label=>root.all().find(n=>n.tag==='button'&&n.textContent===label&&!n.hidden),field:name=>root.all().find(n=>n.name===name),async render(){subject.render(root,helpers);await flush();},async budget(){subject.renderBudget(root,helpers);await flush();},async tick(){const ready=[...timers.values()];timers.clear();for(const job of ready)await job.run();await flush();}};
 }
@@ -57,8 +58,8 @@ test('failed polling stays readable and backs off instead of replacing the task 
  const f=fixture(()=>Promise.reject(new Error('暂时断开')),{id:'task-1',background_work:[work()]});await f.render();const cancel=f.button('停止检查');await f.tick();assert.match(f.root.textContent,/进度暂未刷新/);assert.equal(f.button('停止检查'),cancel);assert.ok([...f.timers.values()][0].delay>2000);
 });
 
-test('budget loads as an infrequent settings disclosure and saves only its two finite integer values',async()=>{
- const f=fixture();await f.budget();const details=f.root.querySelector('details');assert.equal(details.open,undefined);assert.equal(f.field('model_requests').value,6);assert.equal(f.field('tool_calls').value,12);f.field('model_requests').value='12';f.field('tool_calls').value='40';await f.root.querySelector('form').fire('submit');assert.deepEqual(f.calls[1],{path:'/api/agent-budget',body:{model_requests:12,tool_calls:40}});assert.match(f.root.textContent,/工作额度已保存/);assert.equal(f.changed.length,1);
+test('continuous budget saves whole-session limits without exposing internal checkpoints',async()=>{
+ const f=fixture();await f.budget();const details=f.root.querySelector('details');assert.equal(details.open,undefined);assert.equal(f.field('model_requests').value,96);assert.equal(f.field('tool_calls').value,256);f.field('model_requests').value='12';f.field('tool_calls').value='40';await f.root.querySelector('form').fire('submit');assert.deepEqual(f.calls[1],{path:'/api/analysis-budget',body:{...sessionBudget,model_requests:12,tool_calls:40}});assert.match(f.root.textContent,/连续分析额度已保存/);assert.equal(f.changed.length,1);
 });
 
 test('budget save failure and invalid input preserve edited values without changing model settings',async()=>{
@@ -66,14 +67,14 @@ test('budget save failure and invalid input preserve edited values without chang
 });
 
 test('saving a budget does not overwrite newer edits typed while the save was in flight',async()=>{
- const late=deferred();const f=fixture((_,body)=>body?late.promise:undefined);await f.budget();f.field('model_requests').value='10';const saving=f.root.querySelector('form').fire('submit');await flush();f.field('model_requests').value='14';late.resolve({model_requests:10,tool_calls:12});await saving;assert.equal(f.field('model_requests').value,'14');assert.match(f.root.textContent,/还有新修改尚未保存/);
+ const late=deferred();const f=fixture((_,body)=>body?late.promise:undefined);await f.budget();f.field('model_requests').value='10';const saving=f.root.querySelector('form').fire('submit');await flush();f.field('model_requests').value='14';late.resolve({...sessionBudget,model_requests:10});await saving;assert.equal(f.field('model_requests').value,'14');assert.match(f.root.textContent,/还有新修改尚未保存/);
 });
 
 test('a failed initial budget read never presents defaults as the current saved values',async()=>{
- let fail=true;const f=fixture(()=>fail?Promise.reject(new Error('读取失败')):{model_requests:8,tool_calls:24});await f.budget();assert.equal(f.field('model_requests').value,'');assert.equal(f.button('保存额度').disabled,true);assert.ok(f.button('重新读取'));fail=false;await f.button('重新读取').fire();assert.equal(f.field('model_requests').value,8);assert.equal(f.field('tool_calls').value,24);assert.equal(f.button('保存额度').disabled,false);
+ let fail=true;const f=fixture(()=>fail?Promise.reject(new Error('读取失败')):{...sessionBudget,model_requests:8,tool_calls:24});await f.budget();assert.equal(f.field('model_requests').value,'');assert.equal(f.button('保存额度').disabled,true);assert.ok(f.button('重新读取'));fail=false;await f.button('重新读取').fire();assert.equal(f.field('model_requests').value,8);assert.equal(f.field('tool_calls').value,24);assert.equal(f.button('保存额度').disabled,false);
 });
 
 test('parent refresh failures cannot turn acknowledged work or saved settings into a failed operation',async()=>{
  const f=fixture(undefined,{id:'task-1',background_work:[work()]});f.helpers.onChange=()=>{throw new Error('parent refresh unavailable');};await f.render();await f.tick();assert.match(f.root.textContent,/检查完成/);assert.equal(f.root.textContent.includes('parent refresh unavailable'),false);
- const settings=fixture();settings.helpers.onChange=()=>Promise.reject(new Error('parent refresh unavailable'));await settings.budget();await settings.root.querySelector('form').fire('submit');assert.match(settings.root.textContent,/工作额度已保存/);assert.equal(settings.button('保存额度').disabled,false);
+ const settings=fixture();settings.helpers.onChange=()=>Promise.reject(new Error('parent refresh unavailable'));await settings.budget();await settings.root.querySelector('form').fire('submit');assert.match(settings.root.textContent,/连续分析额度已保存/);assert.equal(settings.button('保存额度').disabled,false);
 });

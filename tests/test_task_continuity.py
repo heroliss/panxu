@@ -102,6 +102,7 @@ class ContinuityTests(unittest.TestCase):
         self.assertEqual(self.tool('read_facts', {'ids': [fact['id']]})['total'], 1)
 
     def test_checkpoint_and_budget_exhaustion_do_not_report_completion(self):
+        self.harness.agent_budget.save_session({'model_requests': 6})
         self.queue = [call('checkpoint_task', {'summary': '已看到目录用途。', 'next_steps': ['核对安装包版本'], 'unresolved': ['是否保留离线副本']})]
         self.queue += [call('list_items', {}) for _ in range(5)]
         result = self.run_turn()

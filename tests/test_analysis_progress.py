@@ -139,7 +139,7 @@ class AnalysisProgressHarnessTests(unittest.TestCase):
             self.assertIn('collect_apps', names)
             self.assertIn('同一条回复可提交多批', payload['messages'][-1]['content'])
             progress = self.harness.public(self.task['id'])['analysis_progress']
-            self.assertEqual(progress['phase'], 'finalizing')
+            self.assertEqual(progress['phase'], 'analyzing')
             self.assertEqual(progress['budget']['model_requests']['used'], 5)
             return response(call('record_advice', dict(items=self.advice(self.files[:6])), 'score-a'),
                             call('record_advice', dict(items=self.advice(self.files[6:])), 'score-b'))
@@ -164,15 +164,16 @@ class AnalysisProgressHarnessTests(unittest.TestCase):
         self.assertEqual(len(list(self.scope.iterdir())), 12)
 
     def test_resource_exhaustion_names_resource_and_never_claims_item_limit_or_success(self):
+        self.harness.agent_budget.save_session({'model_requests': 6})
         self.steps = [response(call('list_items', {})) for _ in range(6)]
         result = self.run_turn()
         progress = result['analysis_progress']
         self.assertEqual(result['status'], 'budget_exhausted')
         self.assertEqual(progress['phase'], 'limited')
-        self.assertEqual(progress['budget']['reason'], 'round_budget')
+        self.assertEqual(progress['budget']['reason'], 'session_requests')
         self.assertEqual(progress['remaining_count'], 12)
         self.assertEqual(progress['saved_count'], 0)
-        self.assertIn('模型调用', result['summary'])
+        self.assertIn('分析请求', result['summary'])
         self.assertNotIn('12项上限', result['summary'])
         self.assertEqual(result['usage']['model_requests'], 6)
         self.assertEqual(self.state.history(), [])

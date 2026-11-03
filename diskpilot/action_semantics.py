@@ -2,6 +2,7 @@
 from collections import Counter
 
 from .simulation import within
+from .state_advice import current_state
 
 
 FILE_KINDS = frozenset(('file', 'directory'))
@@ -25,6 +26,8 @@ def primary_action(item):
         return None
     if action == 'stop_service' and str(item.get('details', {}).get('state', '')).casefold() not in ('running', '正在运行'):
         return None
+    if action == 'disable_startup' and current_state(item, 'login')['state'] == 'disabled':
+        return None
     return action
 
 
@@ -36,6 +39,8 @@ def action_details(action):
 def unavailable_reason(item):
     if item.get('risk') == 'protected':
         return '此对象受保护，不能加入操作清单。'
+    if item.get('kind') == 'startup' and current_state(item, 'login')['state'] == 'disabled':
+        return '当前开机启动已关闭，无需再次关闭。'
     if item.get('kind') == 'service' and not primary_action(item):
         if str(item.get('details', {}).get('state', '')).casefold() == 'stopped':
             return '当前服务已停止，无需再次停止。'

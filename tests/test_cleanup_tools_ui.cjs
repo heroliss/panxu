@@ -1,7 +1,7 @@
 'use strict';
 const {test}=require('node:test'),assert=require('node:assert/strict'),{readFileSync}=require('node:fs'),{join}=require('node:path'),{runInNewContext}=require('node:vm');
 const source=readFileSync(join(__dirname,'..','web','cleanup-tools.js'),'utf8');
-const taskSource=readFileSync(join(__dirname,'..','web','tasks.js'),'utf8'),sharedSource=taskSource.slice(taskSource.indexOf('window.PanxuAdvicePresentation ='),taskSource.indexOf('// Provenance is host-owned'));
+const taskSource=readFileSync(join(__dirname,'..','web','tasks.js'),'utf8'),sharedSource=taskSource.slice(taskSource.indexOf('window.PanxuStateAdvice ='),taskSource.indexOf('// Provenance is host-owned'));
 const flush=async()=>{await new Promise(setImmediate);await new Promise(setImmediate);};
 const plain=value=>JSON.parse(JSON.stringify(value));
 const tool=(id='browser_cache')=>({id,title:id==='browser_cache'?'浏览器文件缓存':'休眠设置',category:'applications',description:'使用专用工具处理，不删除整个资料目录。',impact:'清理缓存后可能需要重新下载。',recovery:'缓存可重建，不等同撤销清理。',common:true,parameters:[{name:'browser',type:'string',label:'浏览器',enum:['edge','chrome'],default:'edge'},{name:'profile',type:'string',label:'资料配置',default:'current',maxLength:120}],settings:[{kind:'application',target:'registered-browser',label:'打开浏览器',available:true}],sources:[{title:'官方说明'}],capabilities:{inspect:true,prepare:true,apply:false}});

@@ -123,7 +123,7 @@ class FileCatalog:
                 projected['action_unavailable_reason'] = unavailable_reason(item)
                 projected['details'] = {k: copy.deepcopy(details[k]) for k in (
                     'complete', 'subtree_complete', 'can_simulate_delete', 'file_identity', 'is_hardlink', 'hardlink_entities',
-                    'timestamps', 'parent_id', 'root', 'scan_only', 'state', 'start_mode', 'pid',
+                    'timestamps', 'parent_id', 'root', 'scan_only', 'state', 'start_mode', 'startup_enabled', 'enabled', 'pid',
                     'version', 'scope', 'has_uninstaller', 'observed_at', 'registry_location',
                     'browser_only', 'browser_layer_only', 'size_known', 'browseable', 'browse_block_reason',
                     'entry_metadata_signature') if k in details}

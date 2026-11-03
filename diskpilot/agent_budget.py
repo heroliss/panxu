@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 
 from .simulation import AppError
+from . import analysis_session
 
 
 DEFAULTS = dict(model_requests=6, tool_calls=12)
@@ -39,6 +40,24 @@ class AgentBudget:
             self.state.db.execute('INSERT OR REPLACE INTO meta VALUES(?,?)',
                                   (_KEY, json.dumps(current, separators=(',', ':'))))
             return dict(current)
+
+    def get_session(self):
+        with self.state.lock:
+            row = self.state.db.execute('SELECT value FROM meta WHERE key=?', ('analysis_session_budget_v1',)).fetchone()
+            try:
+                value = json.loads(row[0]) if row else {}
+            except (ValueError, TypeError):
+                value = {}
+            return {**analysis_session.DEFAULTS, **value} if analysis_session.valid(value) else dict(analysis_session.DEFAULTS)
+
+    def save_session(self, payload):
+        if not payload or not analysis_session.valid(payload):
+            raise AppError('请输入有效的分析资源设置。', 'invalid_analysis_budget')
+        with self.state.lock, self.state.db:
+            value = {**self.get_session(), **payload}
+            self.state.db.execute('INSERT OR REPLACE INTO meta VALUES(?,?)',
+                ('analysis_session_budget_v1', json.dumps(value, separators=(',', ':'))))
+            return dict(value)
 
 
 def budget_hint(settings, *, model_requests_used=0, tool_calls_used=0):

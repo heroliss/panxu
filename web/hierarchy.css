@@ -418,3 +418,5 @@ input:not([type="checkbox"]):not([type="radio"]),select,textarea { background: v
 .stream-activity-urgent{padding:9px 12px;margin:8px 0;border:1px solid var(--warning-line);border-radius:6px;background:var(--warning-bg);color:var(--amber);font-size:12px;line-height:1.7}
 .stream-activity-urgent[data-kind=error],.stream-activity-urgent[data-kind=unavailable]{border-color:var(--danger-line);background:var(--danger-bg);color:var(--red)}
 .developer-stream-activity .stream-activity-events{max-height:9rem}
+.state-advice-context{font-size:var(--type-label,.875rem);color:var(--muted);line-height:1.7;margin-top:8px!important}
+.state-advice-note{font-size:var(--type-meta,.8125rem);color:var(--muted);line-height:1.7;margin-top:4px!important}

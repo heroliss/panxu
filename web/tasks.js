@@ -86,6 +86,17 @@ window.PanxuActionCopy = (() => {
 
 // Shared, readable explanations. Capabilities and source text stay distinct
 // from model judgement; missing evidence is never filled with a guessed score.
+window.PanxuStateAdvice = (() => {
+  const recommendations=new Set(['keep_disabled','enable','disable','keep_enabled','keep_current','investigate']);
+  const scopes={runtime:'当前运行',login:'登录自启',service_startup:'服务启动方式'};
+  function read(record={}) {
+    const assessment=record.assessment&&typeof record.assessment==='object'?record.assessment:record;
+    const value=assessment.state_advice || record.state_advice;
+    if(!value||typeof value!=='object'||!recommendations.has(value.recommendation)||!Object.hasOwn(scopes,value.scope)||typeof value.label!=='string')return null;
+    return {...value,scope_label:scopes[value.scope],stale:assessment.stale===true||record.stale===true};
+  }
+  return {read};
+})();
 window.PanxuAdvicePresentation = (() => {
   const text=value=>typeof value==='string'?value.trim():'';
   function render(record={}, {direct=false,suggestion='',compactUnknown=false}={}){
@@ -99,16 +110,17 @@ window.PanxuAdvicePresentation = (() => {
     const impactRating=!value.stale&&Number.isInteger(rawImpact)&&rawImpact>=1&&rawImpact<=5?rawImpact:null;
     const impactLabels={1:'影响很小',2:'影响轻微',3:'影响明显',4:'影响较大',5:'影响重大'};
     const impactDescription=value.stale?'影响程度需要重新核对。':impactRating===null?'影响程度尚未提供。':`影响程度 ${impactRating}/5，${impactLabels[impactRating]}。`;
-    const purpose=text(assessment.purpose)||text(record.purpose),reason=text(assessment.reason)||text(record.reason),impact=text(impactSource.impact);
+    const purpose=text(assessment.purpose)||text(record.purpose),reason=text(assessment.reason)||text(record.reason),impact=text(impactSource.impact),stateAdvice=window.PanxuStateAdvice.read(record);
     let advice=text(suggestion);
     if(!advice){
       if(value.stale)advice='已有建议需要重新核对。';
+      else if(stateAdvice)advice=stateAdvice.label+'。';
       else if((assessment.specialist || record.specialist)?.mode==='replace')advice='建议通过专项方案处理，保留目录或程序主体。';
       else if(assessment.extra_suggestion_id || record.extra_suggestion_id)advice='建议先查看专项方案，再选择处理方式。';
       else if(value.state==='skipped')advice='本轮已跳过，未给出处理建议。';
       else if(value.state==='no_advice')advice='暂未形成操作建议。';
       else if(value.state==='unanalysed')advice=action&&operationAdvice?`已有操作建议：${action}；尚未评分。`:'尚未分析，未形成操作建议。';
-      else if(value.conclusion==='keep'||[1,2].includes(value.rating))advice=value.rating===2?'倾向保留。':'建议保留。';
+      else if(value.conclusion==='keep'||[1,2].includes(value.rating))advice=['startup','service','process'].includes(record.kind)?'清理倾向较低；尚未说明具体状态建议。':value.rating===2?'倾向保留。':'建议保留。';
       else if(value.conclusion==='recommend')advice=action?`建议${action}。`:['file','directory'].includes(record.kind)?'建议清理。':'倾向调整，具体操作待确认。';
       else if(action&&[4,5].includes(value.rating))advice=`倾向${action}，是否执行由你决定。`;
       else if(value.rating===3)advice='清理与保留各有理由，由你决定。';
@@ -120,7 +132,10 @@ window.PanxuAdvicePresentation = (() => {
     const group=document.createElement('section');group.className='advice-explanation-grid';group.dataset.rating=value.rating===null?'':String(value.rating);group.dataset.assessmentState=value.state;if(value.stale)group.dataset.stale='true';group.setAttribute('aria-label','用途、建议、原因与影响');
     for(const [key,label,body] of fields){const block=document.createElement('div'),heading=document.createElement('span'),content=document.createElement('p');block.className='advice-explanation-part';block.dataset.advicePart=key;
       if(key==='impact'){block.dataset.impactRating=impactRating===null?'':String(impactRating);block.dataset.impactState=value.stale?'stale':impactRating===null?'unknown':'rated';block.setAttribute('role','group');block.setAttribute('aria-label','影响；'+impactDescription);block.title=impactDescription;}
-      heading.className='advice-explanation-label';heading.textContent=label;content.textContent=body;block.append(heading,content);if(key==='suggestion'){const link=window.PanxuSpecialistLinks?.create(record);if(link)block.append(link);}group.append(block);}
+      heading.className='advice-explanation-label';heading.textContent=label;content.textContent=body;block.append(heading,content);if(key==='suggestion'){
+        if(stateAdvice){const context=document.createElement('p');context.className='state-advice-context';context.textContent=[stateAdvice.scope_label,text(stateAdvice.current_label)].filter(Boolean).join(' · ');block.append(context);if(!value.stale&&stateAdvice.actionable===false&&text(stateAdvice.reason)){const note=document.createElement('p');note.className='state-advice-note';note.textContent=stateAdvice.reason;block.append(note);}block.dataset.stateRecommendation=stateAdvice.recommendation;}
+        const link=window.PanxuSpecialistLinks?.create(record);if(link)block.append(link);
+      }group.append(block);}
     return group;
   }
   return {render};
@@ -161,7 +176,7 @@ window.PanxuAssessment = (() => {
     return box;
   }
   function blocked(record) {
-    const names={stale_assessment:'文件或建议已有变化，需要重新核对',protected:'此项已受保护',user_kept:'你已选择保留此项',ancestor_barrier:'上级目录有保留或未完成的判断',keep:'此项建议保留',review:'需要先由你决定',skip:'此项已跳过评分',no_advice:'此项暂时没有建议',unscored_assessment:'此项尚未评分',protected_descendant:'内部包含受保护的项目',coverage_incomplete:'目录内容尚未完整核对',legacy_unknown_descendant:'内部有旧记录尚未确定位置',stale_or_unknown_descendant:'内部有已变化或尚未核对的项目',explicit_keep:'内部有明确建议保留的项目',explicit_skip:'内部有已跳过分析的项目',explicit_no_advice:'内部有尚无建议的项目',unscored_descendant:'内部有尚未评分的项目',undecided_descendant:'内部有需要单独决定的项目',self_only_directory:'目录建议没有覆盖全部内部内容',user_kept_descendant:'你已选择保留内部项目'};
+    const names={state_recommendation_no_cleanup_action:'此建议用于开启、维持状态或另一个作用范围，不会自动变成关闭操作',stale_assessment:'文件或建议已有变化，需要重新核对',protected:'此项已受保护',user_kept:'你已选择保留此项',ancestor_barrier:'上级目录有保留或未完成的判断',keep:'此项建议保留',review:'需要先由你决定',skip:'此项已跳过评分',no_advice:'此项暂时没有建议',unscored_assessment:'此项尚未评分',protected_descendant:'内部包含受保护的项目',coverage_incomplete:'目录内容尚未完整核对',legacy_unknown_descendant:'内部有旧记录尚未确定位置',stale_or_unknown_descendant:'内部有已变化或尚未核对的项目',explicit_keep:'内部有明确建议保留的项目',explicit_skip:'内部有已跳过分析的项目',explicit_no_advice:'内部有尚无建议的项目',unscored_descendant:'内部有尚未评分的项目',undecided_descendant:'内部有需要单独决定的项目',self_only_directory:'目录建议没有覆盖全部内部内容',user_kept_descendant:'你已选择保留内部项目'};
     const reasons=read(record).blocked_reasons;
     return [...new Set(reasons.map(code=>Object.hasOwn(names,code)?names[code]:'内部存在保留、未核对或不适合整目录删除的内容'))].join('；');
   }

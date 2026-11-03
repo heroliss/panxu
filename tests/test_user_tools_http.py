@@ -156,6 +156,21 @@ class UserToolHttpTests(unittest.TestCase):
                 self.assertTrue(body)
         self.request('/user-tools.py', expected=404)
 
+    def test_analysis_session_budget_is_separate_atomic_and_query_checked(self):
+        value = self.request('/api/analysis-budget')
+        self.assertEqual(value['model_requests'], 96)
+        self.assertEqual(value['elapsed_minutes'], 30)
+        saved = self.request('/api/analysis-budget', {'elapsed_minutes': 12, 'total_tokens': 50000})
+        self.assertEqual(saved, dict(value, elapsed_minutes=12, total_tokens=50000))
+        self.assertEqual(self.request('/api/agent-budget'), dict(model_requests=6, tool_calls=12))
+        for body in ({'elapsed_minutes': True}, {'total_tokens': 0}, {'model_requests': 1025},
+                     {'elapsed_minutes': 4, 'command': 'anything'}):
+            self.request('/api/analysis-budget', body, expected=400)
+            self.assertEqual(self.request('/api/analysis-budget'), saved)
+        self.request('/api/analysis-budget', {'elapsed_minutes': 10}, expected=403, csrf='wrong')
+        self.request('/api/analysis-budget?extra=1', expected=400)
+        self.assertEqual(self.app.state.history(), [])
+
     def test_task_diagnostic_snapshot_reads_are_owned_and_paginated(self):
         with (patch('diskpilot.diagnostics.system_configuration', return_value={}),
               patch('diskpilot.diagnostics.volume_snapshot', return_value={}),

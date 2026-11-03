@@ -355,7 +355,7 @@ class Application:
                           '/api/file-browser': {'path', 'cursor', 'limit', 'refresh', 'task_id'},
                           '/api/recovery/summary': set(),
                           '/api/recovery': {'page', 'limit', 'status', 'volume'},
-                          '/api/agent-budget': set(), '/api/user-tools': {'query'},
+                          '/api/agent-budget': set(), '/api/analysis-budget': set(), '/api/user-tools': {'query'},
                           '/api/user-tools/schema': set()}
         parts = path.split('/')
         if path.startswith('/api/user-tools/') and len(parts) == 4 and parts[3] != 'schema':
@@ -369,6 +369,8 @@ class Application:
             raise AppError('查询参数无效，请刷新后重试。')
         if path == '/api/agent-budget':
             return self.agent_budget.get()
+        if path == '/api/analysis-budget':
+            return self.agent_budget.get_session()
         if path == '/api/user-tools':
             return self.user_tools.list(query=query.get('query', [''])[0])
         if path == '/api/user-tools/schema':
@@ -542,6 +544,8 @@ class Application:
     def post(self, path, payload):
         if path == '/api/agent-budget':
             return self.agent_budget.save(payload)
+        if path == '/api/analysis-budget':
+            return self.agent_budget.save_session(payload)
         if path.startswith('/api/user-tools/'):
             contracts = {'draft': ({'definition'}, {'definition', 'recipe_id', 'base_version', 'source'}),
                          'save': ({'draft_id'}, {'draft_id'}),
