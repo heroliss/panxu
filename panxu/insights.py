@@ -431,8 +431,8 @@ class Insights:
         for (_, base, _), members in groups.items():
             if len(members) < 2 or len(members) > 40:
                 continue
-            members.sort(key=lambda m: m.mtime)
-            newest = members[-1]
+            # oldest first; with equal times the name without a copy marker counts as the newer one
+            members.sort(key=lambda m: (m.mtime, not is_copy_name(os.path.splitext(m.name)[0])))
             digests = {}
             for m in members:
                 if m.size <= 512 * 1024 * 1024:
@@ -442,6 +442,13 @@ class Insights:
                 d = digests.get(m.path)
                 if d:
                     by_digest.setdefault(f'{m.size}:{d}', []).append(m)
+            newest = members[-1]
+            if is_copy_name(os.path.splitext(newest.name)[0]):
+                # "论文 - 副本" saved last but identical to "论文": keep the original name
+                twins = by_digest.get(f'{newest.size}:{digests.get(newest.path)}', []) if digests.get(newest.path) else []
+                plain = [t for t in twins if not is_copy_name(os.path.splitext(t.name)[0])]
+                if plain:
+                    newest = max(plain, key=lambda t: t.mtime)
             files = []
             for m in members:
                 same = [o for o in by_digest.get(f'{m.size}:{digests.get(m.path)}', []) if o is not m]
@@ -458,6 +465,7 @@ class Insights:
                     note, remove = '较旧的版本', False
                 files.append(self._file(m, note, remove))
             files.reverse()  # newest first
+            files.sort(key=lambda f: f['path'] != newest.path)  # the one to keep always heads the group
             ident = 'ver-' + hashlib.md5((members[0].folder + '|' + base).encode('utf-8')).hexdigest()[:10]
             identical = sum(1 for f in files if f['remove'])
             reason = (f'{len(members)} 个文件名字相近，像是「{base}」的不同版本' +
