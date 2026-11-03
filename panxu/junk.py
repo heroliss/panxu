@@ -11,7 +11,6 @@ import fnmatch
 import glob
 import ntpath
 import os
-import shutil
 import threading
 import time
 from dataclasses import dataclass, field
@@ -262,6 +261,9 @@ def resolve_target(target: Target, env: dict) -> list[str]:
 
 
 def running_process_names() -> set[str]:
+    sim = winapi.simulation()
+    if sim is not None:
+        return sim.processes()
     try:
         import psutil
     except ImportError:
@@ -276,7 +278,7 @@ def running_process_names() -> set[str]:
 
 def disk_free(env: dict) -> int:
     try:
-        return shutil.disk_usage(native(env.get('SystemDrive', 'C:') + '\\')).free
+        return winapi.disk_usage(native(env.get('SystemDrive', 'C:') + '\\')).free
     except OSError:
         return 0
 
@@ -455,6 +457,10 @@ class JunkEngine:
                        failures=stats.failures)
 
     def _run_command(self, rule: Rule):
+        sim = winapi.simulation()
+        if sim is not None:
+            sim.run_cleanup_command(rule.id)
+            return
         argv = [paths.expand(a, self.env) if '%' in a else a for a in rule.command]
         if any(a is None for a in argv):
             raise RuntimeError('找不到系统命令')
@@ -471,6 +477,10 @@ class JunkEngine:
         Uses the documented /sagerun mechanism: mark each handler with
         StateFlagsNNNN=2, run cleanmgr, then remove the marks again.
         """
+        sim = winapi.simulation()
+        if sim is not None:
+            sim.run_cleanup_command(rule.id)
+            return
         import winreg  # Windows only
         base = r'SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\VolumeCaches'
         value = f'StateFlags{slot:04d}'
