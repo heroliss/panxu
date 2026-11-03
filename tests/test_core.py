@@ -107,6 +107,7 @@ class FsOpsTest(TempDirTest):
         self.make('d/b/c', 20)
         self.assertEqual(fsops.path_size(os.path.join(self.tmp, 'd')), (30, 2))
 
+    @unittest.skipIf(os.name == 'nt', 'would use the real Recycle Bin')
     def test_recycle_reports_failure_off_windows(self):
         f = self.make('x.bin', 10)
         stats, done = fsops.recycle([f])

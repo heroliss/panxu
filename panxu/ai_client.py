@@ -110,7 +110,10 @@ class Client:
             with urllib.request.urlopen(req, timeout=self.timeout, context=ssl.create_default_context()) as resp:
                 return json.loads(resp.read().decode('utf-8'))
         except urllib.error.HTTPError as exc:
-            body_text = exc.read().decode('utf-8', 'replace')
+            try:
+                body_text = exc.read().decode('utf-8', 'replace')
+            finally:
+                exc.close()
             err = AIError(_friendly_http_error(exc.code, body_text))
             err.status = exc.code
             raise err from None
