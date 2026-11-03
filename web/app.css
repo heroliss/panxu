@@ -399,6 +399,7 @@ input[type=checkbox]:disabled { cursor: not-allowed; }
 .path-line .mono-path { flex: 1; min-width: 0; }
 .cat-head { display: flex; align-items: baseline; gap: 10px; padding: 14px 6px 6px; border-bottom: 1px solid var(--rule-2); }
 .cat-head .btn { margin-left: auto; }
+.info-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
 
 /* ---------- 我的文件 & 应用 ---------- */
 .finding .group-head h2 { font-size: 14.5px; }

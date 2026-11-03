@@ -177,6 +177,50 @@
       h('button.btn.small', { type: 'button', onclick: () => PX.go('history') }, '查看记录')));
   }
 
+  // 仅供了解: what can be done about it instead of deleting
+  async function infoAction(it, a) {
+    const init = PX.state.init;
+    if (a.kind === 'hibernate') {
+      const sandbox = !!init.sandbox;
+      if (!init.admin && !sandbox) {
+        const ok = await PX.confirm({ title: '关闭休眠需要管理员权限', ok: '以管理员身份重启', body: h('div',
+          '盘序需要以管理员身份重启，然后再点一次「关闭休眠」。') });
+        if (ok) PX.restartAsAdmin();
+        return;
+      }
+      const ok = await PX.confirm({ title: '关闭休眠', ok: '关闭休眠', body: h('div',
+        h('div.summary', fmt.bytes(it.size)),
+        h('div', '关闭后 Windows 会删除 hiberfil.sys。之后不能再使用「休眠」，「快速启动」也会一起关闭（开机可能慢几秒）。'),
+        h('div.small.muted', { style: { marginTop: '8px' } }, '随时可以在「操作记录」里撤销，重新开启休眠。' + (sandbox ? '（演练环境：只是模拟）' : ''))) });
+      if (!ok) return;
+      try {
+        await PX.api.call('hibernate_set', { enabled: false });
+        it.status = 'done';
+        it.result = '已关闭休眠';
+        PX.toast('已关闭休眠');
+        PX.state.init.drives = await PX.api.call('drives');
+      } catch (e) { PX.fail(e); }
+      draw(true);
+    } else if (a.kind === 'settings') {
+      PX.api.call('open_system_page', { page: a.arg }).catch(PX.fail);
+    } else if (a.kind === 'page') {
+      PX.go(a.arg);
+    } else if (a.kind === 'copy') {
+      try {
+        await navigator.clipboard.writeText(a.arg);
+      } catch (e) {
+        const area = document.body.appendChild(h('textarea', { style: { position: 'fixed', opacity: '0' } }));
+        area.value = a.arg;
+        area.select();
+        document.execCommand('copy');
+        area.remove();
+      }
+      PX.toast(`已复制：${a.arg}（在 PowerShell 或终端里运行）`);
+    } else if (a.kind === 'reveal') {
+      PX.api.call('reveal', { path: it.location }).catch(PX.fail);
+    }
+  }
+
   function itemRow(list, it) {
     const can = selectable(it);
     const box = h('input', { type: 'checkbox', checked: state.selected.has(it.id) && can, disabled: !can,
@@ -196,7 +240,10 @@
     it.group === 'info' ? PX.icon('info', 'ic') : box,
     h('div.cell-main',
       h('div.name-line', h('span.name-text', it.title), PX.tag(srcLabel, srcKind), flags),
-      h('div.why', it.why || it.what)),
+      h('div.why', it.group === 'info' && it.what ? it.what : it.why || it.what),
+      it.group === 'info' && it.status === 'pending' && it.actions && it.actions.length
+        ? h('div.info-actions', it.actions.map((a) => h('button.btn.small' + (a.kind === 'hibernate' ? '.primary' : ''), {
+          type: 'button', onclick: (e) => { e.stopPropagation(); infoAction(it, a); } }, a.label))) : null),
     PX.score(it.score, (it.basis || []).join('\n')),
     h('div.size', it.size ? fmt.bytes(it.size) : ''),
     h('button.btn.quiet.small', { type: 'button', title: '问 AI', onclick: (e) => { e.stopPropagation(); PX.ask({ type: 'plan_item', id: it.id }, it.title); } },
@@ -213,12 +260,19 @@
       }
       if (it.caution) d.appendChild(h('div', PX.tag('注意', 'warn'), ' ', it.caution));
       if (it.keep) d.appendChild(h('div', h('b', '保留：'), h('span.mono-path', PX.displayPath(it.keep))));
-      const where = (it.paths && it.paths.length ? it.paths : it.location ? [it.location] : it.locations || []).slice(0, 6);
-      for (const p of where) {
+      const all = it.paths && it.paths.length ? it.paths : it.location ? [it.location] : it.locations || [];
+      const showAll = state.open.has('paths:' + it.id);
+      for (const p of showAll ? all : all.slice(0, 6)) {
         d.appendChild(h('div.path-line', h('span.mono-path', PX.displayPath(p)), h('button.btn.quiet.small', { type: 'button',
           onclick: () => PX.api.call('reveal', { path: p }).catch(PX.fail) }, '打开位置')));
       }
-      if (it.paths && it.paths.length > 6) d.appendChild(h('div.faint', `另有 ${it.paths.length - 6} 项`));
+      if (all.length > 6) {
+        d.appendChild(h('button.fold', { type: 'button', onclick: (e) => {
+          e.stopPropagation();
+          showAll ? state.open.delete('paths:' + it.id) : state.open.add('paths:' + it.id);
+          draw(true);
+        } }, showAll ? '收起' : `显示全部 ${all.length} 项`));
+      }
     }
   }
 

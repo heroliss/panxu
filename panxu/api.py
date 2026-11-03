@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import subprocess
 import sys
 import time
 
@@ -37,6 +38,11 @@ SETTINGS_URIS = {
     'startup': 'ms-settings:startupapps',
     'recovery': 'ms-settings:recovery',
     'recyclebin': 'shell:RecycleBinFolder',
+}
+# classic dialogs that have no ms-settings: page (System32 programs)
+SETTINGS_PROGRAMS = {
+    'virtual_memory': 'SystemPropertiesPerformance.exe',   # 性能选项 > 高级 > 虚拟内存
+    'system_protection': 'SystemPropertiesProtection.exe',  # 系统保护（还原点）
 }
 
 
@@ -257,15 +263,61 @@ class Backend:
 
     def m_open_system_page(self, page: str):
         uri = SETTINGS_URIS.get(page)
-        if not uri:
+        program = SETTINGS_PROGRAMS.get(page)
+        if not uri and not program:
             raise UserError('未知页面')
-        if self.sandbox is not None and page == 'recyclebin':
+        if self.sandbox is not None:
+            if page != 'recyclebin':
+                raise UserError('演练环境不会打开真实的系统设置：在那里做的修改会影响你的电脑')
             folder = self.sandbox.recycle_dir()
             os.makedirs(folder, exist_ok=True)
             winapi.reveal_in_explorer(folder)  # the simulated Recycle Bin, not the real one
             return True
+        if program:
+            exe = os.path.join(self.env.get('SystemRoot', 'C:\\Windows'), 'System32', program)
+            if not winapi.shell_execute(exe):
+                raise UserError('没能打开这个设置')
+            return True
         winapi.open_uri(uri)
         return True
+
+    # ------------------------------------------------------------------ hibernation (仅供了解 > 休眠文件)
+    def _hiberfil(self) -> str:
+        drive = self.env.get('SystemDrive', 'C:')
+        return paths.native(os.path.join(drive if drive.endswith(('\\', '/')) else drive + '\\', 'hiberfil.sys'))
+
+    def _set_hibernate(self, enabled: bool):
+        sim = winapi.simulation()
+        if sim is not None:
+            sim.set_hibernate(enabled)
+            return
+        if not self.admin:
+            raise PermissionError('开关休眠需要管理员权限')
+        exe = os.path.join(self.env.get('SystemRoot', 'C:\\Windows'), 'System32', 'powercfg.exe')
+        proc = winapi.run_hidden([exe, '/hibernate', 'on' if enabled else 'off'], timeout=60)
+        if proc.returncode != 0:
+            text = winapi.decode_console(proc.stdout + proc.stderr).strip()
+            raise RuntimeError(text.splitlines()[-1] if text else f'powercfg 返回 {proc.returncode}')
+
+    def m_hibernate_set(self, enabled: bool):
+        """Switch hibernation (and with it hiberfil.sys and Fast Startup) off or on; logged with an undo."""
+        path = self._hiberfil()
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            size = 0
+        try:
+            self._set_hibernate(bool(enabled))
+        except (PermissionError, RuntimeError, OSError, subprocess.SubprocessError) as exc:
+            raise UserError(str(exc)) from None
+        title = '开启休眠' if enabled else '关闭休眠（删除 hiberfil.sys，快速启动也会关闭）'
+        self.oplog.add('system', title, freed=0 if enabled else size,
+                       items=[{'name': 'hiberfil.sys', 'path': path, 'size': size}],
+                       revert={'action': 'hibernate', 'enabled': not enabled})
+        for item in (self.plan or {}).get('items', []):
+            if item.get('location') and paths.key(item['location']) == paths.key(path):
+                item['status'], item['result'] = ('pending', '') if enabled else ('done', '已关闭休眠')
+        return {'enabled': bool(enabled), 'freed': 0 if enabled else size}
 
     def m_open_key_page(self, preset: str):
         url = ai_client.PRESET_BY_ID.get(preset, {}).get('key_url')
@@ -982,9 +1034,11 @@ class Backend:
                 self.startup.set_enabled(revert['id'], revert['enabled'], log=False)
             elif revert['action'] == 'service':
                 self.services.set_start_type(revert['name'], revert['start_type'], log=False)
+            elif revert['action'] == 'hibernate':
+                self._set_hibernate(bool(revert['enabled']))
             else:
                 raise UserError('这条记录不能撤销')
-        except (ValueError, PermissionError, RuntimeError) as exc:
+        except (ValueError, PermissionError, RuntimeError, OSError) as exc:
             raise UserError(str(exc)) from None
         self.oplog.mark(entry['id'], reverted=True, reverted_at=time.time())
         return True

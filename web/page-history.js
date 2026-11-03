@@ -3,7 +3,7 @@
   'use strict';
   const { h, fmt } = PX;
   const KIND = { junk: ['垃圾清理', 'good'], recycle: ['回收站', 'info'], delete: ['永久删除', 'bad'], startup: ['开机启动', ''],
-    service: ['服务', ''], ai: ['AI', ''], uninstall: ['卸载', ''] };
+    service: ['服务', ''], ai: ['AI', ''], uninstall: ['卸载', ''], system: ['系统设置', ''] };
   let root = null;
   let rows = null;
   const open = new Set();

@@ -180,9 +180,11 @@
     P({ id: 'startup:qv', category: '开机启动', title: '快看图大师 资讯助手', action: 'disable', source: 'ai', confidence: 0.7, what: '看图软件附带的资讯弹窗程序',
       why: 'AI 建议禁用：开机弹出广告和资讯，禁用不影响看图', effect: '开机时不再自动运行，需要时可以手动打开；随时可以在「开机与服务」里重新启用。' }),
     P({ id: 'info:hiber', group: 'info', category: '说明', title: '休眠文件', size: 12.7 * GB, action: 'none', source: 'knowledge', location: 'C:\\hiberfil.sys',
-      what: '用于休眠和快速启动。不需要这两项时，可用管理员命令 powercfg /h off 关闭，文件会自动消失。', why: '体积较大，但不能直接删除。' }),
+      what: '用于休眠和快速启动。不需要这两项时，可用管理员命令 powercfg /h off 关闭，文件会自动消失。', why: '体积较大，但不能直接删除。',
+      actions: [{ kind: 'hibernate', label: '关闭休眠，删除这个文件' }] }),
     P({ id: 'info:docker', group: 'info', category: '说明', title: 'Docker Desktop 数据', size: 28.4 * GB, action: 'none', source: 'knowledge', location: U + '\\AppData\\Local\\Docker',
-      what: '镜像和容器存放在虚拟磁盘里。先用 docker system prune 清理，再在 Docker 设置中压缩磁盘。', why: '体积较大，但不能直接删除。' }),
+      what: '镜像和容器存放在虚拟磁盘里。先用 docker system prune 清理，再在 Docker 设置中压缩磁盘。', why: '体积较大，但不能直接删除。',
+      actions: [{ kind: 'copy', arg: 'docker system prune', label: '复制清理命令' }, { kind: 'reveal', label: '打开文件夹' }] }),
   ];
   const SCORES = { 'rule:user_temp': 95, 'rule:chrome': 95, 'rule:crash_dumps': 95, 'dir:unity': 86, 'rule:edge': 95, 'rule:npm': 70,
     'dir:idea21': 60, 'dir:oldgame': 50, 'file:iso': 60, 'file:wechat': 85, 'file:vscode': 85, 'file:crdl': 90, 'file:thesis': 85,
@@ -272,6 +274,7 @@
       return { stage: stages[step - 1].id, stage_label: stages[step - 1].label, step, steps: 6, stages, detail: [U + '\\AppData\\Local\\Temp', 'C:\\Program Files', U + '\\Documents', '比较文件内容', '空间分析', ''][step - 1] };
     }),
     plan: () => { if (plan) plan.summary = summarize(); return plan; },
+    hibernate_set: ({ enabled }) => ({ enabled, freed: enabled ? 0 : 12.7 * GB }),
     // the first re-check finds Edge closed
     running_check: () => {
       const changed = [];

@@ -719,6 +719,14 @@ class Sandbox:
                     return 0, '[SC] ControlService 成功'
             return 87, '参数错误'
 
+    def set_hibernate(self, enabled: bool) -> None:
+        """Stand-in for powercfg /hibernate on|off: hiberfil.sys appears or disappears."""
+        path = self.native('C/hiberfil.sys')
+        if enabled and not os.path.exists(path):
+            _write(path, _Spec('C/hiberfil.sys', 3270 * MB, age=0), time.time())
+        elif not enabled and os.path.exists(path):
+            os.remove(path)
+
     def run_cleanup_command(self, rule_id: str) -> None:
         """Stand-ins for DISM, Delete-DeliveryOptimizationCache and Disk Cleanup handlers."""
         targets = {

@@ -66,6 +66,23 @@ INFO_TARGETS = [
 ]
 
 
+_REVEAL = {'kind': 'reveal', 'label': '打开文件夹'}
+# what the user can do about each 仅供了解 item (kind: hibernate / settings / page / copy / reveal)
+INFO_ACTIONS = {
+    'hiberfil.sys': [{'kind': 'hibernate', 'label': '关闭休眠，删除这个文件'}],
+    'pagefile.sys': [{'kind': 'settings', 'arg': 'virtual_memory', 'label': '打开虚拟内存设置'}],
+    'system volume information': [{'kind': 'settings', 'arg': 'system_protection', 'label': '打开系统保护（管理还原点）'}],
+    'winsxs': [{'kind': 'page', 'arg': 'junk', 'label': '去垃圾清理做「组件存储清理」'}],
+    'docker': [{'kind': 'copy', 'arg': 'docker system prune', 'label': '复制清理命令'}, _REVEAL],
+    'steamapps': [{'kind': 'page', 'arg': 'apps', 'label': '在「应用」里卸载不玩的游戏'}, _REVEAL],
+}
+
+
+def info_actions(path: str) -> list[dict]:
+    name = os.path.basename(path.rstrip('\\/')).lower()
+    return INFO_ACTIONS.get(name, [_REVEAL] if os.path.isdir(path) else [])
+
+
 def personal_roots(env: dict, settings: dict) -> list[str]:
     out = []
     for name in ('desktop', 'documents', 'downloads', 'pictures', 'videos', 'music'):
@@ -403,7 +420,7 @@ class PlanBuilder:
                 self.add({'id': _ident('info', path), 'kind': 'info', 'group': 'info', 'category': '说明',
                           'title': (note or {}).get('label') or os.path.basename(path), 'size': size,
                           'what': (note or {}).get('advice', ''), 'why': '体积较大，但不能直接删除。',
-                          'action': 'none', 'source': 'knowledge', 'location': path})
+                          'action': 'none', 'source': 'knowledge', 'location': path, 'actions': info_actions(path)})
 
     # -- result ---------------------------------------------------------------------
     def plan(self, extra: dict | None = None) -> dict:

@@ -177,6 +177,31 @@ class CheckupTest(TempDirTest):
         self.assertFalse(edge['selected'])
         self.assertEqual(edge['blocked'], '请先关闭 msedge.exe')
 
+    def test_info_items_offer_what_to_do(self):
+        plan = self.checkup(use_ai=False)
+        info = {i['title']: i for i in plan['items'] if i['group'] == 'info'}
+        self.assertEqual(info['休眠文件']['actions'][0]['kind'], 'hibernate')
+        self.assertEqual(info['虚拟内存页面文件']['actions'][0], {'kind': 'settings', 'arg': 'virtual_memory', 'label': '打开虚拟内存设置'})
+        self.assertEqual(info['组件存储（WinSxS）']['actions'][0]['arg'], 'junk')
+        self.assertIn('copy', [a['kind'] for a in info['Docker Desktop 数据']['actions']])
+        r = self.bridge.call('open_system_page', {'page': 'virtual_memory'})
+        self.assertFalse(r['ok'], 'the simulation never opens real system settings')
+        self.assertIn('演练环境', r['error'])
+
+    def test_hibernation_off_and_undo(self):
+        plan = self.checkup(use_ai=False)
+        hiberfil = os.path.join(self.backend.env['SystemDrive'], 'hiberfil.sys')
+        self.assertTrue(os.path.exists(hiberfil))
+        self.call('hibernate_set', enabled=False)
+        self.assertFalse(os.path.exists(hiberfil))
+        item = next(i for i in self.call('plan')['items'] if i['title'] == '休眠文件')
+        self.assertEqual(item['status'], 'done')
+        entry = self.call('history')[0]
+        self.assertEqual(entry['kind'], 'system')
+        self.assertEqual(entry['freed'], 3270 * 1024 * 1024)
+        self.call('revert', entry_id=entry['id'])
+        self.assertTrue(os.path.exists(hiberfil), 'undo turns hibernation back on')
+
     def test_the_prompt_asks_to_look_inside_installed_programs(self):
         from panxu.analyst import SPACE_SYSTEM_PROMPT
         self.assertIn('installed_app', SPACE_SYSTEM_PROMPT)
