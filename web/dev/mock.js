@@ -184,6 +184,17 @@
     P({ id: 'info:docker', group: 'info', category: '说明', title: 'Docker Desktop 数据', size: 28.4 * GB, action: 'none', source: 'knowledge', location: U + '\\AppData\\Local\\Docker',
       what: '镜像和容器存放在虚拟磁盘里。先用 docker system prune 清理，再在 Docker 设置中压缩磁盘。', why: '体积较大，但不能直接删除。' }),
   ];
+  const SCORES = { 'rule:user_temp': 95, 'rule:chrome': 95, 'rule:crash_dumps': 95, 'dir:unity': 86, 'rule:edge': 95, 'rule:npm': 70,
+    'dir:idea21': 60, 'dir:oldgame': 50, 'file:iso': 60, 'file:wechat': 85, 'file:vscode': 85, 'file:crdl': 90, 'file:thesis': 85,
+    'dup:1': 85, 'startup:qv': 60 };
+  for (const it of planItems) {
+    if (it.action === 'none') { it.score = null; it.basis = []; continue; }
+    it.score = SCORES[it.id] || 50;
+    it.basis = [it.source === 'rule' ? (it.selected ? '内置规则：公认可以重建的缓存和临时文件' : '内置规则，默认不勾：删除后需要时会重新下载')
+      : it.source === 'ai' ? 'AI：可清理（把握 86%）' : it.why,
+    it.blocked ? '没有勾选：' + it.blocked : it.selected ? '自动勾选：' + (it.source === 'rule' ? '默认开启的内置规则' : 'AI 把握很大，而且位于应用数据目录')
+      : it.personal ? '没有自动勾选：你的个人文件只由你决定' : '没有自动勾选：只有默认规则和 AI 把握很大的应用数据会自动勾选'];
+  }
   const planGroups = [{ id: 'safe', name: '放心清理' }, { id: 'review', name: '建议你看看' }, { id: 'info', name: '仅供了解' }];
   let plan = null;
   const summarize = () => Object.fromEntries(planGroups.map(({ id }) => {
@@ -220,6 +231,14 @@
       reason: '里面没有任何文件（包括子文件夹）。', confidence: 0.95,
       files: [F(U + '\\Desktop\\新建文件夹', 0, 0, '空文件夹', true, { mtime: 0, category: 'folder' }), F(U + '\\Desktop\\新建文件夹 (2)', 0, 0, '空文件夹', true, { mtime: 0, category: 'folder' })] },
   ].map((f) => Object.assign(f, { count: f.files.length, size: f.files.reduce((s, x) => s + x.size, 0) }));
+  const KIND_SCORE = { incomplete_download: 90, installer_installed: 85, name_versions: 35, stale_large: 30, empty_folders: 90 };
+  for (const f of findings) {
+    for (const x of f.files) {
+      x.score = f.kind === 'name_versions' ? (x.note.startsWith('最新') || x.note.startsWith('与其他') ? 5 : x.remove ? 85 : 35) : KIND_SCORE[f.kind];
+      if (x.ai && x.ai.verdict === 'delete') x.score = Math.max(x.score, Math.min(85, x.score + 30));
+      if (x.ai && x.ai.verdict === 'keep') x.score = Math.min(x.score, 15);
+    }
+  }
   let insights = null;
 
   const A = (id, name, publisher, version, kind, size, installed, used, extra) => Object.assign({ id, name, publisher, version, kind,

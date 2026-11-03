@@ -26,7 +26,7 @@ import uuid
 from . import APP_NAME, fsops, paths, winapi
 from .analyst import newer_sibling
 from .duplicates import find_duplicates, verify_unchanged
-from .insights import Insights, is_copy_name, managed_dir
+from .insights import KIND_SCORE, Insights, file_score, is_copy_name, managed_dir, with_ai
 from .junk import RULES_BY_ID
 from .scanner import SpaceScan
 
@@ -95,6 +95,19 @@ def _ago(ts: float, now: float) -> str:
     return f'{days / 365:.0f} 年' if days >= 365 else f'{int(days)} 天'
 
 
+def decision_note(item: dict) -> list[str]:
+    """Why an item was (not) ticked automatically -- the last line of its 评分依据."""
+    if item['action'] == 'none':
+        return []
+    if item['blocked']:
+        return ['没有勾选：' + item['blocked']]
+    if item['selected']:
+        return ['自动勾选：' + ('默认开启的内置规则' if item['source'] == 'rule' else 'AI 把握很大，而且位于应用数据目录')]
+    if item.get('personal'):
+        return ['没有自动勾选：你的个人文件只由你决定']
+    return ['没有自动勾选：只有默认规则和 AI 把握很大的应用数据会自动勾选']
+
+
 class PlanBuilder:
     """Collects plan items; a path is offered at most once (first source wins)."""
 
@@ -111,7 +124,8 @@ class PlanBuilder:
     def add(self, item: dict) -> dict | None:
         base = {'id': '', 'group': 'review', 'category': '', 'title': '', 'size': 0, 'count': 0, 'what': '', 'why': '',
                 'effect': '', 'action': 'none', 'source': 'heuristic', 'confidence': None, 'selected': False,
-                'paths': [], 'blocked': None, 'caution': None, 'ask': None, 'status': 'pending', 'ai': None}
+                'paths': [], 'blocked': None, 'caution': None, 'ask': None, 'status': 'pending', 'ai': None,
+                'score': None, 'basis': []}
         item = {**base, **item}
         if item['paths']:
             fresh = [p for p in item['paths'] if not self._taken(p)]
@@ -125,6 +139,7 @@ class PlanBuilder:
                 item['selected'] = False
             item['caution'] = next((c for c in (self.policy.caution(p) for p in fresh) if c), None)
             self._claimed.extend(fresh)
+        item['basis'] = list(item['basis']) + decision_note(item)
         item['ask'] = item['ask'] or {'type': 'plan_item', 'id': item['id']}
         self.items.append(item)
         return item
@@ -144,13 +159,19 @@ class PlanBuilder:
             elif rule.admin and row.get('needs_admin'):
                 blocked = '需要管理员权限'
             safe = rule.default and not blocked
+            if rule.default:
+                score, basis = 95, ['内置规则：公认可以重建的缓存和临时文件']
+            elif rule.mode == 'recycle_bin' or rule.id == 'windows_old':
+                score, basis = 55, ['内置规则，但删除后无法恢复：' + (rule.note or '无法从回收站恢复')]
+            else:
+                score, basis = 70, ['内置规则，默认不勾：' + (rule.note or '删除后需要时会重新下载或生成，第一次会慢一些')]
             self.add({
                 'id': 'rule:' + rule.id, 'kind': 'rule', 'rule': rule.id, 'group': 'safe' if safe else 'review',
                 'category': '垃圾文件', 'title': rule.name, 'size': size or 0, 'count': row.get('count') or 0,
-                'what': rule.description, 'why': '盘序内置的清理规则，只清理公认可以重建的缓存和临时文件。',
+                'what': '', 'why': rule.description,
                 'effect': rule.note or '相关程序会在需要时重新生成这些文件。', 'action': 'delete', 'source': 'rule',
                 'confidence': 1.0 if rule.default else 0.7, 'selected': safe, 'blocked': blocked,
-                'locations': row.get('locations', [])[:5]})
+                'locations': row.get('locations', [])[:5], 'score': score, 'basis': basis})
 
     def add_ai_dirs(self, suggestions: list[dict], env: dict):
         app_bases = [env.get(k) for k in ('LOCALAPPDATA', 'APPDATA', 'LOCALLOW', 'ProgramData') if env.get(k)]
@@ -158,14 +179,19 @@ class PlanBuilder:
             if s.get('source') == 'none' or s.get('expanded') or s['verdict'] not in ('clean', 'review'):
                 continue
             in_app_data = any(paths.is_within(s['path'], b) for b in app_bases)
-            sure = s['verdict'] == 'clean' and s.get('confidence', 0) >= AUTO_AI_CONFIDENCE and in_app_data
+            confidence = float(s.get('confidence') or 0)
+            sure = s['verdict'] == 'clean' and confidence >= AUTO_AI_CONFIDENCE and in_app_data
+            score = round(confidence * 100) if s['verdict'] == 'clean' else min(55, round(confidence * 100))
+            basis = [f'AI：{s.get("verdict_label", "")}（把握 {round(confidence * 100)}%）' + ('，来自缓存' if s.get('source') == 'cache' else '')]
+            if not in_app_data:
+                basis.append('不在应用数据目录：只能由你决定')
             item = self.add({
                 'id': _ident('dir', s['path']), 'kind': 'paths', 'group': 'safe' if sure else 'review',
                 'category': '应用数据', 'title': s.get('app') if s.get('app') not in (None, '', '未知') else
-                os.path.basename(s['path']), 'size': s['size'], 'count': s.get('files', 0), 'what': s.get('reason', ''),
-                'why': f'AI 判断：{s.get("verdict_label", "")}', 'effect': s.get('effect') or '',
+                os.path.basename(s['path']), 'size': s['size'], 'count': s.get('files', 0), 'what': '',
+                'why': s.get('reason') or f'AI 判断：{s.get("verdict_label", "")}', 'effect': s.get('effect') or '',
                 'action': 'recycle', 'source': 'ai', 'confidence': s.get('confidence'), 'selected': sure,
-                'paths': [s['path']], 'node_id': s.get('node_id')})
+                'paths': [s['path']], 'node_id': s.get('node_id'), 'score': score, 'basis': basis})
             if item is not None and item['blocked']:
                 item['group'] = 'review'
 
@@ -186,33 +212,49 @@ class PlanBuilder:
                               'size': n.size, 'count': n.files, 'what': f'「{n.name}」的数据，旁边还有更新的版本「{newer}」。',
                               'why': f'可能是旧版本留下的：{_ago(n.mtime, self.now)}没有修改过。',
                               'effect': '如果还在用旧版本，它的设置和缓存会丢失。', 'action': 'recycle',
-                              'source': 'heuristic', 'confidence': 0.6, 'paths': [p]})
+                              'source': 'heuristic', 'confidence': 0.6, 'paths': [p], 'score': 60,
+                              'basis': [f'旁边有更新的版本「{newer}」', f'{_ago(n.mtime, self.now)}没有修改过']})
             if node.size >= LEFTOVER_MIN and old and analyst.installed_app(path) == '':
                 self.add({'id': _ident('dir', path), 'kind': 'paths', 'category': '应用数据', 'title': node.name,
                           'size': node.size, 'count': node.files,
                           'what': '找不到对应的已安装程序，可能是已卸载程序的残留。',
                           'why': f'在「已安装的应用」里没有找到对应的程序，而且 {_ago(node.mtime, self.now)}没有修改过。',
                           'effect': '如果程序其实还在（例如绿色版），它的设置、存档或缓存会丢失。', 'action': 'recycle',
-                          'source': 'heuristic', 'confidence': 0.5, 'paths': [path]})
+                          'source': 'heuristic', 'confidence': 0.5, 'paths': [path], 'score': 50,
+                          'basis': ['「已安装的应用」里找不到对应的程序', f'{_ago(node.mtime, self.now)}没有修改过',
+                                    '没有经过 AI 复核']})
 
     def add_insights(self, findings: list[dict], file_ai: dict | None = None):
         file_ai = file_ai or {}
         for f in findings:
+            if f['kind'] == 'empty_folders':
+                # nothing to free: one item for all of them instead of a row per folder
+                folders = [x['path'] for x in f['files']]
+                self.add({'id': 'empty:' + f['id'], 'kind': 'paths', 'group': 'review', 'category': f['kind_label'],
+                          'finding': f['id'], 'finding_kind': f['kind'], 'title': f'{len(folders)} 个空文件夹', 'size': 0,
+                          'count': 0, 'what': f['advice'], 'why': f['reason'],
+                          'effect': '移到回收站，需要时可以从回收站还原。不释放空间，只是更整洁。', 'action': 'recycle',
+                          'source': 'insight', 'confidence': f['confidence'], 'paths': folders, 'personal': True,
+                          'score': KIND_SCORE['empty_folders'], 'basis': ['里面没有任何文件（包括子文件夹）']})
+                continue
             files = [x for x in f['files'] if x.get('remove') or f['kind'] in ('stale_large', 'old_downloads',
                                                                              'installer_old')]
             if f['kind'] == 'name_versions':
-                # every version except the newest may be offered; identical copies first
-                files = [x for x in f['files'] if not x['note'].startswith('最新')]
+                files = [x for x in f['files'] if (x.get('score') or 0) > 10]  # never the copy to keep
             for x in sorted(files, key=lambda x: (not x.get('remove'), -x['size']))[:PERSONAL_PER_KIND]:
                 ai = file_ai.get(x['path'])
                 why = x.get('note') or f['reason']
+                base_score = x.get('score', file_score(f['kind'], x))
+                basis = [f'{f["kind_label"]}：{why}']
+                if ai:
+                    basis.append(f'AI：{ai.get("verdict_label", "")}' + (f'——{ai["reason"]}' if ai.get('reason') else ''))
                 self.add({
                     'id': _ident('file', x['path']), 'kind': 'paths', 'group': 'review', 'category': f['kind_label'],
                     'finding': f['id'], 'finding_kind': f['kind'], 'title': x['name'], 'size': x['size'],
                     'count': 1 if x.get('category') != 'folder' else 0, 'what': f['advice'], 'why': why,
                     'effect': '移到回收站，需要时可以从回收站还原。', 'action': 'recycle', 'source': 'insight',
                     'confidence': f['confidence'] if x.get('remove') else min(f['confidence'], 0.4),
-                    'paths': [x['path']], 'ai': ai, 'personal': True})
+                    'paths': [x['path']], 'ai': ai, 'personal': True, 'score': with_ai(base_score, ai), 'basis': basis})
 
     def add_duplicates(self, dups: dict | None):
         for g in (dups or {}).get('groups', []):
@@ -231,7 +273,8 @@ class PlanBuilder:
                 'why': f'保留「{keeper["path"]}」，其余 {len(remove)} 份移到回收站。',
                 'effect': '每组保留一份，内容不会丢失。', 'action': 'recycle', 'source': 'dup', 'confidence': 0.9,
                 'paths': remove, 'keep': keeper['path'], 'dup_size': g['size'],
-                'dup_files': [{'path': f['path'], 'mtime': f['mtime']} for f in files], 'personal': True})
+                'dup_files': [{'path': f['path'], 'mtime': f['mtime']} for f in files], 'personal': True,
+                'score': 85, 'basis': ['内容逐字节相同', '保留一份，内容不会丢失']})
 
     def add_startup(self, items: list[dict], explained: dict, env: dict):
         system_root = env.get('SystemRoot')
@@ -246,7 +289,8 @@ class PlanBuilder:
                 'category': '开机启动', 'title': item['display_name'], 'what': info.get('what', ''),
                 'why': 'AI 建议禁用：' + info.get('reason', ''), 'effect': '开机时不再自动运行，需要时可以手动打开；随时可以在「开机与服务」里重新启用。',
                 'action': 'disable', 'source': 'ai', 'confidence': 0.7,
-                'blocked': '需要管理员权限' if item.get('needs_admin') else None})
+                'blocked': '需要管理员权限' if item.get('needs_admin') else None,
+                'score': 60, 'basis': ['AI 建议禁用', '随时可以重新启用']})
 
     def add_info(self, scan, env: dict):
         for template in INFO_TARGETS:
@@ -275,7 +319,7 @@ class PlanBuilder:
     # -- result ---------------------------------------------------------------------
     def plan(self, extra: dict | None = None) -> dict:
         order = {'safe': 0, 'review': 1, 'info': 2}
-        self.items.sort(key=lambda i: (order[i['group']], i.get('personal', False), -(i['size'] or 0)))
+        self.items.sort(key=lambda i: (order[i['group']], i.get('personal', False), -(i['score'] or 0), -(i['size'] or 0)))
         return {'id': uuid.uuid4().hex[:10], 'created': time.time(), 'items': self.items,
                 'groups': [{'id': g, 'name': n} for g, n in GROUPS.items()], **(extra or {})}
 

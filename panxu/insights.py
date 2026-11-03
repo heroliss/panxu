@@ -58,6 +58,35 @@ KIND_INFO = {
 }
 KIND_ORDER = list(KIND_INFO)
 
+# 建议清理度 (0-100): how strongly PanXu suggests removing a file, shown on every row so the decision can
+# be read at a glance. It only explains and sorts; personal files are never pre-selected, whatever the score.
+KIND_SCORE = {'incomplete_download': 90, 'installer_installed': 85, 'installer_old': 55, 'archive_extracted': 50,
+              'name_versions': 35, 'stale_large': 30, 'old_downloads': 25, 'empty_folders': 90}
+
+
+def file_score(kind: str, f: dict) -> int:
+    if kind == 'name_versions':
+        if f['note'].startswith('最新') or f['note'].startswith('与其他副本内容相同'):
+            return 5   # the copy to keep
+        return 85 if f.get('remove') else 35
+    if kind == 'archive_extracted' and f.get('remove'):
+        return 85   # every file verified in the extracted folder
+    return KIND_SCORE[kind]
+
+
+def with_ai(score: int, ai: dict | None) -> int:
+    """The model's verdict on a file moves the score; it can lower it freely but raise it only so far."""
+    if not ai:
+        return score
+    verdict = ai.get('verdict')
+    if verdict == 'delete':
+        return max(score, min(85, score + 30))
+    if verdict == 'keep':
+        return min(score, 15)
+    if verdict == 'archive':
+        return min(score, 40)
+    return score
+
 _CAMEL = re.compile(r'(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])')
 _VERSION = re.compile(r'\d+(?:[._]\d+)+')
 _INSTALLER_NOISE = {
@@ -347,6 +376,9 @@ class Insights:
                 claimed.update(paths.key(x['path']) for x in f.files)
         out.extend(self._empty())
         out.sort(key=lambda f: (KIND_ORDER.index(f.kind), -f.size))
+        for f in out:
+            for x in f.files:
+                x['score'] = file_score(f.kind, x)
         return [f.as_dict() for f in out]
 
     def _age_days(self, rec: FileRec) -> float:

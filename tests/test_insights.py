@@ -34,6 +34,22 @@ class NamesTest(unittest.TestCase):
         self.assertIsNone(version_of('SteamSetup.exe'))
 
 
+class ScoreTest(unittest.TestCase):
+    def test_scores_by_kind_and_ai(self):
+        f = {'note': '', 'remove': True}
+        self.assertEqual(insights.file_score('incomplete_download', f), 90)
+        self.assertEqual(insights.file_score('archive_extracted', f), 85)
+        self.assertEqual(insights.file_score('archive_extracted', {**f, 'remove': False}), 50)
+        self.assertEqual(insights.file_score('name_versions', {'note': '最新的一份', 'remove': False}), 5)
+        self.assertEqual(insights.file_score('name_versions', {'note': '较旧的版本', 'remove': False}), 35)
+        self.assertEqual(insights.file_score('name_versions', {'note': '和「x」内容完全相同', 'remove': True}), 85)
+        self.assertEqual(insights.with_ai(30, {'verdict': 'delete'}), 60)
+        self.assertEqual(insights.with_ai(80, {'verdict': 'delete'}), 85, 'the model can raise a score only so far')
+        self.assertEqual(insights.with_ai(90, {'verdict': 'keep'}), 15)
+        self.assertEqual(insights.with_ai(90, {'verdict': 'archive'}), 40)
+        self.assertEqual(insights.with_ai(30, None), 30)
+
+
 class FakeApps:
     def __init__(self, rows):
         self.rows = rows

@@ -659,7 +659,8 @@ class Backend:
         policy = self.policy()
         findings = []
         for f in self.insights['findings']:
-            files = [{**x, 'ai': self.file_ai.get(x['path']), 'blocked': policy.reason(x['path'])} for x in f['files']]
+            files = [{**x, 'ai': self.file_ai.get(x['path']), 'blocked': policy.reason(x['path']),
+                      'score': insights.with_ai(x.get('score', 0), self.file_ai.get(x['path']))} for x in f['files']]
             findings.append({**f, 'files': files})
         return {**self.insights, 'findings': findings}
 

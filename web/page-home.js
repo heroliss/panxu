@@ -195,6 +195,7 @@
       h('div.name', it.title, ' ', PX.tag(srcLabel, srcKind)),
       h('div.why', it.why || it.what)),
     flags,
+    PX.score(it.score, (it.basis || []).join('\n')),
     h('div.size', it.size ? fmt.bytes(it.size) : ''),
     h('button.btn.quiet.small', { type: 'button', title: '问 AI', onclick: (e) => { e.stopPropagation(); PX.ask({ type: 'plan_item', id: it.id }, it.title); } },
       PX.icon('spark'), '问 AI'));
@@ -204,7 +205,10 @@
       if (it.what && it.what !== it.why) d.appendChild(h('div', h('b', '是什么：'), it.what));
       if (it.effect) d.appendChild(h('div', h('b', (ACTION[it.action] ? ACTION[it.action] + '后：' : '影响：')), it.effect));
       if (it.ai && it.ai.reason) d.appendChild(h('div', h('b', 'AI：'), (it.ai.what ? it.ai.what + '。' : '') + it.ai.reason));
-      if (it.confidence !== null && it.confidence !== undefined && it.source !== 'rule') d.appendChild(h('div.faint', `把握：${Math.round(it.confidence * 100)}%`));
+      if (it.score !== null && it.score !== undefined) {
+        d.appendChild(h('div.basis', h('b', `建议清理度 ${it.score}（${PX.scoreLabel(it.score)}）：`),
+          h('ul', (it.basis || []).map((line) => h('li', line)))));
+      }
       if (it.caution) d.appendChild(h('div', PX.tag('注意', 'warn'), ' ', it.caution));
       if (it.keep) d.appendChild(h('div', h('b', '保留：'), h('span.mono-path', it.keep)));
       const where = (it.paths && it.paths.length ? it.paths : it.location ? [it.location] : it.locations || []).slice(0, 6);
@@ -265,6 +269,8 @@
         c.appendChild(PX.notice('这次体检没有使用 AI。配置模型后，AI 会帮你判断陌生的大文件夹和你的文件。', 'info',
           h('button.btn.small', { type: 'button', onclick: () => PX.go('settings') }, '去设置')));
       }
+      c.appendChild(h('div.score-legend', PX.score(90), PX.score(60), PX.score(30),
+        h('span', '每项右边的数字是「建议清理度」：越高越建议清理。展开一项能看到评分依据；是否自动勾选只由盘序的规则决定，个人文件从不自动勾选。')));
       for (const g of p.groups) group(c, g.id, g.name);
       const n = selectedItems().length;
       if (n || state.status === 'executing') {

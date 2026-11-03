@@ -94,6 +94,27 @@ class CheckupTest(TempDirTest):
         self.assertIn('msedge.exe', edge['blocked'], 'a running browser blocks its rule')
         self.assertTrue(any(i['group'] == 'info' and i['title'] == '休眠文件' for i in plan['items']))
 
+    def test_every_item_explains_its_score_and_selection(self):
+        plan = self.checkup()
+        for item in plan['items']:
+            if item['action'] == 'none':
+                self.assertIsNone(item['score'])
+                continue
+            self.assertTrue(0 <= item['score'] <= 100, item['title'])
+            self.assertTrue(item['basis'], item['title'])
+            last = item['basis'][-1]
+            self.assertTrue(last.startswith(('自动勾选', '没有自动勾选', '没有勾选')), (item['title'], last))
+            if item['selected']:
+                self.assertGreaterEqual(item['score'], 80, item['title'])
+            if item.get('personal'):
+                self.assertFalse(item['selected'])
+        empty = [i for i in plan['items'] if i.get('finding_kind') == 'empty_folders']
+        self.assertEqual(len(empty), 1, 'all empty folders are one item')
+        self.assertEqual(len(empty[0]['paths']), 3)
+        for item in plan['items']:
+            if item.get('finding_kind') == 'name_versions':
+                self.assertNotIn('最新', item['why'], 'the newest version is never offered')
+
     def test_no_path_offered_twice_and_duplicates_keep_one(self):
         plan = self.checkup()
         offered = [paths.key(p) for i in plan['items'] for p in i['paths']]

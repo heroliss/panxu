@@ -117,6 +117,15 @@
       return parts.join('\\');
     },
   };
+  // 建议清理度 0-100: a small bar plus the number, coloured by how strongly removal is suggested
+  PX.scoreLevel = (s) => (s >= 80 ? 'hi' : s >= 50 ? 'mid' : 'lo');
+  PX.scoreLabel = (s) => (s >= 80 ? '建议清理' : s >= 50 ? '可以考虑' : '看你需要');
+  PX.score = function (score, title) {
+    if (score === null || score === undefined) return h('span.score.none');
+    const label = `建议清理度 ${score}（${PX.scoreLabel(score)}）`;
+    return h('span.score.' + PX.scoreLevel(score), { title: title ? label + '\n' + title : label, role: 'img', 'aria-label': label },
+      h('i', h('b', { style: { width: Math.max(4, Math.min(100, score)) + '%' } })), h('span.v', String(score)));
+  };
   PX.big = function (n, cls) {
     const [v, u] = PX.fmt.split(n);
     return h('span.num' + (cls ? '.' + cls : ''), v, h('small', u));

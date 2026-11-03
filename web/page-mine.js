@@ -120,6 +120,7 @@
         x.note ? h('div.why', x.note) : null,
         x.ai ? h('div.ai-note', h('span', x.ai.what), h('span.muted', x.ai.reason)) : null),
       tags,
+      PX.score(x.score, x.note),
       h('div.size', x.size ? fmt.bytes(x.size) : ''),
       h('div.small.muted', x.mtime ? fmt.date(x.mtime) : ''),
       h('div.row-actions',
