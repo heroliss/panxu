@@ -70,7 +70,7 @@
     PX.state.junkTotal = recommended();
     PX.renderRail();
     rerender();
-    if (PX.isCurrent('overview')) PX.refresh('overview');
+    if (PX.isCurrent('home')) PX.refresh('home');
   }
 
   async function clean() {

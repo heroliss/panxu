@@ -98,9 +98,10 @@ class BundleTest(unittest.TestCase):
         self.assertNotRegex(html, r'<script\s+src=')
         self.assertNotRegex(html, r'<link\s+rel="stylesheet"')
         self.assertNotIn('pywebview = { api', html, 'mock must not ship in the app bundle')
-        for name in ('PX.pages.junk', 'PX.pages.space', 'PX.deleteFlow', 'PX.treemap'):
+        for name in ('PX.pages.junk', 'PX.pages.space', 'PX.deleteFlow', 'PX.treemap', 'PX.pages.home', 'PX.pages.mine',
+                     'PX.pages.apps', 'PX.ask'):
             self.assertIn(name, html)
-        self.assertEqual(len(re.findall(r'<script>', html)), 10)
+        self.assertEqual(len(re.findall(r'<script>', html)), 13)
 
 
 if __name__ == '__main__':

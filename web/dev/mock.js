@@ -94,8 +94,10 @@
     return { id, status: 'done', result: typeof j.result === 'function' ? j.result() : j.result };
   }
 
-  const settings = { theme: 'system', ai: { preset: 'deepseek', base_url: 'https://api.deepseek.com', model: 'deepseek-chat', protocol: 'openai',
-    json_mode: true, anonymize_paths: true, max_requests: 8, min_dir_mb: 500, timeout: 120 }, duplicates: { min_size_mb: 1 }, large_files: { min_size_mb: 100 }, excluded_paths: [] };
+  const settings = { theme: 'system', ai: { preset: 'deepseek', base_url: 'https://api.deepseek.com', model: 'deepseek-flash', protocol: 'openai',
+    json_mode: true, thinking: 'off', anonymize_paths: true, send_file_content: false, max_requests: 8, min_dir_mb: 500, timeout: 120 },
+  checkup: { space_scan: true, duplicates: true, use_ai: true }, insights: { stale_days: 365, large_mb: 100, download_days: 180 },
+  duplicates: { min_size_mb: 1 }, large_files: { min_size_mb: 100 }, excluded_paths: [], extra_personal_paths: ['D:\\资料'] };
   let hasKey = true;
 
   const startup = [
@@ -143,9 +145,154 @@
     { node_id: 17, path: 'C:\\Users\\herol\\AppData\\Roaming\\Tencent', size: 6.3 * GB, files: 9200, verdict: 'keep', verdict_label: '建议保留', app: 'QQ / 微信', reason: '聊天记录数据库与账号配置', effect: '', confidence: 0.9, source: 'cache', expanded: false, caution: '位于应用配置目录，可能包含应用设置或账号数据' },
   ];
 
+  // ---- 1.1: check-up plan, 我的文件, installed programs, sandbox
+  const U = 'C:\\Users\\herol';
+  const P = (o) => Object.assign({ group: 'review', count: 0, what: '', why: '', effect: '', action: 'recycle', source: 'heuristic',
+    confidence: null, selected: false, paths: [], blocked: null, caution: null, status: 'pending', ai: null }, o);
+  const planItems = [
+    P({ id: 'rule:user_temp', group: 'safe', category: '垃圾文件', title: '用户临时文件', size: 2.31 * GB, count: 9120, action: 'delete', source: 'rule', selected: true,
+      what: rules[0][3], why: '盘序内置的清理规则，只清理公认可以重建的缓存和临时文件。', effect: '相关程序会在需要时重新生成这些文件。', locations: [U + '\\AppData\\Local\\Temp'] }),
+    P({ id: 'rule:chrome', group: 'safe', category: '垃圾文件', title: 'Google Chrome', size: 1.46 * GB, action: 'delete', source: 'rule', selected: true, what: rules[8][3], why: '盘序内置的清理规则。' }),
+    P({ id: 'rule:crash_dumps', group: 'safe', category: '垃圾文件', title: '崩溃转储文件', size: 640 * MB, action: 'delete', source: 'rule', selected: true, why: '程序崩溃时保存的内存快照，只在排查故障时有用。' }),
+    P({ id: 'dir:unity', group: 'safe', category: '应用数据', title: 'Unity 编辑器', size: 6.2 * GB, source: 'ai', confidence: 0.86, selected: true,
+      what: 'Unity 的资源导入与着色器缓存，打开项目时会自动重建', why: 'AI 判断：可清理', effect: '下次打开项目时重新导入，耗时较长', paths: [U + '\\AppData\\Local\\Unity'] }),
+    P({ id: 'rule:edge', category: '垃圾文件', title: 'Microsoft Edge', size: 720 * MB, action: 'delete', source: 'rule', blocked: '请先关闭 msedge.exe', why: '盘序内置的清理规则。' }),
+    P({ id: 'rule:npm', category: '垃圾文件', title: 'npm 缓存', size: 3.4 * GB, action: 'delete', source: 'rule', why: 'Node.js 包下载缓存。删除后再次安装依赖时会重新下载。' }),
+    P({ id: 'dir:idea21', category: '应用数据', title: 'IntelliJIdea2021.1', size: 1.6 * GB, confidence: 0.6, what: '「IntelliJIdea2021.1」的数据，旁边还有更新的版本「IntelliJIdea2025.3」。',
+      why: '可能是旧版本留下的：3 年没有修改过。', effect: '如果还在用旧版本，它的设置和缓存会丢失。', paths: [U + '\\AppData\\Local\\JetBrains\\IntelliJIdea2021.1'] }),
+    P({ id: 'dir:oldgame', category: '应用数据', title: 'OldGameStudio', size: 1.1 * GB, confidence: 0.5, what: '找不到对应的已安装程序，可能是已卸载程序的残留。',
+      why: '在「已安装的应用」里没有找到对应的程序，而且 2 年没有修改过。', effect: '如果程序其实还在（例如绿色版），它的设置、存档或缓存会丢失。',
+      paths: [U + '\\AppData\\Local\\OldGameStudio'], caution: '位于本地应用数据目录，可能是程序正在使用的数据' }),
+    P({ id: 'file:iso', category: '很久没动过的大文件', title: 'Ubuntu-24.04.1-desktop-amd64.iso', size: 5.9 * GB, count: 1, source: 'insight', confidence: 0.4, personal: true,
+      what: '这些大文件很久没有修改过。', why: '1.9 年没有修改过，系统镜像可以随时重新下载', effect: '移到回收站，需要时可以从回收站还原。', paths: [U + '\\Downloads\\Ubuntu-24.04.1-desktop-amd64.iso'],
+      ai: { verdict: 'delete', verdict_label: '可以删除', what: 'Ubuntu 安装镜像', reason: '可以从官网重新下载' } }),
+    P({ id: 'file:wechat', category: '已安装程序的安装包', title: 'WeChatSetup_3.9.12.17.exe', size: 186 * MB, count: 1, source: 'insight', confidence: 0.85, personal: true,
+      why: '已安装：微信', paths: [U + '\\Downloads\\WeChatSetup_3.9.12.17.exe'] }),
+    P({ id: 'file:vscode', category: '已安装程序的安装包', title: 'VSCodeUserSetup-x64-1.95.3.exe', size: 98 * MB, count: 1, source: 'insight', confidence: 0.85, personal: true,
+      why: '已安装：Microsoft Visual Studio Code (User)', paths: [U + '\\Downloads\\VSCodeUserSetup-x64-1.95.3.exe'] }),
+    P({ id: 'file:crdl', category: '没有下载完的文件', title: '电影.mkv.crdownload', size: 702 * MB, count: 1, source: 'insight', confidence: 0.9, personal: true,
+      why: '30 天前中断', paths: [U + '\\Downloads\\电影.mkv.crdownload'] }),
+    P({ id: 'file:thesis', category: '同一文件的多个版本', title: '毕业论文_最终版 - 副本.docx', size: 1.7 * MB, count: 1, source: 'insight', confidence: 0.85, personal: true,
+      why: '和「毕业论文_最终版.docx」内容完全相同', paths: [U + '\\Documents\\毕业论文_最终版 - 副本.docx'] }),
+    P({ id: 'dup:1', category: '重复文件', title: '截图 2026-03-01 101530.png 等 2 份', size: 3 * MB, count: 1, source: 'dup', confidence: 0.9, personal: true,
+      what: '2 个文件内容完全相同（逐字节比较）。', why: `保留「${U}\\Desktop\\截图 2026-03-01 101530.png」，其余 1 份移到回收站。`, keep: U + '\\Desktop\\截图 2026-03-01 101530.png',
+      paths: [U + '\\Pictures\\截图 2026-03-01 101530.png'] }),
+    P({ id: 'startup:qv', category: '开机启动', title: '快看图大师 资讯助手', action: 'disable', source: 'ai', confidence: 0.7, what: '看图软件附带的资讯弹窗程序',
+      why: 'AI 建议禁用：开机弹出广告和资讯，禁用不影响看图', effect: '开机时不再自动运行，需要时可以手动打开；随时可以在「开机与服务」里重新启用。' }),
+    P({ id: 'info:hiber', group: 'info', category: '说明', title: '休眠文件', size: 12.7 * GB, action: 'none', source: 'knowledge', location: 'C:\\hiberfil.sys',
+      what: '用于休眠和快速启动。不需要这两项时，可用管理员命令 powercfg /h off 关闭，文件会自动消失。', why: '体积较大，但不能直接删除。' }),
+    P({ id: 'info:docker', group: 'info', category: '说明', title: 'Docker Desktop 数据', size: 28.4 * GB, action: 'none', source: 'knowledge', location: U + '\\AppData\\Local\\Docker',
+      what: '镜像和容器存放在虚拟磁盘里。先用 docker system prune 清理，再在 Docker 设置中压缩磁盘。', why: '体积较大，但不能直接删除。' }),
+  ];
+  const planGroups = [{ id: 'safe', name: '放心清理' }, { id: 'review', name: '建议你看看' }, { id: 'info', name: '仅供了解' }];
+  let plan = null;
+  const summarize = () => Object.fromEntries(planGroups.map(({ id }) => {
+    const rows = plan.items.filter((i) => i.group === id);
+    const sel = rows.filter((i) => i.selected && i.status === 'pending');
+    return [id, { count: rows.length, size: rows.reduce((s, i) => s + (i.size || 0), 0), selected: sel.length, selected_size: sel.reduce((s, i) => s + (i.size || 0), 0) }];
+  }));
+  const stages = [['junk', '扫描垃圾文件'], ['space', '分析系统盘空间'], ['insights', '整理我的文件'], ['dups', '查找重复文件'], ['ai', 'AI 复核'], ['plan', '生成清理方案']]
+    .map(([id, label]) => ({ id, label }));
+
+  const F = (path, size, age, note, remove, extra) => Object.assign({ path, name: path.split('\\').pop(), size, mtime: now - age * day, note, remove,
+    category: 'other', ai: null, blocked: null }, extra || {});
+  const findings = [
+    { id: 'incomplete', kind: 'incomplete_download', kind_label: '没有下载完的文件', advice: '浏览器或下载工具中断后留下的半成品，无法直接打开。确认不再继续下载后可以删除。',
+      title: '2 个没有下载完的文件', reason: '扩展名表明下载没有完成，而且已经超过 3 天没有继续。', confidence: 0.9,
+      files: [F(U + '\\Downloads\\电影.mkv.crdownload', 702 * MB, 30, '30 天前中断', true), F(U + '\\Downloads\\年度报告.pdf.part', 12 * MB, 45, '45 天前中断', true)] },
+    { id: 'installers', kind: 'installer_installed', kind_label: '已安装程序的安装包', advice: '程序已经装好，安装包一般用不到了。需要重装时可以去官网下载最新版。',
+      title: '3 个已安装程序的安装包', reason: '安装包对应的程序在「已安装的应用」中能找到。', confidence: 0.85,
+      files: [F(U + '\\Downloads\\WeChatSetup_3.9.12.17.exe', 186 * MB, 200, '已安装：微信', true, { ai: { verdict: 'delete', verdict_label: '可以删除', what: '微信安装包', reason: '微信已安装，安装包不再需要' } }),
+        F(U + '\\Downloads\\FooSoft_Setup_2.3.0.msi', 141 * MB, 180, '已安装：FooSoft 设计工具 2.3', true),
+        F(U + '\\Downloads\\QuickView_Setup_v5.2.exe', 61 * MB, 410, '已安装：快看图大师', true)] },
+    { id: 'ver-thesis', kind: 'name_versions', kind_label: '同一文件的多个版本', advice: '名字相近、像是同一份文件的不同版本或副本。通常只需要保留最新、最完整的一份。',
+      title: '「毕业论文_最终版 - 副本」等 5 个版本', reason: '5 个文件名字相近，像是「毕业论文」的不同版本，其中 2 个与另一份内容完全相同。', confidence: 0.85,
+      files: [F(U + '\\Documents\\毕业论文_最终版 - 副本.docx', 1.7 * MB, 860, '最新的一份（修改时间最晚）', false, { ai: { verdict: 'keep', verdict_label: '建议保留', what: '论文定稿', reason: '最终版，建议保留并备份' } }),
+        F(U + '\\Documents\\毕业论文_最终版.docx', 1.7 * MB, 860, '与其他副本内容相同，保留这一份', false),
+        F(U + '\\Documents\\毕业论文_修改版.docx', 1.5 * MB, 870, '较旧的版本', false),
+        F(U + '\\Documents\\毕业论文(1).docx', 1.4 * MB, 899, '和「毕业论文.docx」内容完全相同', true),
+        F(U + '\\Documents\\毕业论文.docx', 1.4 * MB, 900, '较旧的版本', false)] },
+    { id: 'stale', kind: 'stale_large', kind_label: '很久没动过的大文件', advice: '这些大文件很久没有修改过。不需要的可以删除；珍贵的照片视频建议移到移动硬盘或网盘。',
+      title: '2 个很久没动过的大文件', reason: '大于 100 MB，且超过 365 天没有修改。', confidence: 0.4,
+      files: [F(U + '\\Downloads\\Ubuntu-24.04.1-desktop-amd64.iso', 5.9 * GB, 700, '1.9 年没有修改过，系统镜像可以随时重新下载', false),
+        F(U + '\\Videos\\2019 家庭聚会.mp4', 2.4 * GB, 2400, '6.6 年没有修改过，如果是珍贵的视频可以移到移动硬盘', false, { category: 'video' })] },
+    { id: 'empty', kind: 'empty_folders', kind_label: '空文件夹', advice: '这些文件夹里什么都没有，删除不会丢失任何内容。', title: '2 个空文件夹',
+      reason: '里面没有任何文件（包括子文件夹）。', confidence: 0.95,
+      files: [F(U + '\\Desktop\\新建文件夹', 0, 0, '空文件夹', true, { mtime: 0, category: 'folder' }), F(U + '\\Desktop\\新建文件夹 (2)', 0, 0, '空文件夹', true, { mtime: 0, category: 'folder' })] },
+  ].map((f) => Object.assign(f, { count: f.files.length, size: f.files.reduce((s, x) => s + x.size, 0) }));
+  let insights = null;
+
+  const A = (id, name, publisher, version, kind, size, installed, used, extra) => Object.assign({ id, name, publisher, version, kind,
+    kind_label: { app: '应用', runtime: '运行库', driver: '驱动', game: '游戏' }[kind], size, size_source: size ? 'estimated' : '', installed: now - installed * day,
+    last_used: used === null ? null : now - used * day, usage_known: true, location: 'C:\\Program Files\\' + name, location_exists: true, can_uninstall: true,
+    msi: false, needs_admin: true, scope: '所有用户', registry_key: id }, extra || {});
+  let apps = [
+    A('a1', 'Google Chrome', 'Google LLC', '130.0.6723.92', 'app', 640 * MB, 300, 0.2),
+    A('a2', '微信', '腾讯科技(深圳)有限公司', '3.9.12.17', 'app', 520 * MB, 240, 1),
+    A('a3', 'FooSoft 设计工具 2.3', 'FooSoft Inc.', '2.3.0', 'app', null, 180, 5),
+    A('a4', '快看图大师', 'Fastview Network Technology Co., Ltd.', '5.2.0.1180', 'app', 140 * MB, 410, 400),
+    A('a5', 'Hollow Knight', 'Team Cherry', '', 'game', 9.1 * GB, 420, 420),
+    A('a6', 'Microsoft Visual C++ 2015-2022 Redistributable (x64)', 'Microsoft Corporation', '14.40.33810.0', 'runtime', 25 * MB, 300, null, { location_exists: false, location: '' }),
+    A('a7', 'NVIDIA 图形驱动程序 566.36', 'NVIDIA Corporation', '566.36', 'driver', 1.2 * GB, 50, null),
+  ];
+  const sandbox = location.hash.includes('sandbox')
+    ? { root: 'C:\\Users\\herol\\AppData\\Local\\PanXu\\sandbox', recycle_count: 2, recycle_size: 1.4 * GB } : null;
+  const recycled = [
+    { id: 'A1B2', original: U + '\\Downloads\\WeChatSetup.exe', name: 'WeChatSetup.exe', size: 182 * MB, time: now - 600 },
+    { id: 'C3D4', original: U + '\\AppData\\Local\\OldGameStudio', name: 'OldGameStudio', size: 1.1 * GB, time: now - 300 },
+  ];
+
   const handlers = {
-    init: () => ({ version: '1.0.0', admin: false, windows: true, settings, has_key: hasKey,
-      presets: [{ id: 'deepseek', name: 'DeepSeek', base_url: 'https://api.deepseek.com', protocol: 'openai', models: ['deepseek-chat', 'deepseek-reasoner'], json_mode: true, key_url: 'x' },
+    checkup: () => job(14, () => {
+      plan = { id: 'p1', created: now, items: JSON.parse(JSON.stringify(planItems)), groups: planGroups, ai: { used: hasKey, errors: [], usage: { requests: 3 } } };
+      plan.summary = summarize();
+      insights = { findings, stats: { files: 18233, bytes: 96 * GB, cloud_skipped: 12, seconds: 3, roots: [] }, roots: [U + '\\Desktop', U + '\\Documents', U + '\\Downloads', 'D:\\资料'], time: now };
+      return plan;
+    }, (f) => {
+      const step = Math.min(6, 1 + Math.floor(f * 6));
+      return { stage: stages[step - 1].id, stage_label: stages[step - 1].label, step, steps: 6, stages, detail: [U + '\\AppData\\Local\\Temp', 'C:\\Program Files', U + '\\Documents', '比较文件内容', '空间分析', ''][step - 1] };
+    }),
+    plan: () => { if (plan) plan.summary = summarize(); return plan; },
+    plan_preview: ({ item_ids }) => {
+      const out = { delete: { count: 0, size: 0, titles: [] }, recycle: { count: 0, size: 0, titles: [] }, disable: { count: 0, titles: [] }, skipped: [] };
+      for (const it of plan.items) {
+        if (!item_ids.includes(it.id)) continue;
+        const slot = out[it.action]; slot.count += 1; slot.titles.push(it.title); if ('size' in slot) slot.size += it.size || 0;
+      }
+      return out;
+    },
+    plan_execute: ({ item_ids }) => job(6, () => {
+      let del = 0, rec = 0, recN = 0; const dis = [];
+      for (const it of plan.items) {
+        if (!item_ids.includes(it.id)) continue;
+        it.status = 'done'; it.result = '已完成';
+        if (it.action === 'delete') del += it.size; else if (it.action === 'recycle') { rec += it.size; recN += 1; } else dis.push(it.title);
+      }
+      plan.summary = summarize();
+      return { deleted: { count: 9000, bytes: del }, recycled: { count: recN, bytes: rec }, disabled: dis, failures: [], items: {}, summary: plan.summary };
+    }, (f) => ({ stage: 'junk', detail: '用户临时文件', freed: f * 4 * GB })),
+    insights_roots: () => [U + '\\Desktop', U + '\\Documents', U + '\\Downloads'],
+    insights_scan: () => job(6, () => { insights = { findings, stats: { files: 18233, bytes: 96 * GB, cloud_skipped: 0, seconds: 3, roots: [] }, roots: [U + '\\Desktop', U + '\\Documents', U + '\\Downloads'], time: now }; return insights; },
+      (f) => ({ files: Math.round(f * 18233), current: U + '\\Documents' })),
+    insights_result: () => insights,
+    insights_delete: ({ paths_to_delete }) => job(2, { done: paths_to_delete, freed: 1 * GB, failed: 0, failures: [], mode: 'recycle' }),
+    ai_review_preview: () => ({ files: findings.filter((f) => f.kind !== 'empty_folders').flatMap((f) => f.files).map((x) => ({ path: x.path, name: x.name, size: x.size })),
+      content_files: [{ path: U + '\\Documents\\毕业论文.docx', name: '毕业论文.docx' }, { path: U + '\\Documents\\毕业论文(1).docx', name: '毕业论文(1).docx' }],
+      content_allowed: !!settings.ai.send_file_content, anonymize: true }),
+    ai_review_files: () => job(5, { files: {}, usage: { requests: 1 }, errors: [] }),
+    apps_list: () => ({ apps, admin: true, usage_known: true }),
+    app_measure: ({ app_id }) => ({ id: app_id, size: 2.3 * GB, files: 812 }),
+    app_uninstall: ({ app_id }) => { apps = apps.filter((a) => a.id !== app_id); return { started: true, simulated: !!sandbox }; },
+    ai_ask: ({ messages }) => job(4, { answer: messages.length > 1 ? '可以。删除后下次打开相关程序时会慢一些，因为缓存要重新生成。'
+      : '可以删除。\n\n• 这是什么：Unity 编辑器为导入的资源生成的缓存。\n• 能不能删：可以，Unity 会在打开项目时重新生成。\n• 删了会怎样：第一次打开项目会比较慢。\n• 在哪里操作：首页的清理方案里勾选这一项，或在「空间分析」中选中它。',
+    cached: false, usage: { requests: 1 }, model: settings.ai.model }),
+    sandbox_recycle_list: () => recycled,
+    sandbox_restore: ({ item_id }) => { const i = recycled.findIndex((r) => r.id === item_id); const [r] = recycled.splice(i, 1); sandbox.recycle_count -= 1; return r.original; },
+    sandbox_reset: () => sandbox,
+    drives: () => handlers.init().drives,
+    init: () => ({ version: '1.1.0', admin: !!sandbox, windows: true, settings, has_key: hasKey, sandbox,
+      plan_groups: planGroups, checkup_stages: stages,
+      presets: [{ id: 'deepseek', name: 'DeepSeek', base_url: 'https://api.deepseek.com', protocol: 'openai', models: ['deepseek-flash', 'deepseek-v4-pro'], json_mode: true, thinking_toggle: true, key_url: 'x' },
         { id: 'kimi', name: 'Kimi（月之暗面）', base_url: 'https://api.moonshot.cn/v1', protocol: 'openai', models: [], json_mode: true },
         { id: 'ollama', name: '本地 Ollama', base_url: 'http://127.0.0.1:11434/v1', protocol: 'openai', models: [], json_mode: true, needs_key: false }],
       drives: [{ root: 'C:\\', label: '', fstype: 'NTFS', total: 476 * GB, used: 389 * GB, free: 87 * GB, system: true, removable: false },
@@ -209,7 +356,12 @@
     startup_set: ({ item_id, enabled }) => { const it = startup.find((x) => x.id === item_id); it.enabled = enabled; return it; },
     services_list: () => services,
     service_set: ({ name, start_type }) => ({ name, start_type, stopped: false }),
-    ai_explain: ({ kind }) => job(4, { items: kind === 'startup' ? {
+    ai_explain: ({ kind }) => job(4, { items: kind === 'apps' ? {
+      a4: { what: '看图软件，附带资讯弹窗', suggestion: 'uninstall', reason: '常驻弹出广告资讯，可换用系统自带的照片应用' },
+      a5: { what: '独立游戏', suggestion: 'optional', reason: '一年多没有运行，不玩了可以卸载，存档在云端' },
+      a6: { what: 'VC++ 运行库', suggestion: 'keep', reason: '很多程序依赖它，卸载后这些程序无法启动' },
+      a1: { what: '浏览器', suggestion: 'keep', reason: '常用程序' },
+    } : kind === 'startup' ? {
       'hkcu_run:WeChat': { what: '微信开机自启', suggestion: 'optional', reason: '禁用后需手动打开微信，不影响收消息' },
       'hkcu_run:Steam': { what: 'Steam 游戏平台', suggestion: 'optional', reason: '禁用后需要时手动打开，开机更快' },
       'hklm_run:AdobeAAMUpdater': { what: 'Adobe 更新检查程序', suggestion: 'disable', reason: '只用于检查更新，可在 Adobe 应用内手动更新' },
@@ -218,7 +370,10 @@
     } : { AdobeARMservice: { what: 'Adobe 自动更新服务', suggestion: 'disable', reason: '设为手动后仍可在应用内更新' } }, usage: {}, errors: [] }),
     history: () => history,
     revert: () => true,
-    settings_save: ({ changes }) => { Object.assign(settings, changes, { ai: Object.assign(settings.ai, changes.ai || {}) }); return { settings, has_key: hasKey }; },
+    settings_save: ({ changes }) => {
+      for (const [k, v] of Object.entries(changes)) settings[k] = v && typeof v === 'object' && !Array.isArray(v) ? Object.assign(settings[k] || {}, v) : v;
+      return { settings, has_key: hasKey };
+    },
     set_api_key: ({ key }) => { hasKey = !!key; return hasKey; },
     has_api_key: () => hasKey,
     ai_models: () => ['deepseek-chat', 'deepseek-reasoner'],
