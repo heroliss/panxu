@@ -102,10 +102,11 @@ def decision_note(item: dict) -> list[str]:
     if item['blocked']:
         return ['没有勾选：' + item['blocked']]
     if item['selected']:
-        return ['自动勾选：' + ('默认开启的内置规则' if item['source'] == 'rule' else 'AI 把握很大，而且位于应用数据目录')]
+        return ['自动勾选：' + ('默认开启的内置规则' if item['source'] == 'rule'
+                              else 'AI 把握很大，位于应用数据目录，而且不属于仍在使用的程序')]
     if item.get('personal'):
         return ['没有自动勾选：你的个人文件只由你决定']
-    return ['没有自动勾选：只有默认规则和 AI 把握很大的应用数据会自动勾选']
+    return ['没有自动勾选：只有默认规则，以及 AI 把握很大的残留数据会自动勾选']
 
 
 class PlanBuilder:
@@ -173,16 +174,22 @@ class PlanBuilder:
                 'confidence': 1.0 if rule.default else 0.7, 'selected': safe, 'blocked': blocked,
                 'locations': row.get('locations', [])[:5], 'score': score, 'basis': basis})
 
-    def add_ai_dirs(self, suggestions: list[dict], env: dict):
+    def add_ai_dirs(self, suggestions: list[dict], env: dict, analyst=None):
         app_bases = [env.get(k) for k in ('LOCALAPPDATA', 'APPDATA', 'LOCALLOW', 'ProgramData') if env.get(k)]
         for s in sorted(suggestions, key=lambda r: -r['size']):
             if s.get('source') == 'none' or s.get('expanded') or s['verdict'] not in ('clean', 'review'):
                 continue
             in_app_data = any(paths.is_within(s['path'], b) for b in app_bases)
             confidence = float(s.get('confidence') or 0)
-            sure = s['verdict'] == 'clean' and confidence >= AUTO_AI_CONFIDENCE and in_app_data
             score = round(confidence * 100) if s['verdict'] == 'clean' else min(55, round(confidence * 100))
             basis = [f'AI：{s.get("verdict_label", "")}（把握 {round(confidence * 100)}%）' + ('，来自缓存' if s.get('source') == 'cache' else '')]
+            # a folder of a program that is still installed usually also holds its settings, licence or
+            # templates next to the cache: the model judges by the big files, so it is never pre-ticked
+            owner = analyst.installed_app(s['path']) if analyst is not None else None
+            if owner:
+                score = min(score, 70)
+                basis.append(f'属于仍在使用的程序「{owner}」：里面可能还有设置或许可证')
+            sure = s['verdict'] == 'clean' and confidence >= AUTO_AI_CONFIDENCE and in_app_data and not owner
             if not in_app_data:
                 basis.append('不在应用数据目录：只能由你决定')
             item = self.add({
@@ -436,7 +443,7 @@ def run(backend, job, options: dict | None = None) -> dict:
     builder = PlanBuilder(policy, backend.knowledge)
     builder.add_junk(junk_rows)
     if backend.scan is not None and backend.scan.complete:
-        builder.add_ai_dirs(list(backend.ai_results.values()), env)
+        builder.add_ai_dirs(list(backend.ai_results.values()), env, backend.analyst)
         analysed = {nid for nid, s in backend.ai_results.items() if s.get('source') != 'none'}
         builder.add_heuristics(backend.scan, backend.analyst, env, analysed)
     builder.add_insights(findings, file_ai)

@@ -25,9 +25,10 @@ class ScriptedModel:
         out = []
         for row in payload:
             if 'subdirs' in row:      # folders: confident "clean" for caches, otherwise "review"
-                cache = any(w in row['path'] for w in ('Unity', 'ms-playwright'))
+                # confident "clean" for caches -- and, wrongly, for FooSoft, a program that is still installed
+                cache = any(w in row['path'] for w in ('Unity', 'ms-playwright', 'FooSoft'))
                 out.append({'id': row['id'], 'verdict': 'clean' if cache else 'review', 'app': row['path'].split('\\')[-1],
-                            'reason': '缓存' if cache else '不确定', 'effect': '', 'confidence': 0.9 if cache else 0.5})
+                            'reason': '缓存' if cache else '不确定', 'effect': '', 'confidence': 0.95 if cache else 0.5})
             elif 'group' in row:      # 我的文件
                 out.append({'id': row['id'], 'verdict': 'delete', 'what': '文件', 'reason': '测试'})
             else:                     # startup items: the model suggests disabling everything
@@ -124,6 +125,23 @@ class CheckupTest(TempDirTest):
                 self.assertNotIn(paths.key(item['keep']), offered)
         invoice = [p for p in offered if os.path.basename(p).startswith('发票')]
         self.assertEqual(len(invoice), 1, 'two identical invoices: only one may ever be offered')
+
+    def test_folders_of_installed_programs_are_never_pre_ticked(self):
+        plan = self.checkup()
+        foo = [i for i in plan['items'] if i['kind'] == 'paths' and i['source'] == 'ai' and 'FooSoft' in i['paths'][0]]
+        self.assertTrue(foo, 'the model judged the FooSoft folders')
+        for item in foo:
+            self.assertFalse(item['selected'], item['paths'][0])
+            self.assertEqual(item['group'], 'review')
+            self.assertLessEqual(item['score'], 70)
+            self.assertTrue(any('仍在使用的程序' in line for line in item['basis']), item['basis'])
+        unity = next(i for i in plan['items'] if i['kind'] == 'paths' and i['source'] == 'ai' and i['paths'][0].endswith('Unity'))
+        self.assertTrue(unity['selected'], 'a leftover cache with no installed program is still pre-ticked')
+
+    def test_the_prompt_asks_to_look_inside_installed_programs(self):
+        from panxu.analyst import SPACE_SYSTEM_PROMPT
+        self.assertIn('installed_app', SPACE_SYSTEM_PROMPT)
+        self.assertIn('descend', SPACE_SYSTEM_PROMPT.split('10.')[1])
 
     def test_model_cannot_put_windows_components_into_the_plan(self):
         plan = self.checkup()
