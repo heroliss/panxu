@@ -22,7 +22,8 @@ def wait(bridge, job_id, timeout=20):
 class BridgeTest(TempDirTest):
     def setUp(self):
         super().setUp()
-        self.bridge = Bridge(Backend(os.path.join(self.tmp, 'data')))
+        # bases inside the temp dir: on Windows the temp dir itself lies under the real %LOCALAPPDATA%
+        self.bridge = Bridge(Backend(os.path.join(self.tmp, 'data'), env=self.posix_env()))
         self.backend = self.bridge._backend
 
     def test_dispatch_and_errors(self):

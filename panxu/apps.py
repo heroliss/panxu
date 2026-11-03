@@ -29,6 +29,7 @@ UNINSTALL_KEYS = [
     (HKCU, r'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall', '当前用户'),
 ]
 _RUNTIME = re.compile(r'redistributable|runtime|\.net |\.net$|sdk\b|运行库|webview2|directx|visual c\+\+|vc\+\+|framework', re.I)
+KIND_LABELS = {'app': '应用', 'runtime': '运行库', 'driver': '驱动', 'game': '游戏'}
 _DRIVER = re.compile(r'driver|驱动|chipset|芯片组', re.I)
 # generic folder names that must never be matched to a program by name alone
 _GENERIC = {'cache', 'caches', 'temp', 'tmp', 'logs', 'log', 'data', 'config', 'common', 'shared', 'microsoft',
@@ -93,6 +94,7 @@ class AppManager:
                     'publisher': str(values.get('Publisher') or ''), 'installed': _date(values.get('InstallDate')),
                     'location': location, 'location_exists': exists, 'size': size,
                     'size_source': 'estimated' if size is not None else '', 'scope': scope, 'kind': kind,
+                    'kind_label': KIND_LABELS[kind],
                     'can_uninstall': bool(uninstall), 'msi': bool(values.get('WindowsInstaller')),
                     'last_used': last_used, 'usage_known': prefetch is not None,
                     'needs_admin': hive == HKLM and not self.admin, 'registry_key': sub,
