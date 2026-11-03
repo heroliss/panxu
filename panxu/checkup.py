@@ -39,6 +39,7 @@ STAGES = [('junk', '扫描垃圾文件'), ('space', '分析系统盘空间'), ('
           ('dups', '查找重复文件'), ('ai', 'AI 复核'), ('plan', '生成清理方案')]
 
 AUTO_AI_CONFIDENCE = 0.8
+ACTIVE_DAYS = 7             # folders changed more recently are left for the user
 LEFTOVER_MIN = 500 * 1024 * 1024
 OLD_VERSION_MIN = 200 * 1024 * 1024
 YEAR = 365 * 86400
@@ -103,7 +104,7 @@ def decision_note(item: dict) -> list[str]:
         return ['没有勾选：' + item['blocked']]
     if item['selected']:
         return ['自动勾选：' + ('默认开启的内置规则' if item['source'] == 'rule'
-                              else 'AI 把握很大，位于应用数据目录，而且不属于仍在使用的程序')]
+                              else 'AI 把握很大，位于应用数据目录，不属于仍在使用的程序，最近也没有改动')]
     if item.get('personal'):
         return ['没有自动勾选：你的个人文件只由你决定']
     return ['没有自动勾选：只有默认规则，以及 AI 把握很大的残留数据会自动勾选']
@@ -189,7 +190,12 @@ class PlanBuilder:
             if owner:
                 score = min(score, 70)
                 basis.append(f'属于仍在使用的程序「{owner}」：里面可能还有设置或许可证')
-            sure = s['verdict'] == 'clean' and confidence >= AUTO_AI_CONFIDENCE and in_app_data and not owner
+            # changed in the last days: some program is still writing there
+            active = bool(s.get('mtime')) and self.now - s['mtime'] < ACTIVE_DAYS * 86400
+            if active and not owner:
+                score = min(score, 75)
+                basis.append(f'最近 {ACTIVE_DAYS} 天内还有改动：可能还有程序在用')
+            sure = s['verdict'] == 'clean' and confidence >= AUTO_AI_CONFIDENCE and in_app_data and not owner and not active
             if not in_app_data:
                 basis.append('不在应用数据目录：只能由你决定')
             item = self.add({

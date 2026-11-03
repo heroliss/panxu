@@ -138,6 +138,21 @@ class CheckupTest(TempDirTest):
         unity = next(i for i in plan['items'] if i['kind'] == 'paths' and i['source'] == 'ai' and i['paths'][0].endswith('Unity'))
         self.assertTrue(unity['selected'], 'a leftover cache with no installed program is still pre-ticked')
 
+    def test_recently_changed_folders_are_never_pre_ticked(self):
+        from panxu import checkup
+        builder = checkup.PlanBuilder(paths.ProtectionPolicy(self.backend.env, allowed_roots=[self.sb.root],
+                                                             drive_roots=self.sb.drive_roots))
+        local = self.backend.env['LOCALAPPDATA']
+        now = time.time()
+        rows = [{'path': os.path.join(local, name), 'size': 10, 'files': 1, 'verdict': 'clean', 'verdict_label': '可清理',
+                 'confidence': 0.95, 'source': 'ai', 'mtime': mtime, 'reason': '缓存'}
+                for name, mtime in (('Busy', now - 3600), ('Quiet', now - 90 * 86400))]
+        builder.add_ai_dirs(rows, self.backend.env)
+        busy, quiet = builder.items
+        self.assertFalse(busy['selected'])
+        self.assertTrue(any('最近' in b for b in busy['basis']))
+        self.assertTrue(quiet['selected'])
+
     def test_the_prompt_asks_to_look_inside_installed_programs(self):
         from panxu.analyst import SPACE_SYSTEM_PROMPT
         self.assertIn('installed_app', SPACE_SYSTEM_PROMPT)

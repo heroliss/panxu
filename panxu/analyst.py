@@ -427,7 +427,7 @@ class Analyst:
         results[node.id] = self._row(scan, node, verdict, source)
 
     def _row(self, scan, node, verdict: dict, source: str, expanded: bool = False) -> dict:
-        return {'node_id': node.id, 'path': scan.path_of(node), 'size': node.size, 'files': node.files,
+        return {'node_id': node.id, 'path': scan.path_of(node), 'size': node.size, 'files': node.files, 'mtime': node.mtime,
                 'verdict': verdict['verdict'], 'verdict_label': VERDICT_LABELS[verdict['verdict']],
                 'app': verdict.get('app', ''), 'reason': verdict.get('reason', ''), 'effect': verdict.get('effect', ''),
                 'confidence': verdict.get('confidence', 0), 'source': source, 'expanded': expanded}
