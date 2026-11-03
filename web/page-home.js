@@ -183,7 +183,7 @@
       'aria-label': '选择 ' + it.title, onclick: (e) => e.stopPropagation(),
       onchange: (e) => { e.target.checked ? state.selected.add(it.id) : state.selected.delete(it.id); draw(true); } });
     const [srcLabel, srcKind] = SOURCE[it.source] || [it.source, ''];
-    const flags = h('div.flags');
+    const flags = h('span.inline-tags');
     if (it.status === 'done') flags.appendChild(PX.tag('已完成', 'good', 'check'));
     else if (it.status !== 'pending') flags.appendChild(PX.tag(it.result || '未完成', 'warn'));
     else if (it.blocked) flags.appendChild(PX.tag(it.blocked, 'warn', 'lock'));
@@ -192,9 +192,8 @@
       onclick: () => { state.open.has(it.id) ? state.open.delete(it.id) : state.open.add(it.id); draw(true); } },
     it.group === 'info' ? PX.icon('info', 'ic') : box,
     h('div.cell-main',
-      h('div.name', it.title, ' ', PX.tag(srcLabel, srcKind)),
+      h('div.name-line', h('span.name-text', it.title), PX.tag(srcLabel, srcKind), flags),
       h('div.why', it.why || it.what)),
-    flags,
     PX.score(it.score, (it.basis || []).join('\n')),
     h('div.size', it.size ? fmt.bytes(it.size) : ''),
     h('button.btn.quiet.small', { type: 'button', title: '问 AI', onclick: (e) => { e.stopPropagation(); PX.ask({ type: 'plan_item', id: it.id }, it.title); } },

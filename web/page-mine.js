@@ -107,19 +107,19 @@
   function fileRow(list, f, x) {
     const box = h('input', { type: 'checkbox', checked: state.selected.has(x.path), disabled: !!x.blocked, 'aria-label': '选择 ' + x.name,
       onchange: (e) => { e.target.checked ? state.selected.add(x.path) : state.selected.delete(x.path); draw(true); } });
-    const tags = h('div.flags');
+    const tags = h('span.inline-tags');
     if (f.kind === 'name_versions') {
       if (x.note.startsWith('最新')) tags.appendChild(PX.tag('最新', 'good'));
       else if (x.remove) tags.appendChild(PX.tag('内容完全相同', 'info'));
-    } else if (x.remove) tags.appendChild(PX.tag('可以删除', 'good'));
+    }
     if (x.ai) tags.appendChild(PX.tag('AI：' + x.ai.verdict_label, VERDICT[x.ai.verdict] || '', 'spark'));
     if (x.blocked) tags.appendChild(PX.tag(x.blocked, 'warn', 'lock'));
     const folder = x.path.slice(0, x.path.length - x.name.length).replace(/[\\/]$/, '');
     list.appendChild(h('div.row.mine-row', box,
-      h('div.cell-main', h('div.name', { title: x.path }, x.name), h('div.sub', { title: folder }, fmt.place(folder, PX.state.init.home)),
+      h('div.cell-main', h('div.name-line', h('span.name-text', { title: x.path }, x.name), tags),
+        h('div.sub', { title: folder }, fmt.place(folder, PX.state.init.home)),
         x.note ? h('div.why', x.note) : null,
         x.ai ? h('div.ai-note', h('span', x.ai.what), h('span.muted', x.ai.reason)) : null),
-      tags,
       PX.score(x.score, x.note),
       h('div.size', x.size ? fmt.bytes(x.size) : ''),
       h('div.small.muted', x.mtime ? fmt.date(x.mtime) : ''),
