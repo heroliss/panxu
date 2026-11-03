@@ -15,7 +15,7 @@ window.PanxuListNavigation = (() => {
     if(focused&&focused!==intent.focus&&focused!==document.body&&focused!==document.documentElement&&focused.isConnected)return false;
     pending.delete(intent.root);target.setAttribute('tabindex','-1');
     if(label){target.setAttribute('aria-label',label);if(!target.getAttribute?.('role'))target.setAttribute('role','group');}
-    target.focus?.({preventScroll:true});target.scrollIntoView?.({behavior:'instant',block:'start',inline:'nearest'});return true;
+    target.focus?.({preventScroll:true});const scroller=target.closest?.('#workspace'),header=scroller?.querySelector?.(':scope > .workspace-page-header');if(!window.PanxuWorkspaceHeader?.reveal(header,target))target.scrollIntoView?.({behavior:'instant',block:'start',inline:'nearest'});return true;
   }
   return {capture,reveal};
 })();

@@ -1,6 +1,6 @@
 {
   "product": "盘序",
-  "version": "0.28.0",
+  "version": "0.29.0",
   "mode": "simulation",
   "root": "E:\\GPT-Projects\\win11-disk-assistant",
   "safety": "This build has NO real executor. All apply/undo/reset operations modify only SQLite simulation records. Never unlink/move/kill/control services/edit startup outside app-owned data.",
@@ -148,7 +148,7 @@
   "privacy": "No user file body read for LLM. Metadata only; send_paths false by default. Independent duplicate scan reads candidate bytes locally for SHA-256 but never sends them to a model. No real provider key expected in tests. LLM cannot execute or approve plans.",
   "agent_task": "statuses ready/investigating/awaiting_review/executing/needs_input/needs_model/paused/budget_exhausted/error/completed. Configurable per-turn model_requests4..32 and tool_calls6..128 (defaults6/12), internal checkpoints auto-continue with meaningful progress under a durable whole-session allowance. Soft remaining-resource guidance retains normal tools until the hard ceiling; checkpoints preserve work for continuation. Output-error recovery alone narrows tools to durable evidence/conclusion. Model record_advice/propose_plan schemas cap30 items per batch, inspect_items50 IDs; manual500 remains separate and complex specialist options remain6 groups. High-rating initialization is an editable draft, never approval; final selection determines targets. Protected/out-of-scope/unsupported identities and stale plans cannot bypass factual checks. Unknown score is not3 or permission. Tool text is untrusted.",
   "action_runtime": "simulation backend only. Per-item durable intent plus atomic overlay/receipt, status succeeded/failed/partial/cancelled/unverified. Recovery verifies receipts without blind replay. User undo is separately visible as current_state=undone. Actual reclaimed bytes always zero.",
-  "release_status": "verified_portable_native_scoped_acceptance_passed",
+  "release_status": "source_review_in_progress_final_delivery_pending",
   "installed_release": "0.28.0",
   "review_selection": "Version0.18 removes score-selection panel and per-score buttons from review/myfiles. Exact rating plus one tri-state select-current-filter control uses shared view,parent,query,rating,scope,risk,kind filters across complete rows. Tree is current parent level, navigation-only not selectable. Fetch cursor pages<=500 serially, candidate cap5000 and total logical-rule cap5000; incomplete/oversize/version-error collection leaves old selection atomically unchanged. Tri-state derives from complete candidates and nearest rules; selected roots with child exceptions remain checked+mixed so next click can deselect. Preserve outside-filter explicit rules and child exclusions. Plans freeze<=500 physical targets; remaining draft retained and stale catalog requires recheck. cleanup_auto_select_four lives in Settings cleanup preferences, existing UI-pref API auto-saves/rolls back error independently of model/text settings; eligible5 preselect stays, only new analysis initial drafts change. Current manual choices untouched. Explicit confirmation and simulation-only boundaries unchanged.",
   "dark_surface_refinement": "Version0.17.1 only dims dark canvas/card/soft/input/sidebar/interaction and rating/impact background tokens; canvas#090e16,panel#151f2d,soft#1d2b3d. Preserve surface separation, ink/muted/rating foregrounds, typography/layout/text-selection, scoring/action/model/backend semantics and simulation-only boundaries; light/non-dark declarations verified identical to0.17 baseline. Strict Python590,Node165,7JSsyntax passed, detector empty. Actual source dark1280x720/light960x680 no horizontal overflow, sampled explanation/label/rating minimum contrast8.01/5.21. Final EXE scoped native dark review/myfiles inspected and recorded, no UI LLM request or processing action. Original four durable files restored byte-for-byte; normal launch verified with 8 tasks,12 prior advice,18 model requests and identical model settings, not an all-module native claim; version0.17 evidence remains historical.",
@@ -344,5 +344,29 @@
     "facts": "Service runtime and startup mode are independent. Unknown/legacy status does not imply enabled/disabled. UI shows actual state, recommendation, stale/conflict/unknown explanation.",
     "selection": "Enable/no-op/scope-mismatched advice is excluded from automatic and implicit cleanup. A separate valid direct_clean intent or exact user action may override model direction after actual-action validation and confirmation.",
     "execution": "No new enable/start/configuration executor; all existing actions remain simulated."
+  },
+  "workspace_header": {
+    "version": "0.29",
+    "status": "candidate_static_http_passed_native_archive_profile_pending",
+    "structure": "Page identity and concise context, category navigation, view/filter controls, and page actions use distinct named slots in a shared sticky header inside the actual #workspace scroll container. One visible h1 and real control nodes; no duplicated proxies, new request ownership or action authority.",
+    "background": "Initial background navigation opens startup inventory through the existing guarded read-only query, avoiding a duplicate category chooser. Inventory keeps startup/process/service/software identity and endpoints while rendering four coherent categories. Existing-advice/all view, score/search/protection filters, refresh and analysis options retain their handlers and state. Task-scoped results retain their goal and return-to-inventory path; they are not asserted to show the complete inventory.",
+    "files": "Existing-advice/all switch is in shared header navigation; the current-directory address control and its refresh occupy the header controls slot in all-files mode. Directory search/rating/sort and heavy list/progress/distribution content are not all pinned. Header address listeners are cleaned up and reattached with the workspace lifecycle.",
+    "tools": "Catalog view buttons occupy navigation, own/new-tool buttons actions, and search/category/rating/refresh controls the header controls slot. Automatic checks, selections, frozen confirmations and result updates keep their existing owners; tool detail/loading/error headings reuse the shared factory.",
+    "lifecycle": "Header resize observation is disposed on replacement; measured height supports scroll padding and explicit list reveal so controls and rows can remain reachable. Existing navigation revision and asynchronous cancellation guards remain in force. Analysis settings close on Escape or focus leaving their disclosure.",
+    "boundaries": "Presentation/navigation only; no change to model budget, backend inference, selection meaning, confirmation, privacy, executor or simulation-only actual_reclaimed_bytes0. Source browser observation does not substitute for current final EXE/native/archive/profile acceptance.",
+    "verification": {
+      "strict_python_tests": 1036,
+      "node_tests": 514,
+      "js_syntax_files": 17,
+      "design_detector_findings": 0,
+      "local_acceptance_passed": true,
+      "source_http_checks_passed": 46,
+      "candidate_exe_http_checks_passed": 49,
+      "candidate_exe_sha256": "b1f7dc89c69323e043824f44b064f49e53845184fde97fd515e367de96737dc1",
+      "source_browser_scope": "Dark1280x720/light1100x720/dark960x680 samples: no horizontal main overflow, sticky header, addressCtrlL/Escape, size-desc page/back keeps file120 selected; first list row12px below header. Settings disclosure not clipped and closes onEscape/focusout.",
+      "native_gui": "pending:Windowslocked",
+      "final_archive": "pending",
+      "profile_restore": "pending"
+    }
   }
 }

@@ -29,7 +29,7 @@ window.PanxuUserTools = (() => {
     if(!id){await loadList(t);return t;}
     await loadTool(t,id,{edit:ref.edit,version:ref.version});return t;
   }
-  function heading(t,title,description){const h=node('header','page-heading');add(h,node('h1','',title),description?node('p','',description):null);t.root.append(h);}
+  function heading(t,title,description){if(window.PanxuWorkspaceHeader){t.root.append(window.PanxuWorkspaceHeader.create(title,description));return;}const h=node('header','page-heading');add(h,node('h1','',title),description?node('p','',description):null);t.root.append(h);}
   function back(t,label,run){if(t.helpers.setContextBack)t.helpers.setContextBack(label,run);else t.root.append(button(label,run,'plain-button user-tool-back'));}
   function error(t,root=t.root){if(!t.error)return;const p=node('p','field-error',t.error);p.setAttribute('role','alert');root.append(p);}
   function busy(t,label){t.root.replaceChildren();heading(t,label,'正在读取…');t.root.setAttribute('aria-busy','true');}

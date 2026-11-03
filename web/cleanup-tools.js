@@ -14,7 +14,7 @@ window.PanxuCleanupTools = (() => {
   function pending(value) {try {if (value === null) sessionStorage.removeItem(storedKey); else if (value) sessionStorage.setItem(storedKey, String(value)); else return sessionStorage.getItem(storedKey);} catch (_) {} return null;}
   function clearPending(id) {if (pending() === id) pending(null);}
   function unmount() {if(mounted){cancelInspection(mounted);cancelCatalog(mounted);clearTimeout(mounted.progressTimer);mounted.dialog?.close?.();}mounted = null; sequence++;}
-  function heading(root, title, description) {const h = node('header', 'page-heading'); append(h, node('h1', '', title), description ? node('p', '', description) : null); root.append(h);}
+  function heading(root, title, description) {const shared=window.PanxuWorkspaceHeader;const h=shared?.create?shared.create(title,description):node('header','page-heading');if(!shared?.create)append(h,node('h1','',title),description?node('p','',description):null);root.append(h);return h;}
   function message(t, text, error = false) {const p = node('p', error ? 'field-error cleanup-message' : 'field-help cleanup-message', text); p.setAttribute('role', error ? 'alert' : 'status'); t.root.append(p); return p;}
   function sourceLabel(t){return t.context.returnLabel || '返回清单';}
   function controls(t, label, run) {if (typeof t.context.setContextBack==='function') {t.context.setContextBack(label,run); return;} const nav = node('div', 'cleanup-navigation'); nav.append(button(label, run, 'plain-button')); t.root.append(nav);}
@@ -107,16 +107,17 @@ window.PanxuCleanupTools = (() => {
   }
   function renderCatalog(t){
     if(!alive(t))return;t.root.replaceChildren();t.rowViews=new Map();
-    heading(t.root,'清理工具','先看本机检查与内置建议，勾选后清理；需要综合判断时再交给 AI 分析。');
+    const header=heading(t.root,'清理工具','先看本机检查与内置建议，勾选后清理；需要综合判断时再交给 AI 分析。'),shared=window.PanxuWorkspaceHeader,integrated=Boolean(shared?.create&&shared?.set);
     t.context.renderAnalysisProgress?.(t.root);
     const top=node('div','cleanup-catalog-top'),tabs=node('div','cleanup-view-tabs');tabs.setAttribute('role','group');tabs.setAttribute('aria-label','工具视图');
     for(const [id,label] of [['recommended','建议工具'],['all','全部工具']]){const b=button(label,()=>{listing.view=id;renderCatalog(t);},'button small');b.setAttribute('aria-pressed',String(listing.view===id));tabs.append(b);}
-    top.append(tabs);if(t.context.onOpenUserTools){const own=node('div','cleanup-own-tools');append(own,button('我的工具',()=>t.context.onOpenUserTools({}),'plain-button'),button('新建工具',()=>t.context.onOpenUserTools({new:true}),'plain-button'));top.append(own);}t.root.append(top);
+    if(integrated){shared.switches?.(tabs,{kind:'view',label:'工具视图'});shared.set(header,'navigation',tabs);}else top.append(tabs);
+    if(t.context.onOpenUserTools){const own=node('div','cleanup-own-tools');append(own,button('我的工具',()=>t.context.onOpenUserTools({}),'plain-button'),button('新建工具',()=>t.context.onOpenUserTools({new:true}),'plain-button'));if(integrated)shared.set(header,'actions',own);else top.append(own);}if(!integrated)t.root.append(top);
     const toolbar=node('div','cleanup-toolbar cleanup-catalog-filters'),search=node('input');search.type='search';search.value=listing.query;search.placeholder='搜索工具、用途';search.setAttribute('aria-label','搜索清理工具');
     search.addEventListener('input',()=>{listing.query=search.value;clearTimeout(t.searchTimer);t.searchTimer=setTimeout(()=>{if(alive(t)&&t.catalogVisible)renderCatalogRows(t);},180);});
     const category=node('select');category.setAttribute('aria-label','工具分类');for(const value of [{id:'all',title:'全部分类'},...toolGroups(listing.data)]){const option=node('option','',value.title||value.id);option.value=value.id;category.append(option);}category.value=listing.category;category.addEventListener('change',()=>{listing.category=category.value;renderCatalogRows(t);});
     const scores=node('select');scores.setAttribute('aria-label','工具评分');for(const [id,label]of [['all','全部评分'],['5','建议清理'],['4','倾向清理'],['3','待你决定'],['2','倾向保留'],['1','建议保留'],['unrated','未评分']]){const option=node('option','',label);option.value=id;scores.append(option);}scores.value=listing.rating;scores.addEventListener('change',()=>{listing.rating=scores.value;renderCatalogRows(t);});
-    append(toolbar,search,category,scores,button('刷新检查',()=>startCatalogChecks(t,true),'button small'));t.root.append(toolbar);
+    append(toolbar,search,category,scores,button('刷新检查',()=>startCatalogChecks(t,true),'button small'));if(integrated)shared.set(header,'controls',toolbar);else t.root.append(toolbar);
     t.catalogProgress=node('p','field-help cleanup-catalog-progress');t.catalogProgress.setAttribute('role','status');t.root.append(t.catalogProgress);
     const resumable=pending();if(resumable)t.root.append(button('继续上次专项操作',()=>{t.catalogVisible=false;loadPlan(t,resumable);},'button cleanup-resume'));
     t.catalogRows=node('div','cleanup-tool-groups cleanup-assessment-groups');t.root.append(t.catalogRows);t.catalogFooter=node('footer','cleanup-catalog-footer');t.footerUI=null;t.root.append(t.catalogFooter);renderCatalogRows(t);updateCatalogProgress(t);

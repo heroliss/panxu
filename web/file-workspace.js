@@ -6,14 +6,14 @@ window.PanxuFileWorkspace = (() => {
   const node=(tag,cls='',text)=>{const n=document.createElement(tag);n.className=cls;if(text!==undefined)n.textContent=String(text);return n;};
   function button(label,run,cls='button'){const b=node('button',cls,label);b.type='button';b.addEventListener('click',run);return b;}
   const active=t=>mounted===t&&t.root.isConnected;
-  function unmount(){serial++;clearTimeout(timer);mounted?.abort?.abort();if(mounted?.keys)mounted.root.removeEventListener?.('keydown',mounted.keys);mounted=null;}
+  function unmount(){serial++;clearTimeout(timer);mounted?.abort?.abort();if(mounted?.keys){mounted.root.removeEventListener?.('keydown',mounted.keys);mounted.helpers.header?.removeEventListener?.('keydown',mounted.keys);}mounted=null;}
   function render(root,helpers){
     unmount();const t={root,helpers,serial,busy:false,error:'',addressEditing:false};mounted=t;
-    t.keys=event=>{if(!active(t)||state.mode!=='all')return;const key=String(event.key || '').toLowerCase();if(key==='f4'||event.altKey&&key==='d'||event.ctrlKey&&key==='l'){event.preventDefault();editAddress(t);}};root.addEventListener('keydown',t.keys);
+    t.keys=event=>{if(!active(t)||state.mode!=='all')return;const key=String(event.key || '').toLowerCase();if(key==='f4'||event.altKey&&key==='d'||event.ctrlKey&&key==='l'){event.preventDefault();editAddress(t);}};root.addEventListener('keydown',t.keys);helpers.header?.addEventListener?.('keydown',t.keys);
     const tabs=node('div','subtabs file-workspace-tabs');tabs.setAttribute('aria-label','文件工作区视图');
     const selectionLabel=helpers.renderTaskResults&&helpers.latestTask?.()?.plan?.origin==='user_direct'?'本次勾选':'已有建议';
-    for(const [id,label] of [['suggestions',selectionLabel],['all','全部文件']]){const b=button(label,()=>{state.mode=id;render(root,helpers);},'subtab'+(state.mode===id?' active':''));b.setAttribute('aria-pressed',String(state.mode===id));tabs.append(b);}
-    root.replaceChildren(tabs);t.host=node('section','file-workspace-content');root.append(t.host);
+    for(const [id,label] of [['suggestions',selectionLabel],['all','全部文件']]){const b=button(label,()=>{const focused=document.activeElement===b;state.mode=id;render(root,helpers);const page=helpers.header?.parentElement || root.closest?.('#workspace');if(page?.id==='workspace')page.scrollTop=0;if(focused)(helpers.header || root).querySelector?.('[data-file-view="'+id+'"]')?.focus?.({preventScroll:true});},'subtab'+(state.mode===id?' active':''));b.dataset.fileView=id;b.setAttribute('aria-pressed',String(state.mode===id));tabs.append(b);}
+    const chrome=window.PanxuWorkspaceHeader,header=helpers.header;root.replaceChildren();if(chrome&&header){chrome.switches(tabs,{kind:'view',label:'文件工作区视图'});chrome.set(header,'navigation',tabs);chrome.set(header,'controls');}else root.append(tabs);t.host=node('section','file-workspace-content');root.append(t.host);
     if(state.mode==='suggestions'){if(helpers.renderTaskResults)helpers.renderTaskResults(t.host);else window.PanxuFiles.render(t.host,{...helpers,forcedView:'suggestions'});return;}
     window.PanxuFiles?.unmount();load(t);
   }
@@ -96,7 +96,7 @@ window.PanxuFileWorkspace = (() => {
   }
   function paint(t){
     if(!active(t))return;
-    const focused=document.activeElement,focusFilter=focused?.getAttribute?.('aria-label')==='筛选当前目录'&&t.host.contains?.(focused),focusAddress=focused?.getAttribute?.('aria-label')==='文件位置'&&t.host.contains?.(focused),selectionStart=focused?.selectionStart,selectionEnd=focused?.selectionEnd;
+    const focused=document.activeElement,focusFilter=focused?.getAttribute?.('aria-label')==='筛选当前目录'&&t.host.contains?.(focused),focusAddress=focused?.getAttribute?.('aria-label')==='文件位置'&&(t.host.contains?.(focused)||t.helpers.header?.contains?.(focused)),selectionStart=focused?.selectionStart,selectionEnd=focused?.selectionEnd;
     if(focusAddress)t.addressDraft=focused.value;
     t.host.replaceChildren();const h=t.helpers;
     if(focusFilter)Promise.resolve().then(()=>{if(!active(t))return;const input=t.host.querySelector?.('[aria-label="筛选当前目录"]');input?.focus?.({preventScroll:true});if(Number.isInteger(selectionStart))input?.setSelectionRange?.(selectionStart,selectionEnd);});
@@ -111,7 +111,7 @@ window.PanxuFileWorkspace = (() => {
     if(state.path){if(state.page?.breadcrumbs?.length){for(const item of state.page.breadcrumbs.filter(item=>item.path))crumbs.append(crumb(item.name || item.label || item.path,item.path));}else crumbs.append(node('span','workspace-address-current',state.path));}
     address.addEventListener('click',event=>{if(event.target===address||event.target===crumbs||event.target===hint)editAddress(t);});
     address.addEventListener('keydown',event=>{if(event.target===address&&['Enter','F2'].includes(event.key)){event.preventDefault();editAddress(t);}});
-    address.append(crumbs,hint,path);address.setAttribute('data-editing',String(Boolean(t.addressEditing)));location.append(address,goButton,button('刷新',()=>{state.cursor=null;state.previous=[];state.layer=null;load(t,true);}));t.host.append(location);
+    address.append(crumbs,hint,path);address.setAttribute('data-editing',String(Boolean(t.addressEditing)));location.append(address,goButton,button('刷新',()=>{state.cursor=null;state.previous=[];state.layer=null;load(t,true);}));if(h.header&&window.PanxuWorkspaceHeader)window.PanxuWorkspaceHeader.set(h.header,'controls',location);else t.host.append(location);
     Object.assign(t,{address,addressInput:path,addressCrumbs:crumbs,addressHint:hint,addressOpen:goButton});
     if(t.addressEditing&&focusAddress)Promise.resolve().then(()=>{if(!active(t)||!t.addressEditing)return;path.focus?.({preventScroll:true});if(Number.isInteger(selectionStart))path.setSelectionRange?.(selectionStart,selectionEnd);});
     if(t.error){const p=node('p','field-error',t.error);p.setAttribute('role','alert');t.host.append(p);}

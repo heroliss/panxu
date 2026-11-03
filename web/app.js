@@ -233,8 +233,10 @@ function initializePanxu() {
   }
   function analysisOptions(root) {
     const details = el('details', 'analysis-options'); append(details, el('summary', '', '分析方式'));
-    append(details, makeSelect([['auto','智能按需（推荐）'],['overview','只看概况'],['detailed','逐项详细分析']], analysisDepth, (value) => { analysisDepth = value; }, '分析深度'), el('p', 'field-help', '默认跳过已有有效建议的项目，以及你已直接决定清理或保留的项目。'));
-    const again=el('label','check-line'),check=el('input');check.type='checkbox';check.checked=analysisReanalyze;check.addEventListener('change',()=>{analysisReanalyze=check.checked;});append(again,check,el('span','','重新分析已有建议的项目'));append(details,again);append(root, details);
+    const panel=el('div','analysis-options-panel');append(panel, makeSelect([['auto','智能按需（推荐）'],['overview','只看概况'],['detailed','逐项详细分析']], analysisDepth, (value) => { analysisDepth = value; }, '分析深度'), el('p', 'field-help', '默认跳过已有有效建议的项目，以及你已直接决定清理或保留的项目。'));
+    const again=el('label','check-line'),check=el('input');check.type='checkbox';check.checked=analysisReanalyze;check.addEventListener('change',()=>{analysisReanalyze=check.checked;});append(again,check,el('span','','重新分析已有建议的项目'));append(panel,again);append(details,panel);
+    details.addEventListener('keydown',event=>{if(event.key==='Escape'&&details.open){event.preventDefault();event.stopPropagation();details.open=false;details.querySelector('summary')?.focus();}});
+    details.addEventListener('focusout',event=>{if(event.relatedTarget&&!details.contains(event.relatedTarget))details.open=false;});append(root, details);return details;
   }
   async function manualSelected(item = null) {
     const selected=(item?[item]:[...analysisIds()].map(id=>itemMap.get(id))).filter(Boolean);
@@ -402,7 +404,7 @@ function initializePanxu() {
     try { await action(); } catch (error) { notify(error.message || '操作失败，请重试。', true); }
     finally { state.busy = false; renderSelection(); }
   }
-  function heading(title, subtitle, actions = []) { const node = el('div', 'page-heading'); const copy = el('div'); append(copy, el('h1', '', title), el('p', '', subtitle)); append(node, copy); if (actions.length) append(node, append(el('div', 'heading-actions'), actions)); return node; }
+  function heading(title, subtitle, actions = []) { if(window.PanxuWorkspaceHeader)return window.PanxuWorkspaceHeader.create(title,subtitle,actions);const node = el('div', 'page-heading'); const copy = el('div'); append(copy, el('h1', '', title), el('p', '', subtitle)); append(node, copy); if (actions.length) append(node, append(el('div', 'heading-actions'), actions)); return node; }
   function section(title, note) { const h = el('div', 'section-heading'); append(h, el('h2', '', title)); if (note) append(h, el('p', '', note)); return h; }
   function empty(title, description, actions = []) { const node = el('div', 'empty-state'); append(node, el('span', 'empty-symbol', '▤'), el('h2', '', title), el('p', '', description), actions); return node; }
   function inputField(label, id, type = 'text', value = '') { const box = el('div', 'form-field'); const lab = el('label', 'field-label', label); lab.htmlFor = id; const input = el('input'); input.id = id; input.type = type; input.value = value || ''; append(box, lab, input); return { box, input }; }
@@ -534,6 +536,7 @@ function initializePanxu() {
     toggleInspector(false); render();$('workspace').scrollTop=snapshot?.scroll_y || 0;
   }
   function render() {
+    window.PanxuWorkspaceHeader?.dispose();
     for(const stop of workspaceObservers)stop();workspaceObservers.clear();
     window.PanxuAnalysisProgress?.unmount?.();inventoryRatingControls=null;
     window.PanxuRecovery?.unmount?.();
@@ -678,14 +681,15 @@ function initializePanxu() {
     return inventoryBaseItems().filter(item=>!['background','software'].includes(state.view)||!window.PanxuInventoryRatings||window.PanxuInventoryRatings.matches(item,state.inventoryFilters,window.PanxuTasks.adviceFor(item.id,item.signature)));
   }
   function makeSelect(options, value, callback, label) { const select = el('select'); select.setAttribute('aria-label', label); options.forEach(([v, l]) => { const option = el('option', '', l); option.value = v; select.append(option); }); select.value = value; select.addEventListener('change', () => callback(select.value)); return select; }
-  function listToolbar(root) {
+  function listToolbar(root,header=null) {
+    const controlHost=header&&window.PanxuWorkspaceHeader?.set(header,'controls') || root;
     if(['background','software'].includes(state.view)&&window.PanxuInventoryRatings){
-      inventoryRatingControls=window.PanxuInventoryRatings.renderControls(root,{state:state.inventoryFilters,items:inventoryBaseItems(),adviceFor:window.PanxuTasks.adviceFor,
-        onChange:filters=>{state.inventoryFilters=filters;state.inventoryOffset=0;renderResults();renderSelection();}});
+      inventoryRatingControls=window.PanxuInventoryRatings.renderControls(root,{toolbarHost:controlHost===root?null:controlHost,state:state.inventoryFilters,items:inventoryBaseItems(),adviceFor:window.PanxuTasks.adviceFor,
+        onChange:filters=>{state.inventoryFilters=filters;state.inventoryOffset=0;renderResults();renderSelection();if(header)window.PanxuWorkspaceHeader?.reveal(header,root.querySelector('#results-container'));}});
     }
     const tools = el('div', 'toolbar'); const search = el('input', 'search-input'); search.type = 'search'; search.placeholder = '搜索文件或软件名称'; search.setAttribute('aria-label', '搜索当前结果'); search.value = state.query;
-    search.addEventListener('input', () => { state.query = search.value; state.limit = 50; state.inventoryOffset=0; renderResults(); renderSelection(); });
-    append(tools, search, makeSelect([['all', '全部内容'], ['low', '可处理'], ['review', '需要决定'], ['protected', '已保留']], state.risk, (value) => { state.risk = value; state.inventoryOffset=0; renderResults(); renderSelection(); }, '筛选内容')); append(root, tools);
+    search.addEventListener('input', () => { state.query = search.value; state.limit = 50; state.inventoryOffset=0; renderResults(); renderSelection();if(header)window.PanxuWorkspaceHeader?.reveal(header,root.querySelector('#results-container')); });
+    append(tools, search, makeSelect([['all', '全部内容'], ['low', '可处理'], ['review', '需要决定'], ['protected', '已保留']], state.risk, (value) => { state.risk = value; state.inventoryOffset=0; renderResults(); renderSelection();if(header)window.PanxuWorkspaceHeader?.reveal(header,root.querySelector('#results-container')); }, '筛选内容'));if(controlHost!==root)window.PanxuWorkspaceHeader.append(header,'controls',tools);else append(root,tools);
   }
   function locationPicker(root) {
     const details = el('details', 'location-picker'); const sum = el('summary', '', '选择检查位置'); append(details, sum);
@@ -694,8 +698,8 @@ function initializePanxu() {
     append(controls, disk, path, button('检查这个位置', () => { state.checkDestination = 'files'; startScan(path.value, false); }, 'button primary')); append(details, controls); append(root, details);
   }
   function renderFiles(root) {
-    append(root, heading('文件清理', '按位置查看，按需分析，再选择要清理的内容。'));
-    const advanced=el('div','file-advanced-controls');locationPicker(advanced);analysisOptions(advanced);appendJob(root);
+    const pageHeader=heading('文件清理', '按位置查看，按需分析，再选择要清理的内容。');append(root,pageHeader);
+    const advanced=el('div','file-advanced-controls');locationPicker(advanced);const fileOptions=analysisOptions(advanced);window.PanxuWorkspaceHeader?.append(pageHeader,'actions',fileOptions);appendJob(root);
     const prepare=async payload=>{
       const data=await api('/api/assessments/plan',payload);
       if(!window.PanxuTasks.acceptPickedPlan(data))throw new Error('返回的删除清单与选择不一致，请刷新后重试。');
@@ -704,10 +708,10 @@ function initializePanxu() {
     };
     const current=window.PanxuTasks.currentTask(),taskScoped=Boolean(fileTaskId&&taskWorkspaceId(current)===fileTaskId);
     if(taskScoped)mountWorkspaceAnalysis(root,current,task=>window.PanxuCleanupReview.updateTask?.(task));
-    if(taskScoped){const source=window.PanxuCleanupReview.sourceFor(current) || current;append(root,el('p','field-help','本次任务：'+source.goal),button('查看所有已有建议',()=>{fileTaskId=null;render();},'plain-button'));}
+    if(taskScoped){const source=window.PanxuCleanupReview.sourceFor(current) || current,exit=button('查看所有已有建议',()=>{fileTaskId=null;render();},'plain-button');if(window.PanxuWorkspaceHeader){pageHeader.querySelector('.workspace-heading-description').textContent='本次任务：'+source.goal;window.PanxuWorkspaceHeader.append(pageHeader,'actions',exit);}else append(root,el('p','field-help','本次任务：'+source.goal),exit);}
     const fileHost=el('section','file-workspace');root.append(fileHost);
     window.PanxuFileWorkspace.render(fileHost, {
-      api,revision: state.catalogRevision, disks: state.disks, bytes, ingest,advanced,
+      api,revision: state.catalogRevision, disks: state.disks, bytes, ingest,advanced,header:pageHeader,
       changed:renderSelection,analyze:(item)=>analyzeList(item),show:showItem,
       analyzeItems:async(items)=>{
         const ids=[...new Set(items.filter(canAnalyze).map(item=>item.id))];if(!ids.length)return;
@@ -726,19 +730,15 @@ function initializePanxu() {
   function renderBackground(root) {
     const current=window.PanxuTasks.currentTask();
     if(backgroundTaskId&&taskWorkspaceId(current)===backgroundTaskId){const source=window.PanxuCleanupReview.sourceFor(current) || current;append(root,heading('后台与软件',source.goal,[button('查看全部后台与软件',()=>{backgroundTaskId=null;render();},'plain-button')]));mountWorkspaceAnalysis(root,current,task=>window.PanxuCleanupReview.updateTask?.(task));window.PanxuTasks.renderResultWorkspace(root,taskHelpers('results'));return;}
-    append(root, heading('后台与软件', '了解开机启动、后台应用和已经安装的软件。'));
+    const header=heading('后台与软件', '查看用途和建议，选择需要调整的内容。');append(root,header);inventoryNavigation(header,state.backgroundExpanded?state.subtype:'startup');
     mountInventoryAnalysis(root,current);
     appendJob(root);
     if (!state.backgroundExpanded) {
-      const panel = el('div', 'panel action-list');
-      [['startup', '开机启动', '管理开机后自动打开的应用。'], ['service', '后台服务', '先了解依赖和用途，再判断是否调整。'], ['process', '后台应用', '看看哪些应用正在运行。'], ['software', '已装软件', '了解用途，再考虑是否保留。']].forEach(([kind, title, description]) => {
-        const row = el('div', 'action-row'); const count = state.items.filter((item) => item.kind === kind && !item.simulated).length;
-        append(row, append(el('div', 'action-copy'), el('h3', '', title), el('p', '', description)), count ? el('span', 'muted', `${count} 项`) : null, button('查看', () => openInventory(kind), 'button small')); append(panel, row);
-      }); append(root, panel, el('p', 'quiet-note', '系统关键内容会保留。检查不会结束正在运行的应用。')); return;
+      const revision=state.navigationRevision;state.subtype='startup';append(root,el('p','workspace-scope-note','正在读取开机启动项…'));
+      Promise.resolve().then(()=>{if(state.view==='background'&&state.navigationRevision===revision&&!state.backgroundExpanded)openInventory('startup');});return;
     }
-    const tabs = el('div', 'subtabs'); [['startup', '开机启动'], ['process', '后台应用'], ['service', '后台服务']].forEach(([value, label]) => append(tabs, button(label, () => { state.subtype = value;state.inventoryOffset=0; render(); }, `subtab${state.subtype === value ? ' active' : ''}`))); append(root, tabs);
-    analysisOptions(root);
-    append(root, button('重新检查', () => { state.inventoryTarget = state.subtype; startInventory('background'); }, 'plain-button')); listToolbar(root); const results = el('div'); results.id = 'results-container'; append(root, results); renderResults();
+    const options=el('div');analysisOptions(options);window.PanxuWorkspaceHeader?.append(header,'actions',button('重新检查',()=>{state.inventoryTarget=state.subtype;startInventory('background');},'button small'),...options.children);
+    listToolbar(root,header); const results = el('div'); results.id = 'results-container'; append(root, results); renderResults();
   }
   async function openInventory(kind) {
     const request=state.inventoryOpenRequest=(state.inventoryOpenRequest || 0)+1;
@@ -746,13 +746,18 @@ function initializePanxu() {
     const current=()=>state.inventoryOpenRequest===request&&state.view===origin&&(state.navigationRevision || 0)===revision;
     state.inventoryTarget = kind; state.backgroundExpanded = true;
     const target = kind === 'software' ? 'software' : 'background';
-    try { if(!await loadApplications(target,current)||!current())return; } catch (error) { if(current())notify(error.message, true); return; }
+    try { if(!await loadApplications(target,current)||!current())return; } catch (error) { if(current()){notify(error.message, true);render();} return; }
     if (state.items.some((item) => item.kind === kind && !synthetic(item))) { setView(target); state.subtype = kind === 'software' ? 'all' : kind; render(); }
     else await startInventory(target);
   }
   function renderSoftware(root) {
-    append(root, heading('已装软件', '使用情况不确定时，建议先保留。', [button('返回', () => { state.backgroundExpanded = false; setView('background'); }, 'plain-button')]));
-    mountInventoryAnalysis(root,window.PanxuTasks.currentTask());appendJob(root); analysisOptions(root); listToolbar(root); const results = el('div'); results.id = 'results-container'; append(root, results); renderResults();
+    const header=heading('后台与软件','查看用途和建议，选择需要调整的内容。');append(root,header);inventoryNavigation(header,'software');
+    const options=el('div');analysisOptions(options);window.PanxuWorkspaceHeader?.append(header,'actions',button('重新检查',()=>startInventory('software'),'button small'),...options.children);
+    mountInventoryAnalysis(root,window.PanxuTasks.currentTask());appendJob(root);listToolbar(root,header); const results = el('div'); results.id = 'results-container'; append(root, results); renderResults();
+  }
+  function inventoryNavigation(header,selected){
+    const tabs=el('div','subtabs');for(const [kind,label]of [['startup','开机启动'],['process','后台应用'],['service','后台服务'],['software','已装软件']]){const entry=button(label,()=>{if(kind!==selected)openInventory(kind);},'subtab');entry.setAttribute('aria-pressed',String(kind===selected));append(tabs,entry);}
+    if(window.PanxuWorkspaceHeader){window.PanxuWorkspaceHeader.switches(tabs,{kind:'category',label:'后台与软件分类'});window.PanxuWorkspaceHeader.set(header,'navigation',tabs);}else append(header,tabs);
   }
   function mountInventoryAnalysis(root,current){
     if(current?.scope_kind!=='applications'||['completed','awaiting_review'].includes(current.status))return;

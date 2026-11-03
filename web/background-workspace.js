@@ -47,6 +47,7 @@ window.PanxuInventoryRatings = (() => {
     let current=normal(helpers.state),items=helpers.items||[];
     const root=node('section','inventory-rating-controls'),line=node('div','inventory-rating-control-line'),tabs=node('div','subtabs inventory-view-tabs');
     tabs.setAttribute('role','group');tabs.setAttribute('aria-label','后台与软件查看方式');
+    window.PanxuWorkspaceHeader?.switches(tabs,{kind:'view',label:'后台与软件查看方式'});
     const buttons=new Map();
     for(const [id,label]of [['suggestions','已有建议'],['all','全部项目']]){
       const entry=node('button','subtab',label);entry.type='button';entry.dataset.inventoryView=id;
@@ -64,7 +65,7 @@ window.PanxuInventoryRatings = (() => {
       const segment=node('span','inventory-rating-segment');segment.dataset.rating=key;segment.setAttribute('aria-hidden','true');segments.set(key,segment);bar.append(segment);
       if(scoreNames[key]){const label=node('span','inventory-rating-key');label.dataset.rating=key;labels.set(key,label);legend.append(label);}
     }
-    distribution.append(bar,legend);root.append(line,distribution,status);host.append(root);
+    distribution.append(bar,legend);if(helpers.toolbarHost){helpers.toolbarHost.append(line);root.append(distribution,status);}else root.append(line,distribution,status);host.append(root);
     function paintState(){
       for(const [id,entry]of buttons){entry.setAttribute('aria-pressed',String(id===current.view));entry.className='subtab'+(id===current.view?' active':'');}
       select.value=current.rating;

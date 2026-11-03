@@ -36,6 +36,13 @@ test('late inventory errors do not appear on a different page',async()=>{
   const f=inventoryFixture(),work=f.env.open('startup');f.state.view='cleanup';f.state.navigationRevision++;
   f.pending[0].reject(new Error('stale read failed'));await work;assert.deepEqual(f.calls,[]);
 });
+
+test('a current inventory read failure leaves a usable page rather than the initial loading placeholder',async()=>{
+  const f=inventoryFixture(),work=f.env.open('startup');
+  f.pending[0].reject(new Error('read unavailable'));await work;
+  assert.equal(f.state.view,'background');assert.equal(f.state.backgroundExpanded,true);
+  assert.deepEqual(f.calls,[['notice','read unavailable'],['render']]);
+});
 test('application reads publish neither inventory nor revision when superseded',async()=>{
   const request=deferred(),calls=[],env={state:{catalogRevision:'old'},api:()=>request.promise,ingest:items=>calls.push(items)};
   runInNewContext(extract('  async function loadApplications(','  function sectionItems(')+'this.load=loadApplications;',env);
