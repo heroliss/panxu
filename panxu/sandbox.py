@@ -769,10 +769,14 @@ def _write(path: str, spec: _Spec, now: float):
             fh.write(spec.data)
         else:
             header = f'PANXU-SIM {spec.rel}\n'.encode('utf-8')[:min(spec.size, 512)]
-            if spec.sparse:
-                winapi.make_sparse(fh)
+            if spec.sparse and not winapi.make_sparse(fh):
+                raise OSError('这个磁盘不支持稀疏文件（需要 NTFS），无法创建演练环境')
             fh.write(header)
-            fh.truncate(spec.size)
+            if spec.size > len(header):
+                # Seek past the end and write the last byte: the gap stays a hole. (truncate() would
+                # not do: on Windows the C runtime extends files by writing zeros, sparse or not.)
+                fh.seek(spec.size - 1)
+                fh.write(b'\0')
     created = modified = now - spec.age * DAY
     winapi.set_file_times(path, created=created, modified=modified, accessed=now - spec.atime_age * DAY)
 
