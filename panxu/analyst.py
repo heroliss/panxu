@@ -164,16 +164,17 @@ def _fmt_date(ts: float) -> str:
 def anonymize_text(text: str, env: dict) -> str:
     """Replace user-specific folders inside free text (command lines)."""
     out = text
-    for name in ('LOCALAPPDATA', 'APPDATA', 'USERPROFILE'):
-        base = env.get(name)
+    bases = [(env.get(name), '%' + name + '%') for name in ('LOCALAPPDATA', 'APPDATA', 'USERPROFILE')]
+    bases += list(paths.simulated_drives().items())  # 演练环境: the simulated drive folder -> 'C:'
+    for base, token in bases:
         if not base:
             continue
         low, base_low = out.lower(), base.lower()
         idx = low.find(base_low)
         while idx >= 0:
-            out = out[:idx] + '%' + name + '%' + out[idx + len(base):]
+            out = out[:idx] + token + out[idx + len(base):]
             low = out.lower()
-            idx = low.find(base_low, idx + len(name) + 2)
+            idx = low.find(base_low, idx + len(token))
     return out
 
 

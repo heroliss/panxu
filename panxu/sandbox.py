@@ -812,7 +812,7 @@ def default_root(data_dir: str) -> str:
 def activate(sandbox: Sandbox) -> None:
     """Route every system access of this process into the simulation."""
     sandbox.ensure()
-    paths.set_simulated_environment(sandbox.env())
+    paths.set_simulated_environment(sandbox.env(), {sandbox.native(d): d + ':' for d in DRIVES})
     winapi.set_simulation(sandbox)
 
 

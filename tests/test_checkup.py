@@ -181,7 +181,16 @@ class CheckupTest(TempDirTest):
         self.assertTrue(again['cached'])
         glob = self.wait(self.call('ai_ask', messages=[{'role': 'user', 'content': 'C 盘怎么了？'}]))
         self.assertTrue(glob['answer'])
-        self.assertIn('cleanup_plan', self.model.requests[-1]['system'])
+        system = self.model.requests[-1]['system']
+        self.assertIn('cleanup_plan', system)
+        # the context is JSON inside the prompt, so compare JSON-escaped text
+        self.assertIn(json.dumps('C:\\Users')[1:-1], system, 'simulated drive folders are shown as drive letters')
+        leaked = json.dumps(self.tmp)[1:-1]
+        self.assertNotIn(leaked, system, 'nothing outside the simulation reaches the model')
+        startup = self.wait(self.call('ai_ask', messages=[{'role': 'user', 'content': '这是什么？'}],
+                                      target={'type': 'startup', 'id': 'hkcu_run:QuickViewHelper'}))
+        self.assertTrue(startup['answer'])
+        self.assertNotIn(leaked, self.model.requests[-1]['system'])
 
     def test_file_content_needs_the_setting(self):
         self.checkup(use_ai=False)

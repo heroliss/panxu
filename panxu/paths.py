@@ -19,6 +19,7 @@ USER_ENV_KEYS = ('USERPROFILE', 'LOCALAPPDATA', 'APPDATA', 'TEMP')
 
 _env_override: dict[str, str] = {}
 _sim_env: dict[str, str] = {}
+_sim_drives: dict[str, str] = {}   # simulated drive folder -> 'C:'
 
 
 def set_env_override(values: dict[str, str]) -> None:
@@ -27,10 +28,20 @@ def set_env_override(values: dict[str, str]) -> None:
     _env_override.update({k: v for k, v in values.items() if k in USER_ENV_KEYS and v})
 
 
-def set_simulated_environment(values: dict[str, str] | None) -> None:
-    """Point every base folder into the simulation (演练环境); None restores the real ones."""
+def set_simulated_environment(values: dict[str, str] | None, drives: dict[str, str] | None = None) -> None:
+    """Point every base folder into the simulation (演练环境); None restores the real ones.
+
+    ``drives`` maps the simulated drive folders to their letters, so text sent to a model
+    shows 'C:\\Users' instead of the real path of the simulation (and the real user name).
+    """
     _sim_env.clear()
     _sim_env.update(values or {})
+    _sim_drives.clear()
+    _sim_drives.update(drives or {})
+
+
+def simulated_drives() -> dict[str, str]:
+    return dict(_sim_drives)
 
 
 def is_foreign_user() -> bool:
@@ -117,6 +128,9 @@ def anonymize(path: str, env: dict[str, str]) -> str:
             if best is None or len(base) > len(env[best]):
                 best = name
     if best is None:
+        for root, letter in _sim_drives.items():
+            if is_within(path, root):
+                return letter + (ntpath.normpath(path)[len(ntpath.normpath(root)):] or '\\')
         return path
     rest = ntpath.normpath(path)[len(ntpath.normpath(env[best])):]
     return '%' + best + '%' + rest
