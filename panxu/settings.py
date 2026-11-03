@@ -12,7 +12,9 @@ from . import winapi
 
 log = logging.getLogger(__name__)
 
+SETTINGS_VERSION = 2
 DEFAULTS = {
+    'version': SETTINGS_VERSION,
     'theme': 'system',  # system | light | dark
     'ai': {
         'preset': 'deepseek',
@@ -20,7 +22,7 @@ DEFAULTS = {
         'model': 'deepseek-flash',
         'protocol': 'openai',  # openai | anthropic
         'json_mode': True,
-        'thinking': 'off',       # off | low | high (only for services with a thinking switch)
+        'thinking': 'low',       # off | low | high, for 问 AI only (classification never thinks)
         'anonymize_paths': True,
         'send_file_content': False,  # allow sending the first lines of documents (asked again each time)
         'max_requests': 8,       # per analysis run
@@ -31,7 +33,7 @@ DEFAULTS = {
         'space_scan': True,      # scan the system drive during the one-click check-up
         'duplicates': True,
         'use_ai': True,          # ask the model when a key is configured
-        'auto_select': 'bold',   # bold: also tick rebuildable caches, leftovers, confident AI verdicts | careful
+        'auto_threshold': 5,     # 勾选门槛 0-10: pre-tick eligible items scoring at least this (稳妥 8, 积极 5)
     },
     'insights': {
         'stale_days': 365,       # "很久没动" threshold for large personal files
@@ -69,11 +71,28 @@ class Settings:
         self.secret_path = os.path.join(data_dir, 'secrets.json')
         self._lock = threading.Lock()
         os.makedirs(data_dir, exist_ok=True)
-        self._data = _merge(DEFAULTS, self._read(self.path))
+        raw = self._read(self.path)
+        self._data = _merge(DEFAULTS, raw)
         ai = self._data['ai']
         replacement = _RETIRED_MODELS.get((ai.get('preset'), ai.get('model')))
         if replacement:
             ai['model'] = replacement
+        if raw and int(raw.get('version') or 1) < SETTINGS_VERSION:
+            self._migrate(raw)
+
+    def _migrate(self, raw: dict):
+        """Settings written by earlier builds (once; the file then carries the current version)."""
+        old_ai = raw.get('ai') if isinstance(raw.get('ai'), dict) else {}
+        if old_ai.get('thinking') in (None, 'off'):
+            self._data['ai']['thinking'] = 'low'   # 'off' was the default, not a choice
+        old_checkup = raw.get('checkup') if isinstance(raw.get('checkup'), dict) else {}
+        if old_checkup.get('auto_select') == 'careful' and 'auto_threshold' not in old_checkup:
+            self._data['checkup']['auto_threshold'] = 8   # 自动勾选 稳妥/积极 -> 勾选门槛 8/5
+        self._data['version'] = SETTINGS_VERSION
+        try:
+            self._write(self.path, self._data)
+        except OSError:
+            pass
 
     @staticmethod
     def _read(path):

@@ -73,14 +73,16 @@ class SandboxRunTest(TempDirTest):
         report = out.getvalue()
         self.assertIn(code, (0, 1), report)
         self.assertNotIn('严重', report)
-        for part in ('会自动勾选', '建议你看看', '仅供了解', '值得注意', '没有删除、移动或修改任何东西'):
+        for part in ('会自动勾选', '建议你看看', '仅供了解', '值得注意', '没有删除、移动或修改任何东西', '勾选门槛：5 分', '[10分]'):
             self.assertIn(part, report)
         self.assertIn('%LOCALAPPDATA%', report, 'user names are replaced by default')
         with open(save, encoding='utf-8') as fh:
             self.assertTrue(json.load(fh)['auto'])
         with redirect_stdout(io.StringIO()) as again, redirect_stderr(io.StringIO()):
-            real_check.main(['--sandbox', os.path.join(self.tmp, 'sb'), '--compare', save, '--no-dups', '--no-space'])
+            real_check.main(['--sandbox', os.path.join(self.tmp, 'sb'), '--compare', save, '--no-dups', '--no-space',
+                             '--threshold', '8'])
         self.assertIn('和上次相比', again.getvalue())
+        self.assertIn('勾选门槛：8 分', again.getvalue())
         self.assertTrue(os.path.exists(os.path.join(self.tmp, 'sb', 'C', 'Users', 'demo', 'Downloads', 'SteamSetup.exe')),
                         'nothing was deleted')
 

@@ -141,6 +141,10 @@ class Backend:
         def alive(path):
             k = paths.key(path)
             return not any(k == g or k.startswith(g + '\\') for g in gone)
+        # the plan on 首页 shows what was done on the tool pages too
+        for item in (self.plan or {}).get('items', []):
+            if item['status'] == 'pending' and item.get('paths') and not any(alive(p) for p in item['paths']):
+                item['status'], item['result'] = 'done', '已处理'
         if self.insights:
             kept = []
             for f in self.insights['findings']:
@@ -362,7 +366,13 @@ class Backend:
         def run(job):
             def progress(i, total, name, freed):
                 job.update(index=i, total=total, current=name, freed=freed)
-            return self.junk.clean([str(r) for r in rule_ids], cancel=job.cancel, progress=progress)
+            result = self.junk.clean([str(r) for r in rule_ids], cancel=job.cancel, progress=progress)
+            # the same rules in the plan on 首页 are done now
+            cleaned = {r['id'] for r in result['rules'] if not r['skipped']}
+            for item in (self.plan or {}).get('items', []):
+                if item.get('kind') == 'rule' and item['rule'] in cleaned and item['status'] == 'pending':
+                    item['status'], item['result'] = 'done', '已在「垃圾清理」清理'
+            return result
         return self.jobs.start('junk_clean', run, group='modify')
 
     # ------------------------------------------------------------------ space

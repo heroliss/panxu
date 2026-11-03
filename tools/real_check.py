@@ -5,6 +5,7 @@
     python tools/real_check.py --save base.json   # keep a summary to compare with later
     python tools/real_check.py --compare base.json
     python tools/real_check.py --out report.txt --full-paths
+    python tools/real_check.py --threshold 8      # report with a stricter 勾选门槛 (default: 5)
 
 Runs the whole check-up on the real system but executes nothing: no file is deleted or moved, no
 setting is changed, and PanXu's own settings and history are not touched (a throw-away data folder
@@ -28,6 +29,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 from panxu import paths  # noqa: E402
+from panxu.checkup import DEFAULT_THRESHOLD, points  # noqa: E402
 from panxu.insights import managed_dir  # noqa: E402
 
 GB = 1024 ** 3
@@ -118,13 +120,17 @@ def compare(old: dict, new: dict) -> list[str]:
     return lines
 
 
+def _pts(item: dict) -> str:
+    return f'[{points(item["score"])}分]' if item.get('score') is not None else ''
+
+
 def render(plan: dict, findings: list[dict], env: dict, seconds: float, full_paths: bool, drive: dict | None,
-           mode: str, ai_used: bool) -> str:
+           ai_used: bool) -> str:
     show = (lambda p: p) if full_paths else (lambda p: paths.anonymize(p, env))
     lines = ['盘序 · 真实电脑检查（只读）  ' + time.strftime('%Y-%m-%d %H:%M'), '']
     if drive:
         lines.append(f'系统盘 {drive["root"]} 可用 {drive["free"] / GB:.1f} GB / {drive["total"] / GB:.1f} GB')
-    lines.append(f'用时 {seconds:.0f} 秒；自动勾选：{"积极" if mode != "careful" else "稳妥"}；AI：{"使用了" if ai_used else "没有使用"}')
+    lines.append(f'用时 {seconds:.0f} 秒；勾选门槛：{plan.get("threshold", DEFAULT_THRESHOLD)} 分；AI：{"使用了" if ai_used else "没有使用"}')
     lines.append('没有删除、移动或修改任何东西。' + ('' if full_paths else '路径里的用户名已替换成 %USERPROFILE% 等。'))
     titles = {'safe': '会自动勾选（放心清理）', 'review': '建议你看看', 'info': '仅供了解'}
     for n, (group, title) in enumerate(titles.items(), 1):
@@ -133,16 +139,15 @@ def render(plan: dict, findings: list[dict], env: dict, seconds: float, full_pat
         lines += ['', f'{"一二三"[n - 1]}、{title}  {len(rows)} 项  {size / GB:.2f} GB']
         if group == 'safe':
             for i in rows:
-                score = f'[{i["score"]}]' if i.get('score') is not None else ''
                 where = show(i['paths'][0]) if i['paths'] else ''
-                lines.append(f'  {score:>5} {i["title"]}  {(i["size"] or 0) / GB:.2f} GB  （{i["basis"][-1] if i.get("basis") else ""}）'
+                lines.append(f'  {_pts(i):>6} {i["title"]}  {(i["size"] or 0) / GB:.2f} GB  （{i["basis"][-1] if i.get("basis") else ""}）'
                              + (f'\n        {where}' if where else ''))
             continue
         cats: dict[str, list] = {}
         for i in rows:
             cats.setdefault(i['category'], []).append(i)
         for cat, items in cats.items():
-            examples = '、'.join(f'{i["title"]}' + (f'[{i["score"]}]' if i.get('score') is not None else '')
+            examples = '、'.join(f'{i["title"]}' + _pts(i)
                                 + (f'（{i["blocked"]}）' if i.get('blocked') else '') for i in items[:3])
             lines.append(f'  {cat}：{len(items)} 项 {sum(i["size"] or 0 for i in items) / GB:.2f} GB  例：{examples}')
     lines += ['', f'四、值得注意（{len(findings)} 条）']
@@ -156,7 +161,8 @@ def render(plan: dict, findings: list[dict], env: dict, seconds: float, full_pat
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description='Read-only check-up of this PC (nothing is changed).')
     parser.add_argument('--ai', action='store_true', help='also ask the configured model (anonymised names are sent)')
-    parser.add_argument('--careful', action='store_true', help='report the 稳妥 auto-selection instead of 积极')
+    parser.add_argument('--threshold', type=int, default=DEFAULT_THRESHOLD, help='勾选门槛 0-10 (default %(default)s)')
+    parser.add_argument('--careful', action='store_true', help='same as --threshold 8 (稳妥)')
     parser.add_argument('--no-space', action='store_true', help='skip the system drive scan')
     parser.add_argument('--no-dups', action='store_true', help='skip the duplicate search')
     parser.add_argument('--out', help='also write the report to this file')
@@ -190,7 +196,7 @@ def main(argv=None) -> int:
             backend.settings.set_secret('ai_key:' + ai['preset'], key)
         bridge = Bridge(backend)
         options = {'use_ai': bool(args.ai), 'space_scan': not args.no_space, 'duplicates': not args.no_dups,
-                   'auto_select': 'careful' if args.careful else 'bold'}
+                   'auto_threshold': 8 if args.careful else max(0, min(10, args.threshold))}
         started = time.time()
         r = bridge.call('checkup', {'options': options})
         if not r['ok']:
@@ -213,8 +219,7 @@ def main(argv=None) -> int:
         env = backend.env
         findings = check_plan(plan, env, backend.insights, backend.junk_rows)
         drive = next((d for d in bridge.call('drives')['data'] if d['system']), None)
-        report = render(plan, findings, env, time.time() - started, args.full_paths, drive,
-                        options['auto_select'], bool(plan['ai'].get('used')))
+        report = render(plan, findings, env, time.time() - started, args.full_paths, drive, bool(plan['ai'].get('used')))
         if args.compare:
             with open(args.compare, encoding='utf-8') as fh:
                 changes = compare(json.load(fh), summary(plan))

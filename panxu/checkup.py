@@ -38,12 +38,14 @@ SOURCES = {'rule': '规则', 'ai': 'AI', 'insight': '我的文件', 'dup': '重�
 STAGES = [('junk', '扫描垃圾文件'), ('space', '分析系统盘空间'), ('insights', '整理我的文件'),
           ('dups', '查找重复文件'), ('ai', 'AI 复核'), ('plan', '生成清理方案')]
 
-AUTO_AI_CONFIDENCE = 0.8     # 稳妥: the model must be this sure to pre-tick a folder
-BOLD_AI_CONFIDENCE = 0.7     # 积极
+# 勾选门槛 (0-10): eligible items whose 建议清理度 reaches it are pre-ticked. 稳妥 8, 积极 5.
+DEFAULT_THRESHOLD = 5
+THRESHOLDS = {'careful': 8, 'bold': 5}   # older settings / options
+MIN_AI_CONFIDENCE = 0.7      # below this a 「可清理」 verdict is never pre-ticked, whatever the threshold
 ACTIVE_DAYS = 7             # folders changed more recently are left for the user
-# 积极 still leaves these rules unticked: no undo (Recycle Bin, rollback to the old Windows), very slow
-# (DISM), or possibly holding the user's own builds (mvn install puts them in the local repository)
-BOLD_EXCLUDED_RULES = {'recycle_bin', 'windows_old', 'component_store', 'maven'}
+# rules never pre-ticked: no undo (Recycle Bin, rollback to the old Windows), very slow (DISM), or
+# possibly holding the user's own builds (mvn install puts them in the local repository)
+NEVER_AUTO_RULES = {'recycle_bin', 'windows_old', 'component_store', 'maven'}
 # names inside a folder that suggest something worth keeping although nobody "made" it: game saves,
 # profiles, backups. A folder containing one is never pre-ticked.
 VALUABLE_DIRS = {'save', 'saves', 'savegames', 'savedgames', 'saved games', 'savedata', 'save data', '存档',
@@ -148,29 +150,38 @@ def cache_like(name: str) -> bool:
     return any(w in low for w in CACHE_WORDS)
 
 
-def decision_note(item: dict) -> list[str]:
+def points(score) -> int | None:
+    """建议清理度 as shown: 0-10, rounded half up (scores are kept 0-100 for sorting)."""
+    return None if score is None else int(score / 10 + 0.5)
+
+
+def decision_note(item: dict, threshold: int) -> list[str]:
     """Why an item was (not) ticked automatically -- the last line of its 评分依据."""
     if item['action'] == 'none':
         return []
     if item['blocked']:
         return ['没有勾选：' + item['blocked']]
+    pts = points(item['score'])
     if item['selected']:
-        return ['自动勾选：' + (item.get('auto_reason') or '默认开启的内置规则')]
+        return [f'自动勾选：{item.get("auto_reason") or "可以清理"}，{pts} 分达到勾选门槛（{threshold} 分）']
     if item.get('personal'):
-        return ['没有自动勾选：你的个人文件只由你决定']
-    return ['没有自动勾选：' + (item.get('hold_reason') or '把握不够，留给你决定')]
+        return ['没有自动勾选：你的文件只由你决定']
+    if item.get('eligible'):
+        return [f'没有自动勾选：{pts} 分，低于勾选门槛（{threshold} 分）']
+    return ['没有自动勾选：' + (item.get('hold_reason') or '留给你决定')]
 
 
 class PlanBuilder:
     """Collects plan items; a path is offered at most once (first source wins)."""
 
-    def __init__(self, policy, knowledge=None, now: float | None = None, bold: bool = False):
+    def __init__(self, policy, knowledge=None, now: float | None = None, threshold: int = DEFAULT_THRESHOLD):
         self.policy = policy
         self.knowledge = knowledge
         self.now = now or time.time()
-        # 积极: besides default rules, also pre-tick rebuildable caches, leftovers and old versions, and
-        # folders the model is fairly sure about. Never personal files, never anything without an undo.
-        self.bold = bold
+        # Each source decides whether an item may be pre-ticked at all ('eligible': never personal
+        # files, nothing without an undo, nothing held back by a guard) and its score; add() then
+        # ticks eligible items whose score reaches the threshold (0-10).
+        self.threshold = threshold
         self.items: list[dict] = []
         self._claimed: list[str] = []
 
@@ -195,7 +206,12 @@ class PlanBuilder:
                 item['selected'] = False
             item['caution'] = next((c for c in (self.policy.caution(p) for p in fresh) if c), None)
             self._claimed.extend(fresh)
-        item['basis'] = list(item['basis']) + decision_note(item)
+        if item['group'] != 'info':
+            item['eligible'] = bool(item.get('eligible')) and not item.get('personal')
+            item['selected'] = (item['eligible'] and not item['blocked'] and item['score'] is not None
+                                and points(item['score']) >= self.threshold)
+            item['group'] = 'safe' if item['selected'] else 'review'
+        item['basis'] = list(item['basis']) + decision_note(item, self.threshold)
         item['ask'] = item['ask'] or {'type': 'plan_item', 'id': item['id']}
         self.items.append(item)
         return item
@@ -214,25 +230,27 @@ class PlanBuilder:
                 blocked = '请先关闭 ' + '、'.join(row['running'])
             elif rule.admin and row.get('needs_admin'):
                 blocked = '需要管理员权限'
+            hold = None
             if rule.default:
                 score, basis, auto = 95, ['内置规则：公认可以重建的缓存和临时文件'], '默认开启的内置规则'
             elif rule.mode == 'recycle_bin' or rule.id == 'windows_old':
                 score, basis, auto = 55, ['内置规则，但删除后无法恢复：' + (rule.note or '无法从回收站恢复')], None
-            elif rule.id in BOLD_EXCLUDED_RULES:
+                hold = '删除后无法恢复，请你决定'
+            elif rule.id in NEVER_AUTO_RULES:
                 score, basis, auto = 60, ['内置规则，默认不勾：' + (rule.note or '删除前请确认里面没有你自己的东西')], None
+                hold = '默认不勾，请你决定'
             else:
-                score = 80
+                score = 70
                 basis = ['内置规则：可以重建，只是下次用到时要重新下载或生成，第一次会慢一些']
-                auto = '积极模式：可以重建的缓存' if self.bold else None
+                auto = '可以重建的缓存'
             self.add({
-                'id': 'rule:' + rule.id, 'kind': 'rule', 'rule': rule.id, 'group': 'safe' if auto and not blocked else 'review',
+                'id': 'rule:' + rule.id, 'kind': 'rule', 'rule': rule.id,
                 'category': '垃圾文件', 'title': rule.name, 'size': size or 0, 'count': row.get('count') or 0,
                 'what': '', 'why': rule.description,
                 'effect': rule.note or '相关程序会在需要时重新生成这些文件。', 'action': 'delete', 'source': 'rule',
-                'confidence': 1.0 if rule.default else 0.7, 'selected': bool(auto) and not blocked, 'blocked': blocked,
+                'confidence': 1.0 if rule.default else 0.7, 'blocked': blocked,
                 'locations': row.get('locations', [])[:5], 'score': score, 'basis': basis,
-                'auto_ok': bool(auto), 'auto_reason': auto,
-                'hold_reason': None if auto else ('删除后无法恢复，请你决定' if score < 60 else '默认不勾，请你决定')})
+                'eligible': hold is None, 'auto_reason': auto, 'hold_reason': hold})
 
     def _folder_guards(self, path: str, node, owner: str | None, basis: list[str]) -> str | None:
         """Reasons a folder must not be pre-ticked whatever the score (also added to the basis)."""
@@ -244,15 +262,14 @@ class PlanBuilder:
         if inside:
             basis.append(f'里面有「{inside}」文件夹：可能是存档、个人资料或备份')
             return f'里面可能有存档或个人资料（「{inside}」）'
-        if owner and not (self.bold and cache_like(os.path.basename(path.rstrip('\\/')))):
+        if owner and not cache_like(os.path.basename(path.rstrip('\\/'))):
             # the whole folder of an installed program also holds its settings, licence or templates;
-            # in 积极 mode its cache-named sub-folders may still be ticked
+            # only its cache-named sub-folders may be ticked
             return f'属于仍在使用的程序「{owner}」'
         return None
 
     def add_ai_dirs(self, suggestions: list[dict], env: dict, analyst=None, scan=None):
         app_bases = [env.get(k) for k in ('LOCALAPPDATA', 'APPDATA', 'LOCALLOW', 'ProgramData') if env.get(k)]
-        threshold = BOLD_AI_CONFIDENCE if self.bold else AUTO_AI_CONFIDENCE
         for s in sorted(suggestions, key=lambda r: -r['size']):
             if s.get('source') == 'none' or s.get('expanded') or s['verdict'] not in ('clean', 'review'):
                 continue
@@ -278,23 +295,20 @@ class PlanBuilder:
             if not in_app_data:
                 basis.append('不在应用数据目录：只能由你决定')
                 hold = hold or '不在应用数据目录'
-            sure = s['verdict'] == 'clean' and confidence >= threshold and not hold
             if s['verdict'] != 'clean':
                 hold = hold or 'AI 也拿不准'
-            elif not sure and not hold:
-                hold = f'AI 的把握不到 {round(threshold * 100)}%'
-            auto = (('积极模式：' if self.bold and confidence < AUTO_AI_CONFIDENCE else '')
-                    + f'AI 判断可清理（把握 {round(confidence * 100)}%），不属于仍在使用的程序，最近也没有改动') if sure else None
-            item = self.add({
-                'id': _ident('dir', s['path']), 'kind': 'paths', 'group': 'safe' if sure else 'review',
+            elif confidence < MIN_AI_CONFIDENCE:
+                hold = hold or f'AI 的把握不到 {round(MIN_AI_CONFIDENCE * 100)}%'
+            self.add({
+                'id': _ident('dir', s['path']), 'kind': 'paths',
                 'category': '应用数据', 'title': s.get('app') if s.get('app') not in (None, '', '未知') else
                 os.path.basename(s['path']), 'size': s['size'], 'count': s.get('files', 0), 'what': '',
                 'why': s.get('reason') or f'AI 判断：{s.get("verdict_label", "")}', 'effect': s.get('effect') or '',
-                'action': 'recycle', 'source': 'ai', 'confidence': s.get('confidence'), 'selected': sure,
+                'action': 'recycle', 'source': 'ai', 'confidence': s.get('confidence'),
                 'paths': [s['path']], 'node_id': s.get('node_id'), 'score': score, 'basis': basis,
-                'auto_reason': auto, 'hold_reason': hold})
-            if item is not None and item['blocked']:
-                item['group'] = 'review'
+                'eligible': hold is None,
+                'auto_reason': f'AI 判断可清理（把握 {round(confidence * 100)}%），不属于仍在使用的程序，最近也没有改动',
+                'hold_reason': hold})
 
     def add_heuristics(self, scan, analyst, env: dict, analysed: set[int]):
         """Without the model: likely leftovers of uninstalled programs and old versions."""
@@ -310,25 +324,25 @@ class PlanBuilder:
                 newer = newer_sibling(n) if n_old else None
                 if newer:
                     basis = [f'旁边有更新的版本「{newer}」', f'{_ago(n.mtime, self.now)}没有修改过']
-                    hold = self._folder_guards(p, n, None, basis) or (None if self.bold else '盘序的推测，留给你决定')
+                    hold = self._folder_guards(p, n, None, basis)
                     self.add({'id': _ident('dir', p), 'kind': 'paths', 'category': '应用数据', 'title': n.name,
-                              'group': 'review' if hold else 'safe', 'selected': not hold,
+                              'eligible': not hold,
                               'size': n.size, 'count': n.files, 'what': f'「{n.name}」的数据，旁边还有更新的版本「{newer}」。',
                               'why': f'可能是旧版本留下的：{_ago(n.mtime, self.now)}没有修改过。',
                               'effect': '如果还在用旧版本，它的设置和缓存会丢失。', 'action': 'recycle',
                               'source': 'heuristic', 'confidence': 0.6, 'paths': [p], 'score': 60, 'basis': basis,
-                              'auto_reason': '积极模式：旧版本留下的数据，进回收站可以还原', 'hold_reason': hold})
+                              'auto_reason': '旧版本留下的数据，进回收站可以还原', 'hold_reason': hold})
             if node.size >= LEFTOVER_MIN and old and analyst.installed_app(path) == '':
                 basis = ['「已安装的应用」里找不到对应的程序', f'{_ago(node.mtime, self.now)}没有修改过', '没有经过 AI 复核']
-                hold = self._folder_guards(path, node, None, basis) or (None if self.bold else '盘序的推测，留给你决定')
+                hold = self._folder_guards(path, node, None, basis)
                 self.add({'id': _ident('dir', path), 'kind': 'paths', 'category': '应用数据', 'title': node.name,
-                          'group': 'review' if hold else 'safe', 'selected': not hold,
+                          'eligible': not hold,
                           'size': node.size, 'count': node.files,
                           'what': '找不到对应的已安装程序，可能是已卸载程序的残留。',
                           'why': f'在「已安装的应用」里没有找到对应的程序，而且 {_ago(node.mtime, self.now)}没有修改过。',
                           'effect': '如果程序其实还在（例如绿色版），它的设置、存档或缓存会丢失。', 'action': 'recycle',
                           'source': 'heuristic', 'confidence': 0.5, 'paths': [path], 'score': 50, 'basis': basis,
-                          'auto_reason': '积极模式：很可能是已卸载程序的残留，进回收站可以还原', 'hold_reason': hold})
+                          'auto_reason': '很可能是已卸载程序的残留，进回收站可以还原', 'hold_reason': hold})
 
     def add_insights(self, findings: list[dict], file_ai: dict | None = None):
         file_ai = file_ai or {}
@@ -396,7 +410,8 @@ class PlanBuilder:
                 'why': 'AI 建议禁用：' + info.get('reason', ''), 'effect': '开机时不再自动运行，需要时可以手动打开；随时可以在「开机与服务」里重新启用。',
                 'action': 'disable', 'source': 'ai', 'confidence': 0.7,
                 'blocked': '需要管理员权限' if item.get('needs_admin') else None,
-                'score': 60, 'basis': ['AI 建议禁用', '随时可以重新启用']})
+                'score': 60, 'basis': ['AI 建议禁用', '随时可以重新启用'],
+                'hold_reason': '开机启动项由你决定：禁用会改变程序的行为'})
 
     def add_info(self, scan, env: dict):
         for template in INFO_TARGETS:
@@ -426,7 +441,7 @@ class PlanBuilder:
     def plan(self, extra: dict | None = None) -> dict:
         order = {'safe': 0, 'review': 1, 'info': 2}
         self.items.sort(key=lambda i: (order[i['group']], i.get('personal', False), -(i['score'] or 0), -(i['size'] or 0)))
-        return {'id': uuid.uuid4().hex[:10], 'created': time.time(), 'items': self.items,
+        return {'id': uuid.uuid4().hex[:10], 'created': time.time(), 'items': self.items, 'threshold': self.threshold,
                 'groups': [{'id': g, 'name': n} for g, n in GROUPS.items()], **(extra or {})}
 
 
@@ -446,10 +461,11 @@ def refresh_running(plan: dict, running: dict[str, list[str]]) -> list[str]:
         blocked = '请先关闭 ' + '、'.join(procs) if procs else None
         if blocked == was:
             continue
-        safe = item.get('auto_ok', RULES_BY_ID[item['rule']].default) and not blocked
+        threshold = plan.get('threshold', DEFAULT_THRESHOLD)
+        safe = bool(item.get('eligible')) and not blocked and points(item['score']) >= threshold
         item.update(blocked=blocked, group='safe' if safe else 'review', selected=safe)
         item['basis'] = [b for b in item['basis'] if not b.startswith(('自动勾选', '没有自动勾选', '没有勾选'))] \
-            + decision_note(item)
+            + decision_note(item, threshold)
         changed.append(item['id'])
     if changed:
         plan['summary'] = summarize(plan)
@@ -474,8 +490,12 @@ def run(backend, job, options: dict | None = None) -> dict:
     settings = backend.settings.get()
     opts = {**settings.get('checkup', {}), **{k: bool(v) for k, v in (options or {}).items()
                                             if k in ('space_scan', 'duplicates', 'use_ai')}}
-    if (options or {}).get('auto_select') in ('bold', 'careful'):
-        opts['auto_select'] = options['auto_select']
+    threshold = opts.get('auto_threshold', DEFAULT_THRESHOLD)
+    if (options or {}).get('auto_select') in THRESHOLDS:
+        threshold = THRESHOLDS[options['auto_select']]
+    if isinstance((options or {}).get('auto_threshold'), int):
+        threshold = options['auto_threshold']
+    opts['auto_threshold'] = threshold = max(0, min(10, int(threshold)))
     client = backend.client_or_none('classify') if opts.get('use_ai', True) else None
     stages = [s for s in STAGES if (s[0] != 'space' or opts.get('space_scan', True))
               and (s[0] != 'dups' or opts.get('duplicates', True)) and (s[0] != 'ai' or client is not None)]
@@ -567,7 +587,7 @@ def run(backend, job, options: dict | None = None) -> dict:
                               details={'usage': ai_info['usage'], 'model': client.model, 'errors': ai_info['errors'][:5]})
 
     stage('plan')
-    builder = PlanBuilder(policy, backend.knowledge, bold=opts.get('auto_select', 'bold') != 'careful')
+    builder = PlanBuilder(policy, backend.knowledge, threshold=threshold)
     builder.add_junk(junk_rows)
     if backend.scan is not None and backend.scan.complete:
         builder.add_ai_dirs(list(backend.ai_results.values()), env, backend.analyst, backend.scan)

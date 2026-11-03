@@ -151,6 +151,20 @@ class SettingsTest(TempDirTest):
         self.assertNotIn('bogus', again)
         self.assertEqual(again['ai']['preset'], 'deepseek')
 
+    def test_thinking_defaults_to_low_once(self):
+        with open(os.path.join(self.tmp, 'settings.json'), 'w', encoding='utf-8') as fh:
+            json.dump({'ai': {'thinking': 'off'}}, fh)  # written by an earlier build, where off was the default
+        s = Settings(self.tmp)
+        self.assertEqual(s.get()['ai']['thinking'], 'low')
+        s.update({'ai': {'thinking': 'off'}})  # now a real choice: kept
+        self.assertEqual(Settings(self.tmp).get()['ai']['thinking'], 'off')
+
+    def test_old_auto_select_becomes_a_threshold(self):
+        with open(os.path.join(self.tmp, 'settings.json'), 'w', encoding='utf-8') as fh:
+            json.dump({'checkup': {'auto_select': 'careful'}}, fh)
+        self.assertEqual(Settings(self.tmp).get()['checkup']['auto_threshold'], 8)
+        self.assertEqual(Settings(os.path.join(self.tmp, 'fresh')).get()['checkup']['auto_threshold'], 5)
+
     def test_retired_models_are_renamed(self):
         with open(os.path.join(self.tmp, 'settings.json'), 'w', encoding='utf-8') as fh:
             json.dump({'ai': {'preset': 'deepseek', 'model': 'deepseek-chat'}}, fh)

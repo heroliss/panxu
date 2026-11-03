@@ -106,8 +106,8 @@ class CheckupTest(TempDirTest):
             last = item['basis'][-1]
             self.assertTrue(last.startswith(('自动勾选', '没有自动勾选', '没有勾选')), (item['title'], last))
             if item['selected']:
-                # 积极 also ticks leftovers (50-60): reversible, through the Recycle Bin
-                self.assertGreaterEqual(item['score'], 80 if item['action'] == 'delete' else 50, item['title'])
+                self.assertGreaterEqual(int(item['score'] / 10 + 0.5), plan['threshold'], item['title'])
+                self.assertTrue(item['eligible'], item['title'])
             if item.get('personal'):
                 self.assertFalse(item['selected'])
         empty = [i for i in plan['items'] if i.get('finding_kind') == 'empty_folders']
@@ -226,7 +226,7 @@ class CheckupTest(TempDirTest):
         by_id = {i['id']: i for i in plan['items']}
         for rule in ('npm', 'pip', 'uv', 'gradle', 'shader_cache', 'adobe_media_cache', 'thumbcache'):
             self.assertTrue(by_id['rule:' + rule]['selected'], rule)
-            self.assertIn('积极模式', by_id['rule:' + rule]['basis'][-1])
+            self.assertIn('勾选门槛（5 分）', by_id['rule:' + rule]['basis'][-1])
         for rule in ('recycle_bin', 'windows_old', 'component_store'):
             if 'rule:' + rule in by_id:
                 self.assertFalse(by_id['rule:' + rule]['selected'], rule)
@@ -243,6 +243,28 @@ class CheckupTest(TempDirTest):
                 if item['action'] == 'delete':
                     self.assertEqual(item['source'], 'rule', 'only rebuildable rule caches are deleted for good')
 
+    def test_cleaning_on_a_tool_page_updates_the_plan(self):
+        plan = self.checkup(use_ai=False)
+        self.wait(self.call('junk_clean', rule_ids=['user_temp']))
+        file_item = next(i for i in plan['items'] if i.get('finding_kind') == 'incomplete_download')
+        finding = next(f for f in self.call('insights_result')['findings'] if f['id'] == file_item['finding'])
+        self.wait(self.call('insights_delete', finding_id=finding['id'], paths_to_delete=file_item['paths']))
+        fresh = {i['id']: i for i in self.call('plan')['items']}
+        self.assertEqual(fresh['rule:user_temp']['status'], 'done')
+        self.assertIn('垃圾清理', fresh['rule:user_temp']['result'])
+        self.assertEqual(fresh[file_item['id']]['status'], 'done')
+
+    def test_threshold_option(self):
+        strict = self.checkup(use_ai=False, auto_threshold=10)
+        self.assertEqual(strict['threshold'], 10)
+        ticked = [i for i in strict['items'] if i['selected']]
+        self.assertTrue(ticked)
+        self.assertTrue(all(i['source'] == 'rule' and i['score'] == 95 for i in ticked), 'only default rules reach 10')
+        loose = self.checkup(use_ai=False, auto_threshold=0)
+        held = [i for i in loose['items'] if not i['selected'] and i['action'] != 'none' and not i['blocked']]
+        self.assertTrue(held, 'a threshold of 0 still leaves personal and guarded items alone')
+        self.assertTrue(all(i.get('personal') or not i['eligible'] for i in held))
+
     def test_bold_ai_threshold_and_guards(self):
         from panxu import checkup
         policy = paths.ProtectionPolicy(self.backend.env, allowed_roots=[self.sb.root], drive_roots=self.sb.drive_roots)
@@ -251,10 +273,10 @@ class CheckupTest(TempDirTest):
         rows = [{'path': os.path.join(local, name), 'size': 10, 'files': 1, 'verdict': 'clean', 'verdict_label': '可清理',
                  'confidence': conf, 'source': 'ai', 'mtime': old, 'reason': '缓存'}
                 for name, conf in (('SureEnough', 0.72), ('Unsure', 0.6))]
-        careful = checkup.PlanBuilder(policy)
+        careful = checkup.PlanBuilder(policy, threshold=8)
         careful.add_ai_dirs(rows, self.backend.env)
         self.assertEqual([i['selected'] for i in careful.items], [False, False])
-        bold = checkup.PlanBuilder(policy, bold=True)
+        bold = checkup.PlanBuilder(policy, threshold=5)
         bold.add_ai_dirs(rows, self.backend.env)
         self.assertEqual([i['selected'] for i in bold.items], [True, False])
         self.assertIn('70%', bold.items[1]['basis'][-1])
