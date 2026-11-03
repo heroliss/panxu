@@ -26,3 +26,7 @@ history.jsonl
 htmlcov/
 *.log
 .instance.lock
+
+# local tools and reports (real-check reports contain your own paths)
+.claude/launch.json
+real-check-*

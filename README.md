@@ -105,6 +105,7 @@ web/dev/mock.js   浏览器预览用的假后端，不会打包
 tools/build_preview.py   生成可在浏览器打开的界面预览（假数据）
 tools/sandbox_e2e.py     在临时演练环境里通过 Bridge.call 跑完整流程（--live 用真实模型）
 tools/ui_harness.py      在浏览器里把真实界面接到演练环境的真实后端（仅开发用）
+tools/real_check.py      在真实电脑上只读地跑一遍体检，列出方案和可疑之处（不删除任何东西）
 tests/            单元测试
 ```
 
@@ -116,7 +117,7 @@ python tools/sandbox_e2e.py                              # 端到端；--live �
 python tools/ui_harness.py                               # 打开 http://127.0.0.1:8766/
 ```
 
-设计取舍见 [docs/DESIGN.md](docs/DESIGN.md)。
+设计取舍见 [docs/DESIGN.md](docs/DESIGN.md)。加清理规则、修误报的步骤见 [docs/RULES.md](docs/RULES.md)；系统大更新或换电脑后，可以用 `python tools/real_check.py` 只读检查一遍。
 
 ## Windows 验收清单
 

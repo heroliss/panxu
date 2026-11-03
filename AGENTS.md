@@ -10,7 +10,7 @@
 
 ## 删除与系统修改
 
-- 新增垃圾清理规则时，目标必须是公认可以重建的缓存或临时数据，写清说明和影响；`tests/test_cleanup.py` 的目录检查必须通过。不确定的位置放进 `knowledge.py` 作为说明，而不是规则。
+- 新增垃圾清理规则时，目标必须是公认可以重建的缓存或临时数据，写清说明和影响；`tests/test_cleanup.py` 的目录检查必须通过。不确定的位置放进 `knowledge.py` 作为说明，而不是规则。加规则和修误报按 `docs/RULES.md` 的步骤做（Claude Code 里是 `maintain-rules` 技能）。
 - 任何删除都经过 `fsops`（不穿越链接）；用户和 AI 选择的路径必须先经过 `ProtectionPolicy.reason()`。
 - 修改注册表或服务时记录原值（`oplog` 的 `revert` 字段），保证能撤销。
 - 测试只使用临时目录里的夹具，不读写开发者自己的真实数据或系统设置。
@@ -21,6 +21,7 @@
 - 前端：`node tests/test_ui.cjs`，以及对每个改过的 JS 文件运行 `node --check`
 - 界面改动：`python tools/build_preview.py preview.html --page <页面>` 生成假数据预览并实际查看；需要真实后端时用 `python tools/ui_harness.py`（演练环境，浏览器打开 http://127.0.0.1:8766/）。
 - 整体流程：`python tools/sandbox_e2e.py`（脚本模型，不联网）；需要验证真实模型时加 `--live`，只会发送演练环境里的假文件名。
+- 真实电脑：`python tools/real_check.py`（只读，不删除不修改），改了规则、检测或自动勾选后跑一次，报告里不能有「严重」。
 - 演练环境：`python run.py --sandbox` 打开真窗口，所有删除和系统修改只发生在演练目录里。新增访问系统状态的代码（路径、注册表、服务、进程、命令）必须能注入假实现，并在 `sandbox.py` 里提供模拟。
 - Windows 专有行为（回收站、UAC、注册表、WebView2）只能在 Windows 上确认。不要把「打包成功」「Linux 测试通过」或「演练环境通过」说成 Windows 验收通过。
 
