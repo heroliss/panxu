@@ -126,6 +126,15 @@
       return parts.join('\\');
     },
   };
+  // a program's icon, or its initial on a colour derived from the name
+  PX.avatar = function (name, icon) {
+    if (icon) return h('img.app-icon', { src: icon, alt: '' });
+    let hash = 0;
+    for (const ch of name || '?') hash = (hash * 31 + ch.codePointAt(0)) % 360;
+    const letter = [...(name || '?').replace(/^(microsoft|the)\s+/i, '')][0] || '?';
+    return h('span.app-icon.letter', { style: { background: `hsl(${hash} 45% 52%)` }, 'aria-hidden': 'true' }, letter.toUpperCase());
+  };
+
   // In the 演练环境 the drives are folders; show 'C:\Users\demo' rather than the folder's real location.
   // Drives carry a 'letter' only there, so real paths pass through unchanged.
   PX.displayPath = function (path) {

@@ -314,6 +314,9 @@
       content_allowed: !!settings.ai.send_file_content, anonymize: true }),
     ai_review_files: () => job(5, { files: {}, usage: { requests: 1 }, errors: [] }),
     apps_list: () => ({ apps, admin: true, usage_known: true }),
+    file_icons: () => ({}),
+    app_icons: ({ ids }) => Object.fromEntries(ids.filter((id) => id === 'a1' || id === 'a2').map((id) => [id,
+      'data:image/svg+xml;base64,' + btoa('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><rect width="24" height="24" rx="5" fill="' + (id === 'a1' ? '#4285f4' : '#07c160') + '"/></svg>')])),
     app_measure: ({ app_id }) => ({ id: app_id, size: 2.3 * GB, files: 812 }),
     app_uninstall: ({ app_id }) => { apps = apps.filter((a) => a.id !== app_id); return { started: true, simulated: !!sandbox }; },
     ai_ask: ({ messages }) => job(4, { answer: messages.length > 1 ? '可以。删除后下次打开相关程序时会慢一些，因为缓存要重新生成。'

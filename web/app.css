@@ -412,6 +412,10 @@ input[type=checkbox]:disabled { cursor: not-allowed; }
 .app-row { grid-template-columns: minmax(0, 1fr) 72px 84px 92px 92px 200px; align-items: start; }
 .app-row .tag { margin-top: 2px; }
 .app-row .idle { color: var(--amber); }
+.app-main { display: flex; gap: 10px; align-items: flex-start; min-width: 0; }
+.app-icon { width: 24px; height: 24px; flex: none; margin-top: 1px; border-radius: 5px; }
+.app-icon.letter { display: inline-grid; place-items: center; color: #fff; font-size: 12.5px; font-weight: 600; }
+.app-row.thead > :first-child { padding-left: 34px; }
 
 /* ---------- AI 顾问 drawer ---------- */
 .advisor-btn { margin-top: 10px; color: var(--cobalt); }

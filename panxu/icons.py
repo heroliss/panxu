@@ -1,0 +1,114 @@
+"""Program icons as small PNG images (for the 应用 list). Standard library only.
+
+An icon is drawn twice, onto black and onto white; the difference gives the
+alpha channel for both modern (32-bit) and old (masked) icons. Extracting
+reads the file's resources only, nothing is executed.
+"""
+from __future__ import annotations
+
+import base64
+import ctypes
+import os
+import struct
+import zlib
+
+from . import winapi
+
+SIZE = 32
+
+
+def encode_png(width: int, height: int, rgba: bytes) -> bytes:
+    """A truecolour-with-alpha PNG from rows of RGBA bytes."""
+    stride = width * 4
+    raw = b''.join(b'\x00' + rgba[y * stride:(y + 1) * stride] for y in range(height))
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return struct.pack('>I', len(data)) + kind + data + struct.pack('>I', zlib.crc32(kind + data) & 0xFFFFFFFF)
+    return (b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', width, height, 8, 6, 0, 0, 0))
+            + chunk(b'IDAT', zlib.compress(raw, 9)) + chunk(b'IEND', b''))
+
+
+def unblend(on_black: bytes, on_white: bytes) -> bytes:
+    """RGBA from the same image drawn on black and on white (both BGRA, as GDI writes them)."""
+    out = bytearray(len(on_black))
+    for i in range(0, len(on_black), 4):
+        b0, g0, r0 = on_black[i], on_black[i + 1], on_black[i + 2]
+        b1, g1, r1 = on_white[i], on_white[i + 1], on_white[i + 2]
+        # on white = alpha * colour + (1 - alpha) * 255, on black = alpha * colour
+        alpha = 255 - ((r1 - r0) + (g1 - g0) + (b1 - b0)) // 3
+        alpha = max(0, min(255, alpha))
+        if alpha:
+            out[i] = min(255, r0 * 255 // alpha)
+            out[i + 1] = min(255, g0 * 255 // alpha)
+            out[i + 2] = min(255, b0 * 255 // alpha)
+        out[i + 3] = alpha
+    return bytes(out)
+
+
+def data_url(png: bytes) -> str:
+    return 'data:image/png;base64,' + base64.b64encode(png).decode('ascii')
+
+
+def file_icon(path: str, index: int = 0, size: int = SIZE) -> bytes | None:
+    """PNG of an icon in an .exe/.dll/.ico (index as in DisplayIcon, negative = resource id), or None."""
+    if winapi.simulation() is not None or not winapi.IS_WINDOWS or not path or not os.path.isfile(path):
+        return None
+    from ctypes import wintypes
+    user32 = ctypes.WinDLL('user32', use_last_error=True)
+    gdi32 = ctypes.WinDLL('gdi32', use_last_error=True)
+    user32.PrivateExtractIconsW.argtypes = [wintypes.LPCWSTR, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                                            ctypes.POINTER(wintypes.HICON), ctypes.POINTER(wintypes.UINT),
+                                            wintypes.UINT, wintypes.UINT]
+    user32.PrivateExtractIconsW.restype = wintypes.UINT
+    user32.DrawIconEx.argtypes = [wintypes.HDC, ctypes.c_int, ctypes.c_int, wintypes.HICON, ctypes.c_int, ctypes.c_int,
+                                  wintypes.UINT, wintypes.HBRUSH, wintypes.UINT]
+    user32.DestroyIcon.argtypes = [wintypes.HICON]
+    user32.GetDC.restype = wintypes.HDC
+    user32.ReleaseDC.argtypes = [wintypes.HWND, wintypes.HDC]
+    gdi32.CreateCompatibleDC.argtypes = [wintypes.HDC]
+    gdi32.CreateCompatibleDC.restype = wintypes.HDC
+    gdi32.CreateDIBSection.argtypes = [wintypes.HDC, ctypes.c_void_p, wintypes.UINT, ctypes.POINTER(ctypes.c_void_p),
+                                       wintypes.HANDLE, wintypes.DWORD]
+    gdi32.CreateDIBSection.restype = wintypes.HBITMAP
+    gdi32.SelectObject.argtypes = [wintypes.HDC, wintypes.HGDIOBJ]
+    gdi32.SelectObject.restype = wintypes.HGDIOBJ
+    gdi32.DeleteObject.argtypes = [wintypes.HGDIOBJ]
+    gdi32.DeleteDC.argtypes = [wintypes.HDC]
+
+    icon = wintypes.HICON()
+    icon_id = wintypes.UINT()
+    found = user32.PrivateExtractIconsW(path, index, size, size, ctypes.byref(icon), ctypes.byref(icon_id), 1, 0)
+    if found in (0, 0xFFFFFFFF) or not icon:
+        return None
+
+    class BITMAPINFOHEADER(ctypes.Structure):
+        _fields_ = [('biSize', wintypes.DWORD), ('biWidth', ctypes.c_long), ('biHeight', ctypes.c_long),
+                    ('biPlanes', wintypes.WORD), ('biBitCount', wintypes.WORD), ('biCompression', wintypes.DWORD),
+                    ('biSizeImage', wintypes.DWORD), ('biXPelsPerMeter', ctypes.c_long),
+                    ('biYPelsPerMeter', ctypes.c_long), ('biClrUsed', wintypes.DWORD), ('biClrImportant', wintypes.DWORD)]
+
+    header = BITMAPINFOHEADER(ctypes.sizeof(BITMAPINFOHEADER), size, -size, 1, 32, 0, 0, 0, 0, 0, 0)  # top-down
+    screen = user32.GetDC(None)
+    dc = gdi32.CreateCompatibleDC(screen)
+    bits = ctypes.c_void_p()
+    bitmap = gdi32.CreateDIBSection(dc, ctypes.byref(header), 0, ctypes.byref(bits), None, 0)
+    old = gdi32.SelectObject(dc, bitmap) if bitmap else None
+    try:
+        if not bitmap or not bits:
+            return None
+        frames = []
+        for background in (0, 255):
+            ctypes.memset(bits, background, size * size * 4)
+            if not user32.DrawIconEx(dc, 0, 0, icon, size, size, 0, None, 0x0003):  # DI_NORMAL
+                return None
+            gdi32.GdiFlush()
+            frames.append(ctypes.string_at(bits, size * size * 4))
+        return encode_png(size, size, unblend(*frames))
+    finally:
+        if old:
+            gdi32.SelectObject(dc, old)
+        if bitmap:
+            gdi32.DeleteObject(bitmap)
+        gdi32.DeleteDC(dc)
+        user32.ReleaseDC(None, screen)
+        user32.DestroyIcon(icon)

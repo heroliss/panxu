@@ -106,6 +106,31 @@ class AppsTest(TempDirTest):
                 self.apps.uninstall(foo['id'])
         self.assertEqual(self.log.entries(), [])
 
+    def test_icon_sources(self):
+        rows = {a['name']: a for a in self.apps.list()}
+        self.assertEqual(os.path.basename(rows['FooSoft 设计工具']['icon']), 'FooSoft.exe', 'main exe, not the uninstaller')
+        # DisplayIcon with quotes, an environment variable and a resource index
+        ico = self.make('Program Files/Bar/bar.ico', 10)
+        self.reg.keys[('HKLM', BASE + '\\Bar')] = {'DisplayName': 'Bar', 'DisplayIcon': '"%SystemRoot%\\..\\Program Files\\Bar\\bar.ico",-101'}
+        # an MSI package without DisplayIcon: its icon is cached under %SystemRoot%\Installer\{ProductCode}
+        code = '{11111111-2222-3333-4444-555555555555}'
+        cached = self.make(f'Windows/Installer/{code}/ARPPRODUCTICON.ico', 10)
+        self.reg.keys[('HKLM', BASE + '\\' + code)] = {'DisplayName': 'MsiThing', 'WindowsInstaller': 1}
+        # the exe one folder down, as with Adobe Acrobat
+        self.make('Program Files/Deep/App/deep.exe', 10)
+        self.reg.keys[('HKLM', BASE + '\\Deep')] = {'DisplayName': 'Deep', 'InstallLocation': os.path.join(self.pf, 'Deep')}
+        rows = {a['name']: a for a in self.apps.list(fresh=True)}
+        self.assertEqual((os.path.normcase(os.path.normpath(rows['Bar']['icon'])), rows['Bar']['icon_index']),
+                         (os.path.normcase(os.path.normpath(ico)), -101))
+        self.assertEqual(rows['MsiThing']['icon'], cached)
+        self.assertEqual(os.path.basename(rows['Deep']['icon']), 'deep.exe')
+
+    def test_measured_size_survives_refresh(self):
+        foo = next(a for a in self.apps.list() if a['name'].startswith('FooSoft'))
+        measured = self.apps.measure(foo['id'])['size']
+        again = next(a for a in self.apps.list(fresh=True) if a['id'] == foo['id'])
+        self.assertEqual((again['size'], again['size_source']), (measured, 'measured'))
+
     def test_kind_labels_cover_every_kind(self):
         for a in self.apps.list():
             self.assertEqual(a['kind_label'], apps.KIND_LABELS[a['kind']])

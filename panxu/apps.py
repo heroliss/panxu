@@ -21,7 +21,7 @@ import time
 
 from . import paths, winapi
 from .insights import compact, tokens
-from .startup import HKCU, HKLM, WinRegistry, split_command
+from .startup import HKCU, HKLM, WinRegistry, expand_vars, split_command
 
 UNINSTALL_KEYS = [
     (HKLM, r'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall', '所有用户'),
@@ -53,6 +53,7 @@ class AppManager:
         self.admin = winapi.is_admin() if admin is None else admin
         self.oplog = oplog
         self._cache: tuple[float, list] | None = None
+        self._measured: dict[str, int] = {}
 
     def _reg(self):
         if self.registry is None:
@@ -87,13 +88,18 @@ class AppManager:
                     size = None
                 exists = bool(location) and os.path.isdir(location)
                 last_used = self._last_used(location, values, prefetch) if exists else None
+                app_id = f'{hive}|{base}|{sub}'
+                if app_id in self._measured:  # 「计算大小」 survives 「刷新」
+                    size = self._measured[app_id]
+                icon, icon_index = self._icon_source({**values, '_key': sub}, location if exists else '', name)
                 kind = 'runtime' if _RUNTIME.search(name) else 'driver' if _DRIVER.search(name) else \
                     'game' if sub.startswith('Steam App') or 'steamapps' in location.lower() else 'app'
                 out.append({
-                    'id': f'{hive}|{base}|{sub}', 'name': name, 'version': str(values.get('DisplayVersion') or ''),
+                    'id': app_id, 'name': name, 'version': str(values.get('DisplayVersion') or ''),
                     'publisher': str(values.get('Publisher') or ''), 'installed': _date(values.get('InstallDate')),
                     'location': location, 'location_exists': exists, 'size': size,
-                    'size_source': 'estimated' if size is not None else '', 'scope': scope, 'kind': kind,
+                    'size_source': 'measured' if app_id in self._measured else 'estimated' if size is not None else '',
+                    'scope': scope, 'kind': kind, 'icon': icon, 'icon_index': icon_index,
                     'kind_label': KIND_LABELS[kind],
                     'can_uninstall': bool(uninstall), 'msi': bool(values.get('WindowsInstaller')),
                     'last_used': last_used, 'usage_known': prefetch is not None,
@@ -125,6 +131,49 @@ class AppManager:
             out[exe] = max(out.get(exe, 0), t)
         return out
 
+    def _icon_source(self, values: dict, location: str, name: str) -> tuple[str, int]:
+        """(file, index) of the program's icon: DisplayIcon ('C:\\x\\app.exe,0', 'icon.ico'), else its main exe."""
+        text = expand_vars(str(values.get('DisplayIcon') or '').strip(), self.env)
+        index = 0
+        m = re.match(r'^"?(.+?)"?\s*,\s*(-?\d+)\s*$', text)
+        if m:
+            text, index = m.group(1), int(m.group(2))
+        text = text.strip().strip('"')
+        if text and os.path.isfile(text):
+            return text, index  # even "uninstallerIcon.ico" / uninstall.exe usually carry the product icon
+        # MSI packages keep their icon next to the cached package: %SystemRoot%\Installer\{ProductCode}
+        sub = str(values.get('_key') or '')
+        if re.fullmatch(r'\{[0-9A-Fa-f-]{36}\}', sub) and self.env.get('SystemRoot'):
+            cached = os.path.join(self.env['SystemRoot'], 'Installer', sub)
+            try:
+                files = sorted(f for f in os.listdir(cached) if f.lower().endswith(('.ico', '.exe')))
+            except OSError:
+                files = []
+            if files:
+                files.sort(key=lambda f: not f.lower().endswith('.ico'))
+                return os.path.join(cached, files[0]), 0
+        if not location:
+            return '', 0
+        # the main program: an exe named like the program, at most two folders down
+        want = compact(name)
+        best, best_score = '', -1
+        top = location.rstrip('\\/').count(os.sep)
+        seen = 0
+        for dirpath, dirnames, filenames in os.walk(location):
+            depth = dirpath.rstrip('\\/').count(os.sep) - top
+            seen += 1
+            if depth >= 2 or seen > 80:
+                dirnames[:] = []
+            for f in filenames:
+                low = f.lower()
+                if not low.endswith('.exe') or re.match(r'(unins|uninst|setup|update|crash|helper|install)', low):
+                    continue
+                stem = compact(os.path.splitext(f)[0])
+                score = (2 if stem and (stem in want or want in stem) else 1) * 10 - depth
+                if score > best_score:
+                    best, best_score = os.path.join(dirpath, f), score
+        return best, 0
+
     def _last_used(self, location: str, values: dict, prefetch: dict | None) -> float | None:
         if not prefetch:
             return None
@@ -154,6 +203,7 @@ class AppManager:
         if not app['location_exists']:
             raise ValueError('没有找到这个程序的安装文件夹')
         size, count = path_size(app['location'])
+        self._measured[app_id] = size
         if self._cache:
             for a in self._cache[1]:
                 if a['id'] == app_id:

@@ -88,6 +88,7 @@ class Backend:
         self.file_ai: dict[str, dict] = {}
         self.plan: dict | None = None
         self._app_index: tuple[float, list] | None = None
+        self._icons: dict[tuple, str | None] = {}
         self._window = window_provider
         self._relaunch = relaunch
         self.app_dirs = [os.path.dirname(os.path.abspath(__file__)), data_dir]
@@ -675,6 +676,38 @@ class Backend:
             return self.apps.measure(str(app_id))
         except ValueError as exc:
             raise UserError(str(exc)) from None
+
+    def _icon(self, path: str, index: int = 0) -> str | None:
+        from . import icons
+        key = (paths.key(path), index)
+        if key not in self._icons:
+            try:
+                png = icons.file_icon(path, index)
+            except (OSError, ValueError):
+                png = None
+            self._icons[key] = icons.data_url(png) if png else None
+        return self._icons[key]
+
+    def m_app_icons(self, ids: list):
+        """{app id: PNG data URL} for the given programs; programs without a usable icon are left out."""
+        wanted = {str(i) for i in ids or []}
+        out = {}
+        for a in self.apps.list():
+            if a['id'] in wanted and a.get('icon'):
+                url = self._icon(a['icon'], a.get('icon_index', 0))
+                if url:
+                    out[a['id']] = url
+        return out
+
+    def m_file_icons(self, files: list):
+        """{path: PNG data URL} for executables (startup items, services)."""
+        out = {}
+        for p in (files or [])[:300]:
+            if isinstance(p, str) and p.lower().endswith(('.exe', '.dll', '.ico')):
+                url = self._icon(p)
+                if url:
+                    out[p] = url
+        return out
 
     def m_apps_measure_all(self):
         """Measure every program folder that has no size yet (background job)."""

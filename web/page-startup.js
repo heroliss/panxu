@@ -2,16 +2,36 @@
 (function () {
   'use strict';
   const { h } = PX;
-  const state = { tab: 'startup', items: null, services: null, ai: { startup: {}, services: {} }, aiBusy: '', scope: 'third', query: '' };
+  const state = { tab: 'startup', items: null, services: null, ai: { startup: {}, services: {} }, aiBusy: '', scope: 'third', query: '',
+    icons: {} };
   const SUGGEST = { keep: ['建议保留', ''], optional: ['可以禁用', 'info'], disable: ['建议禁用', 'warn'] };
   let root = null;
 
   async function load(force) {
+    if (force) { state.refreshing = true; draw(); }
     try {
       if (state.tab === 'startup' && (force || !state.items)) state.items = await PX.api.call('startup_list');
       if (state.tab === 'services' && (force || !state.services)) state.services = await PX.api.call('services_list');
+      if (force) {
+        const n = state.tab === 'startup' ? state.items.length : state.services.length;
+        PX.toast(`已刷新：共 ${n} ${state.tab === 'startup' ? '个开机启动项' : '个服务'}`);
+      }
     } catch (e) { PX.fail(e); }
+    state.refreshing = false;
     draw();
+    loadIcons();
+  }
+
+  // program icons for the list, fetched after it is shown
+  async function loadIcons() {
+    const rows = state.tab === 'startup' ? state.items || [] : (state.services || []).filter((s) => s.kind === 'third_party');
+    const files = [...new Set(rows.map((r) => r.exe).filter((p) => p && !(p in state.icons)))];
+    if (!files.length) return;
+    try {
+      const got = await PX.api.call('file_icons', { files });
+      for (const p of files) state.icons[p] = got[p] || null;
+    } catch (e) { return; }
+    if (PX.isCurrent('startup')) draw();
   }
 
   async function explain() {
@@ -74,7 +94,8 @@
       h('div.grow', h('div.muted', `${state.items.length} 个开机启动项，其中 ${on} 个已启用。与任务管理器的「启动应用」使用同一套开关，随时可以恢复。`)),
       h('div.actions',
         h('button.btn', { type: 'button', disabled: !!state.aiBusy || !state.items.length, onclick: explain }, PX.icon('spark'), state.aiBusy ? '正在分析…' : 'AI 解释这些启动项'),
-        h('button.btn', { type: 'button', onclick: () => load(true) }, PX.icon('refresh'), '刷新'))));
+        h('button.btn', { type: 'button', disabled: !!state.refreshing, onclick: () => load(true) }, PX.icon('refresh'),
+          state.refreshing ? '正在刷新…' : '刷新'))));
     if (!init.admin && state.items.some((i) => i.needs_admin)) {
       c.appendChild(PX.notice('「所有用户」的启动项需要管理员权限才能修改。', 'info',
         h('button.btn.small', { type: 'button', onclick: PX.restartAsAdmin }, '以管理员身份重启')));
@@ -85,8 +106,9 @@
       const sw = PX.switchEl(it.enabled, (e) => toggle(it, e.target.checked, e.target), it.needs_admin);
       sw.title = it.needs_admin ? '需要管理员权限' : it.enabled ? '点击禁用' : '点击启用';
       list.appendChild(h('div.row.su-row', sw,
-        h('div.cell-main', h('div.name', it.display_name), h('div.sub', [it.publisher || '未知发布者', it.source_label].join('，')),
-          aiNote(state.ai.startup[it.id])),
+        h('div.app-main', PX.avatar(it.display_name, state.icons[it.exe]),
+          h('div.cell-main', h('div.name', it.display_name), h('div.sub', [it.publisher || '未知发布者', it.source_label].join('，')),
+            aiNote(state.ai.startup[it.id]))),
         h('div.sub', { title: PX.displayText(it.command) }, (it.exists ? '' : '文件不存在：') + PX.displayText(it.command)),
         h('div.row-actions', it.exists ? h('button.btn.quiet.small', { type: 'button', title: '打开位置',
           onclick: () => PX.api.call('reveal', { path: it.location }).catch(PX.fail) }, PX.icon('open')) : PX.tag('文件不存在', 'warn'),
@@ -126,7 +148,8 @@
         control = h('div', h('div', s.start_label), h('div.small.faint', s.kind === 'windows' ? 'Windows 服务' : '微软服务'));
       }
       list.appendChild(h('div.row.svc-row',
-        h('div.cell-main', h('div.name', s.display_name), h('div.sub', { title: s.description }, s.description || s.name), aiNote(state.ai.services[s.name])),
+        h('div.app-main', PX.avatar(s.display_name, state.icons[s.exe]),
+          h('div.cell-main', h('div.name', s.display_name), h('div.sub', { title: s.description }, s.description || s.name), aiNote(state.ai.services[s.name]))),
         h('div.cell-main', h('div.sub', s.publisher || '未知发布者'), h('div.sub', { title: PX.displayText(s.binpath) }, PX.displayText(s.exe || s.binpath))),
         h('div.small', s.status === 'running' ? PX.tag(s.status_label, 'good') : h('span.muted', s.status_label)),
         control,

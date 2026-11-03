@@ -3,18 +3,45 @@
   'use strict';
   const { h, fmt } = PX;
   const SUGGEST = { keep: ['建议保留', ''], optional: ['看你是否需要', 'info'], uninstall: ['建议卸载', 'warn'] };
-  const state = { apps: null, admin: false, usageKnown: false, ai: {}, aiBusy: false, query: '', showSystem: false, sort: 'name' };
+  const state = { apps: null, admin: false, usageKnown: false, ai: {}, aiBusy: false, query: '', showSystem: false, sort: 'name',
+    icons: {}, refreshing: false };
   let root = null;
 
   async function load(fresh) {
+    const before = state.apps ? new Set(state.apps.map((a) => a.id)) : null;
+    if (fresh) { state.refreshing = true; draw(); }
     try {
       const r = await PX.api.call('apps_list', { fresh: !!fresh });
       state.apps = r.apps;
       state.admin = r.admin;
       state.usageKnown = r.usage_known;
+      if (fresh && before) {
+        const now = new Set(state.apps.map((a) => a.id));
+        const added = state.apps.filter((a) => !before.has(a.id)).length;
+        const removed = [...before].filter((id) => !now.has(id)).length;
+        PX.toast(`已刷新：共 ${state.apps.length} 个程序` + (added ? `，新增 ${added} 个` : '') + (removed ? `，少了 ${removed} 个（已卸载）` : '') +
+          (!added && !removed ? '，没有变化' : ''));
+      }
     } catch (e) { PX.fail(e); state.apps = state.apps || []; }
+    state.refreshing = false;
     draw();
+    loadIcons();
   }
+
+  // icons come after the list: extracting them takes a moment the first time
+  async function loadIcons() {
+    const ids = (state.apps || []).map((a) => a.id).filter((id) => !(id in state.icons));
+    for (let i = 0; i < ids.length; i += 40) {
+      const batch = ids.slice(i, i + 40);
+      try {
+        const got = await PX.api.call('app_icons', { ids: batch });
+        for (const id of batch) state.icons[id] = got[id] || null;
+      } catch (e) { return; }
+      if (PX.isCurrent('apps')) draw();
+    }
+  }
+
+  const avatar = (a) => PX.avatar(a.name, state.icons[a.id]);
 
   async function explain() {
     const init = PX.state.init;
@@ -78,8 +105,8 @@
     const used = !a.usage_known ? '' : a.last_used ? fmt.ago(a.last_used) : '没有记录';
     const idle = a.usage_known && a.kind !== 'runtime' && a.kind !== 'driver' && (!a.last_used || Date.now() / 1000 - a.last_used > 180 * 86400);
     list.appendChild(h('div.row.app-row',
-      h('div.cell-main', h('div.name', a.name), h('div.sub', [a.publisher || '未知发布者', a.version].filter(Boolean).join(' · ')),
-        info ? h('div.ai-note', PX.tag(label, kind, 'spark'), h('span', info.what), h('span.muted', info.reason)) : null),
+      h('div.app-main', avatar(a), h('div.cell-main', h('div.name', a.name), h('div.sub', [a.publisher || '未知发布者', a.version].filter(Boolean).join(' · ')),
+        info ? h('div.ai-note', PX.tag(label, kind, 'spark'), h('span', info.what), h('span.muted', info.reason)) : null)),
       h('div', PX.tag(a.kind_label || '应用')),
       h('div.size', a.size ? fmt.bytes(a.size) : a.location_exists ? h('button.btn.quiet.small', { type: 'button', onclick: () => measure(a) }, '计算') : '—'),
       h('div.small.muted', a.installed ? fmt.date(a.installed) : '—'),
@@ -114,7 +141,8 @@
         state.apps && state.apps.some((a) => !a.size && a.location_exists) ? h('button.btn', { type: 'button', disabled: !!state.measuring, onclick: measureAll },
           state.measuring ? `正在计算 ${state.measuring.done || 0}/${state.measuring.total || '…'}` : '计算全部大小') : null,
         h('button.btn', { type: 'button', disabled: state.aiBusy || !state.apps || !state.apps.length, onclick: explain }, PX.icon('spark'), state.aiBusy ? '正在分析…' : 'AI 解释这些程序'),
-        h('button.btn', { type: 'button', onclick: () => load(true) }, PX.icon('refresh'), '刷新'))));
+        h('button.btn', { type: 'button', disabled: state.refreshing, onclick: () => load(true) }, PX.icon('refresh'),
+          state.refreshing ? '正在刷新…' : '刷新'))));
     if (!state.apps) { c.appendChild(PX.progressBar(null)); return; }
     if (!state.usageKnown) {
       c.appendChild(PX.notice('「最近运行」需要管理员权限才能读取（来自 Windows 的预读取记录）。', 'info',
