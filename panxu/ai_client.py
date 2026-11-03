@@ -243,7 +243,8 @@ def client_from_settings(ai: dict, api_key: str, purpose: str = 'classify') -> C
         raise AIError('请先在设置中填写 API Key')
     thinking = ''
     if preset.get('thinking_toggle'):
-        thinking = str(ai.get('thinking') or 'off')
+        # verdicts never think: slower, dearer, and long reasoning can use up max_tokens (empty answer)
+        thinking = 'off' if purpose == 'classify' else str(ai.get('thinking') or 'off')
     return Client(ai.get('base_url') or preset.get('base_url', ''), ai.get('model', ''), api_key,
                   ai.get('protocol') or preset.get('protocol', 'openai'), bool(ai.get('json_mode')),
                   float(ai.get('timeout') or 120), thinking=thinking,
