@@ -3,11 +3,13 @@
   'use strict';
   const { h } = PX;
   const NAV = [
-    ['overview', '概览', 'home'],
+    ['home', '首页', 'home'],
     ['junk', '垃圾清理', 'broom'],
     ['space', '空间分析', 'map'],
+    ['mine', '我的文件', 'file'],
     ['large', '大文件', 'big'],
     ['dups', '重复文件', 'copy'],
+    ['apps', '应用', 'apps'],
     ['startup', '开机与服务', 'power'],
     ['history', '操作记录', 'history'],
     ['settings', '设置', 'gear'],
@@ -31,9 +33,12 @@
         type: 'button', 'aria-current': id === current ? 'page' : null, onclick: () => PX.go(id),
       }, PX.icon(icon), h('span', label), badge ? h('em.nav-badge', badge) : null));
     }
+    rail.appendChild(h('button.nav-item.advisor-btn', { type: 'button', onclick: () => PX.advisor.open() }, PX.icon('spark'), h('span', 'AI 顾问')));
     const init = PX.state.init || {};
     const foot = h('div.rail-foot');
-    if (init.admin) {
+    if (init.sandbox) {
+      foot.appendChild(h('div.admin-ok', PX.icon('shield'), '演练环境'));
+    } else if (init.admin) {
       foot.appendChild(h('div.admin-ok', PX.icon('shield'), '管理员模式'));
     } else {
       foot.appendChild(h('div', '普通权限运行。部分系统项目需要管理员权限。'));
@@ -59,6 +64,7 @@
     PX.renderRail();
     const main = document.getElementById('main');
     PX.clear(main);
+    if (PX.state.init && PX.state.init.sandbox) main.appendChild(PX.sandbox.banner());
     const root = main.appendChild(h('div.page'));
     main.scrollTop = 0;
     try {
@@ -69,6 +75,54 @@
     }
   };
   PX.isCurrent = (id) => current === id;
+
+  // ---- 演练环境: a fixed banner, the simulated Recycle Bin and rebuilding the simulation
+  let bannerEl = null;
+  PX.sandbox = {
+    banner() {
+      const sb = PX.state.init.sandbox;
+      bannerEl = h('div.sandbox-banner', PX.icon('shield'),
+        h('div.grow', h('b', '演练环境'), '：所有删除和修改只发生在 ', h('span.mono-path', sb.root), ' 里，不会影响你的电脑。'),
+        h('button.btn.small', { type: 'button', onclick: PX.sandbox.showBin }, `演练回收站（${sb.recycle_count}）`),
+        h('button.btn.small', { type: 'button', onclick: PX.sandbox.reset }, '重建演练环境'));
+      return bannerEl;
+    },
+    async refresh() {
+      try { PX.state.init.sandbox = (await PX.api.call('init')).sandbox; } catch (e) { return; }
+      if (bannerEl && bannerEl.parentNode) bannerEl.replaceWith(PX.sandbox.banner());
+    },
+    async showBin() {
+      let rows;
+      try { rows = await PX.api.call('sandbox_recycle_list'); } catch (e) { PX.fail(e); return; }
+      const list = h('div.confirm-list', { style: { maxHeight: '420px' } });
+      const fill = () => {
+        PX.clear(list);
+        if (!rows.length) list.appendChild(h('div.row.muted', '演练回收站是空的'));
+        for (const r of rows) {
+          list.appendChild(h('div.row', { style: { gridTemplateColumns: 'minmax(0,1fr) auto auto' } },
+            h('div.cell-main', h('div.name', r.name), h('div.sub', r.original)), h('span.num.small', PX.fmt.bytes(r.size)),
+            h('button.btn.small', { type: 'button', onclick: async () => {
+              try { await PX.api.call('sandbox_restore', { item_id: r.id }); rows = rows.filter((x) => x !== r); fill(); PX.sandbox.refresh(); PX.toast('已还原：' + r.name); } catch (e) { PX.fail(e); }
+            } }, '还原')));
+        }
+      };
+      fill();
+      PX.modal({ title: '演练回收站', wide: true, body: h('div', h('div.small.muted', '在演练环境里「移到回收站」的文件都在这里，可以还原到原位置。'), list),
+        actions: [{ label: '在资源管理器中打开', onClick: () => { PX.api.call('open_system_page', { page: 'recyclebin' }).catch(PX.fail); return false; } },
+          { label: '关闭', kind: 'primary' }] });
+    },
+    async reset() {
+      const ok = await PX.confirm({ title: '重建演练环境', ok: '重建', body: h('div',
+        '删除演练用的 C 盘和 D 盘，重新生成一台「用了几年的电脑」。演练环境的设置和操作记录会保留。') });
+      if (!ok) return;
+      try {
+        PX.state.init.sandbox = await PX.api.call('sandbox_reset');
+        PX.state.init.drives = await PX.api.call('drives');
+        PX.toast('演练环境已重建');
+        location.reload();
+      } catch (e) { PX.fail(e); }
+    },
+  };
   PX.refresh = function (id) { if (current === id) PX.go(id); };
 
   async function start() {
@@ -79,7 +133,7 @@
       return;
     }
     PX.applyTheme(PX.state.init.settings.theme);
-    PX.go('overview');
+    PX.go('home');
   }
   document.addEventListener('DOMContentLoaded', start);
 })();

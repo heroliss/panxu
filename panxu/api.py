@@ -13,11 +13,15 @@ import shutil
 import sys
 import time
 
-from . import APP_NAME, __version__, ai_client, fsops, paths, winapi
+from . import APP_NAME, __version__, ai_client, checkup, fsops, insights, paths, winapi
 from .analyst import Analyst, VerdictCache
+from .analyst import _fmt_date as fmt_date
+from .analyst import _fmt_size as fmt_size
+from .apps import KIND_LABELS as APP_KINDS
+from .apps import AppManager
 from .duplicates import find_duplicates, verify_unchanged
 from .jobs import JobManager, UserError
-from .junk import GROUPS, JunkEngine
+from .junk import GROUPS, RULES_BY_ID, JunkEngine
 from .knowledge import Knowledge
 from .oplog import OperationLog
 from .scanner import FLAG_CLOUD, FLAG_DENIED, FLAG_LINKS, SpaceScan
@@ -37,24 +41,47 @@ SETTINGS_URIS = {
 
 
 class Backend:
-    def __init__(self, data_dir: str, window_provider=None, relaunch=None):
+    def __init__(self, data_dir: str, window_provider=None, relaunch=None, sandbox=None, env: dict | None = None,
+                 legacy_key_paths: list[str] | None = None):
+        """``sandbox``: a sandbox.Sandbox — every system access then goes to the simulation (演练环境).
+        ``env`` overrides the base folders (tests). ``legacy_key_paths``: where PanXu 0.x may have
+        saved an API key (imported once when no key is configured)."""
         self.data_dir = data_dir
         os.makedirs(data_dir, exist_ok=True)
-        self.env = paths.environment()
+        self.sandbox = sandbox
+        if sandbox is not None and winapi.simulation() is not sandbox:
+            from . import sandbox as sandbox_mod
+            sandbox_mod.activate(sandbox)
+        self.env = env or paths.environment()
         self.admin = winapi.is_admin()
         self.settings = Settings(data_dir)
+        if legacy_key_paths:
+            try:
+                self.settings.import_legacy_key(legacy_key_paths)
+            except Exception:  # noqa: BLE001 - a broken old file must not stop the program
+                log.exception('importing the 0.x API key failed')
         self.oplog = OperationLog(os.path.join(data_dir, 'history.jsonl'))
         self.jobs = JobManager()
         self.knowledge = Knowledge(self.env)
         self.junk = JunkEngine(self.env, self.admin, oplog=self.oplog)
-        self.startup = StartupManager(env=self.env, admin=self.admin, oplog=self.oplog,
-                                      hkcu_ok=not paths.is_foreign_user())
-        self.services = ServiceManager(env=self.env, admin=self.admin, oplog=self.oplog)
+        registry = sandbox.registry if sandbox is not None else None
+        self.startup = StartupManager(registry=registry, env=self.env, admin=self.admin, oplog=self.oplog,
+                                      hkcu_ok=sandbox is not None or not paths.is_foreign_user())
+        self.services = ServiceManager(env=self.env, admin=self.admin, oplog=self.oplog,
+                                       source=sandbox.services if sandbox is not None else None,
+                                       runner=sandbox.sc if sandbox is not None else None)
+        self.apps = AppManager(registry=registry, env=self.env, admin=self.admin, oplog=self.oplog)
         self.cache = VerdictCache(os.path.join(data_dir, 'ai_cache.json'))
-        self.analyst = Analyst(self.cache, self.env, self.knowledge)
+        self.analyst = Analyst(self.cache, self.env, self.knowledge, app_matcher=self._match_app)
+        # shared state: whatever one page (or the check-up) finds, the others see
         self.scan: SpaceScan | None = None
         self.ai_results: dict[int, dict] = {}
         self.dups: dict | None = None
+        self.junk_rows: list[dict] | None = None
+        self.insights: dict | None = None
+        self.file_ai: dict[str, dict] = {}
+        self.plan: dict | None = None
+        self._app_index: tuple[float, list] | None = None
         self._window = window_provider
         self._relaunch = relaunch
         self.app_dirs = [os.path.dirname(os.path.abspath(__file__)), data_dir]
@@ -64,15 +91,93 @@ class Backend:
     # ------------------------------------------------------------------ helpers
     def policy(self) -> paths.ProtectionPolicy:
         excluded = self.settings.get().get('excluded_paths', [])
+        if self.sandbox is not None:
+            return paths.ProtectionPolicy(self.env, excluded, self.app_dirs, allowed_roots=[self.sandbox.root],
+                                          drive_roots=self.sandbox.drive_roots)
         return paths.ProtectionPolicy(self.env, excluded, self.app_dirs)
 
-    def _client(self):
+    def _client(self, purpose: str = 'classify'):
         s = self.settings.get()
         key = self.settings.get_secret('ai_key:' + s['ai']['preset'])
         try:
-            return ai_client.client_from_settings(s['ai'], key)
+            return ai_client.client_from_settings(s['ai'], key, purpose=purpose)
         except ai_client.AIError as exc:
             raise UserError(str(exc)) from None
+
+    def client_or_none(self, purpose: str = 'classify'):
+        try:
+            return self._client(purpose)
+        except UserError:
+            return None
+
+    def _match_app(self, folder_name: str) -> str | None:
+        if self._app_index is None or time.time() - self._app_index[0] > 60:
+            try:
+                self._app_index = (time.time(), self.apps.match_index())
+            except OSError:
+                self._app_index = (time.time(), [])
+        app = self.apps.match_folder(folder_name, self._app_index[1])
+        return app['name'] if app else None
+
+    def forget_paths(self, removed: list[str]):
+        """Keep the shared results in step after files were deleted or recycled."""
+        if not removed:
+            return
+        if self.scan is not None and self.scan.complete:
+            for p in removed:
+                try:
+                    self.scan.remove_path(p, 0, 0)
+                except (ValueError, KeyError):
+                    pass
+        gone = [paths.key(p) for p in removed]
+
+        def alive(path):
+            k = paths.key(path)
+            return not any(k == g or k.startswith(g + '\\') for g in gone)
+        if self.insights:
+            kept = []
+            for f in self.insights['findings']:
+                f['files'] = [x for x in f['files'] if alive(x['path'])]
+                if f['files']:
+                    f['count'] = len(f['files'])
+                    f['size'] = sum(x['size'] for x in f['files'])
+                    f['removable_count'] = sum(1 for x in f['files'] if x.get('remove'))
+                    f['removable_size'] = sum(x['size'] for x in f['files'] if x.get('remove'))
+                    kept.append(f)
+            self.insights['findings'] = kept
+        if self.dups:
+            groups = []
+            for g in self.dups['groups']:
+                g['files'] = [f for f in g['files'] if alive(f['path'])]
+                if len(g['files']) > 1:
+                    g['wasted'] = g['size'] * (len(g['files']) - 1)
+                    groups.append(g)
+            self.dups['groups'] = groups
+
+    def files_for_ai(self, finding_ids: list, include_content: bool) -> list[dict]:
+        """「我的文件」 findings flattened into what analyst.review_files sends."""
+        if not self.insights:
+            raise UserError('请先整理一次「我的文件」')
+        wanted = {str(i) for i in finding_ids or []}
+        out = []
+        for f in self.insights['findings']:
+            if f['id'] not in wanted or f['kind'] == 'empty_folders':
+                continue
+            for x in f['files']:
+                row = {'path': x['path'], 'name': x['name'], 'size': x['size'], 'mtime': x['mtime'],
+                       'category': x.get('category', 'other'), 'group': f['kind_label'], 'note': x.get('note', ''),
+                       'group_id': f['id'] if f['kind'] == 'name_versions' else ''}
+                if include_content:
+                    excerpt = insights.content_excerpt(x['path'], 800)
+                    if excerpt:
+                        row['excerpt'] = excerpt
+                out.append(row)
+        return out
+
+    def startup_items_for_ai(self, items: list[dict]) -> list[dict]:
+        return [{'key': 'startup:' + i['name'] + '|' + i['command'], 'id': i['id'], 'kind': 'startup',
+                 'name': i['display_name'], 'command': i['command'], 'publisher': i['publisher'],
+                 'description': ''} for i in items]
 
     def _require_scan(self) -> SpaceScan:
         if self.scan is None or not self.scan.complete:
@@ -87,11 +192,25 @@ class Backend:
             'settings': s, 'has_key': self.settings.has_secret('ai_key:' + s['ai']['preset']),
             'presets': ai_client.PRESETS, 'drives': self.m_drives(), 'rules': self.junk.catalogue(),
             'groups': [{'id': g, 'name': n} for g, n in GROUPS], 'start_types': START_TYPES,
-            'home': self.env.get('USERPROFILE', ''), 'system_drive': self.env.get('SystemDrive', 'C:') + '\\',
-            'data_dir': self.data_dir,
+            'home': self.env.get('USERPROFILE', ''), 'system_drive': self._system_drive(),
+            'data_dir': self.data_dir, 'sandbox': self._sandbox_info(),
+            'plan_groups': [{'id': g, 'name': n} for g, n in checkup.GROUPS.items()],
+            'checkup_stages': [{'id': s, 'label': lbl} for s, lbl in checkup.STAGES],
         }
 
+    def _system_drive(self) -> str:
+        drive = self.env.get('SystemDrive', 'C:')
+        return paths.native(drive if drive.endswith(('\\', '/')) else drive + '\\')
+
+    def _sandbox_info(self):
+        if self.sandbox is None:
+            return None
+        size, count = self.sandbox.recycle_bin_info()
+        return {'root': self.sandbox.root, 'recycle_count': count, 'recycle_size': size}
+
     def m_drives(self):
+        if self.sandbox is not None:
+            return self.sandbox.drives()
         rows = []
         try:
             import psutil
@@ -140,6 +259,11 @@ class Backend:
         uri = SETTINGS_URIS.get(page)
         if not uri:
             raise UserError('未知页面')
+        if self.sandbox is not None and page == 'recyclebin':
+            folder = self.sandbox.recycle_dir()
+            os.makedirs(folder, exist_ok=True)
+            winapi.reveal_in_explorer(folder)  # the simulated Recycle Bin, not the real one
+            return True
         winapi.open_uri(uri)
         return True
 
@@ -308,7 +432,7 @@ class Backend:
         return out
 
     def m_delete_paths(self, items: list, mode: str = 'recycle', source: str = 'space'):
-        return self._delete(items, mode, 'space' if source not in ('space', 'large_files', 'ai') else source)
+        return self._delete(items, mode, 'space' if source not in ('space', 'large_files', 'ai', 'plan') else source)
 
     def _delete(self, items: list, mode: str, source: str, after=None):
         if mode not in ('recycle', 'permanent'):
@@ -353,12 +477,7 @@ class Backend:
                     title = ('移到回收站' if mode == 'recycle' else '永久删除') + f' {len(done)} 项' + ('（已停止）' if cancelled else '')
                     self.oplog.add('recycle' if mode == 'recycle' else 'delete', title, freed=stats.bytes, items=done,
                                    failures=stats.failures, details={'source': source, 'mode': mode, 'cancelled': cancelled})
-                if self.scan is not None and self.scan.complete:
-                    for p in done:
-                        try:
-                            self.scan.remove_path(p, 0, 0)
-                        except (ValueError, KeyError):
-                            pass
+                self.forget_paths(done)
                 if after is not None:
                     after(done)
             return {'done': done, 'freed': stats.bytes, 'failed': stats.failed, 'failures': stats.failures,
@@ -446,16 +565,7 @@ class Backend:
                 targets.append(f['path'])
         if not targets:
             raise UserError('没有选择任何文件')
-        def forget(done):
-            gone = {paths.key(p) for p in done}
-            groups = []
-            for g in self.dups['groups']:
-                g['files'] = [f for f in g['files'] if paths.key(f['path']) not in gone]
-                if len(g['files']) > 1:
-                    g['wasted'] = g['size'] * (len(g['files']) - 1)
-                    groups.append(g)
-            self.dups['groups'] = groups
-        return self._delete(targets, 'recycle', 'duplicates', after=forget)
+        return self._delete(targets, 'recycle', 'duplicates')  # forget_paths updates the groups
 
     # ------------------------------------------------------------------ startup & services
     def m_startup_list(self):
@@ -478,13 +588,13 @@ class Backend:
 
     def m_ai_explain(self, kind: str, use_cache: bool = True):
         if kind == 'startup':
-            items = [{'key': 'startup:' + i['name'] + '|' + i['command'], 'id': i['id'], 'kind': 'startup',
-                      'name': i['display_name'], 'command': i['command'], 'publisher': i['publisher'],
-                      'description': ''} for i in self.startup.list()]
+            items = self.startup_items_for_ai(self.startup.list())
         elif kind == 'services':
             items = [{'key': 'service:' + s['name'] + '|' + s['binpath'], 'id': s['name'], 'kind': 'service',
                       'name': s['display_name'], 'command': s['binpath'], 'publisher': s['publisher'],
                       'description': s['description']} for s in self.services.list() if s['kind'] == 'third_party']
+        elif kind == 'apps':
+            items = [self._app_for_ai(a) for a in self.apps.list()]
         else:
             raise UserError('未知类型')
         s = self.settings.get()
@@ -498,6 +608,343 @@ class Backend:
             return {'items': {k: v for k, v in by_id.items() if v}, 'usage': result['usage'],
                     'errors': result['errors']}
         return self.jobs.start('ai_explain', run, group='ai')
+
+    # ------------------------------------------------------------------ installed programs
+    def m_apps_list(self, fresh: bool = False):
+        apps = self.apps.list(fresh=bool(fresh))
+        return {'apps': apps, 'admin': self.admin, 'usage_known': any(a['usage_known'] for a in apps)}
+
+    def m_app_measure(self, app_id: str):
+        try:
+            return self.apps.measure(str(app_id))
+        except ValueError as exc:
+            raise UserError(str(exc)) from None
+
+    def m_app_uninstall(self, app_id: str):
+        try:
+            result = self.apps.uninstall(str(app_id))
+        except (ValueError, FileNotFoundError, OSError) as exc:
+            raise UserError(str(exc)) from None
+        self._app_index = None
+        return result
+
+    def _app_for_ai(self, a: dict) -> dict:
+        extra = {'version': a['version'], 'category': APP_KINDS.get(a['kind'], '应用')}
+        if a['size']:
+            extra['size'] = fmt_size(a['size'])
+        if a['installed']:
+            extra['installed'] = fmt_date(a['installed'])
+        if a['usage_known']:
+            extra['last_run'] = fmt_date(a['last_used']) if a['last_used'] else '没有运行记录'
+        return {'key': 'app:' + a['name'] + '|' + a['version'], 'id': a['id'], 'kind': 'app', 'name': a['name'],
+                'publisher': a['publisher'], 'command': '', 'extra': extra}
+
+    # ------------------------------------------------------------------ 我的文件
+    def m_insights_roots(self):
+        return checkup.personal_roots(self.env, self.settings.get())
+
+    def m_insights_scan(self, roots: list | None = None):
+        settings = self.settings.get()
+        roots = [r for r in (roots or checkup.personal_roots(self.env, settings)) if isinstance(r, str) and os.path.isdir(r)]
+        if not roots:
+            raise UserError('请至少选择一个存在的文件夹')
+        policy = self.policy()
+
+        def run(job):
+            ins = insights.Insights(self.env, settings, apps=self.apps).collect(
+                roots, skip=checkup.system_skip(self.env, policy), cancel=job.cancel,
+                progress=lambda p: job.update(**p))
+            self.insights = {'findings': ins.findings(), 'stats': ins.stats, 'roots': ins.roots, 'time': time.time()}
+            return self.m_insights_result()
+        return self.jobs.start('insights_scan', run, group='insights')
+
+    def m_insights_result(self):
+        if not self.insights:
+            return None
+        policy = self.policy()
+        findings = []
+        for f in self.insights['findings']:
+            files = [{**x, 'ai': self.file_ai.get(x['path']), 'blocked': policy.reason(x['path'])} for x in f['files']]
+            findings.append({**f, 'files': files})
+        return {**self.insights, 'findings': findings}
+
+    def m_insights_delete(self, finding_id: str, paths_to_delete: list):
+        if not self.insights:
+            raise UserError('请先整理一次「我的文件」')
+        finding = next((f for f in self.insights['findings'] if f['id'] == finding_id), None)
+        if finding is None:
+            raise UserError('这组结果已失效，请重新整理')
+        known = {paths.key(x['path']): x['path'] for x in finding['files']}
+        chosen = [known[paths.key(p)] for p in paths_to_delete or [] if isinstance(p, str) and paths.key(p) in known]
+        if not chosen:
+            raise UserError('没有选择任何文件')
+        if finding['kind'] == 'name_versions' and len(chosen) >= len(finding['files']):
+            raise UserError('同一文件的多个版本至少要保留一份')
+        # personal files only ever go to the Recycle Bin
+        return self._delete(chosen, 'recycle', 'insights')
+
+    def m_ai_review_preview(self, finding_ids: list):
+        """What would be sent: the confirmation dialog lists it, content files separately."""
+        files = self.files_for_ai(finding_ids, include_content=False)
+        readable = [f for f in files if os.path.splitext(f['path'])[1].lower() in
+                    insights.TEXT_EXTS | set(insights.OFFICE)]
+        s = self.settings.get()['ai']
+        return {'files': [{'path': f['path'], 'name': f['name'], 'size': f['size']} for f in files],
+                'content_files': [{'path': f['path'], 'name': f['name']} for f in readable],
+                'content_allowed': bool(s.get('send_file_content')), 'anonymize': bool(s.get('anonymize_paths', True))}
+
+    def m_ai_review_files(self, finding_ids: list, include_content: bool = False):
+        s = self.settings.get()
+        if include_content and not s['ai'].get('send_file_content'):
+            raise UserError('设置中没有允许读取文档内容')
+        files = self.files_for_ai(finding_ids, include_content=bool(include_content))
+        if not files:
+            raise UserError('没有可以发送的文件')
+        client = self._client()
+
+        def run(job):
+            result = self.analyst.review_files(files, client, s['ai'].get('anonymize_paths', True),
+                                               max_requests=int(s['ai'].get('max_requests', 8)), cancel=job.cancel,
+                                               progress=lambda p: job.update(**p))
+            self.file_ai.update(result['files'])
+            if result['requests']:
+                sent = sum(1 for f in files if f.get('excerpt'))
+                self.oplog.add('ai', f'AI 查看 {len(files)} 个文件' + (f'（含 {sent} 个文档的开头内容）' if sent else ''),
+                               details={'usage': result['usage'], 'model': client.model, 'errors': result['errors'][:5],
+                                        'content_files': [f['path'] for f in files if f.get('excerpt')]})
+            return {'files': result['files'], 'usage': result['usage'], 'errors': result['errors']}
+        return self.jobs.start('ai_review', run, group='ai')
+
+    # ------------------------------------------------------------------ 一键体检 and the plan
+    def m_checkup(self, options: dict | None = None):
+        if any(j['kind'] in ('junk_clean', 'delete', 'plan_execute') for j in self.jobs.running()):
+            raise UserError('清理正在进行，完成后再体检')
+
+        def run(job):
+            return checkup.run(self, job, options if isinstance(options, dict) else {})
+        return self.jobs.start('checkup', run, group='checkup')
+
+    def m_plan(self):
+        if self.plan is None:
+            return None
+        self.plan['summary'] = checkup.summarize(self.plan)
+        return self.plan
+
+    def m_plan_preview(self, item_ids: list):
+        """Totals for the confirmation dialog, split by what will happen."""
+        plan = self._require_plan()
+        wanted = {str(i) for i in item_ids or []}
+        out = {'delete': {'count': 0, 'size': 0, 'titles': []}, 'recycle': {'count': 0, 'size': 0, 'titles': []},
+               'disable': {'count': 0, 'titles': []}, 'skipped': []}
+        for item in plan['items']:
+            if item['id'] not in wanted:
+                continue
+            if item['blocked'] or item['status'] != 'pending' or item['action'] == 'none':
+                out['skipped'].append({'title': item['title'], 'reason': item['blocked'] or '不需要操作'})
+                continue
+            slot = out[item['action']]
+            slot['count'] += 1
+            slot['titles'].append(item['title'])
+            if 'size' in slot:
+                slot['size'] += item['size'] or 0
+        return out
+
+    def m_plan_execute(self, item_ids: list):
+        plan = self._require_plan()
+        if not isinstance(item_ids, list) or not item_ids:
+            raise UserError('请选择要执行的项目')
+
+        def run(job):
+            try:
+                return checkup.execute(self, plan, [str(i) for i in item_ids], job)
+            except ValueError as exc:
+                raise UserError(str(exc)) from None
+        return self.jobs.start('plan_execute', run, group='modify')
+
+    def _require_plan(self) -> dict:
+        if self.plan is None:
+            raise UserError('请先做一次体检')
+        return self.plan
+
+    # ------------------------------------------------------------------ 问 AI
+    def m_ai_ask(self, messages: list, target: dict | None = None, page: str = '', include_content: bool = False):
+        if not isinstance(messages, list) or not messages:
+            raise UserError('请输入问题')
+        context = self._ask_context(target if isinstance(target, dict) else {'type': 'global'}, str(page or ''),
+                                    bool(include_content))
+        client = self._client('advise')
+
+        def run(job):
+            try:
+                return {**self.analyst.ask(client, context, messages), 'model': client.model}
+            except (ai_client.AIError, ValueError) as exc:
+                raise UserError(str(exc)) from None
+        return self.jobs.start('ai_ask', run)
+
+    def _anon(self, path: str) -> str:
+        return paths.anonymize(path, self.env) if self.settings.get()['ai'].get('anonymize_paths', True) else path
+
+    def _path_context(self, path: str) -> dict:
+        policy = self.policy()
+        ctx = {'path': self._anon(path)}
+        node = self.scan.find(path) if self.scan is not None and self.scan.complete else None
+        if node is not None:
+            ctx.update(type='文件夹', size=fmt_size(node.size), files=node.files, modified=fmt_date(node.mtime),
+                       largest_subfolders=[[c.name, fmt_size(c.size)] for c in (node.children or ())[:8]])
+            hints = self.analyst.hints(node)
+            if hints:
+                ctx['hints'] = hints
+            if node.id in self.ai_results:
+                r = self.ai_results[node.id]
+                ctx['earlier_ai_verdict'] = {'verdict': r['verdict_label'], 'reason': r['reason']}
+        elif os.path.isfile(path):
+            st = os.stat(path)
+            ctx.update(type=paths.category_label(paths.category_of(path)), size=fmt_size(st.st_size),
+                       modified=fmt_date(st.st_mtime))
+        elif os.path.isdir(path):
+            ctx['type'] = '文件夹'
+        note = self.knowledge.annotate(path)
+        if note:
+            ctx['panxu_knows'] = {'label': note['label'], 'advice': note['advice']}
+        reason, caution = policy.reason(path), policy.caution(path)
+        if reason:
+            ctx['protected'] = reason
+        elif caution:
+            ctx['caution'] = caution
+        app = self.analyst.installed_app(path)
+        if app is not None:
+            ctx['installed_app'] = app or '未找到对应的已安装程序'
+        return ctx
+
+    def _ask_context(self, target: dict, page: str, include_content: bool) -> dict:
+        kind = target.get('type')
+        ctx: dict = {'current_page': page} if page else {}
+        if kind == 'path' and isinstance(target.get('path'), str):
+            ctx['about'] = self._path_context(target['path'])
+        elif kind == 'rule' and target.get('id') in RULES_BY_ID:
+            rule = RULES_BY_ID[target['id']]
+            ctx['about'] = {'type': '垃圾清理规则', 'name': rule.name, 'description': rule.description,
+                            'note': rule.note, 'needs_admin': rule.admin}
+            row = next((r for r in self.junk_rows or [] if r['id'] == rule.id), None)
+            if row and row.get('size') is not None:
+                ctx['about']['found'] = fmt_size(row['size'])
+        elif kind == 'startup':
+            item = next((i for i in self.startup.list() if i['id'] == target.get('id')), None)
+            if item is None:
+                raise UserError('启动项已不存在，请刷新列表')
+            ctx['about'] = {'type': '开机启动项', 'name': item['display_name'], 'command': self._anon_text(item['command']),
+                            'publisher': item['publisher'], 'enabled': item['enabled']}
+        elif kind == 'service':
+            svc = next((s for s in self.services.list() if s['name'] == target.get('id')), None)
+            if svc is None:
+                raise UserError('服务不存在，请刷新列表')
+            ctx['about'] = {'type': '系统服务', 'name': svc['display_name'], 'service_name': svc['name'],
+                            'description': svc['description'][:300], 'start_type': svc['start_label'],
+                            'status': svc['status_label'], 'publisher': svc['publisher'],
+                            'program': self._anon_text(svc['binpath']), 'microsoft': svc['kind'] != 'third_party'}
+        elif kind == 'app':
+            app = self.apps.get(str(target.get('id')))
+            if app is None:
+                raise UserError('程序已不存在，请刷新列表')
+            ctx['about'] = {'type': '已安装的程序', 'name': app['name'], 'publisher': app['publisher'],
+                            **self._app_for_ai(app)['extra']}
+        elif kind == 'file' and isinstance(target.get('path'), str):
+            ctx['about'] = self._file_context(target['path'], include_content)
+        elif kind == 'plan_item':
+            item = next((i for i in (self.plan or {}).get('items', []) if i['id'] == target.get('id')), None)
+            if item is None:
+                raise UserError('清理方案已更新，请重新打开')
+            ctx['about'] = {'type': '清理方案中的一项', 'title': item['title'], 'group': checkup.GROUPS[item['group']],
+                            'action': checkup.ACTIONS[item['action']], 'source': checkup.SOURCES[item['source']],
+                            'size': fmt_size(item['size'] or 0), 'what': item['what'], 'why': item['why'],
+                            'effect': item['effect'], 'paths': [self._anon(p) for p in item['paths'][:5]]}
+            if item.get('blocked'):
+                ctx['about']['protected'] = item['blocked']
+            if len(item['paths']) == 1:
+                detail = (self._file_context(item['paths'][0], False) if item.get('personal')
+                          else self._path_context(item['paths'][0]))
+                ctx['about']['detail'] = detail
+        else:
+            ctx['about'] = {'type': '整台电脑'}
+            ctx.update(self._global_context())
+        return ctx
+
+    def _anon_text(self, text: str) -> str:
+        from .analyst import anonymize_text
+        return anonymize_text(text, self.env) if self.settings.get()['ai'].get('anonymize_paths', True) else text
+
+    def _file_context(self, path: str, include_content: bool) -> dict:
+        ctx = {'path': self._anon(path), 'type': paths.category_label(paths.category_of(path))}
+        try:
+            st = os.stat(path)
+            ctx.update(size=fmt_size(st.st_size), modified=fmt_date(st.st_mtime))
+        except OSError:
+            ctx['missing'] = True
+        for f in (self.insights or {}).get('findings', []):
+            hit = next((x for x in f['files'] if paths.key(x['path']) == paths.key(path)), None)
+            if hit:
+                ctx['found_as'] = {'group': f['kind_label'], 'reason': f['reason'], 'note': hit.get('note', '')}
+                break
+        if path in self.file_ai:
+            r = self.file_ai[path]
+            ctx['earlier_ai_verdict'] = {'verdict': r['verdict_label'], 'what': r['what'], 'reason': r['reason']}
+        if include_content:
+            if not self.settings.get()['ai'].get('send_file_content'):
+                raise UserError('设置中没有允许读取文档内容')
+            excerpt = insights.content_excerpt(path, 1200)
+            if excerpt:
+                ctx['excerpt'] = excerpt
+        return ctx
+
+    def _global_context(self) -> dict:
+        out: dict = {'drives': [{'drive': d.get('letter') or d['root'], 'label': d['label'], 'total': fmt_size(d['total']),
+                                 'free': fmt_size(d['free']), 'system': d['system']} for d in self.m_drives()]}
+        if self.junk_rows:
+            rows = sorted((r for r in self.junk_rows if r.get('size')), key=lambda r: -r['size'])[:10]
+            out['junk_found'] = [[RULES_BY_ID[r['id']].name, fmt_size(r['size'])] for r in rows]
+        if self.scan is not None and self.scan.complete:
+            nodes = []
+            for child in self.scan.root.children or ():
+                nodes.append(child)
+                nodes.extend((child.children or ())[:5])
+            nodes.sort(key=lambda n: -n.size)
+            out['largest_folders'] = [[self._anon(self.scan.path_of(n)), fmt_size(n.size)] for n in nodes[:10]]
+        if self.plan:
+            out['cleanup_plan'] = [[i['title'], checkup.GROUPS[i['group']], fmt_size(i['size'] or 0)]
+                                   for i in self.plan['items'][:15]]
+        return out
+
+    # ------------------------------------------------------------------ 演练环境
+    def _require_sandbox(self):
+        if self.sandbox is None:
+            raise UserError('现在不是演练环境')
+        return self.sandbox
+
+    def m_sandbox_recycle_list(self):
+        sb = self._require_sandbox()
+        return [{'id': r['id'], 'original': r['original'], 'name': os.path.basename(r['original']),
+                 'size': r['size'], 'time': r['time']} for r in sb.recycle_items()]
+
+    def m_sandbox_restore(self, item_id: str):
+        sb = self._require_sandbox()
+        try:
+            return sb.restore(str(item_id))
+        except (FileNotFoundError, FileExistsError, OSError) as exc:
+            raise UserError(str(exc)) from None
+
+    def m_sandbox_reset(self):
+        sb = self._require_sandbox()
+        if self.jobs.running():
+            raise UserError('还有任务在进行，完成后再重建')
+        try:
+            sb.reset()
+        except (RuntimeError, OSError) as exc:
+            raise UserError(f'重建失败：{exc}') from None
+        self.scan, self.ai_results, self.dups, self.junk_rows = None, {}, None, None
+        self.insights, self.file_ai, self.plan, self._app_index = None, {}, None, None
+        self.apps._cache = None
+        self.junk.last_scan.clear()
+        return self._sandbox_info()
 
     # ------------------------------------------------------------------ history
     def m_history(self, limit: int = 200):

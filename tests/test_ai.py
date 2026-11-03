@@ -91,6 +91,52 @@ class ClientTest(unittest.TestCase):
     def test_list_models(self):
         self.assertEqual(Client(self.base, 'm1', 'k').list_models(), ['m1', 'm2'])
 
+    def test_thinking_switch(self):
+        FakeHandler.replies = [chat('{"a": 1}'), chat('答案')]
+        Client(self.base, 'm', 'k', json_mode=True, thinking='off', temperature=0.2).complete_json('s', 'u')
+        body = FakeHandler.seen[0]['body']
+        self.assertEqual(body['thinking'], {'type': 'disabled'})
+        self.assertNotIn('reasoning_effort', body)
+        self.assertEqual(body['temperature'], 0.2)
+        Client(self.base, 'm', 'k', thinking='high').chat('s', [{'role': 'user', 'content': 'q'}])
+        body = FakeHandler.seen[1]['body']
+        self.assertEqual((body['thinking'], body['reasoning_effort']), ({'type': 'enabled'}, 'high'))
+        self.assertNotIn('response_format', body, 'free-text answers never ask for JSON')
+
+    def test_optional_fields_dropped_once_on_400(self):
+        FakeHandler.replies = [(400, {'error': {'message': 'unknown field thinking'}}), chat('{"a": 1}'), chat('{"b": 2}')]
+        c = Client(self.base, 'm', 'k', json_mode=True, thinking='off', temperature=0.2)
+        self.assertEqual(c.complete_json('s', 'u'), {'a': 1})
+        self.assertEqual(c.complete_json('s', 'u'), {'b': 2})
+        for seen in FakeHandler.seen[1:]:
+            for field in Client.OPTIONAL_FIELDS:
+                self.assertNotIn(field, seen['body'])
+
+    def test_truncated_thinking_is_explained(self):
+        FakeHandler.replies = [(200, {'choices': [{'message': {'content': '', 'reasoning_content': '...'}, 'finish_reason': 'length'}]})]
+        with self.assertRaises(AIError) as ctx:
+            Client(self.base, 'm', 'k').complete('s', 'u')
+        self.assertIn('深度思考', str(ctx.exception))
+
+    def test_chat_keeps_the_conversation(self):
+        FakeHandler.replies = [chat('第二个回答')]
+        msgs = [{'role': 'user', 'content': '一'}, {'role': 'assistant', 'content': '回答'}, {'role': 'user', 'content': '二'},
+                {'role': 'system', 'content': 'ignored'}]
+        self.assertEqual(Client(self.base, 'm', 'k').chat('sys', msgs[:3]), '第二个回答')
+        sent = FakeHandler.seen[0]['body']['messages']
+        self.assertEqual([m['role'] for m in sent], ['system', 'user', 'assistant', 'user'])
+        with self.assertRaises(AIError):
+            Client(self.base, 'm', 'k').chat('sys', msgs[:2])  # must end with a question
+
+    def test_from_settings_purpose(self):
+        ai = {'preset': 'deepseek', 'base_url': 'x', 'model': 'deepseek-flash', 'thinking': 'high'}
+        classify = ai_client.client_from_settings(ai, 'k')
+        advise = ai_client.client_from_settings(ai, 'k', purpose='advise')
+        self.assertEqual((classify.thinking, classify.temperature), ('off', 0.2))
+        self.assertEqual((advise.thinking, advise.temperature), ('high', None))
+        other = ai_client.client_from_settings({'preset': 'kimi', 'base_url': 'x', 'model': 'm', 'thinking': 'high'}, 'k')
+        self.assertEqual(other.thinking, '', 'only services with a thinking switch get the field')
+
     def test_from_settings_requires_key(self):
         with self.assertRaises(AIError):
             ai_client.client_from_settings({'preset': 'deepseek', 'base_url': 'x', 'model': 'm'}, '')

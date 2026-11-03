@@ -84,6 +84,20 @@ class WinRegistry:
         with wr.CreateKeyEx(self.hives[hive], path, 0, wr.KEY_SET_VALUE | wr.KEY_WOW64_64KEY) as key:
             wr.SetValueEx(key, name, 0, wr.REG_BINARY, data)
 
+    def subkeys(self, hive: str, path: str) -> list[str]:
+        wr = self.winreg
+        try:
+            with wr.OpenKey(self.hives[hive], path, 0, wr.KEY_READ | wr.KEY_WOW64_64KEY) as key:
+                out, i = [], 0
+                while True:
+                    try:
+                        out.append(wr.EnumKey(key, i))
+                    except OSError:
+                        return out
+                    i += 1
+        except OSError:
+            return []
+
 
 _VAR = re.compile(r'%([^%\s]+)%')
 
@@ -92,7 +106,8 @@ def expand_vars(text: str, env: dict) -> str:
     """Expand %VAR% (case-insensitive) without touching spacing or slashes."""
     lookup = {k.lower(): v for k, v in os.environ.items()}
     lookup.update({k.lower(): v for k, v in env.items()})
-    lookup.setdefault('windir', env.get('SystemRoot', ''))
+    if env.get('SystemRoot'):
+        lookup['windir'] = env['SystemRoot']
     return _VAR.sub(lambda m: lookup.get(m.group(1).lower(), m.group(0)), text)
 
 

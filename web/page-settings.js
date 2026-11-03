@@ -65,6 +65,14 @@
     sec1.appendChild(field('API Key', h('div.inline', key, keyBtn), '只保存在这台电脑上，用 Windows 账户加密。'));
     const json = h('input', { type: 'checkbox', checked: !!ai.json_mode, onchange: (e) => save({ ai: { json_mode: e.target.checked } }) });
     sec1.appendChild(field('JSON 模式', h('label.inline', json, h('span.small.muted', '让模型只输出 JSON。服务不支持时会自动关闭'))));
+    if (preset.thinking_toggle) {
+      sec1.appendChild(field('深度思考', PX.seg([['off', '关闭'], ['low', '低'], ['high', '高']], ai.thinking || 'off',
+        async (v) => { await save({ ai: { thinking: v } }); draw(); }),
+      '只影响「问 AI」的回答。判断文件夹和文件时总是关闭，更快也更省额度。'));
+    }
+    sec1.appendChild(field('读取文档内容', h('label.inline', PX.switchEl(ai.send_file_content, (e) => save({ ai: { send_file_content: e.target.checked } })),
+      h('span.small.muted', '允许把文档开头约 800 字发给模型，帮你判断文件是什么')),
+    '打开后每次发送前仍会单独询问，并列出会读取的文档。一键体检从不发送文件内容。'));
     const testBtn = h('button.btn', { type: 'button', onclick: async () => {
       testBtn.disabled = true;
       try { const r = await PX.api.call('ai_test'); PX.toast(`连接正常：${r.model}`); } catch (e) { PX.fail(e); }
@@ -83,6 +91,37 @@
     sec2.appendChild(field('分析缓存', h('button.btn', { type: 'button', onclick: async () => {
       try { await PX.api.call('ai_clear_cache'); PX.toast('已清除 AI 分析缓存'); } catch (e) { PX.fail(e); }
     } }, '清除缓存'), '30 天内分析过且大小变化不大的文件夹会直接复用结果，不再消耗额度。'));
+
+    // ---- one-click check-up
+    const ck = s.checkup || {};
+    const secCk = form.appendChild(h('section', h('h2', '一键体检')));
+    for (const [key, label, help] of [['space_scan', '分析系统盘空间', '找出陌生的大文件夹，需要几十秒到几分钟'],
+      ['duplicates', '查找重复文件', '在个人文件夹中比较文件内容'], ['use_ai', '使用 AI 复核', '配置了模型时，让 AI 判断文件夹、文件名和开机启动项']]) {
+      secCk.appendChild(field(label, h('label.inline', PX.switchEl(ck[key] !== false, (e) => save({ checkup: { [key]: e.target.checked } })),
+        h('span.small.muted', help))));
+    }
+
+    // ---- 我的文件
+    const ins = s.insights || {};
+    const secMine = form.appendChild(h('section', h('h2', '我的文件')));
+    secMine.appendChild(h('div.small.muted', { style: { marginBottom: '10px' } }, '除了桌面、文档、下载、图片、视频和音乐，也整理这些文件夹（例如 D:\\资料）：'));
+    const extra = s.extra_personal_paths || [];
+    const exList = secMine.appendChild(h('div.folder-list'));
+    for (const p of extra) {
+      exList.appendChild(h('div.row', PX.icon('folder'), h('div.name.mono-path', p), h('button.btn.quiet.small', { type: 'button',
+        onclick: async () => { await save({ extra_personal_paths: extra.filter((x) => x !== p) }); draw(); } }, '移除')));
+    }
+    if (!extra.length) exList.appendChild(h('div.row.muted.small', { style: { gridTemplateColumns: '1fr' } }, '没有额外的文件夹'));
+    secMine.appendChild(h('div', { style: { marginBottom: '16px' } }, h('button.btn', { type: 'button', onclick: async () => {
+      try {
+        const f = await PX.api.call('pick_folder');
+        if (f && !extra.includes(f)) { await save({ extra_personal_paths: [...extra, f] }); draw(); }
+      } catch (e) { PX.fail(e); }
+    } }, PX.icon('plus'), '添加文件夹')));
+    secMine.appendChild(field('很久没动过', PX.seg([[180, '半年'], [365, '1 年'], [730, '2 年']], ins.stale_days || 365,
+      async (v) => { await save({ insights: { stale_days: v } }); draw(); }), '超过这么久没有修改的大文件会列出来。'));
+    secMine.appendChild(field('大文件', PX.seg([[50, '50 MB'], [100, '100 MB'], [500, '500 MB']], ins.large_mb || 100,
+      async (v) => { await save({ insights: { large_mb: v } }); draw(); })));
 
     // ---- protected folders
     const sec3 = form.appendChild(h('section', h('h2', '排除的文件夹')));

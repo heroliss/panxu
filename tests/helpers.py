@@ -18,6 +18,13 @@ WIN_ENV = {
 }
 
 
+def age(path, days):
+    """Make a file look ``days`` old (on Windows the creation time counts too, see fsops.age_time)."""
+    from panxu import winapi
+    t = time.time() - days * 86400
+    winapi.set_file_times(path, created=t, modified=t, accessed=t)
+
+
 class TempDirTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix='panxu-test-')
@@ -31,8 +38,7 @@ class TempDirTest(unittest.TestCase):
         with open(path, 'wb') as fh:
             fh.write(b'x' * size)
         if age_days:
-            t = time.time() - age_days * 86400
-            os.utime(path, (t, t))
+            age(path, age_days)
         return path
 
     def posix_env(self):

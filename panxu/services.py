@@ -67,7 +67,8 @@ class ServiceManager:
         for row in self._raw():
             name = row.get('name') or ''
             start = _PSUTIL_START.get(row.get('start_type'), row.get('start_type') or 'manual')
-            if start == 'auto' and self._delayed(name):
+            delayed = row.get('delayed')
+            if start == 'auto' and (delayed if delayed is not None else self._delayed(name)):
                 start = 'delayed'
             kind, exe, info = classify(row.get('binpath', ''), self.env)
             status = row.get('status') or ''

@@ -11,7 +11,6 @@ import fnmatch
 import glob
 import ntpath
 import os
-import shutil
 import threading
 import time
 from dataclasses import dataclass, field
@@ -114,6 +113,9 @@ RULES: list[Rule] = [
          '资源管理器的图片缩略图缓存，删除后会重新生成。资源管理器正在使用的部分会跳过。',
          (Target('%LOCALAPPDATA%\\Microsoft\\Windows\\Explorer', pattern='thumbcache_*.db', recursive=False),),
          default=False),
+    Rule('rdp_cache', '远程桌面缓存', 'system',
+         '远程桌面连接保存的屏幕图像缓存，下次连接时会重新生成。',
+         (Target('%LOCALAPPDATA%\\Microsoft\\Terminal Server Client\\Cache'),), processes=('mstsc.exe',)),
     Rule('recycle_bin', '回收站', 'system',
          '清空所有磁盘的回收站。清空后无法再从回收站恢复。',
          mode='recycle_bin', default=False, note='清空后无法从回收站恢复文件'),
@@ -144,6 +146,13 @@ RULES: list[Rule] = [
          (Target('%APPDATA%\\Microsoft\\Teams\\Cache'), Target('%APPDATA%\\Microsoft\\Teams\\Code Cache'),
           Target('%APPDATA%\\Microsoft\\Teams\\GPUCache'), Target('%APPDATA%\\Microsoft\\Teams\\tmp')),
          processes=('teams.exe',)),
+    Rule('slack', 'Slack', 'app', 'Slack 的图片和网页缓存。不影响聊天记录和登录状态。',
+         (Target('%APPDATA%\\Slack\\Cache'), Target('%APPDATA%\\Slack\\Code Cache'),
+          Target('%APPDATA%\\Slack\\GPUCache')), processes=('slack.exe',)),
+    Rule('adobe_media_cache', 'Adobe 媒体缓存', 'app',
+         'Premiere Pro、After Effects 等为导入的音视频生成的缓存（.cfa/.pek 等）。删除后打开工程时会重新生成，期间较慢。',
+         (Target('%APPDATA%\\Adobe\\Common\\Media Cache Files'), Target('%APPDATA%\\Adobe\\Common\\Media Cache')),
+         default=False, processes=('adobe premiere pro.exe', 'afterfx.exe', 'adobe media encoder.exe')),
     Rule('shader_cache', '显卡着色器缓存', 'app',
          'DirectX 和显卡驱动编译的着色器缓存。删除后游戏首次运行会重新编译，可能短暂卡顿。',
          (Target('%LOCALAPPDATA%\\D3DSCache'), Target('%LOCALAPPDATA%\\NVIDIA\\DXCache'),
@@ -162,6 +171,12 @@ RULES: list[Rule] = [
          (Target('%LOCALAPPDATA%\\npm-cache'),), default=False),
     Rule('yarn', 'Yarn 缓存', 'dev', 'Yarn 包下载缓存。', (Target('%LOCALAPPDATA%\\Yarn\\Cache'),), default=False),
     Rule('pip', 'pip 缓存', 'dev', 'Python 包下载缓存。', (Target('%LOCALAPPDATA%\\pip\\cache'),), default=False),
+    Rule('uv', 'uv 缓存', 'dev', 'Python 包管理器 uv 的下载与构建缓存。删除后再次安装依赖时会重新下载。',
+         (Target('%LOCALAPPDATA%\\uv\\cache'),), default=False, processes=('uv.exe',)),
+    Rule('electron_dl', 'Electron 下载缓存', 'dev', 'electron 与 electron-builder 下载的运行时压缩包，重新打包时会再下载。',
+         (Target('%LOCALAPPDATA%\\electron\\Cache'), Target('%LOCALAPPDATA%\\electron-builder\\Cache')), default=False),
+    Rule('jetbrains_logs', 'JetBrains IDE 日志', 'dev', 'IntelliJ IDEA、PyCharm 等 IDE 的旧日志，只删除 7 天前的。',
+         (Target('%LOCALAPPDATA%\\JetBrains\\*\\log', min_age_hours=7 * 24),), default=False),
     Rule('nuget', 'NuGet 下载缓存', 'dev', '.NET 包的 HTTP 下载缓存（不含已解压的全局包）。',
          (Target('%LOCALAPPDATA%\\NuGet\\v3-cache'), Target('%LOCALAPPDATA%\\NuGet\\plugins-cache')), default=False),
     Rule('gradle', 'Gradle 缓存', 'dev', 'Gradle 构建与依赖缓存。删除后下次构建会重新下载，耗时较长。',
@@ -246,6 +261,9 @@ def resolve_target(target: Target, env: dict) -> list[str]:
 
 
 def running_process_names() -> set[str]:
+    sim = winapi.simulation()
+    if sim is not None:
+        return sim.processes()
     try:
         import psutil
     except ImportError:
@@ -260,7 +278,7 @@ def running_process_names() -> set[str]:
 
 def disk_free(env: dict) -> int:
     try:
-        return shutil.disk_usage(native(env.get('SystemDrive', 'C:') + '\\')).free
+        return winapi.disk_usage(native(env.get('SystemDrive', 'C:') + '\\')).free
     except OSError:
         return 0
 
@@ -439,6 +457,10 @@ class JunkEngine:
                        failures=stats.failures)
 
     def _run_command(self, rule: Rule):
+        sim = winapi.simulation()
+        if sim is not None:
+            sim.run_cleanup_command(rule.id)
+            return
         argv = [paths.expand(a, self.env) if '%' in a else a for a in rule.command]
         if any(a is None for a in argv):
             raise RuntimeError('找不到系统命令')
@@ -455,6 +477,10 @@ class JunkEngine:
         Uses the documented /sagerun mechanism: mark each handler with
         StateFlagsNNNN=2, run cleanmgr, then remove the marks again.
         """
+        sim = winapi.simulation()
+        if sim is not None:
+            sim.run_cleanup_command(rule.id)
+            return
         import winreg  # Windows only
         base = r'SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\VolumeCaches'
         value = f'StateFlags{slot:04d}'

@@ -18,12 +18,30 @@ ENV_KEYS = ('SystemRoot', 'SystemDrive', 'ProgramFiles', 'ProgramFiles(x86)', 'P
 USER_ENV_KEYS = ('USERPROFILE', 'LOCALAPPDATA', 'APPDATA', 'TEMP')
 
 _env_override: dict[str, str] = {}
+_sim_env: dict[str, str] = {}
+_sim_drives: dict[str, str] = {}   # simulated drive folder -> 'C:'
 
 
 def set_env_override(values: dict[str, str]) -> None:
     """Use the original user's folders after an over-the-shoulder elevation."""
     _env_override.clear()
     _env_override.update({k: v for k, v in values.items() if k in USER_ENV_KEYS and v})
+
+
+def set_simulated_environment(values: dict[str, str] | None, drives: dict[str, str] | None = None) -> None:
+    """Point every base folder into the simulation (演练环境); None restores the real ones.
+
+    ``drives`` maps the simulated drive folders to their letters, so text sent to a model
+    shows 'C:\\Users' instead of the real path of the simulation (and the real user name).
+    """
+    _sim_env.clear()
+    _sim_env.update(values or {})
+    _sim_drives.clear()
+    _sim_drives.update(drives or {})
+
+
+def simulated_drives() -> dict[str, str]:
+    return dict(_sim_drives)
 
 
 def is_foreign_user() -> bool:
@@ -33,7 +51,14 @@ def is_foreign_user() -> bool:
     return bool(original and current and key(original) != key(current))
 
 
+def _norm(value: str) -> str:
+    # POSIX paths only occur in simulations and tests on Linux; keep them usable there
+    return os.path.normpath(value) if value.startswith('/') and os.sep == '/' else ntpath.normpath(value)
+
+
 def environment() -> dict[str, str]:
+    if _sim_env:
+        return {k: _norm(v) for k, v in _sim_env.items()}
     env = {}
     for key in ENV_KEYS:
         value = _env_override.get(key) or os.environ.get(key)
@@ -103,6 +128,9 @@ def anonymize(path: str, env: dict[str, str]) -> str:
             if best is None or len(base) > len(env[best]):
                 best = name
     if best is None:
+        for root, letter in _sim_drives.items():
+            if is_within(path, root):
+                return letter + (ntpath.normpath(path)[len(ntpath.normpath(root)):] or '\\')
         return path
     rest = ntpath.normpath(path)[len(ntpath.normpath(env[best])):]
     return '%' + best + '%' + rest
@@ -127,6 +155,18 @@ _ROOT_SYSTEM_SUBTREES = {'windows', '$recycle.bin', 'system volume information',
                          '$windows.~bt', '$windows.~ws', '$winreagent', 'windows.old', '$sysreset', '$getcurrent'}
 
 
+def _absolute(path: str) -> bool:
+    """Absolute with a drive (or UNC share) on Windows; POSIX-absolute in Linux test runs.
+
+    (Python 3.13 changed ``ntpath.isabs('/x')`` to False, which is right for Windows.)
+    """
+    if not path:
+        return False
+    if winapi.IS_WINDOWS:
+        return bool(ntpath.splitdrive(path)[0]) and ntpath.isabs(path)
+    return path.startswith('/') or (ntpath.isabs(path) and bool(ntpath.splitdrive(path)[0]))
+
+
 def _real(path: str) -> str:
     """Resolve 8.3 names, junctions and trailing dots the way Windows will (Windows only)."""
     if not winapi.IS_WINDOWS:
@@ -149,8 +189,16 @@ class ProtectionPolicy:
     Built once per batch.
     """
 
-    def __init__(self, env: dict[str, str], excluded: list[str] | None = None, app_dirs: list[str] | None = None):
+    def __init__(self, env: dict[str, str], excluded: list[str] | None = None, app_dirs: list[str] | None = None,
+                 allowed_roots: list[str] | None = None, drive_roots: list[str] | None = None):
         self.env = env
+        # simulation: nothing outside these folders may be touched at all
+        self.allowed_roots = [p for p in (allowed_roots or []) if p]
+        # folders that play the role of a drive root (the simulated C:\ and D:\)
+        self.drive_roots = [p for p in (drive_roots or []) if p]
+        sysdrive = env.get('SystemDrive', '')
+        if sysdrive and not ntpath.splitdrive(sysdrive)[1].strip('\\/') == '' and sysdrive not in self.drive_roots:
+            self.drive_roots.append(sysdrive)
         exact = []
         for name in ('USERPROFILE', 'LOCALAPPDATA', 'APPDATA', 'LOCALLOW', 'ProgramData', 'ProgramFiles',
                      'ProgramFiles(x86)', 'PUBLIC', 'TEMP'):
@@ -192,7 +240,7 @@ class ProtectionPolicy:
 
     def reason(self, path: str) -> str | None:
         """Why ``path`` must not be deleted, or None if allowed."""
-        if not path or not ntpath.isabs(path) or (winapi.IS_WINDOWS and not ntpath.splitdrive(path)[0]):
+        if not isinstance(path, str) or not _absolute(path):
             return '路径无效'
         if path.startswith(('\\\\?\\', '\\\\.\\')):
             return '不支持这种路径写法'
@@ -203,18 +251,29 @@ class ProtectionPolicy:
         real = _real(path)
         if key(real) != key(path):
             forms.append(real)
+        if self.allowed_roots and not all(any(is_within(f, r) for r in self.allowed_roots) for f in forms):
+            return '演练环境中只能处理演练目录里的文件'
         for form in forms:
             reason = self._reason(form)
             if reason:
                 return reason
         return None
 
+    def _split_root(self, path: str) -> tuple[str, list[str]]:
+        """(drive, components below it); a simulated drive folder counts as a drive root."""
+        normalized = ntpath.normpath(path)
+        for root in self.drive_roots:
+            if is_within(path, root):
+                rest = key(path)[len(key(root)):]
+                return ntpath.normpath(root), [p for p in rest.split('\\') if p]
+        drive, rest = ntpath.splitdrive(normalized)
+        return drive, [p for p in rest.split('\\') if p]
+
     def _reason(self, path: str) -> str | None:
-        if is_drive_root(path):
+        if is_drive_root(path) or any(key(path) == key(r) for r in self.drive_roots):
             return '不能删除整个磁盘'
         normalized = ntpath.normpath(path)
-        drive, rest = ntpath.splitdrive(normalized)
-        parts = [p for p in rest.split('\\') if p]
+        drive, parts = self._split_root(path)
         if parts:
             top = parts[0].lower().rstrip('. ')
             if top in _ROOT_SYSTEM_SUBTREES:
@@ -228,7 +287,7 @@ class ProtectionPolicy:
             if is_within(path, base):
                 return '位于你设置的排除目录中'
         k = key(path)
-        if k in self.exact or (drive and k == key(drive + '\\Users')):
+        if k in self.exact or (drive and k == key(ntpath.join(drive + ('' if drive.endswith('\\') else '\\'), 'Users'))):
             return '这是系统或用户的基础文件夹，只能清理其中的内容'
         if key(ntpath.dirname(normalized)) in self.users_dirs:
             return '这是一个 Windows 用户的个人文件夹'
@@ -254,7 +313,8 @@ class ProtectionPolicy:
             return '位于应用配置目录，可能包含应用设置或账号数据'
         if env.get('LOCALAPPDATA') and is_within(path, env['LOCALAPPDATA']):
             return '位于本地应用数据目录，可能是程序正在使用的数据'
-        drive_users = ntpath.join(ntpath.splitdrive(path)[0] + '\\', 'Users')
+        drive = self._split_root(path)[0]
+        drive_users = ntpath.join(drive + ('' if drive.endswith('\\') else '\\'), 'Users')
         if env.get('USERPROFILE') and is_within(path, drive_users) and not is_within(path, env['USERPROFILE']):
             return '位于其他用户的个人文件夹中'
         return None

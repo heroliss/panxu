@@ -64,6 +64,7 @@
     info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/>',
     lock: '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>',
     plus: '<path d="M12 5v14M5 12h14"/>',
+    apps: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
     drive: '<rect x="3" y="13" width="18" height="7" rx="2"/><path d="M5 13l2.5-8h9L19 13M16.5 16.5h.01"/>',
   };
   PX.icon = function (name, cls) {
@@ -104,6 +105,17 @@
       return s < 60 ? s + ' 秒' : Math.floor(s / 60) + ' 分 ' + (s % 60) + ' 秒';
     },
     pct(a, b) { return b ? Math.round((a / b) * 100) : 0; },
+    // 'C:\Users\me\Documents\项目A' -> '文档\项目A' (names as Explorer shows them); other paths unchanged
+    place(path, home) {
+      if (!path || !home) return path || '';
+      const h = home.replace(/[\\/]+$/, '');
+      if (path.toLowerCase() !== h.toLowerCase() && !path.toLowerCase().startsWith(h.toLowerCase() + '\\')) return path;
+      const parts = path.slice(h.length + 1).split('\\').filter(Boolean);
+      if (!parts.length) return '用户文件夹';
+      const names = { desktop: '桌面', documents: '文档', downloads: '下载', pictures: '图片', videos: '视频', music: '音乐' };
+      parts[0] = names[parts[0].toLowerCase()] || parts[0];
+      return parts.join('\\');
+    },
   };
   PX.big = function (n, cls) {
     const [v, u] = PX.fmt.split(n);

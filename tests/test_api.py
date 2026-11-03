@@ -22,7 +22,8 @@ def wait(bridge, job_id, timeout=20):
 class BridgeTest(TempDirTest):
     def setUp(self):
         super().setUp()
-        self.bridge = Bridge(Backend(os.path.join(self.tmp, 'data')))
+        # bases inside the temp dir: on Windows the temp dir itself lies under the real %LOCALAPPDATA%
+        self.bridge = Bridge(Backend(os.path.join(self.tmp, 'data'), env=self.posix_env()))
         self.backend = self.bridge._backend
 
     def test_dispatch_and_errors(self):
@@ -97,9 +98,10 @@ class BundleTest(unittest.TestCase):
         self.assertNotRegex(html, r'<script\s+src=')
         self.assertNotRegex(html, r'<link\s+rel="stylesheet"')
         self.assertNotIn('pywebview = { api', html, 'mock must not ship in the app bundle')
-        for name in ('PX.pages.junk', 'PX.pages.space', 'PX.deleteFlow', 'PX.treemap'):
+        for name in ('PX.pages.junk', 'PX.pages.space', 'PX.deleteFlow', 'PX.treemap', 'PX.pages.home', 'PX.pages.mine',
+                     'PX.pages.apps', 'PX.ask'):
             self.assertIn(name, html)
-        self.assertEqual(len(re.findall(r'<script>', html)), 10)
+        self.assertEqual(len(re.findall(r'<script>', html)), 13)
 
 
 if __name__ == '__main__':

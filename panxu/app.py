@@ -22,6 +22,41 @@ def default_data_dir() -> str:
     return os.path.join(base, 'PanXu')
 
 
+def legacy_key_paths(data_dir: str) -> list[str]:
+    """Where PanXu 0.x kept model_settings.json (its API key is imported once)."""
+    exe_dir = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else ''
+    project = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    out = [os.path.join(exe_dir, 'userdata', 'model_settings.json')] if exe_dir else []
+    out += [os.path.join(project, 'dist', 'PanXu', 'userdata', 'model_settings.json'),
+            os.path.join(data_dir, 'model_settings.json')]
+    return out
+
+
+def prepare_sandbox(root: str, real_data_dir: str):
+    """Open (or build) the simulation and its own data folder.
+
+    The first time, the configured model and its key are copied from the real
+    data folder, so the simulation works with AI straight away. Nothing else
+    (history, exclusions, cache) is shared.
+    """
+    from . import sandbox
+    from .settings import Settings
+    sb = sandbox.Sandbox(root)
+    sandbox.activate(sb)
+    data_dir = os.path.join(sb.root, 'data')
+    if not os.path.isdir(data_dir):
+        os.makedirs(data_dir)
+        real = Settings(real_data_dir)
+        sim = Settings(data_dir)
+        ai = real.get()['ai']
+        sim.update({'ai': ai, 'extra_personal_paths': [sb.native('D/资料'), sb.native('D/下载')]})
+        for name in ('ai_key:' + ai.get('preset', ''),):
+            key = real.get_secret(name)
+            if key:
+                sim.set_secret(name, key)
+    return sb, data_dir
+
+
 def setup_logging(data_dir: str, debug: bool):
     os.makedirs(data_dir, exist_ok=True)
     handler = logging.handlers.RotatingFileHandler(os.path.join(data_dir, 'panxu.log'), maxBytes=2_000_000,
@@ -46,6 +81,8 @@ def main(argv=None):
     parser.add_argument('--debug', action='store_true', help='enable WebView developer tools')
     parser.add_argument('--elevated', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--user-env', help=argparse.SUPPRESS)
+    parser.add_argument('--sandbox', nargs='?', const='', metavar='DIR',
+                        help='演练环境: run against a simulated PC (default %%LOCALAPPDATA%%\PanXu\sandbox)')
     args = parser.parse_args(argv)
 
     if args.user_env:
@@ -54,8 +91,11 @@ def main(argv=None):
         except (ValueError, UnicodeDecodeError):
             pass
     data_dir = args.data_dir or default_data_dir()
+    sb = None
+    if args.sandbox is not None:
+        sb, data_dir = prepare_sandbox(args.sandbox or os.path.join(default_data_dir(), 'sandbox'), data_dir)
     setup_logging(data_dir, args.debug)
-    log.info('PanXu %s starting (admin=%s)', __version__, winapi.is_admin())
+    log.info('PanXu %s starting (admin=%s, sandbox=%s)', __version__, winapi.is_admin(), sb.root if sb else None)
 
     instance = winapi.SingleInstance()
     deadline = time.time() + (15 if args.elevated else 0)
@@ -82,6 +122,8 @@ def main(argv=None):
         extra = ['--elevated', '--user-env', token]
         if args.data_dir:
             extra += ['--data-dir', args.data_dir]
+        if args.sandbox is not None:
+            extra += ['--sandbox', sb.root]
         params = subprocess.list2cmdline(prefix + extra)
         if not winapi.relaunch_as_admin(exe, params, os.getcwd()):
             return False
@@ -92,9 +134,11 @@ def main(argv=None):
             window.destroy()
         return True
 
-    backend = Backend(data_dir, window_provider=lambda: window_ref.get('w'), relaunch=relaunch)
+    backend = Backend(data_dir, window_provider=lambda: window_ref.get('w'), relaunch=relaunch, sandbox=sb,
+                      legacy_key_paths=None if sb else legacy_key_paths(data_dir))
     html = ui_bundle.build()
-    window = webview.create_window(APP_NAME, html=html, js_api=Bridge(backend), width=1320, height=860,
+    title = APP_NAME + ('（演练环境）' if sb else '')
+    window = webview.create_window(title, html=html, js_api=Bridge(backend), width=1320, height=860,
                                    min_size=(1040, 700), text_select=True, background_color='#F4F5F7')
     window_ref['w'] = window
     # Separate WebView2 profile folders: an elevated and a normal WebView2 must

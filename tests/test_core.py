@@ -107,6 +107,7 @@ class FsOpsTest(TempDirTest):
         self.make('d/b/c', 20)
         self.assertEqual(fsops.path_size(os.path.join(self.tmp, 'd')), (30, 2))
 
+    @unittest.skipIf(os.name == 'nt', 'would use the real Recycle Bin')
     def test_recycle_reports_failure_off_windows(self):
         f = self.make('x.bin', 10)
         stats, done = fsops.recycle([f])
@@ -141,6 +142,27 @@ class SettingsTest(TempDirTest):
         self.assertEqual(again['ai']['model'], 'm1')
         self.assertNotIn('bogus', again)
         self.assertEqual(again['ai']['preset'], 'deepseek')
+
+    def test_retired_models_are_renamed(self):
+        with open(os.path.join(self.tmp, 'settings.json'), 'w', encoding='utf-8') as fh:
+            json.dump({'ai': {'preset': 'deepseek', 'model': 'deepseek-chat'}}, fh)
+        self.assertEqual(Settings(self.tmp).get()['ai']['model'], 'deepseek-flash')
+
+    @unittest.skipUnless(os.name == 'nt', 'the 0.x key is protected with DPAPI')
+    def test_import_legacy_key(self):
+        import base64
+        from panxu import winapi
+        blob, _ = winapi.protect_secret(b'sk-legacy')
+        old = os.path.join(self.tmp, 'old', 'model_settings.json')
+        os.makedirs(os.path.dirname(old))
+        with open(old, 'w', encoding='utf-8') as fh:
+            json.dump({'provider': 'deepseek', 'model': 'deepseek-reasoner', 'base_url': 'https://api.deepseek.com',
+                       'key_dpapi': base64.b64encode(blob).decode('ascii')}, fh)
+        s = Settings(os.path.join(self.tmp, 'new'))
+        self.assertEqual(s.import_legacy_key([os.path.join(self.tmp, 'missing.json'), old]), 'deepseek')
+        self.assertEqual(s.get_secret('ai_key:deepseek'), 'sk-legacy')
+        self.assertEqual(s.get()['ai']['model'], 'deepseek-flash')
+        self.assertIsNone(s.import_legacy_key([old]), 'only when no key is configured yet')
 
     def test_secret_roundtrip(self):
         s = Settings(self.tmp)

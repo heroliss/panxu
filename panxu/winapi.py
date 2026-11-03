@@ -8,11 +8,25 @@ from __future__ import annotations
 
 import ctypes
 import os
+import shutil
 import subprocess
 import sys
 import uuid
 
 IS_WINDOWS = sys.platform == 'win32'
+
+# The simulation (演练环境, see sandbox.py) replaces the few calls that touch
+# real system state: shell folders, the Recycle Bin, disk usage, elevation.
+_sim = None
+
+
+def set_simulation(sim) -> None:
+    global _sim
+    _sim = sim
+
+
+def simulation():
+    return _sim
 
 # File attribute bits (also present in os.stat_result.st_file_attributes).
 FILE_ATTRIBUTE_READONLY = 0x1
@@ -155,6 +169,8 @@ def co_initialize():
 
 
 def is_admin() -> bool:
+    if _sim is not None:
+        return _sim.is_admin()
     if not IS_WINDOWS:
         return hasattr(os, 'geteuid') and os.geteuid() == 0
     try:
@@ -182,6 +198,8 @@ def recycle_paths(paths: list[str], hwnd=None) -> tuple[int, bool]:
     """
     if not paths:
         return 0, False
+    if _sim is not None:
+        return _sim.recycle_paths(paths)
     if not IS_WINDOWS:
         raise OSError('Recycle Bin is only available on Windows')
     co_initialize()
@@ -198,6 +216,8 @@ def recycle_paths(paths: list[str], hwnd=None) -> tuple[int, bool]:
 
 def recycle_bin_info(root: str | None = None) -> tuple[int, int]:
     """(bytes, item count) in the Recycle Bin of a drive, or all drives."""
+    if _sim is not None:
+        return _sim.recycle_bin_info()
     if not IS_WINDOWS:
         return 0, 0
     info = SHQUERYRBINFO()
@@ -209,6 +229,8 @@ def recycle_bin_info(root: str | None = None) -> tuple[int, int]:
 
 
 def empty_recycle_bin(root: str | None = None) -> bool:
+    if _sim is not None:
+        return _sim.empty_recycle_bin()
     if not IS_WINDOWS:
         return False
     hr = _shell32.SHEmptyRecycleBinW(None, root, SHERB_NOCONFIRMATION | SHERB_NOPROGRESSUI | SHERB_NOSOUND)
@@ -218,6 +240,8 @@ def empty_recycle_bin(root: str | None = None) -> bool:
 
 def known_folder(name: str) -> str:
     """Resolve a user shell folder, honouring redirection (OneDrive, D:\\...)."""
+    if _sim is not None:
+        return _sim.known_folder(name)
     home = os.path.expanduser('~')
     fallback = os.path.join(home, _KNOWN_FALLBACK[name])
     if not IS_WINDOWS:
@@ -265,6 +289,8 @@ def unprotect_secret(blob: bytes, scheme: str) -> bytes:
 
 def file_version_info(path: str) -> dict:
     """CompanyName / FileDescription / ProductName from an executable, if any."""
+    if _sim is not None:
+        return _sim.file_version_info(path)
     if not IS_WINDOWS or not path:
         return {}
     try:
@@ -294,6 +320,13 @@ def file_version_info(path: str) -> dict:
         return result
     except (OSError, ValueError):
         return {}
+
+
+def disk_usage(root: str):
+    """shutil.disk_usage, or the simulated drive's figures."""
+    if _sim is not None:
+        return _sim.disk_usage(root)
+    return shutil.disk_usage(root)
 
 
 def volume_label(root: str) -> str:
@@ -396,3 +429,53 @@ def reveal_in_explorer(path: str) -> None:
 def open_uri(uri: str) -> None:
     if IS_WINDOWS:
         os.startfile(uri)
+
+
+def shell_execute(executable: str, params: str = '', verb: str = 'open') -> bool:
+    """Start a program the way Explorer does (lets it ask for elevation itself)."""
+    if not IS_WINDOWS:
+        return False
+    rc = _shell32.ShellExecuteW(None, verb, executable, params or None, None, 1)
+    return (rc or 0) > 32
+
+
+def set_file_times(path: str, created: float | None = None, modified: float | None = None,
+                   accessed: float | None = None) -> bool:
+    """Set timestamps including the creation time (Windows only; used to build the simulation)."""
+    if modified is not None or accessed is not None:
+        st = os.stat(path)
+        os.utime(path, (accessed if accessed is not None else st.st_atime,
+                        modified if modified is not None else st.st_mtime))
+    if not IS_WINDOWS or created is None:
+        return True
+    k32 = ctypes.WinDLL('kernel32', use_last_error=True)
+    k32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+                                wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    k32.CreateFileW.restype = wintypes.HANDLE
+    k32.SetFileTime.argtypes = [wintypes.HANDLE, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+    k32.SetFileTime.restype = wintypes.BOOL
+    handle = k32.CreateFileW(path, 0x100, 0x7, None, 3, 0x02000000, None)  # FILE_WRITE_ATTRIBUTES, BACKUP_SEMANTICS
+    if handle in (None, ctypes.c_void_p(-1).value):
+        return False
+    try:
+        ft = ctypes.c_ulonglong(int((created + 11644473600) * 10_000_000))
+        return bool(k32.SetFileTime(handle, ctypes.byref(ft), None, None))
+    finally:
+        k32.CloseHandle(handle)
+
+
+def make_sparse(fileobj) -> bool:
+    """Mark an open file as sparse so a large simulated file uses no disk space (NTFS)."""
+    if not IS_WINDOWS:
+        return True  # Linux/macOS file systems create holes by themselves
+    try:
+        import msvcrt
+        handle = msvcrt.get_osfhandle(fileobj.fileno())
+        k32 = ctypes.WinDLL('kernel32', use_last_error=True)
+        k32.DeviceIoControl.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD,
+                                        ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p]
+        k32.DeviceIoControl.restype = wintypes.BOOL
+        returned = wintypes.DWORD(0)
+        return bool(k32.DeviceIoControl(handle, 0x000900C4, None, 0, None, 0, ctypes.byref(returned), None))
+    except (OSError, ValueError):
+        return False
