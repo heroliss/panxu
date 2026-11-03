@@ -25,4 +25,11 @@ assert.strictEqual(PX.fmt.bytes(150 * 1024 ** 3), '150 GB');
 assert.strictEqual(PX.fmt.bytes(null), '—');
 assert.deepStrictEqual(PX.fmt.split(1024 ** 4 * 2), ['2.0', 'TB']);
 assert.strictEqual(PX.fmt.seconds(75), '1 分 15 秒');
+// places under the user folder read like Explorer
+const R = String.raw;
+assert.strictEqual(PX.fmt.place(R`C:\Users\me\Documents\项目A`, R`C:\Users\me`), R`文档\项目A`);
+assert.strictEqual(PX.fmt.place(R`c:\users\ME\Downloads`, R`C:\Users\me\ `.trim()), '下载');
+assert.strictEqual(PX.fmt.place(R`C:\Users\me`, R`C:\Users\me`), '用户文件夹');
+assert.strictEqual(PX.fmt.place(R`C:\Users\meme\x`, R`C:\Users\me`), R`C:\Users\meme\x`);
+assert.strictEqual(PX.fmt.place(R`D:\资料`, R`C:\Users\me`), R`D:\资料`);
 console.log('ui tests passed');

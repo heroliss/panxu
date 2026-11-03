@@ -222,7 +222,7 @@
     const sum = state.plan.summary[id];
     const sec = c.appendChild(h('section.group'));
     const head = sec.appendChild(h('div.group-head', h('h2', name), h('span.muted.small', GROUP_NOTE[id]), h('span.size', fmt.bytes(sum.size))));
-    if (id === 'safe') {
+    if (id === 'safe' && rows.some(selectable)) {
       const can = rows.filter(selectable);
       const all = can.length && can.every((it) => state.selected.has(it.id));
       head.insertBefore(h('button.btn.quiet.small', { type: 'button', onclick: () => {

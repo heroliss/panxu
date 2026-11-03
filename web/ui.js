@@ -105,6 +105,17 @@
       return s < 60 ? s + ' 秒' : Math.floor(s / 60) + ' 分 ' + (s % 60) + ' 秒';
     },
     pct(a, b) { return b ? Math.round((a / b) * 100) : 0; },
+    // 'C:\Users\me\Documents\项目A' -> '文档\项目A' (names as Explorer shows them); other paths unchanged
+    place(path, home) {
+      if (!path || !home) return path || '';
+      const h = home.replace(/[\\/]+$/, '');
+      if (path.toLowerCase() !== h.toLowerCase() && !path.toLowerCase().startsWith(h.toLowerCase() + '\\')) return path;
+      const parts = path.slice(h.length + 1).split('\\').filter(Boolean);
+      if (!parts.length) return '用户文件夹';
+      const names = { desktop: '桌面', documents: '文档', downloads: '下载', pictures: '图片', videos: '视频', music: '音乐' };
+      parts[0] = names[parts[0].toLowerCase()] || parts[0];
+      return parts.join('\\');
+    },
   };
   PX.big = function (n, cls) {
     const [v, u] = PX.fmt.split(n);

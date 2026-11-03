@@ -116,7 +116,7 @@
     if (x.blocked) tags.appendChild(PX.tag(x.blocked, 'warn', 'lock'));
     const folder = x.path.slice(0, x.path.length - x.name.length).replace(/[\\/]$/, '');
     list.appendChild(h('div.row.mine-row', box,
-      h('div.cell-main', h('div.name', { title: x.path }, x.name), h('div.sub', { title: folder }, folder),
+      h('div.cell-main', h('div.name', { title: x.path }, x.name), h('div.sub', { title: folder }, fmt.place(folder, PX.state.init.home)),
         x.note ? h('div.why', x.note) : null,
         x.ai ? h('div.ai-note', h('span', x.ai.what), h('span.muted', x.ai.reason)) : null),
       tags,
@@ -171,7 +171,7 @@
       return;
     }
     c.appendChild(h('div.small.muted', { style: { marginBottom: '16px' } },
-      `查看了 ${fmt.count(r.stats.files)} 个文件（${fmt.bytes(r.stats.bytes)}），位置：` + r.roots.join('、') +
+      `查看了 ${fmt.count(r.stats.files)} 个文件（${fmt.bytes(r.stats.bytes)}），位置：` + r.roots.map((p) => fmt.place(p, PX.state.init.home)).join('、') +
       (r.stats.cloud_skipped ? `。${r.stats.cloud_skipped} 个只在云端的文件没有读取。` : '')));
     if (!r.findings.length) c.appendChild(PX.empty('没有发现需要注意的文件', '你的个人文件夹很整洁。'));
     for (const f of r.findings) finding(c, f);
