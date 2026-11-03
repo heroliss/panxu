@@ -29,6 +29,26 @@
     return h('div', JSON.stringify(it));
   }
 
+  // what PanXu has done so far: freed space (and how much of it still sits in the Recycle Bin), what can be undone
+  function overview(c) {
+    const freed = rows.reduce((s, e) => s + (e.freed || 0), 0);
+    const inBin = rows.filter((e) => e.kind === 'recycle').reduce((s, e) => s + (e.freed || 0), 0);
+    const undo = rows.filter((e) => e.revert && !(e.followup && e.followup.reverted)).length;
+    const first = rows.reduce((t, e) => Math.min(t, e.time), Infinity);
+    const tiles = c.appendChild(h('div.tiles'));
+    tiles.appendChild(PX.statTile({ label: '一共释放', value: fmt.bytes(freed),
+      sub: inBin ? `其中 ${fmt.bytes(inBin)} 移到了回收站，清空回收站后才真正腾出来` : '直接删除的，空间已经腾出来' }));
+    tiles.appendChild(PX.statTile({ label: '操作次数', value: fmt.count(rows.length), sub: '从 ' + fmt.date(first) + ' 开始' }));
+    tiles.appendChild(PX.statTile({ label: '可以撤销', value: fmt.count(undo), sub: undo ? '开机项目、服务和系统设置的修改' : '没有可以撤销的修改' }));
+    const byKind = new Map();
+    for (const e of rows) if (e.freed) byKind.set(e.kind, (byKind.get(e.kind) || 0) + e.freed);
+    if (byKind.size > 1) {
+      const bars = [...byKind.entries()].sort((a, b) => b[1] - a[1])
+        .map(([kind, value]) => ({ label: (KIND[kind] || [kind])[0], parts: [{ value, cls: kind === 'recycle' ? 's-mid' : 's-hi' }] }));
+      c.appendChild(PX.chartCard('释放的空间从哪里来', null, PX.barList(bars)));
+    }
+  }
+
   function draw() {
     if (!root || !PX.isCurrent('history')) return;
     const c = PX.clear(root);
@@ -36,6 +56,7 @@
       h('div.actions', h('button.btn', { type: 'button', onclick: () => PX.api.call('open_system_page', { page: 'recyclebin' }).catch(PX.fail) }, PX.icon('trash'), '打开回收站'))));
     if (rows === null) { c.appendChild(PX.progressBar(null)); return; }
     if (!rows.length) { c.appendChild(PX.empty('还没有任何操作', '清理、删除或修改开机项目后，会在这里留下记录。')); return; }
+    overview(c);
     const list = c.appendChild(h('div.list'));
     for (const e of rows) {
       const [label, kind] = KIND[e.kind] || [e.kind, ''];

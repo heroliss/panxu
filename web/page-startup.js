@@ -65,6 +65,7 @@
       const r = await PX.api.call('startup_set', { item_id: item.id, enabled });
       item.enabled = r.enabled;
       PX.toast((enabled ? '已启用 ' : '已禁用 ') + item.display_name + '，下次登录时生效');
+      setTimeout(draw, 220);  // after the switch has moved: update the counts
     } catch (e) { input.checked = !enabled; PX.fail(e); }
   }
 
@@ -91,11 +92,20 @@
     if (!state.items) { c.appendChild(PX.progressBar(null)); return; }
     const on = state.items.filter((i) => i.enabled).length;
     c.appendChild(h('div.page-head', { style: { marginBottom: '10px' } },
-      h('div.grow', h('div.muted', `${state.items.length} 个开机启动项，其中 ${on} 个已启用。与任务管理器的「启动应用」使用同一套开关，随时可以恢复。`)),
+      h('div.grow', h('div.muted', '和任务管理器的「启动应用」是同一套开关，关掉的随时可以重新打开。')),
       h('div.actions',
         h('button.btn', { type: 'button', disabled: !!state.aiBusy || !state.items.length, onclick: explain }, PX.icon('spark'), state.aiBusy ? '正在分析…' : 'AI 解释这些启动项'),
         h('button.btn', { type: 'button', disabled: !!state.refreshing, onclick: () => load(true) }, PX.icon('refresh'),
           state.refreshing ? '正在刷新…' : '刷新'))));
+    if (state.items.length) {
+      const advice = Object.entries(state.ai.startup).filter(([id, a]) => a.suggestion === 'disable' && state.items.some((i) => i.id === id && i.enabled));
+      const analysed = Object.keys(state.ai.startup).length > 0;
+      const tiles = c.appendChild(h('div.tiles'));
+      tiles.appendChild(PX.statTile({ cls: 's-hi', label: '开机自动运行', value: String(on), sub: `共 ${state.items.length} 个启动项`, part: on / state.items.length }));
+      tiles.appendChild(PX.statTile({ cls: 's-lo', label: '已禁用', value: String(state.items.length - on), sub: '随时可以重新启用' }));
+      tiles.appendChild(PX.statTile({ cls: 's-mid', label: 'AI 建议禁用', value: analysed ? String(advice.length) : '—',
+        sub: analysed ? (advice.length ? '还开着的里面，可以放心禁用的' : '开着的都建议保留') : '点「AI 解释这些启动项」后显示' }));
+    }
     if (!init.admin && state.items.some((i) => i.needs_admin)) {
       c.appendChild(PX.notice('「所有用户」的启动项需要管理员权限才能修改。', 'info',
         h('button.btn.small', { type: 'button', onclick: PX.restartAsAdmin }, '以管理员身份重启')));

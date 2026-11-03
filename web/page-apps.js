@@ -99,16 +99,33 @@
     } catch (e) { PX.fail(e); }
   }
 
+  let largest = 1;
+  const isIdle = (a) => a.usage_known && a.kind !== 'runtime' && a.kind !== 'driver' && (!a.last_used || Date.now() / 1000 - a.last_used > 180 * 86400);
+  const rowEls = new Map();
+
+  // the biggest programs; amber when they have not run for half a year
+  function overview(c, shown) {
+    const sized = shown.filter((a) => a.size).sort((a, b) => b.size - a.size);
+    if (sized.length < 3) return;
+    const total = sized.reduce((s, a) => s + a.size, 0);
+    const rows = sized.slice(0, 8).map((a) => ({ label: a.name, icon: avatar(a), onclick: () => PX.flash(rowEls.get(a.id)),
+      parts: [{ value: a.size, cls: isIdle(a) ? 's-mid' : 's-lo', title: isIdle(a) ? '半年以上没有运行过' : '' }] }));
+    const idle = sized.filter(isIdle);
+    const note = `${sized.length} 个程序共 ${fmt.bytes(total)}` + (idle.length ? `，其中 ${idle.length} 个半年没用过（${fmt.bytes(idle.reduce((s, a) => s + a.size, 0))}）` : '');
+    c.appendChild(PX.chartCard('占空间最多的程序', note, PX.barList(rows, idle.length ? [['s-mid', '半年以上没用过'], ['s-lo', '最近用过']] : null)));
+  }
+
   function appRow(list, a) {
     const info = state.ai[a.id];
     const [label, kind] = info ? (SUGGEST[info.suggestion] || SUGGEST.keep) : [];
     const used = !a.usage_known ? '' : a.last_used ? fmt.ago(a.last_used) : '没有记录';
-    const idle = a.usage_known && a.kind !== 'runtime' && a.kind !== 'driver' && (!a.last_used || Date.now() / 1000 - a.last_used > 180 * 86400);
-    list.appendChild(h('div.row.app-row',
+    const idle = isIdle(a);
+    const el = list.appendChild(h('div.row.app-row',
       h('div.app-main', avatar(a), h('div.cell-main', h('div.name', a.name), h('div.sub', [a.publisher || '未知发布者', a.version].filter(Boolean).join(' · ')),
         info ? h('div.ai-note', PX.tag(label, kind, 'spark'), h('span', info.what), h('span.muted', info.reason)) : null)),
       h('div', PX.tag(a.kind_label || '应用')),
-      h('div.size', a.size ? fmt.bytes(a.size) : a.location_exists ? h('button.btn.quiet.small', { type: 'button', onclick: () => measure(a) }, '计算') : '—'),
+      h('div.size', a.size ? [fmt.bytes(a.size), PX.meter(a.size / largest, idle ? 's-mid' : '')]
+        : a.location_exists ? h('button.btn.quiet.small', { type: 'button', onclick: () => measure(a) }, '计算') : '—'),
       h('div.small.muted', a.installed ? fmt.date(a.installed) : '—'),
       h('div.small' + (idle ? '.idle' : a.last_used ? '.muted' : '.faint'), { title: a.last_used ? fmt.datetime(a.last_used) : '' }, used || '—'),
       h('div.row-actions',
@@ -116,6 +133,7 @@
         h('button.btn.quiet.small', { type: 'button', onclick: () => PX.ask({ type: 'app', id: a.id }, a.name) }, PX.icon('spark'), '问 AI'),
         h('button.btn.small', { type: 'button', disabled: !a.can_uninstall, title: a.can_uninstall ? '' : '这个程序没有提供卸载程序',
           onclick: () => uninstall(a) }, '卸载…'))));
+    rowEls.set(a.id, el);
   }
 
   function sorted(rows) {
@@ -152,6 +170,9 @@
     const match = (a) => !q || (a.name + a.publisher).toLowerCase().includes(q);
     const main_ = sorted(state.apps.filter((a) => (a.kind === 'app' || a.kind === 'game') && match(a)));
     const system = sorted(state.apps.filter((a) => (a.kind === 'runtime' || a.kind === 'driver') && match(a)));
+    rowEls.clear();
+    largest = Math.max(1, ...state.apps.map((a) => a.size || 0));
+    if (!q) overview(c, main_);
     const head = (cls) => h('div.thead.app-row' + (cls || ''),
       ...[['name', '程序'], [null, '类型'], ['size', '大小', '.r'], ['installed', '安装日期'], ['used', '最近运行'], [null, '']].map(([key, label, r]) =>
         key ? h('button' + (state.sort === key ? '.on' : '') + (r || ''), { type: 'button', onclick: () => { state.sort = key; draw(); } }, label) : h('span', label)));

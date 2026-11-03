@@ -45,6 +45,21 @@
     c.appendChild(h('div.chips', { style: { marginBottom: '16px' } }, CATS.map(([v, label]) =>
       h('button.chip' + (large.category === v ? '.on' : ''), { type: 'button', onclick: () => { large.category = v; loadLarge(); } }, label))));
     const rows = [...large.rows];
+    // by type, for the whole list: a row filters to that type
+    // (files you cannot delete here, like pagefile.sys, are left out)
+    const free = rows.filter((f) => !f.blocked);
+    if (!large.category && free.length) {
+      const byCat = new Map();
+      for (const f of free) byCat.set(f.category, (byCat.get(f.category) || 0) + f.size);
+      if (byCat.size > 1) {
+        const label = Object.fromEntries(CATS);
+        const bars = [...byCat.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8)
+          .map(([cat, value]) => ({ label: label[cat] || cat, onclick: () => { large.category = cat; loadLarge(); }, parts: [{ value, cls: 'c-accent' }] }));
+        c.appendChild(PX.chartCard('按类型', `${free.length} 个文件共 ${fmt.bytes(free.reduce((s, f) => s + f.size, 0))}` +
+          (free.length < rows.length ? '（不含系统文件）' : '') + '，点一行只看这一类', PX.barList(bars)));
+      }
+    }
+    const largest = Math.max(1, ...rows.map((f) => f.size));
     if (large.sort === 'mtime') rows.sort((a, b) => a.mtime - b.mtime);
     const sortBtn = (key, label, cls) => h('button' + (large.sort === key ? '.on' : ''), { type: 'button', class: cls || null,
       onclick: () => { large.sort = key; drawLarge(); } }, label);
@@ -57,7 +72,7 @@
         onchange: (e) => { e.target.checked ? large.selected.add(f.path) : large.selected.delete(f.path); bar(); } });
       list.appendChild(h('div.row.file-row' + (f.blocked ? '.disabled' : ''), box,
         h('div.cell-main', h('div.name', f.name), h('div.sub', (f.blocked ? f.blocked + '：' : '') + PX.displayPath(f.path))),
-        h('div.sub', f.category_label), h('div.size.muted.small', fmt.date(f.mtime)), h('div.size', fmt.bytes(f.size))));
+        h('div.sub', f.category_label), h('div.size.muted.small', fmt.date(f.mtime)), h('div.size', fmt.bytes(f.size), PX.meter(f.size / largest))));
     }
     const barEl = c.appendChild(h('div.actionbar'));
     function bar() {
