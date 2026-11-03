@@ -17,7 +17,7 @@
 | 新增一类可以清理的缓存 | `panxu/junk.py` 的 `RULES` | `tests/test_cleanup.py`（目录检查自动覆盖新规则） |
 | 只给某个位置加说明（不确定能不能删） | `panxu/knowledge.py` 的 `ENTRIES` | 视情况在 `tests/test_core.py` 加断言 |
 | 「我的文件」漏报或误报 | `panxu/insights.py`（版本标记、`managed_dir`、各类发现） | `tests/test_insights.py` |
-| 自动勾选太松或太紧 | `panxu/checkup.py`（`PlanBuilder`、`_folder_guards`、`BOLD_EXCLUDED_RULES`） | `tests/test_checkup.py` |
+| 自动勾选太松或太紧 | `panxu/checkup.py`（各来源的分数和 `eligible`、`_folder_guards`、`NEVER_AUTO_RULES`） | `tests/test_checkup.py` |
 | 某个程序文件夹被误认成卸载残留 | `panxu/apps.py`（`match_folder`、`_GENERIC`）或 `insights.ALIASES` | `tests/test_apps.py` |
 
 ## 先判断：清理规则，还是只加说明？
@@ -44,7 +44,7 @@
         note='')                                               # 不可撤销或有明显影响时写在这里
    ```
    - 目标尽量具体，用 `pattern`、`min_age_hours`、`skip_dirs` 收窄范围；需要管理员权限的目标加 `admin=True`。
-   - 默认不勾的规则在「积极」模式下会被自动勾选；删除后不能撤销，或者可能含用户自己的东西时，加进 `checkup.BOLD_EXCLUDED_RULES`。
+   - 默认不勾的规则得 7 分，在默认的勾选门槛（5 分）下会被自动勾选；删除后不能撤销，或者可能含用户自己的东西时，加进 `checkup.NEVER_AUTO_RULES`（任何门槛下都不自动勾）。
 3. **在演练电脑里放样例。** 在 `panxu/sandbox.py` 的 `_layout()` 里加几个对应的假文件：要清理的，以及必须保留的（比如旁边的配置文件），让以后的测试和演示都能覆盖到。
 4. **补测试并跑全部检查。**
    ```powershell
@@ -66,7 +66,7 @@
 
 - 识别条件太宽（比如把编号文件当成版本），就收紧模式，并加反例测试。
 - 进了不该进的文件夹，就扩充 `insights.managed_dir` 的名单。
-- 自动勾选太松，就在 `checkup._folder_guards` 里加守卫（守卫会自动写进评分依据，用户能看到为什么没勾）。
+- 自动勾选太松，就在 `checkup._folder_guards` 里加守卫，或者调低那一类的分数（守卫和门槛都会写进评分依据，用户能看到为什么没勾）。不要靠提高默认门槛来修一类误报。
 
 原则：让它**漏掉**，也不要让它**删错**。
 
@@ -77,6 +77,6 @@
 - **严重**（违反了盘序的承诺，退出码 2）：个人文件被自动勾选；自动勾选了应用数据以外的文件夹；方案里出现其他账户的文件；程序管理的文件夹里的文件被当成个人文件。
 - **提醒**（退出码 1）：某一类超过 100 项、「多个版本」超过 30 组、单项超过 20 GB、方案里出现受保护的位置、规则扫描出错、AI 出错。
 
-常用参数：`--ai`（同时让设置里的模型复核，会发送匿名化后的文件夹和文件名），`--save real-check-base.json` / `--compare real-check-base.json`（和上次比较），`--out real-check-report.txt`，`--full-paths`（不替换用户名）。报告和基线里有你的文件路径；以 `real-check-` 开头的文件已在 .gitignore 里，不会被提交。
+常用参数：`--ai`（同时让设置里的模型复核，会发送匿名化后的文件夹和文件名），`--threshold 8`（换一个勾选门槛看看，默认 5），`--save real-check-base.json` / `--compare real-check-base.json`（和上次比较），`--out real-check-report.txt`，`--full-paths`（不替换用户名）。报告和基线里有你的文件路径；以 `real-check-` 开头的文件已在 .gitignore 里，不会被提交。
 
 建议在 Windows 大版本更新后、换电脑后、装了一批新软件后各跑一次。
