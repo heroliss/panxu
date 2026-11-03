@@ -1,4 +1,4 @@
-"""Program icons as small PNG images (for the 应用 list). Standard library only.
+"""Program icons as small PNG images (for 应用 and 开机与服务). Standard library only.
 
 An icon is drawn twice, onto black and onto white; the difference gives the
 alpha channel for both modern (32-bit) and old (masked) icons. Extracting
@@ -49,6 +49,32 @@ def data_url(png: bytes) -> str:
     return 'data:image/png;base64,' + base64.b64encode(png).decode('ascii')
 
 
+def _shortcut_icon(path: str) -> tuple[str, int] | None:
+    """Where the icon of a .lnk lives (file, index), as the shell resolves it -- without the shortcut arrow."""
+    from ctypes import wintypes
+
+    class SHFILEINFOW(ctypes.Structure):
+        _fields_ = [('hIcon', wintypes.HICON), ('iIcon', ctypes.c_int), ('dwAttributes', wintypes.DWORD),
+                    ('szDisplayName', wintypes.WCHAR * 260), ('szTypeName', wintypes.WCHAR * 80)]
+
+    shell32 = ctypes.WinDLL('shell32', use_last_error=True)
+    ole32 = ctypes.WinDLL('ole32', use_last_error=True)
+    shell32.SHGetFileInfoW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(SHFILEINFOW), wintypes.UINT, wintypes.UINT]
+    shell32.SHGetFileInfoW.restype = ctypes.c_size_t
+    ole32.CoInitializeEx.argtypes = [ctypes.c_void_p, wintypes.DWORD]
+    ole32.CoInitializeEx.restype = ctypes.c_long
+    com = ole32.CoInitializeEx(None, 0x2)  # resolving a shortcut needs COM on this thread
+    try:
+        info = SHFILEINFOW()
+        if not shell32.SHGetFileInfoW(path, 0, ctypes.byref(info), ctypes.sizeof(info), 0x1000):  # SHGFI_ICONLOCATION
+            return None
+        where = os.path.expandvars(info.szDisplayName)
+        return (where, info.iIcon) if where and not where.lower().endswith('.lnk') else None
+    finally:
+        if com in (0, 1):  # S_OK / S_FALSE
+            ole32.CoUninitialize()
+
+
 def file_icon(path: str, index: int = 0, size: int = SIZE) -> bytes | None:
     """PNG of an icon in an .exe/.dll/.ico (index as in DisplayIcon, negative = resource id), or None."""
     if winapi.simulation() is not None or not winapi.IS_WINDOWS or not path or not os.path.isfile(path):
@@ -79,6 +105,9 @@ def file_icon(path: str, index: int = 0, size: int = SIZE) -> bytes | None:
     icon_id = wintypes.UINT()
     found = user32.PrivateExtractIconsW(path, index, size, size, ctypes.byref(icon), ctypes.byref(icon_id), 1, 0)
     if found in (0, 0xFFFFFFFF) or not icon:
+        if path.lower().endswith('.lnk'):
+            where = _shortcut_icon(path)  # a Startup-folder shortcut: the icon it shows in Explorer
+            return file_icon(where[0], where[1], size) if where else None
         return None
 
     class BITMAPINFOHEADER(ctypes.Structure):
