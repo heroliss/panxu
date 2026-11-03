@@ -352,7 +352,7 @@ class Application:
 
     def get(self, path, query):
         query_contract = {'/api/file-browser/drives': set(),
-                          '/api/file-browser': {'path', 'cursor', 'limit', 'refresh', 'task_id'},
+                          '/api/file-browser': {'path', 'cursor', 'limit', 'refresh', 'task_id', 'sort', 'direction'},
                           '/api/recovery/summary': set(),
                           '/api/recovery': {'page', 'limit', 'status', 'volume'},
                           '/api/agent-budget': set(), '/api/analysis-budget': set(), '/api/user-tools': {'query'},
@@ -419,7 +419,8 @@ class Application:
             except (TypeError,ValueError):
                 raise AppError('请使用有效的文件页大小。') from None
             return self.file_browser.page(query.get('path',[''])[0],cursor=query.get('cursor',[None])[0],
-                limit=limit,refresh=query.get('refresh',['0'])[0]=='1',task=self.selection_task(query.get('task_id',[None])[0]))
+                limit=limit,refresh=query.get('refresh',['0'])[0]=='1',task=self.selection_task(query.get('task_id',[None])[0]),
+                sort=query.get('sort',['enumeration'])[0],direction=query.get('direction',['asc'])[0])
         if path == '/api/cleanup-tools':
             return self.cleanup_tools.list(query=query.get('query', [''])[0], category=query.get('category', ['all'])[0])
         if path == '/api/cleanup-tools/assessments':
@@ -475,7 +476,8 @@ class Application:
                 return self.catalog.page(offset=offset, limit=limit, query=query.get('query', [''])[0],
                     scope=query.get('scope', [''])[0], risk=query.get('risk', ['all'])[0], expected=query.get('revision', [''])[0],
                     view=query.get('view', ['all'])[0], parent_id=query.get('parent_id', [''])[0], rating=query.get('rating', ['all'])[0],
-                    kind=query.get('kind', ['all'])[0],
+                    kind=query.get('kind', ['all'])[0],sort=query.get('sort', ['enumeration'])[0],direction=query.get('direction', ['asc'])[0],
+                    expected_page_revision=query.get('page_revision', [''])[0],
                     task=self.selection_task(query.get('task_id', [''])[0]))
         if path == '/api/applications':
             section = query.get('section', ['background'])[0]

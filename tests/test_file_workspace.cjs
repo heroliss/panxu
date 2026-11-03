@@ -62,6 +62,41 @@ test('file workspace starts at drives and opens only one bounded layer without s
  assert.equal(f.requests.length,2);const url=new URL(f.requests[1].path,'http://local');assert.equal(url.pathname,'/api/file-browser');assert.equal(url.searchParams.get('path'),'E:\\');assert.equal(url.searchParams.get('limit'),'50');assert.match(f.root.textContent,/未统计/);assert.equal(f.actions.length,0);assert.equal(f.requests.some(r=>/scan|analyze|prepare|execute/.test(r.path)),false);
 });
 
+test('one address control switches between clickable breadcrumbs and an editable path without navigating on focus',async()=>{
+ const f=fixture(url=>url.pathname==='/api/file-browser'?page([],{breadcrumbs:[{name:'E:',path:'E:\\'},{name:'fixture',path:'E:\\fixture'}]}):undefined);await f.open();
+ const address=f.root.querySelector('.workspace-address'),crumbs=f.root.querySelector('.workspace-breadcrumbs'),input=f.input('文件位置');
+ assert.equal(f.root.querySelectorAll('.workspace-location').length,1);assert.equal(crumbs.parent,address);assert.equal(input.parent,address);assert.equal(input.hidden,true);assert.equal(crumbs.hidden,false);assert.equal(f.button('打开').hidden,true);
+ const before=f.requests.length;await f.root.fire('keydown',{key:'l',ctrlKey:true});assert.equal(input.hidden,false);assert.equal(crumbs.hidden,true);assert.equal(f.document.activeElement,input);assert.equal(input.selectionEnd,input.value.length);assert.equal(f.requests.length,before);
+ input.value='E:\\not-committed';await input.fire('input');await input.fire('keydown',{key:'Escape'});assert.equal(input.hidden,true);assert.equal(crumbs.hidden,false);assert.equal(input.value,'E:\\fixture');assert.equal(f.requests.length,before);
+ await address.fire('click',{target:address});assert.equal(input.hidden,false);input.value='E:\\draft';await input.fire('blur');assert.equal(input.hidden,true);assert.equal(input.value,'E:\\fixture');assert.equal(f.actions.length,0);
+});
+
+test('address Enter and Open commit a typed path while blur to Open does not discard the draft',async()=>{
+ const f=fixture(url=>url.pathname==='/api/file-browser'?page([],{path:url.searchParams.get('path')}):undefined);await f.open();
+ await f.root.fire('keydown',{key:'F4'});let input=f.input('文件位置');input.value=' E:\\typed ';await input.fire('keydown',{key:'Enter'});assert.equal(new URL(f.requests.at(-1).path,'http://local').searchParams.get('path'),'E:\\typed');assert.equal(f.input('文件位置').hidden,true);
+ await f.root.fire('keydown',{key:'d',altKey:true});input=f.input('文件位置');input.value='E:\\clicked';await input.fire('blur',{relatedTarget:f.button('打开')});assert.equal(input.hidden,false);await f.button('打开').fire();assert.equal(new URL(f.requests.at(-1).path,'http://local').searchParams.get('path'),'E:\\clicked');
+ const current=f.input('文件位置');f.window.PanxuFileWorkspace.unmount();await f.root.fire('keydown',{key:'l',ctrlKey:true});assert.equal(current.hidden,true);assert.equal(f.actions.length,0);
+});
+
+test('sorting prepares the entire layer asynchronously and preserves selection and idempotent paging cursors',async()=>{
+ const deferredPage=deferred(),old=item('retained'),ordered=Array.from({length:75},(_,i)=>item('ordered-'+i,{size_bytes:75-i}));
+ const f=fixture(url=>{if(url.pathname!=='/api/file-browser')return;const cursor=url.searchParams.get('cursor');if(url.searchParams.get('sort')==='enumeration')return page([old]);if(!cursor)return {status:'sorting',items:[],sort_progress:{processed_entries:256,total_entries:null,complete:false},has_more:true,next_cursor:'preparing'};if(cursor==='preparing')return deferredPage.promise;return page(cursor==='ordered-next'?ordered.slice(50):ordered.slice(0,50),{current_cursor:cursor,has_more:cursor!=='ordered-next',next_cursor:cursor==='ordered-next'?null:'ordered-next'});});
+ await f.open();await f.select('retained');const order=f.input('排序依据');order.value='size';await order.fire('change');
+ assert.match(f.root.textContent,/正在准备整层排序，已读取 256 项/);assert.equal(f.input('选择 retained.txt').disabled,true);assert.deepEqual(f.selected(),['retained']);
+ deferredPage.resolve(page(ordered.slice(0,50),{current_cursor:'ordered-first',has_more:true,next_cursor:'ordered-next'}));await flush();assert.match(f.root.textContent,/ordered-0\.txt/);assert.equal(f.all().filter(n=>n.className==='workspace-file-row').length,50);await f.button('下一页').fire();assert.match(f.root.textContent,/ordered-50\.txt/);await f.button('上一页').fire();assert.match(f.requests.at(-1).path,/cursor=ordered-first/);assert.match(f.root.textContent,/ordered-0\.txt/);
+ assert.deepEqual(f.selected(),['retained']);const direction=f.input('排序方向');direction.value='desc';await direction.fire('change');assert.equal(new URL(f.requests.at(-1).path,'http://local').searchParams.get('direction'),'desc');assert.equal(f.actions.length,0);
+});
+
+test('navigation cancels a pending full-layer sort and ignores its old rows and cursor',async()=>{
+ const late=deferred();const f=fixture(url=>{if(url.pathname!=='/api/file-browser')return;if(url.searchParams.get('sort')==='enumeration')return page([item('old')]);if(url.searchParams.get('cursor'))return late.promise;return {status:'sorting',items:[],next_cursor:'wait',sort_progress:{processed_entries:500}};});await f.open();const order=f.input('排序依据');order.value='name';await order.fire('change');await f.button('此电脑').fire();late.resolve(page([item('stale')],{current_cursor:'obsolete'}));await flush();assert.equal(f.input('文件位置').value,'');assert.equal(f.root.textContent.includes('stale.txt'),false);assert.ok(f.button('E:'));assert.equal(f.actions.length,0);
+});
+
+test('compact rows label personal intent and distinguish file creation/modification from suggestion generation',async()=>{
+ const value=item('times',{details:{timestamps:{created_at:'2020-01-01T01:00:00Z',modified_at:'2021-02-02T02:00:00Z'}},assessment:{state:'explicit',rating:4,provenance:{source:'llm',generated_at:'2026-11-03T03:00:00Z'}}});const partial=item('partial',{kind:'directory',size_known:true,size_kind:'observed_lower_bound',size_bytes:200});
+ const f=fixture(url=>url.pathname==='/api/file-browser'?page([value,partial]):undefined);await f.open();assert.match(f.root.textContent,/我的意愿/);assert.match(f.root.textContent,/文件创建：/);assert.match(f.root.textContent,/文件修改：/);assert.match(f.root.textContent,/建议生成：/);assert.equal(f.root.textContent.includes('修改于 '),false);assert.match(f.root.textContent,/至少 200 B/);
+ const row=f.all().find(n=>n.className==='workspace-file-row'&&n.textContent.includes('times.txt'));assert.ok(row.querySelector('.workspace-file-heading').querySelector('.item-disposition-control'));assert.equal(row.querySelectorAll('.workspace-file-size').length,1);assert.equal(f.actions.length,0);
+});
+
 test('ordinary browsing paginates instead of enumerating a directory or its descendants',async()=>{
  const rows=Array.from({length:75},(_,i)=>item('file-'+i));const f=fixture(url=>url.pathname==='/api/file-browser'?page(url.searchParams.get('cursor')?rows.slice(50):rows.slice(0,50),{has_more:!url.searchParams.get('cursor'),next_cursor:url.searchParams.get('cursor')?null:'page-2'}):undefined);
  await f.open();assert.equal(f.all().filter(n=>n.className==='workspace-file-row').length,50);assert.equal(f.requests.length,1);await f.button('下一页').fire();assert.equal(f.all().filter(n=>n.className==='workspace-file-row').length,25);assert.equal(f.requests.length,2);assert.match(f.requests[1].path,/cursor=page-2/);await f.button('上一页').fire();assert.equal(f.requests.length,3);assert.equal(new URL(f.requests[2].path,'http://local').searchParams.has('cursor'),false);assert.equal(f.actions.length,0);

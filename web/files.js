@@ -41,7 +41,45 @@ window.PanxuDisposition = (() => {
       finally{select.disabled=disabled||typeof api!=='function';}
     });return select;
   }
-  return {render};
+  function labelled(select){
+    const label=document.createElement('label'),caption=document.createElement('span');label.className='item-disposition-control';caption.className='item-disposition-label';caption.textContent='我的意愿';label.title=select.title;label.append(caption,select);return label;
+  }
+  return {render,labelled};
+})();
+
+// Filesystem timestamps describe the object; suggestion timestamps describe
+// the saved judgement. Unknown values never become a zero size or today's date.
+window.PanxuFileFacts = (() => {
+  const text=value=>typeof value==='string'?value.trim():'';
+  function stamp(raw){
+    if(typeof raw!=='string')return null;
+    const parts=raw.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/);if(!parts)return null;
+    const [,year,month,day,hour,minute,second]=parts.map(Number),days=[31,year%4===0&&(year%100!==0||year%400===0)?29:28,31,30,31,30,31,31,30,31,30,31];
+    if(month<1||month>12||day<1||day>days[month-1]||hour>23||minute>59||second>59)return null;
+    const date=new Date(raw);if(!Number.isFinite(date.getTime()))return null;
+    return {short:date.toLocaleString('zh-CN',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}),full:date.toLocaleString('zh-CN')};
+  }
+  function sizeLabel(item,bytes){
+    const size=item?.size_bytes;if(!Number.isFinite(size)||size<0||item.size_kind==='unknown')return item.kind==='directory'?'未统计':'未取得';
+    const value=typeof bytes==='function'?bytes(size):size+' B';
+    return item.kind==='directory'&&(item.size_kind==='observed_lower_bound'||item.details?.subtree_complete===false||item.subtree_complete===false)?'至少 '+value:value;
+  }
+  function render(item={}, {bytes,includeSize=true,includeAnalysisTime=true}={}){
+    const line=document.createElement('div');line.className='file-fact-line';line.setAttribute('aria-label','文件属性与建议时间');
+    const directory=item.kind==='directory',prefix=directory?'目录':'文件';
+    const add=(label,value,title)=>{const part=document.createElement('span');part.className='file-fact';part.textContent=label+'：'+value;if(title)part.title=title;line.append(part);};
+    if(['file','directory'].includes(item.kind)){
+      const suffix=text(item.name).includes('.')?text(item.name).split('.').pop().toUpperCase():'';
+      add('类型',directory?'文件夹':suffix?suffix+' 文件':'文件');
+      if(includeSize)add('大小',sizeLabel(item,bytes));
+      const times=item.details?.timestamps || {};
+      for(const [key,label]of [['created_at',prefix+'创建'],['modified_at',prefix+'修改']]){const date=stamp(times[key] || item[key]);add(label,date?.short || '未取得',date?label+'时间（本机时区）：'+date.full+(directory&&key==='modified_at'?'；表示目录自身的修改，不代表全部子文件的最近修改。':''):label+'时间未取得；不是分析保存时间。');}
+    }
+    const assessment=item.assessment || {},provenance=assessment.provenance || item.provenance;
+    if(includeAnalysisTime&&provenance?.source==='llm'){const date=stamp(provenance.generated_at);if(date)add(assessment.state==='inherited'?'上级建议生成':'建议生成',date.short,'模型建议生成时间（本机时区）：'+date.full+'；不是文件修改时间。');}
+    return line;
+  }
+  return {render,stamp,sizeLabel};
 })();
 
 // Full-filter candidates are bounded, versioned snapshots, never a page-local
@@ -127,7 +165,7 @@ window.PanxuFilteredSelection = (() => {
 window.PanxuFiles = (() => {
   const limit = 50, cache = new Map(), picked = new Map(), candidateCache=new Map();
   let context, host, status, pager, scopeInput, searchInput, riskInput, ratingInput, trailHost, selectionHost,coverageDetails;
-  let query = '', scope = '', risk = 'all', rating = 'all', view = 'suggestions', parentId = '', offset = 0, revision = '', page = null;
+  let query = '', scope = '', risk = 'all', rating = 'all', view = 'suggestions', parentId = '', offset = 0, revision = '', page = null, sortMode='enumeration',sortDirection='asc',pageRevision='';
   let controller, sequence = 0, debounce, loading = false, preparing = false, pickedRevision = '', pickedSelectionRevision='', externalRevision = '', selectionNotice = '', matches=null, matchesLoading=false, preparedTask=null;
   const node = (tag, cls, text) => {
     const n = document.createElement(tag); if (cls) n.className = cls;
@@ -204,6 +242,8 @@ window.PanxuFiles = (() => {
     scopeInput=select('筛选检查位置',[['','所有检查位置'],...(helpers.disks || []).map(d=>[d.path||d.name,d.name||d.path])],scope,value=>{scope=value;parentId='';change();});
     ratingInput=select('筛选清理倾向',[['all','全部倾向'],['5','5 分 · 建议清理'],['4','4 分 · 倾向清理'],['3','3 分 · 待你决定'],['2','2 分 · 倾向保留'],['1','1 分 · 建议保留'],['unrated','未评分'],['skipped','已跳过'],['no_advice','暂无建议']],rating,value=>{rating=value;change();});
     tools.append(searchInput,scopeInput,ratingInput,button('刷新清单',()=>refreshAdvice(),'plain-button'));
+    const sort=select('文件排序字段',[['enumeration','默认顺序'],['name','名称'],['type','类型'],['size','大小'],['created','文件创建时间'],['modified','文件修改时间'],['rating','清理评分']],sortMode,value=>{sortMode=value;direction.disabled=value==='enumeration';pageRevision='';change();});
+    const direction=button(sortDirection==='desc'?'降序':'升序',()=>{sortDirection=sortDirection==='asc'?'desc':'asc';direction.textContent=sortDirection==='desc'?'降序':'升序';pageRevision='';change();},'button small');direction.setAttribute('aria-label','切换文件排序方向');direction.disabled=sortMode==='enumeration';tools.append(sort,direction);
     const more=node('section','file-browser-options');more.hidden=true;more.setAttribute('aria-label','文件查看选项');
     const moreButton=button('查看选项',()=>{more.hidden=!more.hidden;moreButton.setAttribute('aria-expanded',String(!more.hidden));},'plain-button');moreButton.setAttribute('aria-expanded','false');tools.append(moreButton);
     riskInput=select('筛选保护状态',[['all','全部保护状态'],['low','可加入操作清单'],['review','需你决定'],['protected','已保护']],risk,value=>{risk=value;change();});
@@ -227,7 +267,7 @@ window.PanxuFiles = (() => {
     const run=++sequence;controller?.abort();controller=new AbortController();const control=controller,target=host;
     loading=true;matches=null;matchesLoading=false;target.setAttribute('aria-busy','true');status.textContent='正在载入已扫描内容…';selectionChanged();
     pager.querySelectorAll('button').forEach(button=>button.disabled=true);
-    const params=new URLSearchParams({view,parent_id:view==='tree'?parentId:'',offset,limit,query,scope,risk,rating,revision});const key=params.toString();
+    const params=new URLSearchParams({view,parent_id:view==='tree'?parentId:'',offset,limit,query,scope,risk,rating,revision,sort:sortMode,direction:sortDirection,...(offset>0&&pageRevision?{page_revision:pageRevision}:{})});const key=params.toString();
     const timeout=setTimeout(()=>{if(run===sequence)control.abort();},15000);
     try{
       let data=cache.get(key);
@@ -242,7 +282,7 @@ window.PanxuFiles = (() => {
       }
       if(run!==sequence||!target.isConnected)return;
       if(picked.size&&pickedRevision!==data.revision)selectionNotice='清单或建议已更新，未完成的勾选草案仍保留；请重新核对后勾选，确认时还会校验版本。';
-      revision=data.revision;page=data;loading=false;matchesLoading=true;
+      revision=data.revision;pageRevision=data.page_revision || '';page=data;loading=false;matchesLoading=true;
       target.setAttribute('aria-busy','false');context.ingest(data.items);paint();context.changed();context.adviceChanged?.();
       // The page is usable while the separate cross-page selection snapshot
       // loads. Its timeout/abort must not turn a displayed page into an error.
@@ -327,7 +367,7 @@ window.PanxuFiles = (() => {
     if(!page.total){const empty=node('div','empty-state');empty.append(node('p','',view==='suggestions'?'可以切换到目录结构查看已扫描内容。':'未扫描、无权限或未读取的内容不会被补造成完整目录。'));host.append(empty);return;}
     const panel=node('div','panel file-page-panel'),locations=locationLabels(page.items);
     page.items.forEach(item=>{
-      const row=node('div','paged-file-row');row.dataset.fileId=item.id;row.dataset.fileKind=item.kind;
+      const row=node('div','paged-file-row file-compact-row');row.dataset.fileId=item.id;row.dataset.fileKind=item.kind;
       const check=node('input');check.type='checkbox';check.dataset.reviewCheck=item.id;check.setAttribute('aria-label','选择待确认删除：'+item.name);
       check.title=item.navigation_only?'此项仅用于浏览已扫描目录。':canPrepare(item)?'选择后仍需查看具体删除清单并确认。':window.PanxuAssessment.blocked(item) || '此项暂不能加入删除清单。';
       check.addEventListener('change',()=>{selectionNotice='';pick(item,check.checked);selectionChanged();});
@@ -337,15 +377,16 @@ window.PanxuFiles = (() => {
         const expand=button('',()=>navigate(item.id),'file-tree-expand');expand.setAttribute('aria-label','展开已扫描目录：'+item.name);expand.setAttribute('aria-expanded','false');expand.append(node('span','tree-chevron'));name.append(expand);
       }
       const icon=window.PanxuIcons?.create(item);if(icon)name.append(icon);name.append(title);
-      const location=node('small','file-location',locations.get(item.id));location.title=item.path;location.setAttribute('aria-label','完整位置：'+item.path);copy.append(name,location);
+      const primary=node('div','cleanup-row-primary'),header=node('div','cleanup-row-header');const location=node('small','file-location',locations.get(item.id));location.title=item.path;location.setAttribute('aria-label','完整位置：'+item.path);header.append(name,location);primary.append(header);copy.append(primary);
       if(item.kind==='directory'&&(item.subtree_complete===false||item.details?.subtree_complete===false||item.details?.complete===false))copy.append(node('small','field-help','内部尚未完整读取'));
       const value=assessment(item);
-      if(!item.navigation_only)copy.append(window.PanxuDisposition.render(item,{api:context.api,disabled:loading||preparing,onChange:()=>{if(item.user_disposition?.value==='direct_keep')picked.delete(item.id);refreshAdvice();},onError:error=>{selectionNotice=error.message;selectionChanged();}}));
+      if(!item.navigation_only)primary.append(window.PanxuDisposition.labelled(window.PanxuDisposition.render(item,{api:context.api,disabled:loading||preparing,onChange:()=>{if(item.user_disposition?.value==='direct_keep')picked.delete(item.id);refreshAdvice();},onError:error=>{selectionNotice=error.message;selectionChanged();}})));
+      copy.append(window.PanxuFileFacts.render(item,{bytes:context.bytes,includeSize:false}));
       if(value.state==='inherited')copy.append(node('small','file-inheritance-note',`继承自${value.inherited_from_name || '上级目录'}，未逐项分析`));
       if(value.stale)copy.append(node('small','file-inheritance-note','建议或对象已有变化，需要重新核对。'));
-      copy.append(window.PanxuAdvicePresentation.render(item,{compactUnknown:true}));
+      const explanation=node('div','cleanup-row-advice');explanation.append(window.PanxuAdvicePresentation.render(item,{compactUnknown:true}));copy.append(explanation);
       const extension=String(item.name||'').match(/\.([a-z0-9]{1,8})$/i)?.[1],type=item.kind==='directory'?'文件夹':extension?`${extension.toUpperCase()} 文件`:'文件';
-      const meta=node('div','paged-file-meta'),measurement=node('div','file-meta-measurement');measurement.append(node('span','file-type',type),node('span','file-size',context.bytes(item.size_bytes)));
+      const meta=node('div','paged-file-meta'),measurement=node('div','file-meta-measurement');measurement.append(node('span','file-size',window.PanxuFileFacts.sizeLabel(item,context.bytes)));
       meta.append(measurement);row.append(check,window.PanxuAssessment.render(item,{primary:true,cls:'file-primary-rating'}),copy,meta);
       if(!item.navigation_only){const known=value.state!=='unanalysed';row.append(button(known?'查看建议':'分析这项',()=>known?context.show(item):context.analyze(item),'button small row-analyze'));}
       panel.append(row);
@@ -393,7 +434,7 @@ window.PanxuCleanupReview = (() => {
     const id=task.cleanup_source_task_id || task.id;
     if(!states.has(id)){
       if(states.size>=8)states.delete(states.keys().next().value);
-      states.set(id,{id,source:task.cleanup_source_task_id?null:task,rules:new Map(),manualRules:new Map(),autoSeen:new Set(),autoRules:new Set(),initialized:false,applications:applications(task),kind:'all',view:task.status==='investigating'?'all':'suggestions',rating:'all',query:'',parentId:'',offset:0,revision:'',selectionRevision:'',mode:task.execution?'execution':'list',executionId:task.execution?task.id:null,execution:task.execution || null});
+      states.set(id,{id,source:task.cleanup_source_task_id?null:task,rules:new Map(),manualRules:new Map(),autoSeen:new Set(),autoRules:new Set(),initialized:false,applications:applications(task),kind:'all',view:task.status==='investigating'?'all':'suggestions',rating:'all',query:'',parentId:'',offset:0,revision:'',selectionRevision:'',sort:'enumeration',direction:'asc',pageRevision:'',mode:task.execution?'execution':'list',executionId:task.execution?task.id:null,execution:task.execution || null});
       if(task.status==='awaiting_review'&&task.plan?.origin==='user_direct'&&task.plan.items?.length&&!task.execution&&!task.cleanup_source_task_id){
         const restored=states.get(id);restored.initialized=true;restored.view=restored.applications?'all':'tree';
         for(const item of task.plan.items)setRule(restored,item,true,false,true);
@@ -476,6 +517,11 @@ window.PanxuCleanupReview = (() => {
     [['all','全部倾向'],['5','5 分 · 建议清理'],['4','4 分 · 倾向清理'],['3','3 分 · 待你决定'],['2','2 分 · 倾向保留'],['1','1 分 · 建议保留'],['skipped','已跳过'],['unrated','未评分 / 尚未分析'],['no_advice','暂无建议']].forEach(([id,label])=>{const option=node('option','',label);option.value=id;rating.append(option);});rating.value=state.rating;
     rating.addEventListener('change',()=>{state.rating=rating.value;state.offset=0;load(token);});
     add(filters,search,rating,button('刷新',()=>load(token),'plain-button'));
+    const sort=node('select');sort.setAttribute('aria-label','本轮排序字段');
+    const fields=[['enumeration','默认顺序'],['name','名称'],['type','类型'],...(!state.applications?[['size','大小'],['created','文件创建时间'],['modified','文件修改时间']]:[]),['rating','清理评分']];
+    for(const [id,label] of fields){const option=node('option','',label);option.value=id;sort.append(option);}sort.value=state.sort;
+    const direction=button(state.direction==='desc'?'降序':'升序',()=>{state.direction=state.direction==='asc'?'desc':'asc';direction.textContent=state.direction==='desc'?'降序':'升序';state.offset=0;state.pageRevision='';load(token);},'button small');direction.setAttribute('aria-label','切换本轮排序方向');direction.disabled=state.sort==='enumeration';
+    sort.addEventListener('change',()=>{state.sort=sort.value;state.offset=0;state.pageRevision='';direction.disabled=state.sort==='enumeration';load(token);});filters.append(sort,direction);
     if(state.applications){const kind=node('select');kind.setAttribute('aria-label','筛选项目类型');[['all','全部类型'],['startup','开机启动'],['service','后台服务'],['process','运行进程'],['software','已安装软件']].forEach(([id,label])=>{const option=node('option','',label);option.value=id;kind.append(option);});kind.value=state.kind;kind.addEventListener('change',()=>{state.kind=kind.value;state.offset=0;load(token);});filters.append(kind);}
     const all=node('label','check-line filter-select-all cleanup-filter-selection'),allCheck=node('input'),matchStatus=node('span','field-help cleanup-filter-status');allCheck.type='checkbox';allCheck.dataset.filterSelectAll='1';allCheck.setAttribute('aria-label','全选当前筛选结果');
     allCheck.title='覆盖当前视图和筛选的全部页面；其他筛选的勾选及子项例外保留。';
@@ -497,11 +543,11 @@ window.PanxuCleanupReview = (() => {
   async function load(token,retry=false,navigation=null,{live=false,seed=false}={}){
     if(!active(token))return;const state=token.state,run=++token.run;token.abort?.abort();token.abort=new AbortController();const signal=token.abort.signal;if(!live)token.busy=true;token.matches=null;token.matchesLoading=false;token.matchError='';token.error='';paint(token);
     let ready=false;
-    const params=new URLSearchParams({task_id:state.id,view:state.view,kind:state.kind,parent_id:state.view==='tree'?state.parentId:'',offset:state.offset,limit,query:state.query,rating:state.rating,revision:live?'':state.revision});
+    const params=new URLSearchParams({task_id:state.id,view:state.view,kind:state.kind,parent_id:state.view==='tree'?state.parentId:'',offset:state.offset,limit,query:state.query,rating:state.rating,revision:live?'':state.revision,sort:state.sort,direction:state.direction,...(!live&&state.offset>0&&state.pageRevision?{page_revision:state.pageRevision}:{})});
     try{
       const page=await token.helpers.api('/api/files?'+params,undefined,{signal});
       if(!active(token)||run!==token.run)return;
-      state.revision=page.revision;state.selectionRevision=page.selection_revision || state.selectionRevision;token.page=page;
+      state.revision=page.revision;state.pageRevision=page.page_revision || '';state.selectionRevision=page.selection_revision || state.selectionRevision;token.page=page;
       if(!state.initialized||seed){
         const data=await token.helpers.api('/api/assessments/select',{task_id:state.id,category:token.helpers.autoSelectFour===false?'5':'high',mode:'automatic',include_inherited:true,kind:'all',limit:500,revision:state.revision,selection_revision:state.selectionRevision},{signal});
         if(!active(token)||run!==token.run)return;
@@ -572,14 +618,14 @@ window.PanxuCleanupReview = (() => {
     token.pagerNodes.previous.disabled=token.busy||!page.offset;token.pagerNodes.next.disabled=token.busy||!page.has_more;token.pagerNodes.label.textContent=`第 ${Math.floor(page.offset/limit)+1} 页`;
   }
   function createRow(token,item){
-    const view={item:{...item},root:node('div','paged-file-row cleanup-file-row'),check:node('input'),grade:node('span','file-primary-rating'),copy:node('div','paged-file-copy'),header:node('div','cleanup-row-header'),notes:node('div','cleanup-row-notes'),advice:node('div'),meta:node('div','paged-file-meta')};
+    const view={item:{...item},root:node('div','paged-file-row cleanup-file-row file-compact-row'),check:node('input'),grade:node('span','file-primary-rating'),copy:node('div','paged-file-copy'),header:node('div','cleanup-row-header'),notes:node('div','cleanup-row-notes'),advice:node('div','cleanup-row-advice'),facts:node('div','cleanup-row-facts'),meta:node('div','paged-file-meta')};
     view.root.dataset.cleanupId=item.id;view.check.type='checkbox';view.check.dataset.cleanupPick=item.id;
     view.check.addEventListener('change',()=>{try{setRule(token.state,view.item,view.check.checked,true,true);token.state.initialized=true;token.notice='';token.error='';}catch(error){token.error=error.message;}paint(token);});
     view.disposition=window.PanxuDisposition.render(view.item,{api:token.helpers.api,disabled:token.busy,
       onChange:()=>{if(view.item.user_disposition?.value==='direct_keep')setRule(token.state,view.item,false,false,true);load(token);},
       onError:error=>{token.error=error.message;paint(token);}});
     view.dispositionHostDisabled=token.busy;
-    view.copy.append(view.header,view.notes,view.disposition,view.advice);
+    const primary=node('div','cleanup-row-primary');primary.append(view.header,window.PanxuDisposition.labelled(view.disposition));view.copy.append(primary,view.facts,view.notes,view.advice);
     const details=button('来源与详情',()=>token.helpers.showItem?.(view.item),'plain-button row-analyze');
     add(view.root,view.check,view.grade,view.copy,view.meta,details);return view;
   }
@@ -615,10 +661,12 @@ window.PanxuCleanupReview = (() => {
     }
     const adviceKey=JSON.stringify([current.assessment,current.purpose,current.recommendation,current.reason,current.impact,current.action,current.action_label]);
     if(view.adviceKey!==adviceKey){view.adviceKey=adviceKey;view.advice.replaceChildren(window.PanxuAdvicePresentation.render(current,{compactUnknown:true}));view.grade.replaceChildren(window.PanxuAssessment.render(current,{primary:true}));}
+    const factsKey=JSON.stringify([current.kind,current.name,current.details?.timestamps,current.created_at,current.modified_at,current.assessment?.provenance,current.provenance,current.assessment?.state]);
+    if(view.factsKey!==factsKey){view.factsKey=factsKey;view.facts.replaceChildren(window.PanxuFileFacts.render(current,{bytes:token.helpers.bytes,includeSize:false}));view.facts.hidden=!view.facts.textContent;}
     const disabled=token.busy||token.helpers.disabled;
     if(disabled)view.disposition.disabled=true;else if(view.dispositionHostDisabled)view.disposition.disabled=false;view.dispositionHostDisabled=disabled;
     if(!view.disposition.disabled)view.disposition.value=current.user_disposition?.stale?'':current.user_disposition?.value || '';
-    view.meta.textContent=fileItem(current)?token.helpers.bytes(current.size_bytes):current.action_label || window.PanxuActionCopy.label(operation(current),current.kind);
+    view.meta.textContent=fileItem(current)?window.PanxuFileFacts.sizeLabel(current,token.helpers.bytes):current.action_label || window.PanxuActionCopy.label(operation(current),current.kind);
   }
   async function prepare(token){
     if(token.busy||token.helpers.disabled||!active(token))return;token.busy=true;token.error='';paint(token);

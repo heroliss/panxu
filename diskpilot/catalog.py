@@ -6,9 +6,66 @@ import base64
 from collections import Counter
 import hashlib
 import json
+import os
+from datetime import datetime
 
 from .simulation import AppError, canonical, within, _parent
 from .action_semantics import FILE_KINDS, KINDS, action_details, action_groups, in_task_scope, primary_action, unavailable_reason
+
+
+SORT_KEYS = ('enumeration', 'name', 'type', 'size', 'created', 'modified', 'rating')
+_SORT_ALIASES = {'file_created': 'created', 'file_modified': 'modified', 'cleanup_rating': 'rating'}
+
+
+def normalize_sort(sort='enumeration', direction='asc'):
+    sort = _SORT_ALIASES.get(sort, sort) if isinstance(sort, str) else None
+    if sort not in SORT_KEYS or direction not in ('asc', 'desc'):
+        raise AppError('请选择有效的排序字段和方向。', 'invalid_file_sort')
+    return sort, direction
+
+
+def sort_value(row, key):
+    """Shared metadata keys; unknown is distinct from zero and analysis time."""
+    if key == 'name':
+        return str(row.get('name', '')).casefold()
+    if key == 'type':
+        if row.get('kind') not in FILE_KINDS:
+            return row.get('kind')
+        return 'directory' if row.get('kind') == 'directory' else os.path.splitext(str(row.get('name', '')))[1].casefold() or 'file'
+    if key == 'size':
+        value = row.get('size_bytes')
+        if row.get('kind') == 'directory' and row.get('size_known', row.get('details', {}).get('size_known')) is not True:
+            return None
+        return value if type(value) is int and value >= 0 else None
+    if key in ('created', 'modified'):
+        field = 'created_at' if key == 'created' else 'modified_at'
+        value = row.get(field) or row.get('details', {}).get('timestamps', {}).get(field)
+        try:
+            parsed = datetime.fromisoformat(value) if isinstance(value, str) else None
+            return parsed.timestamp() if parsed is not None and parsed.tzinfo is not None else None
+        except (ValueError, OverflowError, OSError):
+            return None
+    if key == 'rating':
+        assessment = row.get('assessment') or {}
+        value = assessment.get('rating')
+        return value if type(value) is int and 1 <= value <= 5 and not assessment.get('stale') else None
+    return None
+
+
+def ordered_rows(rows, sort, direction):
+    """Order the complete observed query before slicing; unknowns always last."""
+    sort, direction = normalize_sort(sort, direction)
+    if sort == 'enumeration':
+        return rows
+    tie = lambda row: (str(row.get('name', '')).casefold(), row['id'])
+    known, unknown = [], []
+    for row in rows:
+        value = sort_value(row, sort)
+        (unknown if value is None else known).append(row)
+    known.sort(key=tie)
+    known.sort(key=lambda row: sort_value(row, sort), reverse=direction == 'desc')
+    unknown.sort(key=tie)
+    return known + unknown
 
 
 class FileCatalog:
@@ -126,7 +183,19 @@ class FileCatalog:
                     'timestamps', 'parent_id', 'root', 'scan_only', 'state', 'start_mode', 'startup_enabled', 'enabled', 'pid',
                     'version', 'scope', 'has_uninstaller', 'observed_at', 'registry_location',
                     'browser_only', 'browser_layer_only', 'size_known', 'browseable', 'browse_block_reason',
-                    'entry_metadata_signature') if k in details}
+                    'entry_metadata_signature', 'mtime_ns', 'ctime_ns') if k in details}
+                if item['kind'] in FILE_KINDS:
+                    timestamps = details.get('timestamps') or {}
+                    projected.update(created_at=timestamps.get('created_at'), modified_at=timestamps.get('modified_at'),
+                        observed_at=timestamps.get('observed_at'),
+                        size_known=item['kind'] == 'file' or details.get('complete') is True and details.get('subtree_complete') is True)
+                    if item['kind'] == 'directory':
+                        partial = not projected['size_known'] and not details.get('browser_only') and (projected.get('size_bytes') or 0) > 0
+                        projected['size_kind'] = 'known' if projected['size_known'] else 'observed_lower_bound' if partial else 'unknown'
+                        if not projected['size_known'] and not partial:
+                            projected['size_bytes'] = None
+                    else:
+                        projected['size_kind'] = 'known'
                 if item['kind'] == 'service':
                     projected['details']['state_label'] = {'Running': '正在运行', 'Stopped': '已停止',
                         'Start Pending': '正在启动', 'Stop Pending': '正在停止', 'Paused': '已暂停'}.get(details.get('state'), '状态尚未确认')
@@ -603,25 +672,34 @@ class FileCatalog:
         return [index[ident] for ident in ids]
 
     def page(self, *, offset=0, limit=50, query='', scope='', risk='all', expected=None,
-             view='all', parent_id='', rating='all', kind='all', task=None):
+             view='all', parent_id='', rating='all', kind='all', task=None, sort='enumeration', direction='asc',
+             expected_page_revision=None):
         if type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 100:
             raise AppError('每页显示1到100项，请使用有效页码。')
         if not isinstance(query, str) or len(query) > 200 or not isinstance(scope, str) or len(scope) > 2000:
             raise AppError('搜索或范围过长。')
         if risk not in ('all', 'low', 'review', 'protected'):
             raise AppError('请选择有效的内容筛选。')
+        sort, direction = normalize_sort(sort, direction)
         with self.state.lock:
             token, _ = self._index()
             rows = self._selection_rows(task)
             if expected and expected != token:
                 raise AppError('检查清单已有更新，将重新载入第一页。', 'catalog_changed', 409)
+            page_revision = hashlib.sha256(json.dumps([token, sort, direction, query, scope, risk, kind, rating,
+                view, parent_id, task.get('id') if task else None], ensure_ascii=False).encode()).hexdigest()[:24]
+            if expected_page_revision and expected_page_revision != page_revision:
+                raise AppError('排序或清单已变化，请从第一页重新查看。', 'catalog_changed', 409)
             base_filtered, filtered, breadcrumbs = self._query_rows(rows, task=task, query=query,
                 scope=scope, risk=risk, kind=kind, view=view, parent_id=parent_id, rating=rating)
+            filtered = ordered_rows(filtered, sort, direction)
             return dict(revision=token, offset=offset, limit=limit, total=len(filtered), catalog_total=len(rows),
                         items=copy.deepcopy(filtered[offset:offset + limit]),
                         has_more=offset + limit < len(filtered), view=view, parent_id=parent_id, breadcrumbs=breadcrumbs, kind=kind,
                         task_id=task['id'] if task else None, selection_revision=self.selection_revision(task), groups=self._groups(base_filtered),
                         assessment_revision=self.assessments.revision() if self.assessments else None,
+                        sort=sort, direction=direction,
+                        page_revision=page_revision,
                         coverage=dict(known_items=len(rows), observed_only=True,
                             note=('仅展示本任务已读取的注册和运行元数据，不代表全机全部自启动机制。' if task and task.get('scope_kind') == 'applications' else
                                   '仅展示已扫描并保存的内容；展开目录不会新增扫描，未扫描部分不代表为空。')))

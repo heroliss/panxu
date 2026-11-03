@@ -101,12 +101,12 @@ class InvestigationBudgetTests(unittest.TestCase):
         spec = next(row for row in tool_specs() if row['function']['name'] == name)
         schema = spec['function']['parameters']
         items = schema['properties']['items']
-        self.assertEqual(items['maxItems'], 6)
+        self.assertEqual(items['maxItems'], 30)
         fields = items['items']['properties']
         rows = []
         for index in range(items['maxItems']):
             character = '😀' if astral else '标'
-            ident = str(index) + character * (fields['id']['maxLength'] - 1)
+            ident = str(index) + character * (fields['id']['maxLength'] - len(str(index)))
             row = dict(id=ident, reason=('😀' if astral else '因') * fields['reason']['maxLength'],
                 impact=('😀' if astral else '果') * fields['impact']['maxLength'])
             evidence = fields['evidence_ids']
@@ -132,7 +132,7 @@ class InvestigationBudgetTests(unittest.TestCase):
         self.assert_schema(result, schema)
         return spec, result
 
-    def test_six_schema_bounded_escaped_advice_and_plan_items_survive_stream_and_agent_validation(self):
+    def test_thirty_schema_bounded_escaped_advice_and_plan_items_survive_stream_and_agent_validation(self):
         self.assertGreaterEqual(streaming.MAX_ARGUMENTS, 128000)
         for name, astral, escaped in ((name, astral, escaped) for name in ('record_advice', 'propose_plan')
                                       for astral in (False, True) for escaped in (False, True)):
@@ -227,7 +227,7 @@ class InvestigationBudgetTests(unittest.TestCase):
                             assistant.agent_turn([dict(role='user', content='Fixed truncation fixture.')], [],
                                                  stream=streamed)
                         self.assertEqual(caught.exception.budget,
-                            dict(boundary='generation_tokens', observed=usage, limit=3500, signal=signal))
+                            dict(boundary='generation_tokens', observed=usage, limit=streaming.MAX_GENERATION_TOKENS, signal=signal))
                         self.assertEqual(len(requests), 1)
 
     def test_disconnect_without_explicit_limit_remains_incomplete(self):

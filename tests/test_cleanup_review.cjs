@@ -478,3 +478,12 @@ test('a user filter superseding a live read is preserved and the newest advice i
  finish({revision:'r1',selection_revision:'s2',offset:0,total:1,items:[advised],has_more:false,breadcrumbs:[]});await updating;await flush();await flush();await flush();
  const latest=new URL(f.calls.filter(call=>call.path.startsWith('/api/files?')).at(-1).path,'http://fixture');assert.equal(latest.searchParams.get('rating'),'4');assert.equal(f.check(item.id).checked,true);assert.match(f.root.textContent,/Newest advice after filter change/);assert.equal(f.calls.some(call=>call.path.endsWith('/approve')),false);
 });
+
+test('task list sorting is sent to the full backend query and keeps manual exclusions during live advice updates',async()=>{
+ const f=await fixture();await f.pick(high.id,false);
+ const sort=f.root.querySelectorAll('select').find(node=>node.attrs['aria-label']==='本轮排序字段');sort.value='modified';await sort.fire('change');await flush();
+ const direction=f.root.all().find(node=>node.attrs['aria-label']==='切换本轮排序方向');await direction.fire('click');await flush();
+ let url=new URL(f.calls.filter(call=>call.path.startsWith('/api/files?')).at(-1).path,'http://fixture');assert.equal(url.searchParams.get('sort'),'modified');assert.equal(url.searchParams.get('direction'),'desc');assert.equal(url.searchParams.get('offset'),'0');assert.equal(f.check(high.id).checked,false);
+ await f.subject.updateTask({...f.helpers.task,advice_revision:1,advice_total:6});await flush();
+ url=new URL(f.calls.filter(call=>call.path.startsWith('/api/files?')).at(-1).path,'http://fixture');assert.equal(url.searchParams.get('sort'),'modified');assert.equal(url.searchParams.get('direction'),'desc');assert.equal(f.check(high.id).checked,false);assert.equal(f.calls.some(call=>call.path.endsWith('/approve')),false);
+});

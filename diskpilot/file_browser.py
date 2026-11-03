@@ -12,15 +12,18 @@ import json
 import os
 from pathlib import Path
 import secrets
+import sqlite3
 import stat
 import threading
 import time
+import tempfile
 from collections import OrderedDict
 
 from .scanner import (metadata_item, _metadata_signature, _checked_root,
                       _ancestor_project, _is_reparse, _CREDENTIAL_NAMES)
-from .simulation import AppError, canonical
+from .simulation import AppError, canonical, within
 from .windows import disks
+from .catalog import normalize_sort, sort_value
 
 
 _CLOUD_FLAGS = 0x1000 | 0x40000 | 0x400000  # offline / recall-on-open / recall-on-data
@@ -35,7 +38,8 @@ def _sensitive(path):
 
 
 def _cursor(session, offset):
-    data = json.dumps([session.ident, offset, session.seen], separators=(',', ':')).encode()
+    data = json.dumps([session.ident, offset, session.seen, session.sort, session.direction,
+                       session.task_id], separators=(',', ':')).encode()
     return base64.urlsafe_b64encode(data).decode().rstrip('=')
 
 
@@ -53,15 +57,42 @@ class _Directory:
     errors: int = 0
     complete: bool = False
     accessed: float = field(default_factory=time.monotonic)
+    sort: str = 'enumeration'
+    direction: str = 'asc'
+    task_id: str | None = None
+    store: object = None
+    stored_count: int = 0
+    sort_context: dict = field(default_factory=dict)
+    sort_revision: str | None = None
+    store_path: str | None = None
+    cache_root: str | None = None
 
     @property
     def count(self):
-        return self.base + len(self.rows)
+        return self.stored_count if self.store is not None else self.base + len(self.rows)
 
-    def close(self):
+    def close_iterator(self):
         if self.iterator is not None:
             self.iterator.close()
             self.iterator = None
+
+    def close(self):
+        self.close_iterator()
+        if self.store is not None:
+            self.store.close()
+            self.store = None
+        if self.store_path is not None:
+            # These names are generated in our private cache, never supplied by
+            # a browser request or selected from user files.
+            if (os.path.dirname(os.path.abspath(self.store_path)) != os.path.abspath(self.cache_root or '')
+                    or os.path.basename(self.store_path) != self.ident + '.sqlite3'):
+                raise RuntimeError('Unexpected browser cache ownership')
+            try:
+                os.unlink(self.store_path)
+            except FileNotFoundError:
+                pass
+            self.store_path = None
+        self.sort_context.clear()
 
 
 class DirectoryBrowser:
@@ -83,12 +114,16 @@ class DirectoryBrowser:
         self.drive_provider = drive_provider
         self._directories = OrderedDict()
         self._lock = threading.RLock()
+        self._spool_cache = None
 
     def close(self):
         with self._lock:
             for session in self._directories.values():
                 session.close()
             self._directories.clear()
+            if self._spool_cache is not None:
+                self._spool_cache.cleanup()
+                self._spool_cache = None
 
     def drives(self):
         rows = []
@@ -200,7 +235,7 @@ class DirectoryBrowser:
             if changed:
                 self.state.publish(changed, f'browser:{session.ident}:{offset}:{session.seen}', include_view=False)
 
-    def _new(self, absolute, info):
+    def _new(self, absolute, info, *, sort='enumeration', direction='asc', task=None):
         try:
             iterator = os.scandir(absolute)
         except PermissionError:
@@ -210,10 +245,49 @@ class DirectoryBrowser:
         try:
             project = _ancestor_project(absolute)
             root_item = self._entry(absolute, info, absolute, project)
-            return _Directory(secrets.token_hex(12), absolute, _metadata_signature(absolute, info), project, iterator, root_item)
+            session = _Directory(secrets.token_hex(12), absolute, _metadata_signature(absolute, info), project, iterator, root_item,
+                                 sort=sort, direction=direction, task_id=task.get('id') if task else None)
+            if sort != 'enumeration':
+                # Private cache creation precedes the directory signature. Its
+                # SQLite files live one level below Temp, so browsing Temp does
+                # not invalidate itself when a sort index writes its own data.
+                session.cache_root = self._spool_cache.name
+                session.store_path = os.path.join(session.cache_root, session.ident + '.sqlite3')
+                session.store = sqlite3.connect(session.store_path, check_same_thread=False)
+                session.store.execute('PRAGMA temp_store=FILE')
+                session.store.execute('PRAGMA cache_size=-2048')
+                session.store.execute('CREATE TABLE entries (id TEXT PRIMARY KEY,payload TEXT,unknown INTEGER,value_text TEXT,value_number REAL,name TEXT)')
+                order = 'DESC' if direction == 'desc' else 'ASC'
+                session.store.execute(f'CREATE INDEX ordered_entries ON entries(unknown ASC,value_number {order},value_text {order},name ASC,id ASC)')
+                with self.state.lock:
+                    self.catalog._index()
+                    session.sort_revision = self.catalog.assessments.revision() if self.catalog.assessments else ''
+                    session.sort_context = {ident: row for ident, row in self.catalog._nodes.items()
+                        if row['kind'] in ('file', 'directory') and canonical(os.path.dirname(row['path'])) == canonical(absolute)}
+                    if task:
+                        session.sort_context.update({row['id']: row for row in self.catalog._selection_rows(task)
+                            if row['kind'] in ('file', 'directory') and canonical(os.path.dirname(row['path'])) == canonical(absolute)})
+            return session
         except BaseException:
             iterator.close()
+            if 'session' in locals():
+                session.close()
             raise
+
+    def _sort_record(self, session, item):
+        old = session.sort_context.get(item['id'])
+        value_row = dict(item)
+        if old and self._same_metadata(old, item):
+            value_row = old
+        elif item['kind'] == 'directory':
+            value_row['size_known'] = False
+        value = sort_value(value_row, session.sort)
+        text = value if isinstance(value, str) else None
+        number = value if isinstance(value, (int, float)) else None
+        session.store.execute('INSERT INTO entries VALUES(?,?,?,?,?,?)',
+            (item['id'], json.dumps(item, ensure_ascii=False), int(value is None), text, number,
+             item['name'].casefold()))
+        session.stored_count += 1
 
     def _advance(self, session, required):
         started, examined = time.monotonic(), 0
@@ -224,12 +298,12 @@ class DirectoryBrowser:
                 entry = next(session.iterator)
             except StopIteration:
                 session.complete = True
-                session.close()
+                session.close_iterator()
                 break
             except OSError:
                 session.errors += 1
                 session.complete = True
-                session.close()
+                session.close_iterator()
                 break
             examined += 1
             session.seen += 1
@@ -239,10 +313,20 @@ class DirectoryBrowser:
                 info = os.lstat(os.path.join(session.path, entry.name))
                 item = self._entry(os.path.join(session.path, entry.name), info, session.path,
                                    session.project, parent_id=session.root_item['id'])
+                if self._spool_cache is not None and within(item['path'], self._spool_cache.name):
+                    item.update(risk='protected', actions=[])
+                    item['details'].update(browseable=False, can_simulate_delete=False,
+                        browse_block_reason='盘序正在使用的临时排序索引，不展开或加入清理。')
             except OSError:
                 session.errors += 1
                 continue
-            session.rows.append(item)
+            if session.store is not None:
+                self._sort_record(session, item)
+            else:
+                session.rows.append(item)
+        if session.store is not None:
+            session.store.commit()
+            return
         excess = len(session.rows) - self.max_entries
         if excess > 0:
             del session.rows[:excess]
@@ -260,12 +344,17 @@ class DirectoryBrowser:
             rows.append(dict(name=part, path=current))
         return rows
 
-    def page(self, path='', cursor=None, limit=50, refresh=False, task=None):
+    def page(self, path='', cursor=None, limit=50, refresh=False, task=None, sort='enumeration', direction='asc'):
         if type(limit) is not int or not 1 <= limit <= 100 or type(refresh) is not bool:
             raise AppError('每页可读取1至100项，请使用有效刷新参数。', 'invalid_browser_page')
+        sort, direction = normalize_sort(sort, direction)
         if path == '' and cursor is None:
-            return self.drives()
+            return dict(self.drives(), sort=sort, direction=direction)
         with self._lock:
+            if sort != 'enumeration' and self._spool_cache is None:
+                self._spool_cache = tempfile.TemporaryDirectory(prefix='panxu-browser-sort-')
+            if self._spool_cache is not None and isinstance(path, str) and os.path.isabs(path) and within(path, self._spool_cache.name):
+                raise AppError('这是盘序正在使用的临时排序索引，不展开或清理。', 'owned_browser_cache', 403)
             absolute, info = self._root(path)
             key = canonical(absolute)
             signature = _metadata_signature(absolute, info)
@@ -273,44 +362,65 @@ class DirectoryBrowser:
             session = self._directories.get(key)
             expired = session is not None and now - session.accessed > self.ttl
             changed = session is not None and session.signature != signature
+            task_id = task.get('id') if task else None
+            ordering_changed = session is not None and (session.sort != sort or session.direction != direction or session.task_id != task_id)
+            assessment_revision = self.catalog.assessments.revision() if self.catalog.assessments else ''
+            ratings_changed = session is not None and sort == 'rating' and session.sort_revision != assessment_revision
             offset = 0
             if cursor is not None:
                 try:
-                    if not isinstance(cursor, str) or len(cursor) > 256 or refresh:
+                    if not isinstance(cursor, str) or len(cursor) > 512 or refresh:
                         raise ValueError()
                     value = json.loads(base64.urlsafe_b64decode(cursor + '=' * (-len(cursor) % 4)))
-                    if (not isinstance(value, list) or len(value) != 3 or not session or value[0] != session.ident
+                    if (not isinstance(value, list) or len(value) != 6 or not session or value[0] != session.ident
                             or type(value[1]) is not int or type(value[2]) is not int
                             or not 0 <= value[1] <= session.count or not 0 <= value[2] <= session.seen
-                            or value[1] < session.base or expired or changed):
+                            or value[1] < session.base or expired or changed or ordering_changed or ratings_changed
+                            or value[3:] != [sort, direction, task_id]):
                         raise ValueError()
                     offset = value[1]
                 except (ValueError, TypeError, UnicodeError, json.JSONDecodeError):
-                    if session and (expired or changed):
+                    if session and (expired or changed or ratings_changed):
                         session.close()
                         self._directories.pop(key, None)
                     raise AppError('目录或浏览缓存已变化，请刷新当前层后继续。', 'browser_cursor_expired', 409) from None
-            if refresh or expired or changed:
+            if refresh or expired or changed or ordering_changed or ratings_changed:
                 if session:
                     session.close()
                     self._directories.pop(key, None)
                 session = None
             if session is None:
-                session = self._new(absolute, info)
+                session = self._new(absolute, info, sort=sort, direction=direction, task=task)
                 self._directories[key] = session
             session.accessed = now
             self._directories.move_to_end(key)
             while len(self._directories) > self.max_directories:
                 _, evicted = self._directories.popitem(last=False)
                 evicted.close()
-            self._advance(session, offset + limit + 1)
+            self._advance(session, session.count + self.entry_budget + 1 if session.store is not None else offset + limit + 1)
             _, current_info = self._root(absolute)
             if _metadata_signature(absolute, current_info) != session.signature:
                 session.close()
                 self._directories.pop(key, None)
                 raise AppError('读取过程中目录发生变化，请刷新当前层。', 'browser_directory_changed', 409)
-            start = offset - session.base
-            batch = session.rows[start:start + limit]
+            if session.store is not None and not session.complete:
+                return dict(items=[], path=absolute, parent_path='' if os.path.dirname(absolute) == absolute else os.path.dirname(absolute),
+                    breadcrumbs=self._breadcrumbs(absolute), next_cursor=_cursor(session, 0), current_cursor=_cursor(session, 0),
+                    has_more=True, observed_count=session.count, enumerated_entries=session.seen,
+                    enumeration_complete=False, status='sorting', sort=sort, direction=direction,
+                    sort_progress=dict(processed_entries=session.seen, total_entries=None, complete=False),
+                    coverage=dict(kind='direct_children_only', subtree_complete=False, known_total=None, errors=session.errors,
+                        note='正在分批读取当前层以准备完整排序；不会递归扫描或将局部顺序冒充完整排序。'),
+                    revision=self.catalog.token(), selection_revision=self.catalog.selection_revision(task),
+                    cache=dict(retained_from=0, ttl_seconds=self.ttl))
+            if session.store is not None:
+                order = 'DESC' if direction == 'desc' else 'ASC'
+                batch = [json.loads(row[0]) for row in session.store.execute(
+                    f'SELECT payload FROM entries ORDER BY unknown ASC,value_number {order},value_text {order},name ASC,id ASC LIMIT ? OFFSET ?',
+                    (limit, offset))]
+            else:
+                start = offset - session.base
+                batch = session.rows[start:start + limit]
             self._publish(session, batch, offset)
             projected = self.catalog.observed_rows([row['id'] for row in batch], task=task, include_outside=True)
             raw = {row['id']: row for row in batch}
@@ -318,18 +428,26 @@ class DirectoryBrowser:
                 observed = raw[row['id']]
                 details = observed['details']
                 row.update(browseable=details['browseable'], browse_block_reason=details['browse_block_reason'],
-                           size_known=row['kind'] != 'directory',
                            created_at=details['timestamps']['created_at'], modified_at=details['timestamps']['modified_at'],
                            observed_at=details['timestamps']['observed_at'],
                            can_analyze=row.get('risk') != 'protected' and not row.get('simulated'))
                 if row['kind'] == 'directory':
-                    row['size_bytes'] = None
+                    known = row.get('details', {}).get('complete') is True and row.get('details', {}).get('subtree_complete') is True
+                    partial = not known and not row.get('details', {}).get('browser_only') and (row.get('size_bytes') or 0) > 0
+                    row.update(size_known=known, size_kind='known' if known else 'observed_lower_bound' if partial else 'unknown')
+                    if not known and not partial:
+                        row['size_bytes'] = None
+                else:
+                    row.update(size_known=True, size_kind='known')
             returned = len(batch)
             has_more = offset + returned < session.count or not session.complete
             parent = os.path.dirname(absolute)
             status = 'partial' if session.errors else 'completed' if session.complete else 'reading'
             return dict(items=projected, path=absolute, parent_path='' if parent == absolute else parent,
                         breadcrumbs=self._breadcrumbs(absolute), next_cursor=_cursor(session, offset + returned) if has_more else None,
+                        current_cursor=_cursor(session, offset), sort=sort, direction=direction,
+                        sort_progress=dict(processed_entries=session.seen, total_entries=session.count if session.complete and not session.errors else None,
+                                           complete=session.complete and not session.errors),
                         has_more=has_more, observed_count=session.count, enumerated_entries=session.seen,
                         enumeration_complete=session.complete and not session.errors, status=status,
                         coverage=dict(kind='direct_children_only', subtree_complete=False,

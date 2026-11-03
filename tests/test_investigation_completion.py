@@ -198,7 +198,7 @@ class InvestigationCompletionTests(unittest.TestCase):
         self.assertEqual(result['usage']['tool_failures'], 0)
         self.assertEqual(result['advice_total'], 6)
         self.assertEqual(result['investigation_notice']['budget'], dict(
-            boundary='generation_tokens', observed=None, limit=3500, signal='length'))
+            boundary='generation_tokens', observed=None, limit=8192, signal='length'))
         self.assertTrue(result['investigation_notice']['recovered'])
 
     def test_ordinary_unfinished_network_stream_does_not_trigger_automatic_recovery(self):
@@ -252,17 +252,14 @@ class InvestigationCompletionTests(unittest.TestCase):
         self.assertEqual(result['last_public_reply']['text'], '已保存6项启动项建议，未实际修改系统。')
         self.assertIsNone(result['last_result'])
 
-    def test_model_batch_limit_matches_schema_without_weakening_historical_host_tool(self):
+    def test_seven_model_advice_items_no_longer_hit_an_artificial_six_item_limit(self):
         self.queue = [call('collect_apps', {'section': 'background'}, 'inventory'),
-            call('record_advice', self.ratings(7), 'oversized'),
-            call('record_advice', self.ratings(), 'corrected'),
+            call('record_advice', self.ratings(7), 'ratings'),
             call('present_findings', self.findings(), 'finish')]
         result = self.run_turn()
         self.assertEqual(result['status'], 'completed')
-        self.assertEqual(result['usage']['tool_failures'], 1)
-        self.assertEqual(result['advice_total'], 6)
-        # Host/history compatibility remains separate from model's small batch.
-        self.harness.tool(self.task['id'], 'record_advice', self.ratings(7), cancel=threading.Event())
+        self.assertEqual(result['usage']['tool_failures'], 0)
+        self.assertEqual(result['advice_total'], 7)
         self.assertEqual(self.harness.advice_page(self.task['id'])['total'], 7)
 
     def test_late_collection_is_allowed_within_configured_budget(self):

@@ -1,14 +1,15 @@
 'use strict';
 // A layer is browsed on demand. Observation, analysis and selection stay separate.
 window.PanxuFileWorkspace = (() => {
-  const state={mode:'all',path:'',cursor:null,previous:[],page:null,query:'',rating:'all',rules:window.PanxuFiles?.selectionRules?.() || new Map(),layer:null,filterOffset:0};
+  const state={mode:'all',path:'',cursor:null,previous:[],page:null,query:'',rating:'all',sort:'enumeration',direction:'asc',rules:window.PanxuFiles?.selectionRules?.() || new Map(),layer:null,filterOffset:0};
   let mounted=null,serial=0,timer=null;
   const node=(tag,cls='',text)=>{const n=document.createElement(tag);n.className=cls;if(text!==undefined)n.textContent=String(text);return n;};
   function button(label,run,cls='button'){const b=node('button',cls,label);b.type='button';b.addEventListener('click',run);return b;}
   const active=t=>mounted===t&&t.root.isConnected;
-  function unmount(){serial++;clearTimeout(timer);mounted?.abort?.abort();mounted=null;}
+  function unmount(){serial++;clearTimeout(timer);mounted?.abort?.abort();if(mounted?.keys)mounted.root.removeEventListener?.('keydown',mounted.keys);mounted=null;}
   function render(root,helpers){
-    unmount();const t={root,helpers,serial,busy:false,error:''};mounted=t;
+    unmount();const t={root,helpers,serial,busy:false,error:'',addressEditing:false};mounted=t;
+    t.keys=event=>{if(!active(t)||state.mode!=='all')return;const key=String(event.key || '').toLowerCase();if(key==='f4'||event.altKey&&key==='d'||event.ctrlKey&&key==='l'){event.preventDefault();editAddress(t);}};root.addEventListener('keydown',t.keys);
     const tabs=node('div','subtabs file-workspace-tabs');tabs.setAttribute('aria-label','文件工作区视图');
     const selectionLabel=helpers.renderTaskResults&&helpers.latestTask?.()?.plan?.origin==='user_direct'?'本次勾选':'已有建议';
     for(const [id,label] of [['suggestions',selectionLabel],['all','全部文件']]){const b=button(label,()=>{state.mode=id;render(root,helpers);},'subtab'+(state.mode===id?' active':''));b.setAttribute('aria-pressed',String(state.mode===id));tabs.append(b);}
@@ -23,26 +24,38 @@ window.PanxuFileWorkspace = (() => {
   function mark(item){return window.PanxuFilteredSelection.mark(state.rules,item);}
   function write(item,checked){window.PanxuFilteredSelection.write(state.rules,item,checked,true);window.PanxuFiles?.stampSelection?.(state.page?.revision,state.page?.selection_revision);}
   async function requestPage(t,extra={}){
-    const q=new URLSearchParams({path:state.path,limit:'50',...extra});
+    const q=new URLSearchParams({path:state.path,limit:'50',sort:state.sort,direction:state.direction,...extra});
     return t.helpers.api('/api/file-browser?'+q,undefined,{signal:t.abort?.signal});
   }
   async function load(t,refresh=false,navigation=null){
     if(!active(t))return;t.abort?.abort();t.abort=new AbortController();const run=++serial;t.busy=true;t.error='';paint(t);
     let ready=false;
     try{
-      const data=state.path?await requestPage(t,{...(state.cursor?{cursor:state.cursor}:{}),...(refresh?{refresh:'1'}:{})}):await t.helpers.api('/api/file-browser/drives');
+      let data=state.path?await requestPage(t,{...(state.cursor?{cursor:state.cursor}:{}),...(refresh?{refresh:'1'}:{})}):await t.helpers.api('/api/file-browser/drives');
+      let cursor=state.cursor;const preparations=new Set();
+      while(data.status==='sorting'){
+        if(!active(t)||run!==serial)return;
+        const processed=data.sort_progress?.processed_entries;t.sortPreparing=true;if(t.sortMeter)t.sortMeter.hidden=false;
+        if(t.progressNode)t.progressNode.textContent=Number.isSafeInteger(processed)?`正在准备整层排序，已读取 ${processed.toLocaleString('zh-CN')} 项；原列表暂不可选择。`:'正在准备整层排序，原列表暂不可选择。';
+        if(!data.next_cursor||preparations.has(data.next_cursor))throw new Error('排序进度暂未更新，请刷新后重试；已有勾选会保留。');
+        cursor=data.next_cursor;preparations.add(cursor);data=await requestPage(t,{cursor});
+      }
       if(!active(t)||run!==serial)return;
-      state.page=data;state.layer=null;
+      state.cursor=data.current_cursor ?? cursor;state.page=data;state.layer=null;
       if(state.path&&(state.query||state.rating!=='all'))await collectLayer(t,run);
       ready=true;
     }catch(e){if(active(t)&&run===serial&&e.name!=='AbortError')t.error=e.message;}
-    finally{if(active(t)&&run===serial){t.busy=false;paint(t);if(ready)window.PanxuListNavigation?.reveal(t.host.querySelector('.workspace-file-list'),navigation,'当前目录的文件列表');}}
+    finally{if(active(t)&&run===serial){t.busy=false;t.sortPreparing=false;paint(t);if(ready)window.PanxuListNavigation?.reveal(t.host.querySelector('.workspace-file-list'),navigation,'当前目录的文件列表');}}
   }
   async function collectLayer(t,run=serial){
     if(state.layer)return state.layer;
     const rows=[],ids=new Set(),cursors=new Set();let cursor=null,last;
     for(let n=0;n<100;n++){
       const data=await requestPage(t,{...(cursor?{cursor}:{}),limit:'100'});if(!active(t)||run!==serial)return null;
+      if(data.status==='sorting'){
+        const processed=data.sort_progress?.processed_entries;if(t.progressNode)t.progressNode.textContent=Number.isSafeInteger(processed)?`正在准备整层排序，已读取 ${processed.toLocaleString('zh-CN')} 项；原列表暂不可选择。`:'正在准备整层排序…';
+        if(!data.next_cursor||cursors.has(data.next_cursor))throw new Error('排序进度暂未更新，请刷新后重试。');cursor=data.next_cursor;cursors.add(cursor);n--;continue;
+      }
       if(!Array.isArray(data.items))throw new Error('当前目录结果不完整，请刷新后重试；已有勾选会保留。');
       for(const item of data.items){if(!item?.id||ids.has(item.id)||!item.navigation_only&&typeof item.signature!=='string')throw new Error('当前目录结果不完整，请刷新后重试；已有勾选会保留。');ids.add(item.id);rows.push(item);}
       if(rows.length>5000)throw new Error('这个目录超过5,000项，请进入更小的目录后再筛选或全选；已有勾选会保留。');
@@ -59,7 +72,10 @@ window.PanxuFileWorkspace = (() => {
     catch(e){if(active(t)&&run===serial)t.error=e.message;}
     finally{if(active(t)&&run===serial){t.busy=false;paint(t);}}
   }
-  function go(t,path){state.path=path || '';state.cursor=null;state.previous=[];state.query='';state.rating='all';state.layer=null;state.page=null;state.filterOffset=0;load(t);}
+  function go(t,path){t.addressEditing=false;t.addressDraft=null;state.path=path || '';state.cursor=null;state.previous=[];state.query='';state.rating='all';state.layer=null;state.page=null;state.filterOffset=0;load(t);}
+  function editAddress(t){if(!active(t)||!t.addressInput)return;t.addressEditing=true;t.addressInput.value=t.addressDraft ?? state.path;t.addressInput.hidden=false;t.addressCrumbs.hidden=true;t.addressHint.hidden=true;t.addressOpen.hidden=false;t.address.setAttribute('data-editing','true');t.addressInput.focus?.({preventScroll:true});t.addressInput.setSelectionRange?.(0,t.addressInput.value.length);}
+  function cancelAddress(t,{focus=false}={}){t.addressEditing=false;t.addressDraft=null;if(!t.addressInput)return;t.addressInput.value=state.path;t.addressInput.hidden=true;t.addressCrumbs.hidden=false;t.addressHint.hidden=false;t.addressOpen.hidden=true;t.address.setAttribute('data-editing','false');if(focus)t.address.focus?.({preventScroll:true});}
+  function sort(t,key,value){state[key]=value;state.cursor=null;state.previous=[];state.filterOffset=0;state.layer=null;clearTimeout(timer);load(t);}
   function filter(t){clearTimeout(timer);state.filterOffset=0;const run=++serial;t.busy=true;t.error='';paint(t);timer=setTimeout(async()=>{try{await collectLayer(t,run);}catch(e){if(active(t)&&run===serial)t.error=e.message;}finally{if(active(t)&&run===serial){t.busy=false;paint(t);}}},220);}
   async function analyze(t){
     if(t.busy)return;
@@ -72,7 +88,7 @@ window.PanxuFileWorkspace = (() => {
     if(t.busy||!selected().length)return;const run=++serial,path=state.path;t.busy=true;t.error='';paint(t);
     try{
       // Re-read metadata before freezing. No write or model request happens here.
-      const current=await requestPage(t,{limit:'1'});if(!active(t)||run!==serial||path!==state.path)return;
+      const current=await requestPage(t,{limit:'1',sort:'enumeration',direction:'asc'});if(!active(t)||run!==serial||path!==state.path)return;
       const rules=[...state.rules.values()],snapshots=Object.fromEntries(rules.map(r=>[r.id,r.signature]));
       await t.helpers.prepareLogical({task_id:null,selected_ids:rules.filter(r=>r.selected).map(r=>r.id),excluded_ids:rules.filter(r=>!r.selected).map(r=>r.id),snapshots,revision:current.revision,selection_revision:current.selection_revision});
     }catch(e){if(active(t)&&run===serial)t.error=e.message;}
@@ -80,16 +96,24 @@ window.PanxuFileWorkspace = (() => {
   }
   function paint(t){
     if(!active(t))return;
-    const focused=document.activeElement,focusFilter=focused?.getAttribute?.('aria-label')==='筛选当前目录'&&t.host.contains?.(focused),selectionStart=focused?.selectionStart,selectionEnd=focused?.selectionEnd;
+    const focused=document.activeElement,focusFilter=focused?.getAttribute?.('aria-label')==='筛选当前目录'&&t.host.contains?.(focused),focusAddress=focused?.getAttribute?.('aria-label')==='文件位置'&&t.host.contains?.(focused),selectionStart=focused?.selectionStart,selectionEnd=focused?.selectionEnd;
+    if(focusAddress)t.addressDraft=focused.value;
     t.host.replaceChildren();const h=t.helpers;
     if(focusFilter)Promise.resolve().then(()=>{if(!active(t))return;const input=t.host.querySelector?.('[aria-label="筛选当前目录"]');input?.focus?.({preventScroll:true});if(Number.isInteger(selectionStart))input?.setSelectionRange?.(selectionStart,selectionEnd);});
-    const location=node('div','workspace-location'),path=node('input');path.value=state.path;path.placeholder='选择磁盘，或输入目录路径';path.setAttribute('aria-label','文件位置');
-    path.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();go(t,path.value.trim());}});
-    const goButton=button('打开',()=>go(t,path.value.trim()));goButton.disabled=t.busy;
-    location.append(path,goButton,button('刷新',()=>{state.cursor=null;state.previous=[];state.layer=null;load(t,true);}));t.host.append(location);
-    const crumbs=node('nav','workspace-breadcrumbs');crumbs.setAttribute('aria-label','当前位置');crumbs.append(button('此电脑',()=>go(t,''),'plain-button'));
-    if(state.path){if(state.page?.breadcrumbs?.length){for(const item of state.page.breadcrumbs.filter(item=>item.path))crumbs.append(button(item.name || item.label || item.path,()=>go(t,item.path),'plain-button'));}else crumbs.append(node('span','',state.path));}
-    t.host.append(crumbs);
+    const location=node('div','workspace-location'),address=node('div','workspace-address'),path=node('input'),crumbs=node('nav','workspace-breadcrumbs'),hint=node('span','workspace-address-hint','输入路径');
+    address.setAttribute('role','group');address.setAttribute('aria-label','文件地址栏');address.setAttribute('tabindex','0');address.title='点击空白处输入完整路径；也可按 Alt+D、Ctrl+L 或 F4。';
+    path.value=t.addressDraft ?? state.path;path.placeholder='输入磁盘或目录路径';path.setAttribute('aria-label','文件位置');path.setAttribute('autocomplete','off');path.spellcheck=false;path.hidden=!t.addressEditing;
+    const submit=()=>go(t,path.value.trim()),goButton=button('打开',submit);goButton.hidden=!t.addressEditing;goButton.disabled=t.busy;
+    path.addEventListener('input',()=>{t.addressDraft=path.value;});path.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();submit();}else if(e.key==='Escape'){e.preventDefault();e.stopPropagation?.();cancelAddress(t,{focus:true});}});
+    path.addEventListener('blur',event=>{if(event.relatedTarget===goButton)return;if(active(t)&&t.addressEditing)cancelAddress(t);});
+    crumbs.setAttribute('aria-label','当前位置');crumbs.hidden=Boolean(t.addressEditing);hint.hidden=Boolean(t.addressEditing);
+    const crumb=(label,value)=>button(label,event=>{event?.stopPropagation?.();go(t,value);},'plain-button workspace-crumb');crumbs.append(crumb('此电脑',''));
+    if(state.path){if(state.page?.breadcrumbs?.length){for(const item of state.page.breadcrumbs.filter(item=>item.path))crumbs.append(crumb(item.name || item.label || item.path,item.path));}else crumbs.append(node('span','workspace-address-current',state.path));}
+    address.addEventListener('click',event=>{if(event.target===address||event.target===crumbs||event.target===hint)editAddress(t);});
+    address.addEventListener('keydown',event=>{if(event.target===address&&['Enter','F2'].includes(event.key)){event.preventDefault();editAddress(t);}});
+    address.append(crumbs,hint,path);address.setAttribute('data-editing',String(Boolean(t.addressEditing)));location.append(address,goButton,button('刷新',()=>{state.cursor=null;state.previous=[];state.layer=null;load(t,true);}));t.host.append(location);
+    Object.assign(t,{address,addressInput:path,addressCrumbs:crumbs,addressHint:hint,addressOpen:goButton});
+    if(t.addressEditing&&focusAddress)Promise.resolve().then(()=>{if(!active(t)||!t.addressEditing)return;path.focus?.({preventScroll:true});if(Number.isInteger(selectionStart))path.setSelectionRange?.(selectionStart,selectionEnd);});
     if(t.error){const p=node('p','field-error',t.error);p.setAttribute('role','alert');t.host.append(p);}
     if(!state.path){
       if(t.busy){t.host.append(node('p','field-help','正在读取磁盘…'));return;}
@@ -98,23 +122,26 @@ window.PanxuFileWorkspace = (() => {
     }
     const toolbar=node('div','workspace-file-toolbar'),query=node('input');query.type='search';query.value=state.query;query.placeholder='筛选当前目录';query.setAttribute('aria-label','筛选当前目录');query.addEventListener('input',()=>{state.query=query.value;clearTimeout(timer);timer=setTimeout(()=>filter(t),180);});
     const rating=node('select');rating.setAttribute('aria-label','按分析倾向筛选');for(const [value,label] of [['all','全部倾向'],['5','5分 · 建议清理'],['4','4分 · 倾向清理'],['3','3分 · 由你决定'],['2','2分 · 倾向保留'],['1','1分 · 建议保留'],['unrated','未评分'],['skipped','已跳过'],['no_advice','暂无建议']]){const option=node('option','',label);option.value=value;rating.append(option);}rating.value=state.rating;rating.addEventListener('change',()=>{state.rating=rating.value;filter(t);});
-    toolbar.append(query,rating);t.host.append(toolbar);
+    const ordering=node('select');ordering.setAttribute('aria-label','排序依据');for(const [value,label] of [['enumeration','默认顺序'],['name','名称'],['type','类型'],['size','大小'],['modified','文件修改时间'],['created','文件创建时间'],['rating','清理倾向']]){const option=node('option','',label);option.value=value;ordering.append(option);}ordering.value=state.sort;ordering.addEventListener('change',()=>sort(t,'sort',ordering.value));
+    const direction=node('select');direction.setAttribute('aria-label','排序方向');for(const [value,label] of [['asc','升序'],['desc','降序']]){const option=node('option','',label);option.value=value;direction.append(option);}direction.value=state.direction;direction.disabled=state.sort==='enumeration';direction.addEventListener('change',()=>sort(t,'direction',direction.value));
+    toolbar.append(query,rating,ordering,direction);t.host.append(toolbar);
     const filtered=(state.layer?.items || state.page?.items || []).filter(matches),rows=state.layer?filtered.slice(state.filterOffset,state.filterOffset+50):filtered,selectable=filtered.filter(eligible),selection=window.PanxuFilteredSelection.aggregate(state.rules,selectable);
     const incomplete=!state.layer&&state.page?.has_more;
     const allLabel=node('label','workspace-select-all'),allCheck=node('input');allCheck.type='checkbox';allCheck.checked=!incomplete&&selection.checked;allCheck.indeterminate=selection.indeterminate||Boolean(incomplete&&selection.checked);allCheck.disabled=t.busy;allCheck.setAttribute('aria-label','全选当前目录的筛选结果');allCheck.addEventListener('change',()=>all(t,allCheck.checked));allLabel.append(allCheck,node('span','','全选当前目录的筛选结果'));t.host.append(allLabel);
-    const note=node('p','field-help workspace-coverage',t.busy?'正在读取当前层，不会递归扫描…':state.layer?`本层共 ${state.layer.items.length} 项，匹配 ${filtered.length} 项；当前显示 ${rows.length} 项。`:`当前页 ${rows.length} 项；子目录按需展开，文件夹总大小未统计。`);note.setAttribute('role','status');t.host.append(note);
+    const note=node('p','field-help workspace-coverage',t.busy?'正在读取当前层，不会递归扫描…':state.layer?`本层共 ${state.layer.items.length} 项，匹配 ${filtered.length} 项；当前显示 ${rows.length} 项。`:`当前页 ${rows.length} 项；目录大小按已有扫描结果显示，未统计时保留未知。`);note.setAttribute('role','status');t.progressNode=note;const meter=node('progress','workspace-sort-progress');meter.setAttribute('aria-label','正在准备整层排序');meter.hidden=!t.sortPreparing;t.sortMeter=meter;t.host.append(meter,note);
     const list=node('div','workspace-file-list');list.setAttribute('aria-busy',String(t.busy));
     for(const item of rows){
       const row=node('article','workspace-file-row'),check=node('input'),copy=node('div','workspace-file-copy');check.type='checkbox';const chosen=mark(item);check.checked=chosen.checked;check.indeterminate=chosen.indeterminate;check.disabled=t.busy||!eligible(item);check.setAttribute('aria-label','选择 '+item.name);check.addEventListener('change',()=>{try{write(item,check.checked);}catch(e){t.error=e.message;}paint(t);});
-      const title=node('div','item-title-line');const icon=window.PanxuIcons?.create(item);if(icon)title.append(icon);const name=button(item.name,()=>item.kind==='directory'&&item.browseable!==false?go(t,item.path):h.show?.(item),'plain-button file-name-button workspace-file-name');title.append(name);copy.append(title);
-      const a=window.PanxuAssessment.read(item);if(a.state==='inherited')copy.append(node('p','workspace-item-state','继承上级建议，未逐项分析'));else if(item.outside_analysis_coverage)copy.append(node('p','workspace-item-state','新观察内容，尚未分析'));
-      if(item.browse_block_reason)copy.append(node('p','field-help',item.browse_block_reason));
+      const header=node('div','workspace-file-heading'),title=node('div','item-title-line');const icon=window.PanxuIcons?.create(item);if(icon)title.append(icon);const name=button(item.name,()=>item.kind==='directory'&&item.browseable!==false?go(t,item.path):h.show?.(item),'plain-button file-name-button workspace-file-name');name.title=item.name;title.append(name);header.append(title);
+      const size=node('span','workspace-file-size',item.kind==='directory'&&item.size_known!==true?'大小未统计':Number.isFinite(item.size_bytes)?(item.size_kind==='observed_lower_bound'?'至少 ':'')+h.bytes(item.size_bytes):'大小未知');size.title=item.kind==='directory'?'目录大小依据已有扫描结果；浏览不会自动递归统计。':'文件大小';header.append(size);
+      if(!item.navigation_only){const disposition=window.PanxuDisposition.render(item,{api:h.api,disabled:t.busy,onChange:()=>{if(!active(t))return;if(item.user_disposition?.value==='direct_keep')write(item,false);state.layer=null;load(t,true);},onError:error=>{if(active(t)){t.error=error.message;paint(t);}}});let labelled=window.PanxuDisposition.labelled?.(disposition);if(!labelled){labelled=node('label','workspace-disposition');labelled.append(node('span','','我的意愿'),disposition);labelled.title='倾向用于辅助 AI 判断；直接决定会跳过分析，执行仍需勾选和确认。';}labelled.classList?.add('workspace-disposition');header.append(labelled);}
+      copy.append(header);const facts=window.PanxuFileFacts?.render(item,{bytes:h.bytes,includeSize:false,includeAnalysisTime:true});if(facts)copy.append(facts);
+      const a=window.PanxuAssessment.read(item),notes=node('div','workspace-item-notes');if(a.state==='inherited')notes.append(node('span','workspace-item-state','继承上级建议，未逐项分析'));else if(item.outside_analysis_coverage)notes.append(node('span','workspace-item-state','新观察，尚未分析'));
+      if(item.browse_block_reason)notes.append(node('span','field-help',item.browse_block_reason));
+      if(item.kind==='directory'&&item.analysis_summary?.known_children){const c=item.analysis_summary,summary=node('span','workspace-item-state',`直接子项 ${c.known_children} · 单独分析 ${c.direct} · 继承 ${c.inherited} · 待分析 ${c.unanalysed ?? '未知'}`);summary.title='仅统计已观察的直接子项，不代表整棵目录已分析。';notes.append(summary);}
+      if(notes.children.length)copy.append(notes);
       if(a.state!=='unanalysed')copy.append(window.PanxuAdvicePresentation.render(item,{compactUnknown:true}));
-      else copy.append(node('span','workspace-item-state','未分析'));
-      if(!item.navigation_only)copy.append(window.PanxuDisposition.render(item,{api:h.api,disabled:t.busy,onChange:()=>{if(!active(t))return;if(item.user_disposition?.value==='direct_keep')write(item,false);state.layer=null;load(t,true);},onError:error=>{if(active(t)){t.error=error.message;paint(t);}}}));
-      if(item.kind==='directory'&&item.analysis_summary){const c=item.analysis_summary;copy.append(node('small','workspace-item-state',c.known_children?`已观察 ${c.known_children} 个直接子项：单独分析 ${c.direct}，继承 ${c.inherited}，待分析 ${c.unanalysed ?? '未知'}。`:'子项尚未展开；整棵目录的分析进度未知。'));}
-      const modified=item.details?.timestamps?.modified_at || item.modified_at;if(modified){const stamp=new Date(modified);if(!Number.isNaN(stamp.getTime()))copy.append(node('small','workspace-item-time','修改于 '+stamp.toLocaleString('zh-CN')));}
-      const size=node('span','workspace-file-size',item.kind==='directory'&&item.size_known!==true?'未统计':Number.isFinite(item.size_bytes)?h.bytes(item.size_bytes):'大小未知');row.append(check,window.PanxuAssessment.render(item,{primary:true}),copy,size);list.append(row);
+      row.append(check,window.PanxuAssessment.render(item,{primary:true}),copy);list.append(row);
     }
     if(!rows.length&&!t.busy&&!t.error)list.append(node('p','empty-state','本层没有匹配内容。'));t.host.append(list);
     const pager=node('div','file-pagination');

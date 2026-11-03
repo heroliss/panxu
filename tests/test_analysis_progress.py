@@ -137,7 +137,7 @@ class AnalysisProgressHarnessTests(unittest.TestCase):
             names = {tool['function']['name'] for tool in payload['tools']}
             self.assertIn('record_advice', names)
             self.assertIn('collect_apps', names)
-            self.assertIn('同一条回复可提交多批', payload['messages'][-1]['content'])
+            self.assertIn('按信息量自行选批次', payload['messages'][-1]['content'])
             progress = self.harness.public(self.task['id'])['analysis_progress']
             self.assertEqual(progress['phase'], 'analyzing')
             self.assertEqual(progress['budget']['model_requests']['used'], 5)

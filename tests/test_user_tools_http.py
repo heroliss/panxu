@@ -171,6 +171,30 @@ class UserToolHttpTests(unittest.TestCase):
         self.request('/api/analysis-budget?extra=1', expected=400)
         self.assertEqual(self.app.state.history(), [])
 
+    def test_file_sort_routes_order_whole_layer_before_paging_and_validate_sort(self):
+        for number in range(63):
+            (self.scope / f'sort-{number:03}.tmp').write_bytes(b'x' * number)
+        before = self.hashes()
+        arguments = dict(path=str(self.scope), sort='size', direction='desc', limit=50)
+        page = self.request('/api/file-browser?' + urllib.parse.urlencode(arguments))
+        while page.get('status') == 'sorting':
+            page = self.request('/api/file-browser?' + urllib.parse.urlencode(dict(arguments, cursor=page['next_cursor'])))
+        rows = list(page['items'])
+        self.assertEqual(len(rows), 50)
+        while page.get('has_more'):
+            page = self.request('/api/file-browser?' + urllib.parse.urlencode(dict(arguments, cursor=page['next_cursor'])))
+            rows.extend(page['items'])
+        self.assertEqual(len(rows), 66)
+        self.assertEqual([row['size_bytes'] for row in rows], sorted([row['size_bytes'] for row in rows], reverse=True))
+        self.request('/api/file-browser?' + urllib.parse.urlencode(dict(arguments, sort='not-a-sort')), expected=400)
+        self.request('/api/file-browser?' + urllib.parse.urlencode(arguments) + '&sort=name', expected=400)
+        self.request('/api/files?sort=name&direction=bad', expected=400)
+        ordered = self.request('/api/files?sort=modified&direction=asc')
+        self.assertEqual((ordered['sort'], ordered['direction']), ('modified', 'asc'))
+        self.request('/api/files?sort=modified&direction=desc&page_revision=' + ordered['page_revision'], expected=409)
+        self.assertEqual(self.hashes(), before)
+        self.assertEqual(self.app.state.history(), [])
+
     def test_task_diagnostic_snapshot_reads_are_owned_and_paginated(self):
         with (patch('diskpilot.diagnostics.system_configuration', return_value={}),
               patch('diskpilot.diagnostics.volume_snapshot', return_value={}),

@@ -251,12 +251,12 @@ function initializePanxu() {
 
   function dispositionControl(item) {
     if(!window.PanxuDisposition)return null;
-    return window.PanxuDisposition.render(item,{api,disabled:state.busy,onError:error=>notify(error.message,true),onChange:(updated,result)=>{
+    return window.PanxuDisposition.labelled(window.PanxuDisposition.render(item,{api,disabled:state.busy,onError:error=>notify(error.message,true),onChange:(updated,result)=>{
       if(result?.revision)state.catalogRevision=result.revision;
       ingest([...(state.items.filter(entry=>entry.id!==updated.id)),updated]);
       if(updated.user_disposition?.value==='direct_keep')analysisIds().delete(updated.id);
       renderResults();renderSelection();if(state.inspector&&state.focused?.id===updated.id){state.focused=updated;renderInspector();}
-    }});
+    }}));
   }
 
 

@@ -47,7 +47,9 @@ from .action_semantics import ACTION_DETAILS, APP_KINDS, FILE_KINDS, action_deta
 
 MAX_ROUNDS, MAX_CALLS = 6, 12
 CONTEXT_TARGET_BYTES = 96 * 1024
-MODEL_ADVICE_BATCH = 6
+MODEL_ADVICE_BATCH = 30
+MODEL_INSPECT_BATCH = 50
+MODEL_SPECIALIST_BATCH = 6
 FINAL_TOOLS = frozenset(('record_advice', 'propose_plan', 'present_findings', 'ask_user'))
 FINISH_TOOLS = frozenset(('present_findings', 'ask_user'))
 BUSY = {'investigating', 'executing'}
@@ -101,7 +103,7 @@ def tool_specs():
         ('inspect_cleanup_tool', '读取一项专项工具的参数、影响和有限只读事实；不执行清理。',
          {'tool_id': ident, 'parameters': {'type': 'object', 'maxProperties': 12}}, ['tool_id']),
         ('record_specialist_suggestions', '保存内置清理之外的专项说明和选项，供用户选择；不执行命令、不批准操作。',
-         {'items': {'type': 'array', 'minItems': 1, 'maxItems': MODEL_ADVICE_BATCH, 'items': {'type': 'object',
+         {'items': {'type': 'array', 'minItems': 1, 'maxItems': MODEL_SPECIALIST_BATCH, 'items': {'type': 'object',
             'properties': {'id': {'type': 'string', 'maxLength': 80}, 'title': {'type': 'string', 'maxLength': 120},
                 'explanation': {'type': 'string', 'maxLength': 1200}, 'impact': {'type': 'string', 'maxLength': 600},
                 'cleanup_rating': {'type': ['integer', 'null'], 'minimum': 1, 'maximum': 5}, 'item_ids': ids,
@@ -148,7 +150,8 @@ def tool_specs():
          {'offset': {'type': 'integer', 'minimum': 0}, 'query': {'type': 'string', 'maxLength': 120},
           'kind': {'type': 'string', 'enum': ['file', 'directory', 'software', 'startup', 'service', 'process']},
           'limit': {'type': 'integer', 'minimum': 1, 'maximum': 40}, 'unanalysed': {'type': 'boolean'}}, []),
-        ('inspect_items', '取得已观察项目的用途线索、可用动作与个人选择要求。', {'ids': ids}, ['ids']),
+        ('inspect_items', '取得已观察项目的用途线索、可用动作与个人选择要求。',
+         {'ids': {**ids, 'maxItems': MODEL_INSPECT_BATCH}}, ['ids']),
         ('collect_apps', '只读查询已安装软件或后台信息，辅助核对用途；不证明用户是否仍需要。',
          {'section': {'type': 'string', 'enum': ['software', 'background']}}, ['section']),
         ('compare_files', '在当前范围本地计算文件哈希，核对重复；不上传正文，不自动删除。', {'ids': ids}, ['ids']),
@@ -307,7 +310,7 @@ class TaskHarness(Orchestration):
     def _record_specialist_suggestions(self, task, args, provenance):
         self._args(args, ['items'], ['items'])
         rows = args['items']
-        if not isinstance(rows, list) or not 1 <= len(rows) <= MODEL_ADVICE_BATCH:
+        if not isinstance(rows, list) or not 1 <= len(rows) <= MODEL_SPECIALIST_BATCH:
             raise AppError('每次请保存1到6个专项建议。')
         current = {item['id']: item for item in self._items(task)}
         previous = {row['id']: row for row in task.get('extra_suggestions', [])}
@@ -1293,10 +1296,10 @@ class TaskHarness(Orchestration):
             value['user_disposition'] = dict(value=disposition['value'], label=disposition['label'], inherited=disposition['inherited'])
         return value
 
-    def _selected(self, task, ids):
-        if (not isinstance(ids, list) or not 1 <= len(ids) <= 20 or
+    def _selected(self, task, ids, *, limit=20):
+        if (not isinstance(ids, list) or not 1 <= len(ids) <= limit or
                 any(not isinstance(x, str) for x in ids) or len(set(ids)) != len(ids)):
-            raise AppError('请使用当前任务中1到20个不同项目的ID。')
+            raise AppError(f'请使用当前任务中1到{limit}个不同项目的ID。')
         current = {x['id']: x for x in self._items(task)}
         if any(x not in current for x in ids):
             raise AppError('有项目不在当前任务中或已经处理，请重新查看。')
@@ -1627,7 +1630,7 @@ class TaskHarness(Orchestration):
             return dict(total=len(rows), offset=offset, items=[self._metadata(i, detailed=i['kind'] != 'cleanup_tool') for i in rows[offset:offset+limit]])
         if name in ('inspect_items', 'compare_files', 'cache_experience'):
             self._args(args, ['ids'], ['ids'])
-            items = self._selected(task, args['ids'])
+            items = self._selected(task, args['ids'], limit=MODEL_INSPECT_BATCH if name == 'inspect_items' else 20)
             if name == 'inspect_items':
                 if task.get('scope_kind') == task_tool_analysis.SCOPE_KIND:
                     task.setdefault('tool_diagnostics_read', {}).update({item['id']: item['signature'] for item in items})
@@ -2576,7 +2579,7 @@ class TaskHarness(Orchestration):
                         ('现在收束本轮：只依据已取得的事实，不重新采集；可用read_facts时允许回读已保存正文。' if force_finalization else
                          '即将保存内部检查点；有新进展会自动续接。先保存已有依据的建议，未覆盖目标继续调查，不必重复已有读取。')
                         + ('本次只提交present_findings短结论，或用ask_user询问一个真正阻塞的选择。' if finish_only else
-                           'record_advice每批最多6项；同一条回复可提交多批，目标确已完成才用present_findings结束。')
+                           f'record_advice每批可保存1到{MODEL_ADVICE_BATCH}项，按信息量自行选批次；目标确已完成才用present_findings结束。')
                         + '说清已检查范围和未覆盖部分；没有检查不等于没问题。不能宣称系统已优化或实际处理。'})
                     task['summary'] = '正在保存已检查内容，继续分析剩余目标…' if not force_finalization else '正在整理已检查内容的评分与结论…'
                     if progress:
@@ -2697,7 +2700,7 @@ class TaskHarness(Orchestration):
                             raise AppError('此工具不适用于当前任务或阶段；请使用本次提供的工具。', 'tool_unavailable')
                         if (name in ('record_advice', 'propose_plan') and isinstance(args.get('items'), list)
                                 and len(args['items']) > MODEL_ADVICE_BATCH):
-                            raise AppError('模型建议每次最多6项，请分批保存，再提交简短结论。', 'advice_batch_limit')
+                            raise AppError(f'模型建议每批最多{MODEL_ADVICE_BATCH}项，可分批保存；这不是整个任务的项目上限。', 'advice_batch_limit')
                         result = self.tool(key, name, args, cancel=cancel, provenance=response_provenance)
                         if name in ('start_duplicate_scan', 'run_cleanup_diagnostics') and result.get('id'):
                             work_id = result['id']

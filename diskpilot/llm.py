@@ -610,7 +610,7 @@ class ModelAssistant:
                 safe['_continuation'] = copy.deepcopy(message['_continuation'])
         payload = dict(model=settings['model'], messages=safe_messages, tools=tools,
                        tool_choice=tool_choice, stream=stream,
-                       max_tokens=3500 if settings.get('provider', 'custom') in ('custom', 'ollama') else streaming.MAX_GENERATION_TOKENS)
+                       max_tokens=streaming.MAX_GENERATION_TOKENS)
         # Native continuations replace the public assistant projection on the
         # wire; the in-memory envelope holds both copies. Budget the prepared
         # request once in _completion, before tracing or transport, instead of
