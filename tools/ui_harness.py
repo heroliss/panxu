@@ -5,7 +5,8 @@
 Serves the app's HTML bundle on http://127.0.0.1:PORT/ with a shim that sends
 ``pywebview.api.call`` to ``Bridge.call`` over HTTP, so pages, jobs and the
 backend can be checked together without pywebview. Without --live a scripted
-model answers (no network). This is a test tool: the app itself never runs a
+model answers (no network). The simulation is kept in %TEMP%\\panxu-ui-harness
+(rebuild it from the banner). This is a test tool: the app itself never runs a
 web server (see docs/DESIGN.md). Folder pickers and window functions are not
 available here.
 """
@@ -15,7 +16,6 @@ import argparse
 import json
 import os
 import secrets
-import shutil
 import sys
 import tempfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -46,8 +46,8 @@ def main():
     parser.add_argument('--live', action='store_true', help='use the configured real model')
     args = parser.parse_args()
 
-    root = args.sandbox or tempfile.mkdtemp(prefix='panxu-ui-')
-    sb = sandbox.Sandbox(root if args.sandbox else os.path.join(root, 'sb'))
+    # one reusable folder: the server is usually stopped by killing it, so nothing would clean up a new one
+    sb = sandbox.Sandbox(args.sandbox or os.path.join(tempfile.gettempdir(), 'panxu-ui-harness'))
     sandbox.activate(sb)
     backend = Backend(os.path.join(sb.root, 'data'), sandbox=sb)
     if args.live:
@@ -100,8 +100,6 @@ def main():
     finally:
         server.server_close()
         sandbox.deactivate()
-        if not args.sandbox:
-            shutil.rmtree(root, ignore_errors=True)
 
 
 if __name__ == '__main__':
