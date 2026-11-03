@@ -1,0 +1,154 @@
+import json
+import os
+import unittest
+
+from helpers import WIN_ENV, TempDirTest
+
+from panxu import fsops, paths
+from panxu.oplog import OperationLog
+from panxu.settings import Settings
+
+
+class PathPolicyTest(unittest.TestCase):
+    def test_expand_and_unknown_vars(self):
+        self.assertEqual(paths.expand('%LOCALAPPDATA%\\Temp', WIN_ENV), 'C:\\Users\\alice\\AppData\\Local\\Temp')
+        self.assertIsNone(paths.expand('%NOPE%\\x', WIN_ENV))
+
+    def test_is_within_is_case_insensitive_and_component_based(self):
+        self.assertTrue(paths.is_within('c:\\users\\ALICE\\x', 'C:\\Users\\alice'))
+        self.assertFalse(paths.is_within('C:\\Users\\alice2', 'C:\\Users\\alice'))
+        self.assertTrue(paths.is_within('C:\\Users\\alice', 'C:\\Users\\alice\\'))
+
+    def test_anonymize_uses_the_most_specific_base(self):
+        self.assertEqual(paths.anonymize('C:\\Users\\alice\\AppData\\Local\\JetBrains', WIN_ENV), '%LOCALAPPDATA%\\JetBrains')
+        self.assertEqual(paths.anonymize('C:\\Users\\alice\\.gradle', WIN_ENV), '%USERPROFILE%\\.gradle')
+        self.assertEqual(paths.anonymize('D:\\Games', WIN_ENV), 'D:\\Games')
+
+    def test_protection_policy(self):
+        policy = paths.ProtectionPolicy(WIN_ENV, excluded=['D:\\Keep'])
+        blocked = ['C:\\', 'D:\\', 'C:\\Windows\\System32\\x.dll', 'C:\\pagefile.sys', 'C:\\Users', 'C:\\Users\\alice',
+                   'C:\\Users\\alice\\AppData\\Local', 'C:\\Program Files', 'C:\\ProgramData\\Microsoft\\x',
+                   'D:\\Keep\\a.iso', 'relative\\path', 'C:\\System Volume Information', '\\', '/', 'C:']
+        for p in blocked:
+            self.assertIsNotNone(policy.reason(p), p)
+        allowed = ['C:\\Users\\alice\\Downloads\\a.iso', 'C:\\Users\\alice\\AppData\\Local\\Unity', 'D:\\Old\\x.zip',
+                   'C:\\Program Files\\Leftover']
+        for p in allowed:
+            self.assertIsNone(policy.reason(p), p)
+        self.assertIsNotNone(policy.caution('C:\\Program Files\\Leftover'))
+        self.assertIsNotNone(policy.caution('C:\\Users\\alice\\OneDrive\\doc.txt'))
+        self.assertIsNone(policy.caution('D:\\Old\\x.zip'))
+
+    def test_selection_containing_protected_folders_is_refused(self):
+        policy = paths.ProtectionPolicy(WIN_ENV, excluded=['D:\\Photos\\Keep'])
+        refused = [
+            'D:\\Photos',                                          # contains an exclusion
+            'C:\\Users\\alice\\AppData\\Local\\Microsoft',          # contains WindowsApps, Credentials...
+            'C:\\Users\\alice\\AppData\\Local\\Packages\\Microsoft.Windows.StartMenuExperienceHost_cw5n1h2txyewy',
+            'C:\\Users\\alice\\AppData\\Roaming\\Microsoft\\Protect',
+            'C:\\Users\\alice\\AppData\\Roaming\\Microsoft',        # contains Protect
+            'C:\\Users\\bob', 'C:\\Users\\Default\\NTUSER.DAT',
+            'D:\\Windows\\System32', 'E:\\$Recycle.Bin\\S-1-5', 'C:\\Windows.old\\Users',
+            '\\\\?\\C:\\Windows\\System32', '\\\\.\\C:\\x', '\\\\localhost\\C$\\Windows',
+            'C:\\Windows.\\System32',
+        ]
+        for p in refused:
+            self.assertIsNotNone(policy.reason(p), p)
+        self.assertIsNone(policy.reason('D:\\Photos\\2019'))
+        self.assertIsNone(policy.reason('\\\\nas\\share\\old.iso'))
+        self.assertIn('本地应用数据', policy.caution('C:\\Users\\alice\\AppData\\Local\\Unity'))
+        self.assertIn('其他用户', policy.caution('C:\\Users\\bob\\Downloads\\x.zip'))
+
+    def test_categories(self):
+        self.assertEqual(paths.category_of('movie.MKV'), 'video')
+        self.assertEqual(paths.category_of('setup.exe'), 'installer')
+        self.assertEqual(paths.category_of('noext'), 'other')
+
+
+class FsOpsTest(TempDirTest):
+    def test_delete_matching_respects_age_pattern_and_keeps_root(self):
+        old = self.make('root/a/old.tmp', 100, age_days=3)
+        new = self.make('root/a/new.tmp', 100)
+        other = self.make('root/keep.txt', 100, age_days=3)
+        root = os.path.join(self.tmp, 'root')
+        stats = fsops.delete_matching(root, lambda n: n.endswith('.tmp'), min_age_seconds=86400)
+        self.assertFalse(os.path.exists(old))
+        self.assertTrue(os.path.exists(new))
+        self.assertTrue(os.path.exists(other))
+        self.assertTrue(os.path.isdir(root))
+        self.assertEqual((stats.files, stats.bytes), (1, 100))
+
+    def test_links_are_never_followed(self):
+        outside = self.make('outside/precious.txt', 50)
+        tree = os.path.join(self.tmp, 'tree')
+        os.makedirs(tree)
+        os.symlink(os.path.dirname(outside), os.path.join(tree, 'link'))
+        self.make('tree/sub/junk.bin', 10)
+        stats = fsops.delete_path(tree)
+        self.assertTrue(os.path.exists(outside), 'link target must survive')
+        self.assertFalse(os.path.exists(tree))
+        self.assertEqual(stats.failed, 0)
+        # matching delete skips links entirely
+        os.makedirs(tree)
+        os.symlink(os.path.dirname(outside), os.path.join(tree, 'link'))
+        fsops.delete_matching(tree, lambda n: True)
+        self.assertTrue(os.path.exists(outside))
+
+    def test_delete_selected_symlink_removes_only_the_link(self):
+        outside = self.make('outside/precious.txt', 50)
+        link = os.path.join(self.tmp, 'link')
+        os.symlink(os.path.dirname(outside), link)
+        fsops.delete_path(link)
+        self.assertFalse(os.path.lexists(link))
+        self.assertTrue(os.path.exists(outside))
+
+    def test_path_size(self):
+        self.make('d/a', 10)
+        self.make('d/b/c', 20)
+        self.assertEqual(fsops.path_size(os.path.join(self.tmp, 'd')), (30, 2))
+
+    def test_recycle_reports_failure_off_windows(self):
+        f = self.make('x.bin', 10)
+        stats, done = fsops.recycle([f])
+        self.assertEqual(done, [])
+        self.assertEqual(stats.failed, 1)
+        self.assertTrue(os.path.exists(f))
+
+
+class OpLogTest(TempDirTest):
+    def test_add_mark_and_read_newest_first(self):
+        log = OperationLog(os.path.join(self.tmp, 'h.jsonl'))
+        a = log.add('junk', 'first', freed=5)
+        b = log.add('startup', 'second', revert={'action': 'startup'})
+        log.mark(b['id'], reverted=True)
+        rows = log.entries()
+        self.assertEqual([r['title'] for r in rows], ['second', 'first'])
+        self.assertTrue(rows[0]['followup']['reverted'])
+        self.assertEqual(log.get(a['id'])['freed'], 5)
+
+    def test_corrupt_lines_are_ignored(self):
+        path = os.path.join(self.tmp, 'h.jsonl')
+        with open(path, 'w', encoding='utf-8') as fh:
+            fh.write('not json\n' + json.dumps({'id': 'x', 'time': 1, 'kind': 'ai', 'title': 't'}) + '\n')
+        self.assertEqual(len(OperationLog(path).entries()), 1)
+
+
+class SettingsTest(TempDirTest):
+    def test_merge_ignores_unknown_keys_and_persists(self):
+        s = Settings(self.tmp)
+        s.update({'ai': {'model': 'm1'}, 'bogus': 1})
+        again = Settings(self.tmp).get()
+        self.assertEqual(again['ai']['model'], 'm1')
+        self.assertNotIn('bogus', again)
+        self.assertEqual(again['ai']['preset'], 'deepseek')
+
+    def test_secret_roundtrip(self):
+        s = Settings(self.tmp)
+        s.set_secret('ai_key:deepseek', 'sk-123')
+        self.assertEqual(Settings(self.tmp).get_secret('ai_key:deepseek'), 'sk-123')
+        s.set_secret('ai_key:deepseek', '')
+        self.assertFalse(s.has_secret('ai_key:deepseek'))
+
+
+if __name__ == '__main__':
+    unittest.main()
