@@ -31,6 +31,7 @@ DEFAULTS = {
         'space_scan': True,      # scan the system drive during the one-click check-up
         'duplicates': True,
         'use_ai': True,          # ask the model when a key is configured
+        'auto_select': 'bold',   # bold: also tick rebuildable caches, leftovers, confident AI verdicts | careful
     },
     'insights': {
         'stale_days': 365,       # "很久没动" threshold for large personal files

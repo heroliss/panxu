@@ -38,8 +38,17 @@ SOURCES = {'rule': '规则', 'ai': 'AI', 'insight': '我的文件', 'dup': '重�
 STAGES = [('junk', '扫描垃圾文件'), ('space', '分析系统盘空间'), ('insights', '整理我的文件'),
           ('dups', '查找重复文件'), ('ai', 'AI 复核'), ('plan', '生成清理方案')]
 
-AUTO_AI_CONFIDENCE = 0.8
+AUTO_AI_CONFIDENCE = 0.8     # 稳妥: the model must be this sure to pre-tick a folder
+BOLD_AI_CONFIDENCE = 0.7     # 积极
 ACTIVE_DAYS = 7             # folders changed more recently are left for the user
+# 积极 still leaves these rules unticked: no undo (Recycle Bin, rollback to the old Windows), very slow
+# (DISM), or possibly holding the user's own builds (mvn install puts them in the local repository)
+BOLD_EXCLUDED_RULES = {'recycle_bin', 'windows_old', 'component_store', 'maven'}
+# names inside a folder that suggest something worth keeping although nobody "made" it: game saves,
+# profiles, backups. A folder containing one is never pre-ticked.
+VALUABLE_DIRS = {'save', 'saves', 'savegames', 'savedgames', 'saved games', 'savedata', 'save data', '存档',
+                 'profile', 'profiles', 'user data', 'userdata', 'backup', 'backups', '备份', 'license', 'licenses'}
+CACHE_WORDS = ('cache', 'temp', 'tmp', 'log', 'crash', 'dump', 'shader', 'thumbnail')
 LEFTOVER_MIN = 500 * 1024 * 1024
 OLD_VERSION_MIN = 200 * 1024 * 1024
 YEAR = 365 * 86400
@@ -96,6 +105,32 @@ def _ago(ts: float, now: float) -> str:
     return f'{days / 365:.0f} 年' if days >= 365 else f'{int(days)} 天'
 
 
+class _Stub:
+    """A scan-node stand-in when only a suggestion's modification time is known."""
+    children = ()
+
+    def __init__(self, mtime):
+        self.mtime = mtime
+
+
+def valuable_inside(node, depth: int = 4) -> str | None:
+    """Name of a sub-folder that looks like saves, a profile or a backup (scan nodes only, no disk access)."""
+    stack = [(c, 1) for c in node.children or ()]
+    while stack:
+        n, d = stack.pop()
+        low = n.name.lower()
+        if low in VALUABLE_DIRS or low.startswith('savegame'):
+            return n.name
+        if d < depth:
+            stack.extend((c, d + 1) for c in n.children or ())
+    return None
+
+
+def cache_like(name: str) -> bool:
+    low = name.lower()
+    return any(w in low for w in CACHE_WORDS)
+
+
 def decision_note(item: dict) -> list[str]:
     """Why an item was (not) ticked automatically -- the last line of its 评分依据."""
     if item['action'] == 'none':
@@ -103,20 +138,22 @@ def decision_note(item: dict) -> list[str]:
     if item['blocked']:
         return ['没有勾选：' + item['blocked']]
     if item['selected']:
-        return ['自动勾选：' + ('默认开启的内置规则' if item['source'] == 'rule'
-                              else 'AI 把握很大，位于应用数据目录，不属于仍在使用的程序，最近也没有改动')]
+        return ['自动勾选：' + (item.get('auto_reason') or '默认开启的内置规则')]
     if item.get('personal'):
         return ['没有自动勾选：你的个人文件只由你决定']
-    return ['没有自动勾选：只有默认规则，以及 AI 把握很大的残留数据会自动勾选']
+    return ['没有自动勾选：' + (item.get('hold_reason') or '把握不够，留给你决定')]
 
 
 class PlanBuilder:
     """Collects plan items; a path is offered at most once (first source wins)."""
 
-    def __init__(self, policy, knowledge=None, now: float | None = None):
+    def __init__(self, policy, knowledge=None, now: float | None = None, bold: bool = False):
         self.policy = policy
         self.knowledge = knowledge
         self.now = now or time.time()
+        # 积极: besides default rules, also pre-tick rebuildable caches, leftovers and old versions, and
+        # folders the model is fairly sure about. Never personal files, never anything without an undo.
+        self.bold = bold
         self.items: list[dict] = []
         self._claimed: list[str] = []
 
@@ -160,23 +197,45 @@ class PlanBuilder:
                 blocked = '请先关闭 ' + '、'.join(row['running'])
             elif rule.admin and row.get('needs_admin'):
                 blocked = '需要管理员权限'
-            safe = rule.default and not blocked
             if rule.default:
-                score, basis = 95, ['内置规则：公认可以重建的缓存和临时文件']
+                score, basis, auto = 95, ['内置规则：公认可以重建的缓存和临时文件'], '默认开启的内置规则'
             elif rule.mode == 'recycle_bin' or rule.id == 'windows_old':
-                score, basis = 55, ['内置规则，但删除后无法恢复：' + (rule.note or '无法从回收站恢复')]
+                score, basis, auto = 55, ['内置规则，但删除后无法恢复：' + (rule.note or '无法从回收站恢复')], None
+            elif rule.id in BOLD_EXCLUDED_RULES:
+                score, basis, auto = 60, ['内置规则，默认不勾：' + (rule.note or '删除前请确认里面没有你自己的东西')], None
             else:
-                score, basis = 70, ['内置规则，默认不勾：' + (rule.note or '删除后需要时会重新下载或生成，第一次会慢一些')]
+                score = 80
+                basis = ['内置规则：可以重建，只是下次用到时要重新下载或生成，第一次会慢一些']
+                auto = '积极模式：可以重建的缓存' if self.bold else None
             self.add({
-                'id': 'rule:' + rule.id, 'kind': 'rule', 'rule': rule.id, 'group': 'safe' if safe else 'review',
+                'id': 'rule:' + rule.id, 'kind': 'rule', 'rule': rule.id, 'group': 'safe' if auto and not blocked else 'review',
                 'category': '垃圾文件', 'title': rule.name, 'size': size or 0, 'count': row.get('count') or 0,
                 'what': '', 'why': rule.description,
                 'effect': rule.note or '相关程序会在需要时重新生成这些文件。', 'action': 'delete', 'source': 'rule',
-                'confidence': 1.0 if rule.default else 0.7, 'selected': safe, 'blocked': blocked,
-                'locations': row.get('locations', [])[:5], 'score': score, 'basis': basis})
+                'confidence': 1.0 if rule.default else 0.7, 'selected': bool(auto) and not blocked, 'blocked': blocked,
+                'locations': row.get('locations', [])[:5], 'score': score, 'basis': basis,
+                'auto_ok': bool(auto), 'auto_reason': auto,
+                'hold_reason': None if auto else ('删除后无法恢复，请你决定' if score < 60 else '默认不勾，请你决定')})
 
-    def add_ai_dirs(self, suggestions: list[dict], env: dict, analyst=None):
+    def _folder_guards(self, path: str, node, owner: str | None, basis: list[str]) -> str | None:
+        """Reasons a folder must not be pre-ticked whatever the score (also added to the basis)."""
+        mtime = node.mtime if node is not None else None
+        if mtime and self.now - mtime < ACTIVE_DAYS * 86400:
+            basis.append(f'最近 {ACTIVE_DAYS} 天内还有改动：可能还有程序在用')
+            return '最近还有改动'
+        inside = valuable_inside(node) if node is not None else None
+        if inside:
+            basis.append(f'里面有「{inside}」文件夹：可能是存档、个人资料或备份')
+            return f'里面可能有存档或个人资料（「{inside}」）'
+        if owner and not (self.bold and cache_like(os.path.basename(path.rstrip('\\/')))):
+            # the whole folder of an installed program also holds its settings, licence or templates;
+            # in 积极 mode its cache-named sub-folders may still be ticked
+            return f'属于仍在使用的程序「{owner}」'
+        return None
+
+    def add_ai_dirs(self, suggestions: list[dict], env: dict, analyst=None, scan=None):
         app_bases = [env.get(k) for k in ('LOCALAPPDATA', 'APPDATA', 'LOCALLOW', 'ProgramData') if env.get(k)]
+        threshold = BOLD_AI_CONFIDENCE if self.bold else AUTO_AI_CONFIDENCE
         for s in sorted(suggestions, key=lambda r: -r['size']):
             if s.get('source') == 'none' or s.get('expanded') or s['verdict'] not in ('clean', 'review'):
                 continue
@@ -184,27 +243,39 @@ class PlanBuilder:
             confidence = float(s.get('confidence') or 0)
             score = round(confidence * 100) if s['verdict'] == 'clean' else min(55, round(confidence * 100))
             basis = [f'AI：{s.get("verdict_label", "")}（把握 {round(confidence * 100)}%）' + ('，来自缓存' if s.get('source') == 'cache' else '')]
-            # a folder of a program that is still installed usually also holds its settings, licence or
-            # templates next to the cache: the model judges by the big files, so it is never pre-ticked
             owner = analyst.installed_app(s['path']) if analyst is not None else None
             if owner:
                 score = min(score, 70)
                 basis.append(f'属于仍在使用的程序「{owner}」：里面可能还有设置或许可证')
-            # changed in the last days: some program is still writing there
-            active = bool(s.get('mtime')) and self.now - s['mtime'] < ACTIVE_DAYS * 86400
-            if active and not owner:
+            node = None
+            if scan is not None and s.get('node_id') is not None:
+                try:
+                    node = scan.node(s['node_id'])
+                except (KeyError, IndexError):
+                    node = None
+            if node is None and s.get('mtime'):
+                node = _Stub(s['mtime'])
+            hold = self._folder_guards(s['path'], node, owner, basis)
+            if hold and hold.startswith('最近'):
                 score = min(score, 75)
-                basis.append(f'最近 {ACTIVE_DAYS} 天内还有改动：可能还有程序在用')
-            sure = s['verdict'] == 'clean' and confidence >= AUTO_AI_CONFIDENCE and in_app_data and not owner and not active
             if not in_app_data:
                 basis.append('不在应用数据目录：只能由你决定')
+                hold = hold or '不在应用数据目录'
+            sure = s['verdict'] == 'clean' and confidence >= threshold and not hold
+            if s['verdict'] != 'clean':
+                hold = hold or 'AI 也拿不准'
+            elif not sure and not hold:
+                hold = f'AI 的把握不到 {round(threshold * 100)}%'
+            auto = (('积极模式：' if self.bold and confidence < AUTO_AI_CONFIDENCE else '')
+                    + f'AI 判断可清理（把握 {round(confidence * 100)}%），不属于仍在使用的程序，最近也没有改动') if sure else None
             item = self.add({
                 'id': _ident('dir', s['path']), 'kind': 'paths', 'group': 'safe' if sure else 'review',
                 'category': '应用数据', 'title': s.get('app') if s.get('app') not in (None, '', '未知') else
                 os.path.basename(s['path']), 'size': s['size'], 'count': s.get('files', 0), 'what': '',
                 'why': s.get('reason') or f'AI 判断：{s.get("verdict_label", "")}', 'effect': s.get('effect') or '',
                 'action': 'recycle', 'source': 'ai', 'confidence': s.get('confidence'), 'selected': sure,
-                'paths': [s['path']], 'node_id': s.get('node_id'), 'score': score, 'basis': basis})
+                'paths': [s['path']], 'node_id': s.get('node_id'), 'score': score, 'basis': basis,
+                'auto_reason': auto, 'hold_reason': hold})
             if item is not None and item['blocked']:
                 item['group'] = 'review'
 
@@ -221,21 +292,26 @@ class PlanBuilder:
                 n_old = n.mtime and self.now - n.mtime > YEAR
                 newer = newer_sibling(n) if n_old else None
                 if newer:
+                    basis = [f'旁边有更新的版本「{newer}」', f'{_ago(n.mtime, self.now)}没有修改过']
+                    hold = self._folder_guards(p, n, None, basis) or (None if self.bold else '盘序的推测，留给你决定')
                     self.add({'id': _ident('dir', p), 'kind': 'paths', 'category': '应用数据', 'title': n.name,
+                              'group': 'review' if hold else 'safe', 'selected': not hold,
                               'size': n.size, 'count': n.files, 'what': f'「{n.name}」的数据，旁边还有更新的版本「{newer}」。',
                               'why': f'可能是旧版本留下的：{_ago(n.mtime, self.now)}没有修改过。',
                               'effect': '如果还在用旧版本，它的设置和缓存会丢失。', 'action': 'recycle',
-                              'source': 'heuristic', 'confidence': 0.6, 'paths': [p], 'score': 60,
-                              'basis': [f'旁边有更新的版本「{newer}」', f'{_ago(n.mtime, self.now)}没有修改过']})
+                              'source': 'heuristic', 'confidence': 0.6, 'paths': [p], 'score': 60, 'basis': basis,
+                              'auto_reason': '积极模式：旧版本留下的数据，进回收站可以还原', 'hold_reason': hold})
             if node.size >= LEFTOVER_MIN and old and analyst.installed_app(path) == '':
+                basis = ['「已安装的应用」里找不到对应的程序', f'{_ago(node.mtime, self.now)}没有修改过', '没有经过 AI 复核']
+                hold = self._folder_guards(path, node, None, basis) or (None if self.bold else '盘序的推测，留给你决定')
                 self.add({'id': _ident('dir', path), 'kind': 'paths', 'category': '应用数据', 'title': node.name,
+                          'group': 'review' if hold else 'safe', 'selected': not hold,
                           'size': node.size, 'count': node.files,
                           'what': '找不到对应的已安装程序，可能是已卸载程序的残留。',
                           'why': f'在「已安装的应用」里没有找到对应的程序，而且 {_ago(node.mtime, self.now)}没有修改过。',
                           'effect': '如果程序其实还在（例如绿色版），它的设置、存档或缓存会丢失。', 'action': 'recycle',
-                          'source': 'heuristic', 'confidence': 0.5, 'paths': [path], 'score': 50,
-                          'basis': ['「已安装的应用」里找不到对应的程序', f'{_ago(node.mtime, self.now)}没有修改过',
-                                    '没有经过 AI 复核']})
+                          'source': 'heuristic', 'confidence': 0.5, 'paths': [path], 'score': 50, 'basis': basis,
+                          'auto_reason': '积极模式：很可能是已卸载程序的残留，进回收站可以还原', 'hold_reason': hold})
 
     def add_insights(self, findings: list[dict], file_ai: dict | None = None):
         file_ai = file_ai or {}
@@ -353,7 +429,7 @@ def refresh_running(plan: dict, running: dict[str, list[str]]) -> list[str]:
         blocked = '请先关闭 ' + '、'.join(procs) if procs else None
         if blocked == was:
             continue
-        safe = RULES_BY_ID[item['rule']].default and not blocked
+        safe = item.get('auto_ok', RULES_BY_ID[item['rule']].default) and not blocked
         item.update(blocked=blocked, group='safe' if safe else 'review', selected=safe)
         item['basis'] = [b for b in item['basis'] if not b.startswith(('自动勾选', '没有自动勾选', '没有勾选'))] \
             + decision_note(item)
@@ -381,6 +457,8 @@ def run(backend, job, options: dict | None = None) -> dict:
     settings = backend.settings.get()
     opts = {**settings.get('checkup', {}), **{k: bool(v) for k, v in (options or {}).items()
                                             if k in ('space_scan', 'duplicates', 'use_ai')}}
+    if (options or {}).get('auto_select') in ('bold', 'careful'):
+        opts['auto_select'] = options['auto_select']
     client = backend.client_or_none('classify') if opts.get('use_ai', True) else None
     stages = [s for s in STAGES if (s[0] != 'space' or opts.get('space_scan', True))
               and (s[0] != 'dups' or opts.get('duplicates', True)) and (s[0] != 'ai' or client is not None)]
@@ -472,10 +550,10 @@ def run(backend, job, options: dict | None = None) -> dict:
                               details={'usage': ai_info['usage'], 'model': client.model, 'errors': ai_info['errors'][:5]})
 
     stage('plan')
-    builder = PlanBuilder(policy, backend.knowledge)
+    builder = PlanBuilder(policy, backend.knowledge, bold=opts.get('auto_select', 'bold') != 'careful')
     builder.add_junk(junk_rows)
     if backend.scan is not None and backend.scan.complete:
-        builder.add_ai_dirs(list(backend.ai_results.values()), env, backend.analyst)
+        builder.add_ai_dirs(list(backend.ai_results.values()), env, backend.analyst, backend.scan)
         analysed = {nid for nid, s in backend.ai_results.items() if s.get('source') != 'none'}
         builder.add_heuristics(backend.scan, backend.analyst, env, analysed)
     builder.add_insights(findings, file_ai)

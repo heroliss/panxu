@@ -100,6 +100,11 @@
       secCk.appendChild(field(label, h('label.inline', PX.switchEl(ck[key] !== false, (e) => save({ checkup: { [key]: e.target.checked } })),
         h('span.small.muted', help))));
     }
+    secCk.appendChild(field('自动勾选', PX.seg([['bold', '积极'], ['careful', '稳妥']], ck.auto_select === 'careful' ? 'careful' : 'bold',
+      async (v) => { await save({ checkup: { auto_select: v } }); draw(); }),
+    ck.auto_select === 'careful'
+      ? '稳妥：只勾默认开启的清理规则，以及 AI 把握很大（≥ 80%）的卸载残留。'
+      : '积极：另外勾上所有可以重建的缓存、旧版本和卸载残留，以及 AI 把握 ≥ 70% 的应用数据。都不碰你的文件、存档和正在用的程序，清空回收站这类不能撤销的也不勾；文件夹只进回收站。'));
 
     // ---- 我的文件
     const ins = s.insights || {};

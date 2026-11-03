@@ -96,7 +96,7 @@
 
   const settings = { theme: 'system', ai: { preset: 'deepseek', base_url: 'https://api.deepseek.com', model: 'deepseek-flash', protocol: 'openai',
     json_mode: true, thinking: 'off', anonymize_paths: true, send_file_content: false, max_requests: 8, min_dir_mb: 500, timeout: 120 },
-  checkup: { space_scan: true, duplicates: true, use_ai: true }, insights: { stale_days: 365, large_mb: 100, download_days: 180 },
+  checkup: { space_scan: true, duplicates: true, use_ai: true, auto_select: 'bold' }, insights: { stale_days: 365, large_mb: 100, download_days: 180 },
   duplicates: { min_size_mb: 1 }, large_files: { min_size_mb: 100 }, excluded_paths: [], extra_personal_paths: ['D:\\资料'] };
   let hasKey = true;
 

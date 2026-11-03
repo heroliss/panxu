@@ -73,8 +73,8 @@ class CheckupTest(TempDirTest):
     def checkup(self, **options):
         return self.wait(self.call('checkup', options=options))
 
-    def test_default_selection(self):
-        plan = self.checkup()
+    def test_careful_selection(self):
+        plan = self.checkup(auto_select='careful')
         selected = [i for i in plan['items'] if i['selected']]
         self.assertTrue(selected)
         for item in selected:
@@ -106,7 +106,8 @@ class CheckupTest(TempDirTest):
             last = item['basis'][-1]
             self.assertTrue(last.startswith(('自动勾选', '没有自动勾选', '没有勾选')), (item['title'], last))
             if item['selected']:
-                self.assertGreaterEqual(item['score'], 80, item['title'])
+                # 积极 also ticks leftovers (50-60): reversible, through the Recycle Bin
+                self.assertGreaterEqual(item['score'], 80 if item['action'] == 'delete' else 50, item['title'])
             if item.get('personal'):
                 self.assertFalse(item['selected'])
         empty = [i for i in plan['items'] if i.get('finding_kind') == 'empty_folders']
@@ -195,8 +196,46 @@ class CheckupTest(TempDirTest):
         self.assertTrue(any('group' in r for r in sent))
         self.assertFalse(any('excerpt' in r for r in sent))
 
+    def test_bold_selection(self):
+        plan = self.checkup(use_ai=False)  # 积极 is the default
+        by_id = {i['id']: i for i in plan['items']}
+        for rule in ('npm', 'pip', 'uv', 'gradle', 'shader_cache', 'adobe_media_cache', 'thumbcache'):
+            self.assertTrue(by_id['rule:' + rule]['selected'], rule)
+            self.assertIn('积极模式', by_id['rule:' + rule]['basis'][-1])
+        for rule in ('recycle_bin', 'windows_old', 'component_store'):
+            if 'rule:' + rule in by_id:
+                self.assertFalse(by_id['rule:' + rule]['selected'], rule)
+        guessed = {i['title']: i for i in plan['items'] if i['source'] == 'heuristic'}
+        self.assertTrue(guessed['IntelliJIdea2021.1']['selected'], 'an old version next to a newer one')
+        game = guessed['OldGameStudio']
+        self.assertFalse(game['selected'], 'it holds SaveGames')
+        self.assertIn('存档', game['basis'][-1])
+        for item in plan['items']:
+            if item['selected']:
+                self.assertFalse(item.get('personal'), item['title'])
+                self.assertTrue(item['basis'][-1].startswith('自动勾选'), item['title'])
+                self.assertIn(item['action'], ('delete', 'recycle'))
+                if item['action'] == 'delete':
+                    self.assertEqual(item['source'], 'rule', 'only rebuildable rule caches are deleted for good')
+
+    def test_bold_ai_threshold_and_guards(self):
+        from panxu import checkup
+        policy = paths.ProtectionPolicy(self.backend.env, allowed_roots=[self.sb.root], drive_roots=self.sb.drive_roots)
+        local = self.backend.env['LOCALAPPDATA']
+        old = time.time() - 90 * 86400
+        rows = [{'path': os.path.join(local, name), 'size': 10, 'files': 1, 'verdict': 'clean', 'verdict_label': '可清理',
+                 'confidence': conf, 'source': 'ai', 'mtime': old, 'reason': '缓存'}
+                for name, conf in (('SureEnough', 0.72), ('Unsure', 0.6))]
+        careful = checkup.PlanBuilder(policy)
+        careful.add_ai_dirs(rows, self.backend.env)
+        self.assertEqual([i['selected'] for i in careful.items], [False, False])
+        bold = checkup.PlanBuilder(policy, bold=True)
+        bold.add_ai_dirs(rows, self.backend.env)
+        self.assertEqual([i['selected'] for i in bold.items], [True, False])
+        self.assertIn('70%', bold.items[1]['basis'][-1])
+
     def test_without_ai_heuristics_fill_in(self):
-        plan = self.checkup(use_ai=False)
+        plan = self.checkup(use_ai=False, auto_select='careful')
         self.assertEqual(self.model.requests, [])
         self.assertFalse(plan['ai']['used'])
         guessed = {i['title']: i for i in plan['items'] if i['source'] == 'heuristic'}
