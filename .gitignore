@@ -5,10 +5,14 @@ build/
 dist/
 data/
 userdata/
-verification/*
-!verification/*.py
-!verification/README.md
+# old 0.x verification artefacts (no longer tracked)
+verification/
+preview*.html
 model_settings.json
+settings.json
+secrets.json
+ai_cache.json
+history.jsonl
 *.sqlite
 *.sqlite3
 *.sqlite3-*
