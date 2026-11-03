@@ -74,6 +74,18 @@ class BridgeTest(TempDirTest):
         self.assertFalse(r['ok'])
         self.assertIn('保留', r['error'])
 
+    def test_duplicates_skip_folders_programs_manage(self):
+        for rel in ('area/proj/node_modules/a/lib.js', 'area/proj/node_modules/b/lib.js', 'area/app/Cache/x.bin',
+                    'area/app/Cache/y.bin', 'area/mine/one.bin', 'area/mine/two.bin'):
+            self.make(rel, 5000)
+        s = wait(self.bridge, self.bridge.call('dup_scan', {'roots': [os.path.join(self.tmp, 'area')], 'min_size_mb': 0.001})['data'])
+        found = [os.path.basename(f['path']) for g in s['result']['groups'] for f in g['files']]
+        self.assertEqual(sorted(found), ['one.bin', 'two.bin'])
+        # a folder the user picks explicitly is searched even if its name looks managed
+        s = wait(self.bridge, self.bridge.call('dup_scan', {'roots': [os.path.join(self.tmp, 'area', 'app', 'Cache')],
+                                                            'min_size_mb': 0.001})['data'])
+        self.assertEqual(len(s['result']['groups']), 1)
+
     def test_ai_requires_key(self):
         self.make('x/sub/y', 10)
         wait(self.bridge, self.bridge.call('space_scan', {'root': os.path.join(self.tmp, 'x')})['data'])

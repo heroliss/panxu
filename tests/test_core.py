@@ -59,6 +59,14 @@ class PathPolicyTest(unittest.TestCase):
         self.assertIn('本地应用数据', policy.caution('C:\\Users\\alice\\AppData\\Local\\Unity'))
         self.assertIn('其他用户', policy.caution('C:\\Users\\bob\\Downloads\\x.zip'))
 
+    def test_other_accounts_never_reach_the_model(self):
+        from panxu.knowledge import Knowledge
+        k = Knowledge(WIN_ENV)
+        for p in ('C:\\Users\\bob', 'C:\\Users\\bob\\AppData\\Local\\Big', 'C:\\Users\\Public'):
+            self.assertEqual(k.ai_role(p), 'skip', p)
+        self.assertEqual(k.ai_role('C:\\Users\\alice'), 'descend', 'your own folder is still looked into')
+        self.assertEqual(k.ai_role('C:\\Users\\alice\\AppData\\Local\\Unity'), 'ask')
+
     def test_categories(self):
         self.assertEqual(paths.category_of('movie.MKV'), 'video')
         self.assertEqual(paths.category_of('setup.exe'), 'installer')

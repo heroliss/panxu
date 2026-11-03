@@ -26,7 +26,7 @@ import uuid
 from . import APP_NAME, fsops, paths, winapi
 from .analyst import newer_sibling
 from .duplicates import find_duplicates, verify_unchanged
-from .insights import Insights, is_copy_name
+from .insights import Insights, is_copy_name, managed_dir
 from .junk import RULES_BY_ID
 from .scanner import SpaceScan
 
@@ -71,13 +71,17 @@ def personal_roots(env: dict, settings: dict) -> list[str]:
     return out
 
 
-def system_skip(env: dict, policy):
-    """Directories the personal-file tools never enter: system folders, app data, user exclusions."""
+def system_skip(env: dict, policy, roots: list[str] | None = None):
+    """Directories the personal-file tools never enter: system folders, app data, user exclusions, and
+    folders programs manage themselves (caches, node_modules, chat storage...) below the chosen roots."""
     bases = [env.get(k) for k in ('SystemRoot', 'ProgramFiles', 'ProgramFiles(x86)', 'ProgramData', 'LOCALAPPDATA',
                                   'APPDATA')]
     bases = [b for b in bases if b]
+    chosen = {paths.key(r) for r in roots or []}
 
     def skip(path):
+        if paths.key(path) not in chosen and managed_dir(os.path.basename(path.rstrip('\\/'))):
+            return True
         return any(paths.is_within(path, b) for b in bases) or policy.reason(path) == '位于你设置的排除目录中'
     return skip
 
@@ -326,7 +330,7 @@ def run(backend, job, options: dict | None = None) -> dict:
         backend.ai_results = {}
 
     roots = personal_roots(env, settings)
-    skip = system_skip(env, policy)
+    skip = system_skip(env, policy, roots)
     stage('insights')
     ins = Insights(env, settings, apps=backend.apps).collect(
         roots, skip=skip, cancel=job.cancel, progress=lambda p: job.update(detail=p.get('current', '')))

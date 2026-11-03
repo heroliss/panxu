@@ -90,6 +90,10 @@ ENTRIES: list[Entry] = [
     Entry('%USERPROFILE%\\Pictures', 'personal', '图片', '个人文件。'),
     Entry('%USERPROFILE%\\Videos', 'personal', '视频', '个人文件。'),
     Entry('%USERPROFILE%\\Music', 'personal', '音乐', '个人文件。'),
+    # other accounts (and Public): their files, and even their names, are not ours to send anywhere.
+    # Listed after %USERPROFILE% so that your own folder (same depth) still matches first.
+    Entry('%SystemDrive%\\Users\\*', 'personal', '其他账户或公用的文件夹',
+          '另一个 Windows 账户（或所有账户共用）的文件。盘序不分析、不发给 AI；需要清理时请登录那个账户。'),
     Entry('%USERPROFILE%\\OneDrive', 'cloud', 'OneDrive', '删除会同步到云端。可右键文件夹选「释放空间」，只保留在云端。'),
     Entry('%USERPROFILE%\\OneDrive - *', 'cloud', 'OneDrive（工作或学校）', '删除会同步到云端。可右键选「释放空间」。'),
     Entry('%USERPROFILE%\\Documents\\WeChat Files', 'personal', '微信聊天文件',

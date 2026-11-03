@@ -32,9 +32,17 @@ INSTALLER_EXTS = {'.exe', '.msi', '.msix', '.msixbundle', '.appx', '.appxbundle'
 INCOMPLETE_EXTS = {'.crdownload', '.part', '.partial', '.download', '.opdownload', '.td', '.!qb', '.bc!', '.xltd', '.!ut'}
 ARCHIVE_EXTS = {'.zip', '.rar', '.7z', '.tar', '.gz', '.tgz', '.bz2', '.xz', '.zst'}
 IGNORED_FILES = {'desktop.ini', 'thumbs.db', '.ds_store'}
-SKIP_DIRS = {'.git', '.svn', '.hg', 'node_modules', '__pycache__', '.venv', 'venv', '$recycle.bin',
+SKIP_DIRS = {'.git', '.svn', '.hg', 'node_modules', '__pycache__', '.venv', 'venv', 'site-packages', '$recycle.bin',
              'system volume information', '.idea', '.vs'}
+# Folders that programs fill and manage themselves, even inside Documents: caches, logs, chat
+# storage, game data, application profiles. Their files are not the user's to sort out here, and
+# removing them (even "identical copies" or empty folders) can break the program.
+CACHE_DIRS = {'cache', 'caches', 'cache_data', 'code cache', 'cachestorage', 'service worker', 'logs', 'log', 'logfiles',
+              'crashes', 'crashpad', 'crashdumps', 'temp', 'tmp', 'thumbnails'}
+APP_DIRS = {'wechat files', 'xwechat_files', 'wxwork', 'tencent files', 'my games', 'adobe', 'zoom'}
 MEDIA = {'image', 'video', 'audio'}
+# kinds of files people keep several versions of; numbered app data (data_0, data_1...) is never one
+VERSION_CATEGORIES = {'document', 'image', 'video', 'audio', 'archive'}
 MAX_FILES = 400_000
 
 KIND_INFO = {
@@ -107,8 +115,10 @@ _TAIL = [
     re.compile(r'\s*-\s*(副本|copy)(\s*[\(（]?\d{1,3}[\)）]?)?$', re.I),
     re.compile(r'\s*(的)?副本\d*$'),
     re.compile(r'^copy of\s+', re.I),
+    # explicit version words, v2 / ver2 / 版本2, dates and years -- but not bare numbers: "data_1",
+    # "Font-900" or "Replay003" are separate files, not versions of one
     re.compile(r'[\s_\-.]*(final|最终版?|终稿|定稿|修改版?|修订版?|改|new|新版?|old|旧版?|bak|backup|备份|draft|草稿|初稿|'
-               r'第[一二三四五六七八九十\d]+版|v?\d+(\.\d+)*|ver\d+|版本\d+|\d{6,8})$', re.I),
+               r'第[一二三四五六七八九十\d]+版|v\d+(\.\d+)*|ver\d+|版本\d+|\d{6,8}|(19|20)\d{2})$', re.I),
 ]
 _FAMILY = {'.doc': '.docx', '.xls': '.xlsx', '.ppt': '.pptx', '.jpeg': '.jpg', '.htm': '.html', '.tif': '.tiff'}
 
@@ -127,6 +137,13 @@ def base_name(stem: str) -> str:
 
 def is_copy_name(stem: str) -> bool:
     return bool(_COPY_MARK.search(stem))
+
+
+def managed_dir(name: str) -> bool:
+    """True for a folder a program manages itself (see CACHE_DIRS / APP_DIRS) or a tool's dot-folder."""
+    low = name.lower().strip()
+    return (low in SKIP_DIRS or low in CACHE_DIRS or low in APP_DIRS or low.startswith('.')
+            or low.endswith(('cache', 'cache_data')))
 
 
 # ---------------------------------------------------------------------------
@@ -259,6 +276,7 @@ class Insights:
         seen = set()
         dir_children: dict[str, list[str]] = {}
         dir_has_files: dict[str, bool] = {}
+        projects: list[str] = []
         cloud = 0
         for root in roots:
             k = paths.key(root)
@@ -270,9 +288,12 @@ class Insights:
                 if skip and dirpath != root and skip(dirpath):
                     dirs.clear()
                     continue
-                dirs[:] = [d for d in dirs if d.name.lower() not in SKIP_DIRS]
+                kept = [d for d in dirs if not managed_dir(d.name)]
+                has = len(kept) != len(dirs)  # holds a program-managed folder (node_modules, .git...): not empty
+                if any(d.name.lower() in ('.git', '.svn', '.hg') for d in dirs):
+                    projects.append(dirpath)  # empty folders in a repository are often there on purpose
+                dirs[:] = kept
                 dir_children[dirpath] = [os.path.join(dirpath, d.name) for d in dirs]
-                has = False
                 for entry in files:
                     if entry.name.lower() in IGNORED_FILES:
                         continue
@@ -306,8 +327,12 @@ class Insights:
         for d in sorted(dir_children, key=len, reverse=True):
             is_empty(d)
         root_keys = {paths.key(r) for r in self.roots}
-        self.empty_dirs = sorted(d for d, e in empty.items()
-                                 if e and paths.key(d) not in root_keys and not empty.get(os.path.dirname(d), False))
+
+        def topmost(d):
+            parent = os.path.dirname(d)
+            return paths.key(parent) in root_keys or not empty.get(parent, False)
+        self.empty_dirs = sorted(d for d, e in empty.items() if e and paths.key(d) not in root_keys and topmost(d)
+                                 and not any(paths.is_within(d, p) for p in projects))
         self.stats = {'files': len(self.files), 'cloud_skipped': cloud, 'bytes': sum(f.size for f in self.files),
                       'seconds': round(time.time() - started, 1), 'roots': self.roots}
         return self
@@ -424,6 +449,8 @@ class Insights:
             base = base_name(stem)
             if len(base) < 2:
                 continue
+            if r.category not in VERSION_CATEGORIES:
+                continue  # fonts, databases, replays, extension-less app files
             if r.category in MEDIA and not is_copy_name(stem):
                 continue  # IMG_0001 / IMG_0002 are different photos, not versions
             groups.setdefault((paths.key(r.folder), base, ext), []).append(r)

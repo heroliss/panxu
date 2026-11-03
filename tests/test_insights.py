@@ -76,6 +76,31 @@ class FindingsTest(TempDirTest):
                          'exactly one of each identical pair is offered, never the newest')
         self.assertFalse(files['论文.docx']['remove'])
 
+    def test_numbered_files_are_not_versions(self):
+        # found on a real PC: app caches, font weights, game logs and replays all end in numbers
+        for name in ('data_0', 'data_1', 'data_2'):
+            self.write(f'Docs/Cachey/{name}', b'same' * 300)
+        for name in ('NotoSansSC-500.woff', 'NotoSansSC-900.woff', 'DataCRC000.txt', 'DataCRC001.txt',
+                     'message_index.db', 'message_index_v1_1.db', 'temp_2026_9_3_3_02.rec', 'temp_2026_9_2_0_29.rec'):
+            self.write(f'Docs/Apps/{name}', b'same' * 300)
+        self.assertNotIn('name_versions', self.run_insights())
+        self.write('Docs/简历_2024.docx', sandbox.docx(['2024']))
+        self.write('Docs/简历_2025.docx', sandbox.docx(['2025']))
+        self.assertEqual(len(self.run_insights()['name_versions']['files']), 2, 'years and v2 still mark versions')
+
+    def test_folders_programs_manage_are_left_alone(self):
+        for rel in ('Documents/WXWork/1688/Cache/Cache_Data/f_01.txt', 'Documents/WXWork/1688/Cache/Cache_Data/f_01 (1).txt',
+                    'Documents/My Games/Game/LogFiles/x.mp4.part', 'Documents/proj/node_modules/pkg/setup.exe',
+                    'Documents/proj/.git/objects/pack.zip', 'Documents/Adobe/Premiere Pro/23.0/old.mp4.crdownload',
+                    'Documents/app/GPUCache/data_1'):
+            self.write(rel, b'x' * 1000, days=500)
+        os.makedirs(os.path.join(self.home, 'Documents', 'Adobe', 'Premiere Pro', '23.0', 'Presets'))
+        os.makedirs(os.path.join(self.home, 'Documents', 'mine', 'empty'))
+        os.makedirs(os.path.join(self.home, 'Documents', 'proj', 'out'))  # inside a repository: on purpose
+        found = Insights(self.env, {}).collect([self.home]).findings()
+        paths_ = [os.path.relpath(f['path'], self.home) for finding in found for f in finding['files']]
+        self.assertEqual(paths_, [os.path.join('Documents', 'mine')], 'only the empty folder of the user')
+
     def test_photos_are_not_versions_without_copy_marks(self):
         for i in range(1, 4):
             self.write(f'Pictures/IMG_000{i}.jpg', sandbox.JPEG + bytes([i]) * 2000)

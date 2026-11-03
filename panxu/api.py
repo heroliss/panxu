@@ -531,12 +531,7 @@ class Backend:
         if not roots:
             raise UserError('请至少选择一个存在的文件夹')
         policy = self.policy()
-        skip_bases = [self.env.get('SystemRoot'), self.env.get('ProgramFiles'), self.env.get('ProgramFiles(x86)'),
-                      self.env.get('ProgramData'), self.env.get('LOCALAPPDATA'), self.env.get('APPDATA')]
-        skip_bases = [b for b in skip_bases if b]
-
-        def skip(path):
-            return any(paths.is_within(path, b) for b in skip_bases) or policy.reason(path) == '位于你设置的排除目录中'
+        skip = checkup.system_skip(self.env, policy, roots)
 
         def run(job):
             result = find_duplicates(roots, min_size=int(float(min_size_mb) * 1024 * 1024), skip=skip,
@@ -652,7 +647,7 @@ class Backend:
 
         def run(job):
             ins = insights.Insights(self.env, settings, apps=self.apps).collect(
-                roots, skip=checkup.system_skip(self.env, policy), cancel=job.cancel,
+                roots, skip=checkup.system_skip(self.env, policy, roots), cancel=job.cancel,
                 progress=lambda p: job.update(**p))
             self.insights = {'findings': ins.findings(), 'stats': ins.stats, 'roots': ins.roots, 'time': time.time()}
             return self.m_insights_result()
