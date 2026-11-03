@@ -337,6 +337,32 @@ class PlanBuilder:
                 'groups': [{'id': g, 'name': n} for g, n in GROUPS.items()], **(extra or {})}
 
 
+def refresh_running(plan: dict, running: dict[str, list[str]]) -> list[str]:
+    """Re-evaluate 「请先关闭」 on rule items after programs were opened or closed.
+
+    A rule that is no longer blocked goes back to where the check-up would have put it (a default
+    rule: 放心清理, ticked). Other blocks (administrator rights) are left alone. Returns changed ids."""
+    changed = []
+    for item in plan['items']:
+        if item.get('kind') != 'rule' or item['status'] != 'pending' or item['rule'] not in running:
+            continue
+        was = item['blocked']
+        if was and not was.startswith('请先关闭'):
+            continue
+        procs = running[item['rule']]
+        blocked = '请先关闭 ' + '、'.join(procs) if procs else None
+        if blocked == was:
+            continue
+        safe = RULES_BY_ID[item['rule']].default and not blocked
+        item.update(blocked=blocked, group='safe' if safe else 'review', selected=safe)
+        item['basis'] = [b for b in item['basis'] if not b.startswith(('自动勾选', '没有自动勾选', '没有勾选'))] \
+            + decision_note(item)
+        changed.append(item['id'])
+    if changed:
+        plan['summary'] = summarize(plan)
+    return changed
+
+
 def summarize(plan: dict) -> dict:
     out = {}
     for g in GROUPS:

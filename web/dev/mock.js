@@ -272,6 +272,17 @@
       return { stage: stages[step - 1].id, stage_label: stages[step - 1].label, step, steps: 6, stages, detail: [U + '\\AppData\\Local\\Temp', 'C:\\Program Files', U + '\\Documents', '比较文件内容', '空间分析', ''][step - 1] };
     }),
     plan: () => { if (plan) plan.summary = summarize(); return plan; },
+    // the first re-check finds Edge closed
+    running_check: () => {
+      const changed = [];
+      const edge = plan && plan.items.find((i) => i.id === 'rule:edge');
+      if (edge && edge.blocked) {
+        Object.assign(edge, { blocked: null, group: 'safe', selected: true });
+        edge.basis = [edge.basis[0], '自动勾选：默认开启的内置规则'];
+        changed.push(edge.id);
+      }
+      return { running: { edge: [], chrome: [] }, plan_changed: changed };
+    },
     plan_preview: ({ item_ids }) => {
       const out = { delete: { count: 0, size: 0, titles: [] }, recycle: { count: 0, size: 0, titles: [] }, disable: { count: 0, titles: [] }, skipped: [] };
       for (const it of plan.items) {

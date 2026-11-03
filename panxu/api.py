@@ -293,6 +293,15 @@ class Backend:
             return self.junk.scan(cancel=job.cancel, progress=progress)
         return self.jobs.start('junk_scan', run)
 
+    def m_running_check(self):
+        """Which cleanup rules wait for a program right now (no rescan); updates the plan too."""
+        running = self.junk.running_now()
+        for row in self.junk_rows or []:
+            if row['id'] in running:
+                row['running'] = running[row['id']]
+        changed = checkup.refresh_running(self.plan, running) if self.plan else []
+        return {'running': running, 'plan_changed': changed}
+
     def m_junk_clean(self, rule_ids: list):
         if not isinstance(rule_ids, list) or not rule_ids:
             raise UserError('请选择要清理的项目')

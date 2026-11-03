@@ -76,6 +76,32 @@
   };
   PX.isCurrent = (id) => current === id;
 
+  // ---- 「请先关闭 …」: the block is decided at scan time, so check the running programs again (cheap,
+  // no rescan) when the user comes back to the window, every few seconds while something waits, or on
+  // 「我已关闭」 -- and unlock what was closed
+  let checking = false;
+  const waiting = () => (PX.isCurrent('junk') && PX.junk.waitingForPrograms()) || (PX.isCurrent('home') && PX.home.waitingForPrograms());
+  PX.recheckRunning = async function (byUser) {
+    if (checking) return;
+    checking = true;
+    try {
+      const r = await PX.api.call('running_check');
+      PX.junk.applyRunning(r.running);
+      await PX.home.applyRunning(r.plan_changed);
+      if (byUser) {
+        const still = [...new Set(Object.values(r.running).flat())];
+        if (still.length) PX.toast(`还在运行：${still.join('、')}。有些程序关掉窗口后仍在后台或托盘里，请从托盘图标退出，或在任务管理器中结束。`, true);
+        else PX.toast('已重新检查，可以勾选了');
+      }
+    } catch (e) { if (byUser) PX.fail(e); }
+    checking = false;
+  };
+  PX.closedButton = () => h('button.btn.quiet.small', { type: 'button', title: '关掉程序后点这里重新检查',
+    onclick: (e) => { e.stopPropagation(); PX.recheckRunning(true); } }, '我已关闭');
+  window.addEventListener('focus', () => { if (waiting()) PX.recheckRunning(); });
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && waiting()) PX.recheckRunning(); });
+  setInterval(() => { if (document.visibilityState === 'visible' && waiting()) PX.recheckRunning(); }, 4000);
+
   // ---- 演练环境: a fixed banner, the simulated Recycle Bin and rebuilding the simulation
   let bannerEl = null;
   PX.sandbox = {

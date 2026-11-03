@@ -115,6 +115,7 @@
     const checked = state.selected.has(rule.id);
     const flags = h('div.flags');
     if (blocked) flags.appendChild(PX.tag(blocked, blocked.startsWith('需要') ? 'info' : 'warn', blocked.startsWith('需要') ? 'lock' : 'warn'));
+    if (blocked && !blocked.startsWith('需要')) flags.appendChild(PX.closedButton());
     else if (res.needs_admin) flags.appendChild(PX.tag('部分需要管理员', 'info', 'lock'));
     if (rule.slow) flags.appendChild(PX.tag('耗时较长'));
     const box = h('input', { type: 'checkbox', checked, disabled: !!blocked, 'aria-label': '选择 ' + rule.name,
@@ -217,7 +218,26 @@
       h('button.btn.primary', { type: 'button', disabled: !n || busy, onclick: clean }, PX.icon('broom'), '清理选中项')));
   }
 
-  PX.junk = { state, scan, total, recommended };
+  // fresh 「请先关闭」 state from the backend (no rescan): unlock rows whose program was closed
+  function applyRunning(running) {
+    let changed = false;
+    for (const [id, procs] of Object.entries(running || {})) {
+      const res = state.results[id];
+      if (!res || (res.running || []).join() === procs.join()) continue;
+      res.running = procs;
+      changed = true;
+      const rule = ruleById(id);
+      if (procs.length) state.selected.delete(id);
+      else if (rule.default && !state.touched && visible(rule) && !blockedReason(rule, res) && (res.size || 0) > 0) state.selected.add(id);
+    }
+    if (!changed) return;
+    PX.state.junkTotal = recommended();
+    PX.renderRail();
+    rerender(true);
+  }
+  const waitingForPrograms = () => Object.values(state.results).some((r) => r.running && r.running.length);
+
+  PX.junk = { state, scan, total, recommended, applyRunning, waitingForPrograms };
   PX.pages.junk = {
     render(container) {
       root = container;

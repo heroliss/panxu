@@ -72,6 +72,16 @@ class EngineTest(TempDirTest):
         self.assertIn('关闭', result['rules'][0]['skipped'])
         self.assertTrue(os.path.exists(cache))
 
+    def test_running_now_updates_the_last_scan(self):
+        self.make('Users/alice/AppData/Local/Google/Chrome/User Data/Default/Cache/f', 300)
+        eng = self.engine(processes={'chrome.exe'})
+        eng.scan(['chrome'])
+        self.assertEqual(eng.last_scan['chrome'].running, ['chrome.exe'])
+        eng._processes = set()  # closed
+        self.assertEqual(eng.running_now()['chrome'], [])
+        self.assertEqual(eng.last_scan['chrome'].running, [])
+        self.assertNotIn('user_temp', eng.running_now(), 'only rules that wait for programs')
+
     def test_admin_rules_skipped_without_elevation(self):
         f = self.make('Windows/Temp/x.tmp', 300, age_days=3)
         result = self.engine(admin=False).clean(['windows_temp'])

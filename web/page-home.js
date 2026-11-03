@@ -186,7 +186,10 @@
     const flags = h('span.inline-tags');
     if (it.status === 'done') flags.appendChild(PX.tag('已完成', 'good', 'check'));
     else if (it.status !== 'pending') flags.appendChild(PX.tag(it.result || '未完成', 'warn'));
-    else if (it.blocked) flags.appendChild(PX.tag(it.blocked, 'warn', 'lock'));
+    else if (it.blocked) {
+      flags.appendChild(PX.tag(it.blocked, 'warn', 'lock'));
+      if (it.blocked.startsWith('请先关闭')) flags.appendChild(PX.closedButton());
+    }
     if (it.ai && it.ai.verdict_label) flags.appendChild(PX.tag('AI：' + it.ai.verdict_label, it.ai.verdict === 'delete' ? 'good' : it.ai.verdict === 'keep' ? 'warn' : 'info', 'spark'));
     const row = h('div.row.plan-row' + (it.status !== 'pending' ? '.disabled' : ''), {
       onclick: () => { state.open.has(it.id) ? state.open.delete(it.id) : state.open.add(it.id); draw(true); } },
@@ -301,6 +304,21 @@
     if (keepScroll) main.scrollTop = top;
   }
 
-  PX.home = { state, checkup };
+  // a program named in 「请先关闭」 was closed (or opened): take the updated items, tick what became safe
+  async function applyRunning(changed) {
+    if (!changed || !changed.length || !state.plan) return;
+    let fresh;
+    try { fresh = await PX.api.call('plan'); } catch (e) { return; }
+    if (!fresh) return;
+    state.plan = fresh;
+    for (const it of fresh.items) {
+      if (!changed.includes(it.id)) continue;
+      if (it.selected && selectable(it)) state.selected.add(it.id); else state.selected.delete(it.id);
+    }
+    draw(true);
+  }
+  const waitingForPrograms = () => items().some((it) => it.status === 'pending' && it.blocked && it.blocked.startsWith('请先关闭'));
+
+  PX.home = { state, checkup, applyRunning, waitingForPrograms };
   PX.pages.home = { render(container) { root = container; draw(); if (!state.loaded) loadExisting(); } };
 })();

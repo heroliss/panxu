@@ -306,6 +306,19 @@ class JunkEngine:
     def processes(self) -> set[str]:
         return set(self._processes) if self._processes is not None else running_process_names()
 
+    def running_now(self) -> dict[str, list[str]]:
+        """{rule id: its programs that are running right now} for every rule that waits for programs.
+
+        Cheap (one process listing, no file access): lets the UI unlock 「请先关闭」 after the user
+        closed the program, without scanning again. The last scan results are updated too."""
+        running = self.processes()
+        out = {r.id: [p for p in r.processes if p.lower() in running] for r in RULES if r.processes}
+        with self._lock:
+            for rule_id, procs in out.items():
+                if rule_id in self.last_scan:
+                    self.last_scan[rule_id].running = procs
+        return out
+
     def catalogue(self) -> list[dict]:
         return [{'id': r.id, 'name': r.name, 'group': r.group, 'group_name': GROUP_NAMES[r.group],
                  'description': r.description, 'default': r.default, 'admin': r.admin, 'mode': r.mode,

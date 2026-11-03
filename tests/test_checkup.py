@@ -153,6 +153,29 @@ class CheckupTest(TempDirTest):
         self.assertTrue(any('最近' in b for b in busy['basis']))
         self.assertTrue(quiet['selected'])
 
+    def test_closing_a_program_unlocks_its_rule_without_rescanning(self):
+        plan = self.checkup(use_ai=False)
+        edge = next(i for i in plan['items'] if i['id'] == 'rule:edge')
+        self.assertTrue(edge['blocked'].startswith('请先关闭'))
+        self.assertFalse(edge['selected'])
+        r = self.call('running_check')
+        self.assertEqual(r['running']['edge'], ['msedge.exe'])
+        self.assertEqual(r['plan_changed'], [], 'still running: nothing changes')
+        self.sb.state['processes'] = ['explorer.exe']  # the user closes Edge
+        r = self.call('running_check')
+        self.assertEqual(r['running']['edge'], [])
+        self.assertEqual(r['plan_changed'], ['rule:edge'])
+        edge = next(i for i in self.call('plan')['items'] if i['id'] == 'rule:edge')
+        self.assertIsNone(edge['blocked'])
+        self.assertEqual((edge['group'], edge['selected']), ('safe', True), 'a default rule goes back to 放心清理')
+        self.assertTrue(edge['basis'][-1].startswith('自动勾选'))
+        self.assertEqual(sum(1 for b in edge['basis'] if b.startswith(('自动勾选', '没有'))), 1)
+        self.sb.state['processes'] = ['msedge.exe']  # opened again
+        self.assertEqual(self.call('running_check')['plan_changed'], ['rule:edge'])
+        edge = next(i for i in self.call('plan')['items'] if i['id'] == 'rule:edge')
+        self.assertFalse(edge['selected'])
+        self.assertEqual(edge['blocked'], '请先关闭 msedge.exe')
+
     def test_the_prompt_asks_to_look_inside_installed_programs(self):
         from panxu.analyst import SPACE_SYSTEM_PROMPT
         self.assertIn('installed_app', SPACE_SYSTEM_PROMPT)
