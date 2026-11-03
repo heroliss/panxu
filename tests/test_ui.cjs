@@ -39,8 +39,14 @@ assert.strictEqual(PX.displayPath(R`c:\temp\SB\c`), R`C:\ `.trim());
 assert.strictEqual(PX.displayPath(R`C:\Temp\sb\Cx\y`), R`C:\Temp\sb\Cx\y`);
 assert.strictEqual(PX.displayPath(R`D:\资料`), R`D:\资料`);
 assert.strictEqual(PX.fmt.place(R`C:\Temp\sb\C\data`, R`C:\Temp\sb\C\Users\demo`), R`C:\data`);
-assert.strictEqual(PX.scoreLevel(80), 'hi');
-assert.strictEqual(PX.scoreLevel(79), 'mid');
-assert.strictEqual(PX.scoreLevel(49), 'lo');
+// 建议清理度 shown as 0-10 points, rounded half up like the backend (checkup.points)
+assert.strictEqual(PX.points(95), 10);
+assert.strictEqual(PX.points(75), 8);
+assert.strictEqual(PX.points(74), 7);
+assert.strictEqual(PX.points(null), null);
+assert.strictEqual(PX.scoreLevel(75), 'hi');
+assert.strictEqual(PX.scoreLevel(74), 'mid');
+assert.strictEqual(PX.scoreLevel(45), 'mid');
+assert.strictEqual(PX.scoreLevel(44), 'lo');
 PX.state.init = null;
 console.log('ui tests passed');

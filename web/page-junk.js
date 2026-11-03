@@ -3,7 +3,7 @@
   'use strict';
   const { h, fmt } = PX;
 
-  const state = { status: 'idle', results: {}, selected: new Set(), progress: {}, expanded: new Set(),
+  const state = { status: 'idle', results: {}, selected: PX.sel.rules, progress: {}, expanded: new Set(),
     openGroups: new Set(), lastClean: null, jobId: null, touched: false };
 
   const rules = () => PX.state.init.rules;
@@ -54,7 +54,7 @@
       state.results = {};
       for (const row of rows) state.results[row.id] = row;
       if (!state.touched) {
-        state.selected = new Set(rules().filter((r) => r.default && visible(r) && !blockedReason(r, state.results[r.id])
+        PX.sel.replace(state.selected, rules().filter((r) => r.default && visible(r) && !blockedReason(r, state.results[r.id])
           && (state.results[r.id].size || 0) > 0).map((r) => r.id));
       } else {
         for (const id of [...state.selected]) {
@@ -109,6 +109,28 @@
     scan();
   }
 
+  // the biggest item sets the scale of the size meters
+  let largest = 1;
+
+  // where the junk is, per group: the ticked part and the rest
+  function overview(container) {
+    const rows = [];
+    for (const g of PX.state.init.groups) {
+      let sel = 0, rest = 0;
+      for (const r of rules().filter((x) => x.group === g.id && visible(x))) {
+        const size = state.results[r.id].size || 0;
+        if (state.selected.has(r.id)) sel += size; else rest += size;
+      }
+      if (sel + rest > 0) {
+        rows.push({ label: g.name, onclick: () => PX.flash(document.getElementById('junk-' + g.id)),
+          parts: [{ value: sel, cls: 's-hi', title: sel ? '已选 ' + fmt.bytes(sel) : '' }, { value: rest, cls: 's-lo', title: rest ? '没选 ' + fmt.bytes(rest) : '' }] });
+      }
+    }
+    if (rows.length < 2) return;
+    rows.sort((a, b) => b.parts[0].value + b.parts[1].value - a.parts[0].value - a.parts[1].value);
+    container.appendChild(PX.chartCard('垃圾都在哪里', '点一行跳到那一组', PX.barList(rows, [['s-hi', '已选'], ['s-lo', '没选']])));
+  }
+
   function row(rule) {
     const res = state.results[rule.id];
     const blocked = blockedReason(rule, res);
@@ -124,7 +146,8 @@
     const sizeText = res.size === null ? '—' : (blocked && blocked.startsWith('需要') && !res.size) ? '—' : fmt.bytes(res.size);
     const el = h('div.row.junk-row' + (blocked ? '.disabled' : ''), {
       onclick: () => { state.expanded.has(rule.id) ? state.expanded.delete(rule.id) : state.expanded.add(rule.id); rerender(true); },
-    }, box, h('div.cell-main', h('div.name', rule.name), h('div.desc', rule.description)), flags, h('div.size', sizeText),
+    }, box, h('div.cell-main', h('div.name', rule.name), h('div.desc', rule.description)), flags,
+    h('div.size', sizeText, res.size ? PX.meter(res.size / largest, checked ? 's-hi' : '') : null),
     h('button.btn.quiet.small', { type: 'button', title: '问 AI', onclick: (e) => { e.stopPropagation(); PX.ask({ type: 'rule', id: rule.id }, rule.name); } },
       PX.icon('spark'), '问 AI'));
     const out = [el];
@@ -157,6 +180,10 @@
         h('div.sub', state.status === 'done' ? `共发现 ${fmt.bytes(total())} 可清理` : state.status === 'cleaning' ? '正在清理' : '正在扫描')),
       h('div.actions', h('button.btn', { type: 'button', disabled: busy, onclick: scan }, PX.icon('refresh'), '重新扫描')));
     container.appendChild(head);
+    if (PX.home && PX.home.state.plan) {
+      container.appendChild(PX.notice('这里的勾选和首页「清理方案」里的垃圾文件是同一份：在哪里勾都一样。', 'info',
+        h('button.btn.small', { type: 'button', onclick: () => PX.go('home') }, '回到清理方案')));
+    }
 
     if (!init.admin) {
       container.appendChild(PX.notice('Windows 临时文件、更新缓存、旧版 Windows 等系统项目需要管理员权限才能扫描和清理。', 'info',
@@ -191,12 +218,14 @@
     }
     if (!Object.keys(state.results).length) return;
 
+    largest = Math.max(1, ...rules().filter(visible).map((r) => state.results[r.id].size || 0));
+    if (!busy) overview(container);
     for (const g of init.groups) {
       const inGroup = rules().filter((r) => r.group === g.id);
       const shown = inGroup.filter(visible);
       const hidden = inGroup.length - shown.length;
       const gsize = shown.reduce((s, r) => s + (state.results[r.id].size || 0), 0);
-      const sec = h('section.group', h('div.group-head', h('h2', g.name), h('span.size', gsize ? fmt.bytes(gsize) : '')));
+      const sec = h('section.group', { id: 'junk-' + g.id }, h('div.group-head', h('h2', g.name), h('span.size', gsize ? fmt.bytes(gsize) : '')));
       const list = sec.appendChild(h('div.list'));
       for (const r of shown) for (const el of row(r)) list.appendChild(el);
       if (hidden) {
@@ -236,8 +265,14 @@
     rerender(true);
   }
   const waitingForPrograms = () => Object.values(state.results).some((r) => r.running && r.running.length);
+  // something was cleaned elsewhere (首页): scan again next time this page is shown
+  function invalidate() {
+    if (state.status === 'scanning' || state.status === 'cleaning') return;
+    state.status = 'idle';
+    state.results = {};
+  }
 
-  PX.junk = { state, scan, total, recommended, applyRunning, waitingForPrograms };
+  PX.junk = { state, scan, total, recommended, applyRunning, waitingForPrograms, invalidate };
   PX.pages.junk = {
     render(container) {
       root = container;

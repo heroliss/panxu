@@ -2,17 +2,12 @@
 (function () {
   'use strict';
   const { h } = PX;
+  // 首页 gathers everything into one plan; the tools show one kind of thing in detail
   const NAV = [
-    ['home', '首页', 'home'],
-    ['junk', '垃圾清理', 'broom'],
-    ['space', '空间分析', 'map'],
-    ['mine', '我的文件', 'file'],
-    ['large', '大文件', 'big'],
-    ['dups', '重复文件', 'copy'],
-    ['apps', '应用', 'apps'],
-    ['startup', '开机与服务', 'power'],
-    ['history', '操作记录', 'history'],
-    ['settings', '设置', 'gear'],
+    [null, [['home', '首页', 'home']]],
+    ['单项工具', [['junk', '垃圾清理', 'broom'], ['space', '空间分析', 'map'], ['mine', '我的文件', 'file'],
+      ['large', '大文件', 'big'], ['dups', '重复文件', 'copy'], ['apps', '应用', 'apps'], ['startup', '开机与服务', 'power']]],
+    ['记录与设置', [['history', '操作记录', 'history'], ['settings', '设置', 'gear']]],
   ];
   let current = null;
 
@@ -27,11 +22,14 @@
   PX.renderRail = function () {
     const rail = PX.clear(document.getElementById('rail'));
     rail.appendChild(h('div.brand', h('b', '盘序'), h('span', 'v' + (PX.state.init ? PX.state.init.version : ''))));
-    for (const [id, label, icon] of NAV) {
-      const badge = id === 'junk' && PX.state.junkTotal ? PX.fmt.bytes(PX.state.junkTotal) : null;
-      rail.appendChild(h('button.nav-item' + (id === current ? '.active' : ''), {
-        type: 'button', 'aria-current': id === current ? 'page' : null, onclick: () => PX.go(id),
-      }, PX.icon(icon), h('span', label), badge ? h('em.nav-badge', badge) : null));
+    for (const [section, entries] of NAV) {
+      if (section) rail.appendChild(h('div.nav-section', section));
+      for (const [id, label, icon] of entries) {
+        const badge = id === 'junk' && PX.state.junkTotal ? PX.fmt.bytes(PX.state.junkTotal) : null;
+        rail.appendChild(h('button.nav-item' + (id === current ? '.active' : ''), {
+          type: 'button', 'aria-current': id === current ? 'page' : null, onclick: () => PX.go(id),
+        }, PX.icon(icon), h('span', label), badge ? h('em.nav-badge', badge) : null));
+      }
     }
     rail.appendChild(h('button.nav-item.advisor-btn', { type: 'button', onclick: () => PX.advisor.open() }, PX.icon('spark'), h('span', 'AI 顾问')));
     const init = PX.state.init || {};

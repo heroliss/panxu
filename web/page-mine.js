@@ -4,7 +4,7 @@
   'use strict';
   const { h, fmt } = PX;
   const VERDICT = { keep: 'warn', delete: 'good', archive: 'info', review: '' };
-  const state = { status: 'idle', result: null, selected: new Set(), open: new Set(), progress: {}, jobId: null,
+  const state = { status: 'idle', result: null, selected: PX.sel.paths, open: new Set(), progress: {}, jobId: null,
     loaded: false, aiBusy: false };
   let root = null;
 
@@ -128,8 +128,26 @@
         h('button.btn.quiet.small', { type: 'button', onclick: () => PX.ask({ type: 'file', path: x.path }, x.name) }, PX.icon('spark'), '问 AI'))));
   }
 
+  // what was found, by kind, split by 建议清理度 (the same colours as the score pips)
+  function overview(c, r) {
+    const kinds = new Map();
+    for (const f of r.findings) {
+      const k = kinds.get(f.kind_label) || { first: f, hi: 0, mid: 0, lo: 0, n: 0 };
+      for (const x of f.files) { k[PX.scoreLevel(x.score)] += x.size || 0; k.n += 1; }
+      kinds.set(f.kind_label, k);
+    }
+    const rows = [...kinds.entries()].filter(([, k]) => k.hi + k.mid + k.lo > 0)
+      .sort((a, b) => (b[1].hi + b[1].mid + b[1].lo) - (a[1].hi + a[1].mid + a[1].lo))
+      .map(([label, k]) => ({ label, onclick: () => PX.flash(document.getElementById('finding-' + k.first.id)),
+        parts: [['hi', '8–10 分'], ['mid', '5–7 分'], ['lo', '0–4 分']].map(([lv, name]) =>
+          ({ value: k[lv], cls: 's-' + lv, title: k[lv] ? `${name}：${fmt.bytes(k[lv])}` : '' })) }));
+    if (rows.length < 2) return;
+    const total = r.findings.reduce((s, f) => s + f.size, 0);
+    c.appendChild(PX.chartCard('值得看看的文件', `共 ${fmt.bytes(total)}，颜色是建议清理度`, PX.barList(rows, PX.SCORE_LEGEND)));
+  }
+
   function finding(c, f) {
-    const sec = c.appendChild(h('section.group.finding'));
+    const sec = c.appendChild(h('section.group.finding', { id: 'finding-' + f.id }));
     const can = f.files.filter((x) => !x.blocked);
     const removable = can.filter((x) => x.remove);
     const allSel = can.length && can.every((x) => state.selected.has(x.path));
@@ -171,10 +189,15 @@
         [h('button.btn.primary', { type: 'button', onclick: scan }, '开始整理')]));
       return;
     }
+    if (PX.home && PX.home.state.plan) {
+      c.appendChild(PX.notice('这里的勾选和首页「清理方案」里的是同一份：在哪里勾都一样。', 'info',
+        h('button.btn.small', { type: 'button', onclick: () => PX.go('home') }, '回到清理方案')));
+    }
     c.appendChild(h('div.small.muted', { style: { marginBottom: '16px' } },
       `查看了 ${fmt.count(r.stats.files)} 个文件（${fmt.bytes(r.stats.bytes)}），位置：` + r.roots.map((p) => fmt.place(p, PX.state.init.home)).join('、') +
       (r.stats.cloud_skipped ? `。${r.stats.cloud_skipped} 个只在云端的文件没有读取。` : '')));
     if (!r.findings.length) c.appendChild(PX.empty('没有发现需要注意的文件', '你的个人文件夹很整洁。'));
+    else overview(c, r);
     for (const f of r.findings) finding(c, f);
     if (state.selected.size) {
       let size = 0;

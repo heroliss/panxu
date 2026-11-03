@@ -1,17 +1,24 @@
-/* 首页: system drive, 一键体检, and the cleanup plan (放心清理 / 建议你看看 / 仅供了解). */
+/* 首页: system drive, 一键体检, and the cleanup plan (放心清理 / 建议你看看 / 仅供了解).
+
+   The plan gathers what the tool pages find; ticks are shared with those pages (PX.sel), so ticking
+   a junk rule here or in 垃圾清理 is the same tick. */
 (function () {
   'use strict';
   const { h, fmt } = PX;
   const SOURCE = { rule: ['规则', 'good'], ai: ['AI', 'info'], insight: ['我的文件', ''], dup: ['重复文件', ''],
     heuristic: ['盘序判断', 'warn'], knowledge: ['说明', ''] };
   const ACTION = { delete: '永久删除', recycle: '移到回收站', disable: '禁用开机启动', none: '' };
-  const GROUP_NOTE = {
-    safe: '已经替你勾好：可以重建的缓存（直接删除），以及很可能没用的残留（进回收站，可以还原）。',
-    review: '可能可以清理，但需要你看一眼再决定。个人文件只会移到回收站。',
-    info: '体积较大但不能直接删除的东西，以及应该怎么处理。',
+  const GROUP = {
+    safe: ['g-safe', '已经替你勾好：可以重建的缓存（直接删除），以及很可能没用的残留（进回收站，可以还原）。'],
+    review: ['g-review', '可能可以清理，但需要你看一眼再决定。你的文件只会移到回收站。'],
+    info: ['g-info', '体积较大但不能直接删除的东西，以及应该怎么处理。'],
   };
-  const state = { status: 'idle', plan: null, selected: new Set(), open: new Set(), progress: {}, report: null,
-    jobId: null, loaded: false, shown: { review: 40 } };
+  // where each category is handled in detail
+  const CAT_PAGE = { 垃圾文件: ['junk', '垃圾清理'], 应用数据: ['space', '空间分析'], 重复文件: ['dups', '重复文件'],
+    开机启动: ['startup', '开机与服务'] };
+  const THRESHOLDS = [[8, '≥ 8 分'], [7, '≥ 7 分'], [5, '≥ 5 分']];
+  const state = { status: 'idle', plan: null, planId: null, open: new Set(), progress: {}, report: null, jobId: null,
+    withMine: false };
   let root = null;
 
   function strata(drive, reclaim, cls) {
@@ -27,23 +34,34 @@
 
   const items = () => (state.plan ? state.plan.items : []);
   const selectable = (it) => it.status === 'pending' && it.action !== 'none' && !it.blocked;
-  function selectedItems() { return items().filter((it) => state.selected.has(it.id) && selectable(it)); }
+  const isSel = (it) => selectable(it) && PX.sel.has(it);
+  function setSel(it, on) {
+    PX.sel.set(it, on);
+    if (it.kind === 'rule' && PX.junk) PX.junk.state.touched = true;  // 垃圾清理 keeps this choice
+  }
+  function selectedItems() { return items().filter(isSel); }
   function selectedSize() { return selectedItems().reduce((s, it) => s + (it.size || 0), 0); }
+  const catAnchor = (group, name) => 'cat-' + group + '-' + name;
 
   function adopt(plan) {
+    // a new check-up resets the ticks to what it suggests; the same plan only refreshes statuses
+    if (plan.id !== state.planId) {
+      PX.sel.rules.clear(); PX.sel.paths.clear(); PX.sel.items.clear();
+      for (const it of plan.items) if (it.selected && selectable(it)) PX.sel.set(it, true);
+      if (PX.junk) PX.junk.state.touched = true;
+      state.planId = plan.id;
+      state.open = new Set();
+    }
     state.plan = plan;
-    state.selected = new Set(plan.items.filter((it) => it.selected && selectable(it)).map((it) => it.id));
-    state.open = new Set();
     state.status = 'done';
   }
 
   async function loadExisting() {
-    state.loaded = true;
     try {
       const plan = await PX.api.call('plan');
-      if (plan && state.status === 'idle') adopt(plan);
+      if (plan && state.status !== 'running' && state.status !== 'executing') adopt(plan);
     } catch (e) { /* no plan yet */ }
-    draw();
+    draw(true);
   }
 
   async function checkup() {
@@ -54,8 +72,10 @@
     draw();
     try {
       const plan = await PX.api.run('checkup', {}, (p) => { state.progress = p; draw(true); }, (id) => { state.jobId = id; });
+      state.planId = null;
       adopt(plan);
       PX.state.init.drives = await PX.api.call('drives');
+      if (PX.junk) PX.junk.invalidate();
     } catch (e) {
       state.status = state.plan ? 'done' : 'idle';
       if (!e.cancelled) PX.fail(e);
@@ -99,13 +119,31 @@
         (id) => { state.jobId = id; });
       const fresh = await PX.api.call('plan');
       if (fresh) state.plan = fresh;
-      for (const it of items()) if (it.status !== 'pending') state.selected.delete(it.id);
+      for (const it of items()) if (it.status !== 'pending') PX.sel.set(it, false);
       PX.state.init.drives = await PX.api.call('drives');
       if (PX.sandbox) PX.sandbox.refresh();
+      if (PX.junk) PX.junk.invalidate();
     } catch (e) { if (!e.cancelled) PX.fail(e); }
     state.status = 'done';
     state.jobId = null;
     draw();
+  }
+
+  // 按分数勾选: tick every item that may be pre-ticked and reaches the threshold; items a guard holds back
+  // (saves, programs in use, no undo) keep whatever the user chose for them
+  function selectByScore(threshold) {
+    let picked = 0, size = 0, held = 0;
+    for (const it of items()) {
+      if (!selectable(it)) continue;
+      const bulk = it.eligible || (state.withMine && it.personal);
+      if (!bulk) { held += 1; continue; }
+      const on = threshold !== null && PX.points(it.score) >= threshold;
+      setSel(it, on);
+      if (on) { picked += 1; size += it.size || 0; }
+    }
+    draw(true);
+    PX.toast(threshold === null ? '已全部取消' : `按 ≥ ${threshold} 分勾选了 ${picked} 项（${fmt.bytes(size)}）`
+      + (held ? `；${held} 项需要你单独决定` + (state.withMine ? '' : '（包括你的文件）') : ''));
   }
 
   // ------------------------------------------------------------------ drawing
@@ -113,7 +151,6 @@
     const drives = PX.state.init.drives || [];
     const sys = drives.find((d) => d.system) || drives[0];
     if (!sys) return;
-    const safe = state.plan ? state.plan.summary.safe.selected_size : 0;
     const reclaim = state.plan ? selectedSize() : 0;
     const [v, u] = fmt.split(sys.free);
     const name = sys.letter || sys.root.replace(/\\$/, '');
@@ -137,7 +174,7 @@
         ck.use_ai !== false ? (init.has_key ? 'AI 复核' : 'AI 复核（未配置模型，跳过）') : null].filter(Boolean);
       cta.appendChild(h('span.muted.small', '检查：' + parts.join(' · ') + '。体检只看不删，清理前会再问你。'));
     }
-    if (!state.plan && state.status === 'idle' && safe === 0) {
+    if (!state.plan && state.status === 'idle') {
       box.appendChild(h('div.small.muted', { style: { marginTop: '10px' } },
         '体检会给出一份清理方案：放心清理的项目默认勾选，其余的由你决定。每一项都可以「问 AI」。'));
     }
@@ -175,6 +212,67 @@
       h('div.grow', h('div', '清理完成：' + (parts.join('，') || '没有需要处理的内容')),
         r.failures.length ? h('div.small.muted', `${r.failures.length} 项没有完成：` + r.failures.slice(0, 2).map((f) => (f.title || f.path || '') + '（' + f.reason + '）').join('；')) : null),
       h('button.btn.small', { type: 'button', onclick: () => PX.go('history') }, '查看记录')));
+  }
+
+  const scrollTo = (id) => PX.flash(document.getElementById(id));
+
+  // the plan at a glance: three tiles (one per group) and where the space is, by category
+  function overview(c) {
+    const p = state.plan;
+    const s = p.summary;
+    const pending = items().filter((it) => it.status === 'pending' && it.action !== 'none');
+    const sel = selectedItems();
+    const box = c.appendChild(h('section.overview'));
+    const head = box.appendChild(h('div.ov-head'));
+    if (!state.report && pending.length) {
+      head.appendChild(h('div.ov-conclusion',
+        h('b', sel.length ? `已经替你勾好 ${sel.length} 项，可以释放 ${fmt.bytes(selectedSize())}` : '没有自动勾选的项目'),
+        h('span.muted', s.review.count ? `　另有 ${s.review.count} 项建议你看看，不会自动处理。` : '')));
+    }
+    const groupSel = (g) => items().filter((it) => it.group === g && isSel(it));
+    const tiles = box.appendChild(h('div.tiles'));
+    for (const g of p.groups) {
+      const sum = s[g.id];
+      if (!sum.count) continue;
+      const chosen = groupSel(g.id);
+      const chosenSize = chosen.reduce((a, it) => a + (it.size || 0), 0);
+      tiles.appendChild(PX.statTile({ cls: GROUP[g.id][0], label: g.name, value: fmt.bytes(sum.size),
+        sub: g.id === 'info' ? `${sum.count} 项，只给说明和入口` : `${sum.count} 项 · 已选 ${chosen.length} 项（${fmt.bytes(chosenSize)}）`,
+        part: g.id === 'info' ? undefined : sum.size ? chosenSize / sum.size : 0, onclick: () => scrollTo('group-' + g.id) }));
+    }
+    // where the space is: categories of the two actionable groups
+    const cats = new Map();
+    for (const it of items()) {
+      if (it.group === 'info' || it.status !== 'pending') continue;
+      const row = cats.get(it.category) || { safe: 0, review: 0, nSafe: 0, nReview: 0 };
+      row[it.group] += it.size || 0;
+      row[it.group === 'safe' ? 'nSafe' : 'nReview'] += 1;
+      cats.set(it.category, row);
+    }
+    const rows = [...cats.entries()].filter(([, r]) => r.safe + r.review > 0)
+      .sort((a, b) => (b[1].safe + b[1].review) - (a[1].safe + a[1].review)).slice(0, 8)
+      .map(([name, r]) => ({ label: name, onclick: () => scrollTo(catAnchor(r.safe ? 'safe' : 'review', name)),
+        parts: [{ value: r.safe, cls: 'g-safe', title: r.safe ? `放心清理 ${fmt.bytes(r.safe)}（${r.nSafe} 项）` : '' },
+          { value: r.review, cls: 'g-review', title: r.review ? `建议你看看 ${fmt.bytes(r.review)}（${r.nReview} 项）` : '' }] }));
+    if (rows.length) {
+      box.appendChild(PX.chartCard('空间都在哪里', '点一行跳到对应的项目',
+        PX.barList(rows, [['g-safe', '放心清理'], ['g-review', '建议你看看']])));
+    }
+  }
+
+  // 按分数勾选 + what the numbers mean
+  function scoreBar(c) {
+    const used = state.plan.threshold;
+    const bar = c.appendChild(h('div.score-bar'));
+    bar.appendChild(h('div.sb-row', h('b', '按分数勾选'),
+      THRESHOLDS.map(([t, label]) => h('button.btn.small' + (t === used ? '.current' : ''), { type: 'button', title: t === used ? '体检就是按这个门槛自动勾选的' : '',
+        onclick: () => selectByScore(t) }, label)),
+      h('button.btn.small.quiet', { type: 'button', onclick: () => selectByScore(null) }, '全不选'),
+      h('label.inline-check.small', h('input', { type: 'checkbox', checked: state.withMine, onchange: (e) => { state.withMine = e.target.checked; } }),
+        '包括我的文件')));
+    bar.appendChild(h('div.sb-legend', PX.score(90), h('span', '8–10 建议清理'), PX.score(60), h('span', '5–7 可以考虑'),
+      PX.score(30), h('span', '0–4 看你需要'),
+      h('span.muted', `· 体检按 ≥ ${used} 分自动勾选（设置里可以改）。存档、正在使用的程序、不能撤销的操作从不按分数勾选。`)));
   }
 
   // 仅供了解: what can be done about it instead of deleting
@@ -223,12 +321,12 @@
 
   function itemRow(list, it) {
     const can = selectable(it);
-    const box = h('input', { type: 'checkbox', checked: state.selected.has(it.id) && can, disabled: !can,
+    const box = h('input', { type: 'checkbox', checked: isSel(it), disabled: !can,
       'aria-label': '选择 ' + it.title, onclick: (e) => e.stopPropagation(),
-      onchange: (e) => { e.target.checked ? state.selected.add(it.id) : state.selected.delete(it.id); draw(true); } });
+      onchange: (e) => { setSel(it, e.target.checked); draw(true); } });
     const [srcLabel, srcKind] = SOURCE[it.source] || [it.source, ''];
     const flags = h('span.inline-tags');
-    if (it.status === 'done') flags.appendChild(PX.tag('已完成', 'good', 'check'));
+    if (it.status === 'done') flags.appendChild(PX.tag(it.result && it.result !== '已移到回收站' ? it.result : '已完成', 'good', 'check'));
     else if (it.status !== 'pending') flags.appendChild(PX.tag(it.result || '未完成', 'warn'));
     else if (it.blocked) {
       flags.appendChild(PX.tag(it.blocked, 'warn', 'lock'));
@@ -255,7 +353,7 @@
       if (it.effect) d.appendChild(h('div', h('b', (ACTION[it.action] ? ACTION[it.action] + '后：' : '影响：')), it.effect));
       if (it.ai && it.ai.reason) d.appendChild(h('div', h('b', 'AI：'), (it.ai.what ? it.ai.what + '。' : '') + it.ai.reason));
       if (it.score !== null && it.score !== undefined) {
-        d.appendChild(h('div.basis', h('b', `建议清理度 ${it.score}（${PX.scoreLabel(it.score)}）：`),
+        d.appendChild(h('div.basis', h('b', `建议清理度 ${PX.points(it.score)} 分（${PX.scoreLabel(it.score)}）：`),
           h('ul', (it.basis || []).map((line) => h('li', line)))));
       }
       if (it.caution) d.appendChild(h('div', PX.tag('注意', 'warn'), ' ', it.caution));
@@ -280,31 +378,29 @@
     const rows = items().filter((it) => it.group === id);
     if (!rows.length) return;
     const sum = state.plan.summary[id];
-    const sec = c.appendChild(h('section.group'));
-    const head = sec.appendChild(h('div.group-head', h('h2', name), h('span.muted.small', GROUP_NOTE[id]), h('span.size', fmt.bytes(sum.size))));
-    if (id === 'safe' && rows.some(selectable)) {
-      const can = rows.filter(selectable);
-      const all = can.length && can.every((it) => state.selected.has(it.id));
-      head.insertBefore(h('button.btn.quiet.small', { type: 'button', onclick: () => {
-        for (const it of can) all ? state.selected.delete(it.id) : state.selected.add(it.id); draw(true);
-      } }, all ? '全不选' : '全选'), head.lastChild);
-    }
+    const sec = c.appendChild(h('section.group-card.' + GROUP[id][0], { id: 'group-' + id }));
+    sec.appendChild(h('div.gc-head', h('i.sw.' + GROUP[id][0]), h('h2', name), h('span.gc-count', `${rows.length} 项`),
+      h('span.gc-note', GROUP[id][1]), h('span.gc-size', fmt.bytes(sum.size))));
     const list = sec.appendChild(h('div.list'));
-    if (id !== 'review') { for (const it of rows) itemRow(list, it); return; }
-    // 建议你看看: by category, each with 「全选这一组」
     const cats = [];
     for (const it of rows) { let cat = cats.find((x) => x.name === it.category); if (!cat) cats.push(cat = { name: it.category, rows: [] }); cat.rows.push(it); }
     for (const cat of cats) {
       const can = cat.rows.filter(selectable);
-      const all = can.length && can.every((it) => state.selected.has(it.id));
-      list.appendChild(h('div.cat-head', h('b', cat.name), h('span.muted.small', `${cat.rows.length} 项 · ${fmt.bytes(cat.rows.reduce((s, it) => s + (it.size || 0), 0))}`),
-        can.length ? h('button.btn.quiet.small', { type: 'button', onclick: () => {
-          for (const it of can) all ? state.selected.delete(it.id) : state.selected.add(it.id); draw(true);
+      const all = can.length && can.every(isSel);
+      const personal = cat.rows.some((it) => it.personal) && !CAT_PAGE[cat.name];
+      const page = CAT_PAGE[cat.name] || (personal ? ['mine', '我的文件'] : null);
+      list.appendChild(h('div.cat-head', { id: catAnchor(id, cat.name) },
+        h('b', cat.name), h('span.muted.small', `${cat.rows.length} 项 · ${fmt.bytes(cat.rows.reduce((s, it) => s + (it.size || 0), 0))}`),
+        h('span.grow'),
+        page && id !== 'info' ? h('button.btn.quiet.small.go', { type: 'button', title: `在「${page[1]}」里看全部细节`, onclick: () => PX.go(page[0]) },
+          `去「${page[1]}」`, PX.icon('chev')) : null,
+        can.length && id !== 'info' ? h('button.btn.quiet.small', { type: 'button', onclick: () => {
+          for (const it of can) setSel(it, !all); draw(true);
         } }, all ? '取消这一组' : '全选这一组') : null));
-      const limit = cat.rows.length > 12 && !state.open.has('cat:' + cat.name) ? 8 : cat.rows.length;
+      const limit = cat.rows.length > 12 && !state.open.has('cat:' + id + cat.name) ? 8 : cat.rows.length;
       cat.rows.slice(0, limit).forEach((it) => itemRow(list, it));
       if (limit < cat.rows.length) {
-        list.appendChild(h('button.fold', { type: 'button', onclick: () => { state.open.add('cat:' + cat.name); draw(true); } },
+        list.appendChild(h('button.fold', { type: 'button', onclick: () => { state.open.add('cat:' + id + cat.name); draw(true); } },
           `显示其余 ${cat.rows.length - limit} 项`));
       }
     }
@@ -325,18 +421,8 @@
         c.appendChild(PX.notice('这次体检没有使用 AI。配置模型后，AI 会帮你判断陌生的大文件夹和你的文件。', 'info',
           h('button.btn.small', { type: 'button', onclick: () => PX.go('settings') }, '去设置')));
       }
-      if (!state.report && state.status === 'done') {
-        const s = p.summary;
-        const pending = items().filter((it) => it.status === 'pending');
-        if (pending.some((it) => it.action !== 'none')) {
-          c.appendChild(h('div.result.neutral', h('span.big', fmt.bytes(s.safe.selected_size)),
-            h('div.grow', h('div', s.safe.selected ? `体检完成：${s.safe.selected} 项可以放心清理，已经替你勾好。` : '体检完成：没有可以直接清理的项目。'),
-              h('div.small.muted', (s.review.count ? `另有 ${s.review.count} 项（${fmt.bytes(s.review.size)}）建议你看看，不会自动处理。` : '')
-                + (s.safe.selected ? '确认无误后点下方的「执行选中的项目」。' : '')))));
-        }
-      }
-      c.appendChild(h('div.score-legend', PX.score(90), PX.score(60), PX.score(30),
-        h('span', '每项右边的数字是「建议清理度」：越高越建议清理。展开一项能看到评分依据；是否自动勾选只由盘序的规则决定，个人文件从不自动勾选。')));
+      overview(c);
+      scoreBar(c);
       for (const g of p.groups) group(c, g.id, g.name);
       const n = selectedItems().length;
       if (n || state.status === 'executing') {
@@ -366,13 +452,13 @@
     if (!fresh) return;
     state.plan = fresh;
     for (const it of fresh.items) {
-      if (!changed.includes(it.id)) continue;
-      if (it.selected && selectable(it)) state.selected.add(it.id); else state.selected.delete(it.id);
+      if (changed.includes(it.id)) PX.sel.set(it, it.selected && selectable(it));
     }
     draw(true);
   }
   const waitingForPrograms = () => items().some((it) => it.status === 'pending' && it.blocked && it.blocked.startsWith('请先关闭'));
 
   PX.home = { state, checkup, applyRunning, waitingForPrograms };
-  PX.pages.home = { render(container) { root = container; draw(); if (!state.loaded) loadExisting(); } };
+  // the tool pages may have cleaned something since: always take the plan's current statuses
+  PX.pages.home = { render(container) { root = container; draw(); loadExisting(); } };
 })();

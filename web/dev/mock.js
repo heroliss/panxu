@@ -96,7 +96,7 @@
 
   const settings = { theme: 'system', ai: { preset: 'deepseek', base_url: 'https://api.deepseek.com', model: 'deepseek-flash', protocol: 'openai',
     json_mode: true, thinking: 'off', anonymize_paths: true, send_file_content: false, max_requests: 8, min_dir_mb: 500, timeout: 120 },
-  checkup: { space_scan: true, duplicates: true, use_ai: true, auto_select: 'bold' }, insights: { stale_days: 365, large_mb: 100, download_days: 180 },
+  checkup: { space_scan: true, duplicates: true, use_ai: true, auto_threshold: 5 }, insights: { stale_days: 365, large_mb: 100, download_days: 180 },
   duplicates: { min_size_mb: 1 }, large_files: { min_size_mb: 100 }, excluded_paths: [], extra_personal_paths: ['D:\\资料'] };
   let hasKey = true;
 
@@ -189,14 +189,30 @@
   const SCORES = { 'rule:user_temp': 95, 'rule:chrome': 95, 'rule:crash_dumps': 95, 'dir:unity': 86, 'rule:edge': 95, 'rule:npm': 70,
     'dir:idea21': 60, 'dir:oldgame': 50, 'file:iso': 60, 'file:wechat': 85, 'file:vscode': 85, 'file:crdl': 90, 'file:thesis': 85,
     'dup:1': 85, 'startup:qv': 60 };
+  const HOLD = { 'dir:oldgame': '找不到对应的程序，但不确定是不是绿色版', 'startup:qv': '开机启动项由你决定' };
   for (const it of planItems) {
     if (it.action === 'none') { it.score = null; it.basis = []; continue; }
     it.score = SCORES[it.id] || 50;
-    it.basis = [it.source === 'rule' ? (it.selected ? '内置规则：公认可以重建的缓存和临时文件' : '内置规则，默认不勾：删除后需要时会重新下载')
-      : it.source === 'ai' ? 'AI：可清理（把握 86%）' : it.why,
-    it.blocked ? '没有勾选：' + it.blocked : it.selected ? '自动勾选：' + (it.source === 'rule' ? '默认开启的内置规则' : 'AI 把握很大，而且位于应用数据目录')
-      : it.personal ? '没有自动勾选：你的个人文件只由你决定' : '没有自动勾选：只有默认规则和 AI 把握很大的应用数据会自动勾选'];
+    it.kind = it.id.startsWith('rule:') ? 'rule' : it.id.startsWith('dup:') ? 'dup' : it.id.startsWith('startup:') ? 'startup' : 'paths';
+    if (it.kind === 'rule') it.rule = it.id.slice(5);
+    it.eligible = !it.personal && !HOLD[it.id];
+    it.hold_reason = it.personal ? '你的个人文件只由你决定' : HOLD[it.id] || null;
+    it.auto_reason = it.source === 'rule' ? (it.score >= 90 ? '默认开启的内置规则' : '可以重建的缓存') : it.source === 'ai' ? 'AI 判断可以清理' : '盘序的判断';
   }
+  // the same rule as checkup.PlanBuilder: eligible, not blocked, and at least the threshold
+  const decide = (items, t) => {
+    for (const it of items) {
+      if (it.action === 'none') continue;
+      const pts = PX.points(it.score);
+      it.selected = it.eligible && !it.blocked && pts >= t;
+      it.group = it.selected ? 'safe' : 'review';
+      const note = it.blocked ? '没有勾选：' + it.blocked
+        : it.selected ? `自动勾选：${it.auto_reason}，${pts} 分达到勾选门槛（${t} 分）`
+        : it.hold_reason ? '没有自动勾选：' + it.hold_reason : `没有自动勾选：${pts} 分，低于勾选门槛（${t} 分）`;
+      it.basis = [it.source === 'ai' ? `AI：可清理（把握 ${Math.round((it.confidence || 0) * 100)}%）` : it.why, note];
+    }
+    return items;
+  };
   const planGroups = [{ id: 'safe', name: '放心清理' }, { id: 'review', name: '建议你看看' }, { id: 'info', name: '仅供了解' }];
   let plan = null;
   const summarize = () => Object.fromEntries(planGroups.map(({ id }) => {
@@ -265,7 +281,9 @@
 
   const handlers = {
     checkup: () => job(14, () => {
-      plan = { id: 'p1', created: now, items: JSON.parse(JSON.stringify(planItems)), groups: planGroups, ai: { used: hasKey, errors: [], usage: { requests: 3 } } };
+      const t = settings.checkup.auto_threshold || 5;
+      plan = { id: 'p' + Date.now(), created: now, threshold: t, items: decide(JSON.parse(JSON.stringify(planItems)), t),
+        groups: planGroups, ai: { used: hasKey, errors: [], usage: { requests: 3 } } };
       plan.summary = summarize();
       insights = { findings, stats: { files: 18233, bytes: 96 * GB, cloud_skipped: 12, seconds: 3, roots: [] }, roots: [U + '\\Desktop', U + '\\Documents', U + '\\Downloads', 'D:\\资料'], time: now };
       return plan;
@@ -280,8 +298,8 @@
       const changed = [];
       const edge = plan && plan.items.find((i) => i.id === 'rule:edge');
       if (edge && edge.blocked) {
-        Object.assign(edge, { blocked: null, group: 'safe', selected: true });
-        edge.basis = [edge.basis[0], '自动勾选：默认开启的内置规则'];
+        edge.blocked = null;
+        decide([edge], plan.threshold);
         changed.push(edge.id);
       }
       return { running: { edge: [], chrome: [] }, plan_changed: changed };

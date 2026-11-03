@@ -66,9 +66,9 @@
     const json = h('input', { type: 'checkbox', checked: !!ai.json_mode, onchange: (e) => save({ ai: { json_mode: e.target.checked } }) });
     sec1.appendChild(field('JSON 模式', h('label.inline', json, h('span.small.muted', '让模型只输出 JSON。服务不支持时会自动关闭'))));
     if (preset.thinking_toggle) {
-      sec1.appendChild(field('深度思考', PX.seg([['off', '关闭'], ['low', '低'], ['high', '高']], ai.thinking || 'off',
+      sec1.appendChild(field('深度思考', PX.seg([['off', '关闭'], ['low', '低'], ['high', '高']], ai.thinking || 'low',
         async (v) => { await save({ ai: { thinking: v } }); draw(); }),
-      '只影响「问 AI」的回答。判断文件夹和文件时总是关闭，更快也更省额度。'));
+      '用于「问 AI」：「低」想得更周全，只慢一两秒；「高」更慢也更费额度。判断文件夹和文件时总是不思考：那是简短的结构化判断，思考会让一次体检慢很多，还可能被截断。'));
     }
     sec1.appendChild(field('读取文档内容', h('label.inline', PX.switchEl(ai.send_file_content, (e) => save({ ai: { send_file_content: e.target.checked } })),
       h('span.small.muted', '允许把文档开头约 800 字发给模型，帮你判断文件是什么')),
@@ -100,11 +100,13 @@
       secCk.appendChild(field(label, h('label.inline', PX.switchEl(ck[key] !== false, (e) => save({ checkup: { [key]: e.target.checked } })),
         h('span.small.muted', help))));
     }
-    secCk.appendChild(field('自动勾选', PX.seg([['bold', '积极'], ['careful', '稳妥']], ck.auto_select === 'careful' ? 'careful' : 'bold',
-      async (v) => { await save({ checkup: { auto_select: v } }); draw(); }),
-    ck.auto_select === 'careful'
-      ? '稳妥：只勾默认开启的清理规则，以及 AI 把握很大（≥ 80%）的卸载残留。'
-      : '积极：另外勾上所有可以重建的缓存、旧版本和卸载残留，以及 AI 把握 ≥ 70% 的应用数据。都不碰你的文件、存档和正在用的程序，清空回收站这类不能撤销的也不勾；文件夹只进回收站。'));
+    const t = ck.auto_threshold === undefined ? 5 : ck.auto_threshold;
+    secCk.appendChild(field('勾选门槛', PX.seg([[8, '稳妥 ≥ 8 分'], [7, '适中 ≥ 7 分'], [5, '积极 ≥ 5 分']], t,
+      async (v) => { await save({ checkup: { auto_threshold: v } }); draw(); }),
+    '体检后自动勾选「建议清理度」达到门槛的项目。' + (t >= 8 ? '稳妥：基本只勾默认开启的清理规则和 AI 把握很大的残留。'
+      : t >= 7 ? '适中：再加上可以重建的开发和软件缓存。'
+        : '积极：再加上旧版本和卸载残留。') +
+    '无论门槛多低，都不会自动勾你的文件、存档、正在用的程序和不能撤销的操作；文件夹只进回收站。首页也可以随时「按分数勾选」。'));
 
     // ---- 我的文件
     const ins = s.insights || {};

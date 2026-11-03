@@ -165,15 +165,76 @@
     return out;
   };
 
-  // 建议清理度 0-100: a small bar plus the number, coloured by how strongly removal is suggested
-  PX.scoreLevel = (s) => (s >= 80 ? 'hi' : s >= 50 ? 'mid' : 'lo');
-  PX.scoreLabel = (s) => (s >= 80 ? '建议清理' : s >= 50 ? '可以考虑' : '看你需要');
+  // 建议清理度: kept 0-100 for sorting, shown as 0-10 points in three bands
+  PX.points = (s) => (s === null || s === undefined ? null : Math.floor(s / 10 + 0.5));
+  PX.scoreLevel = (s) => { const p = PX.points(s); return p >= 8 ? 'hi' : p >= 5 ? 'mid' : 'lo'; };
+  PX.scoreLabel = (s) => { const p = PX.points(s); return p >= 8 ? '建议清理' : p >= 5 ? '可以考虑' : '看你需要'; };
   PX.score = function (score, title) {
     if (score === null || score === undefined) return h('span.score.none');
-    const label = `建议清理度 ${score}（${PX.scoreLabel(score)}）`;
+    const p = PX.points(score);
+    const label = `建议清理度 ${p} 分（${PX.scoreLabel(score)}）`;
+    const bar = h('i');
+    for (let k = 1; k <= 5; k++) bar.appendChild(h('b' + (p >= k * 2 ? '.on' : p >= k * 2 - 1 ? '.half' : '')));
     return h('span.score.' + PX.scoreLevel(score), { title: title ? label + '\n' + title : label, role: 'img', 'aria-label': label },
-      h('i', h('b', { style: { width: Math.max(4, Math.min(100, score)) + '%' } })), h('span.v', String(score)));
+      bar, h('span.v', String(p)));
   };
+
+  // One selection for the whole app: ticking a junk rule or a file is the same tick on 首页 and on its
+  // own page. Junk rules by id, files and folders by path, anything else (duplicate groups, startup
+  // items) by plan item id.
+  PX.sel = {
+    rules: new Set(), paths: new Set(), items: new Set(),
+    keyOf(it) {
+      if (it.kind === 'rule') return ['rules', it.rule];
+      if (it.kind === 'paths' && it.paths && it.paths.length === 1) return ['paths', it.paths[0]];
+      return ['items', it.id];
+    },
+    has(it) { const [s, k] = this.keyOf(it); return this[s].has(k); },
+    set(it, on) { const [s, k] = this.keyOf(it); if (on) this[s].add(k); else this[s].delete(k); },
+    replace(set, values) { set.clear(); for (const v of values) set.add(v); },
+  };
+
+  // horizontal bars, one row per category, each split into stacked parts (magnitude + part-to-whole);
+  // rows: [{label, parts: [{value, cls, title}], onclick}], legend: [[cls, label]]
+  PX.barList = function (rows, legend) {
+    const max = Math.max(1, ...rows.map((r) => r.parts.reduce((s, p) => s + p.value, 0)));
+    const wrap = h('div.barlist');
+    if (legend && legend.length > 1) {
+      wrap.appendChild(h('div.barlist-legend', legend.map(([cls, label]) => h('span', h('i.sw.' + cls), label))));
+    }
+    for (const r of rows) {
+      const total = r.parts.reduce((s, p) => s + p.value, 0);
+      const track = h('div.bl-track');
+      for (const p of r.parts) {
+        if (p.value > 0) track.appendChild(h('i.' + p.cls, { style: { width: (p.value / max) * 100 + '%' }, title: p.title || '' }));
+      }
+      wrap.appendChild(h(r.onclick ? 'button.bl-row' : 'div.bl-row.static', { type: r.onclick ? 'button' : null, onclick: r.onclick,
+        title: [r.label, ...r.parts.map((p) => p.title)].filter(Boolean).join('\n') },
+        h('span.bl-label', r.icon || null, h('span.bl-text', r.label)), track, h('span.bl-value', r.valueText || PX.fmt.bytes(total))));
+    }
+    return wrap;
+  };
+
+  // a headline number with a caption and a thin part-of bar
+  PX.statTile = function ({ cls, label, value, sub, part, onclick }) {
+    return h((onclick ? 'button.stat-tile' : 'div.stat-tile.static') + (cls ? '.' + cls : ''), { type: onclick ? 'button' : null, onclick },
+      h('div.st-label', cls ? h('i.sw.' + cls) : null, label), h('div.st-value', value), h('div.st-sub', sub),
+      part !== undefined ? h('div.st-bar', h('i', { style: { width: Math.round(Math.max(0, Math.min(1, part)) * 100) + '%' } })) : null);
+  };
+  // a chart card: title, an optional note after it, then the chart
+  PX.chartCard = (title, note, chart) => h('div.ov-chart', h('div.ov-chart-title', title, note ? h('span.ov-note', note) : null), chart);
+  // a thin bar under a size, relative to the largest one in the list
+  PX.meter = (frac, cls) => h('i.meter', h('i' + (cls ? '.' + cls : ''), { style: { width: Math.max(2, Math.round(Math.min(1, frac || 0) * 100)) + '%' } }));
+  // bring a row or section into view and mark it for a moment (chart rows jump to what they stand for)
+  PX.flash = function (el) {
+    if (!el) return;
+    el.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    el.classList.remove('flash');
+    void el.offsetWidth;
+    el.classList.add('flash');
+  };
+  // the score bands as chart parts (colours match the score pips)
+  PX.SCORE_LEGEND = [['s-hi', '8–10 建议清理'], ['s-mid', '5–7 可以考虑'], ['s-lo', '0–4 看你需要']];
   PX.big = function (n, cls) {
     const [v, u] = PX.fmt.split(n);
     return h('span.num' + (cls ? '.' + cls : ''), v, h('small', u));
