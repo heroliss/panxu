@@ -104,6 +104,37 @@ class FindingsTest(TempDirTest):
         self.write('Docs/简历_2025.docx', sandbox.docx(['2025']))
         self.assertEqual(len(self.run_insights()['name_versions']['files']), 2, 'years and v2 still mark versions')
 
+    def test_versions_follow_the_number_in_the_name(self):
+        self.assertEqual(insights.name_version('release-v0.4.0'), (0, 4, 0))
+        self.assertEqual(insights.name_version('需求文档_v3 - 副本'), (3,))
+        self.assertEqual(insights.name_version('简历_2025'), (2025,))
+        self.assertIsNone(insights.name_version('毕业论文_最终版'))
+        # unpacking or copying gives both the same time: the name decides
+        self.write('Docs/notes_v0.4.0.md', b'new' * 100, days=10)
+        self.write('Docs/notes_v0.3.1.md', b'old' * 100, days=10)
+        files = {os.path.basename(f['path']): f for f in self.run_insights()['name_versions']['files']}
+        self.assertTrue(files['notes_v0.4.0.md']['note'].startswith('最新'))
+        self.assertIn('版本号', files['notes_v0.4.0.md']['note'])
+        self.assertEqual(files['notes_v0.3.1.md']['note'], '较旧的版本')
+
+    def test_documents_that_came_with_a_program_are_not_versions(self):
+        self.write('Downloads/tool-x64/tool-x64/tool.exe', b'MZ' * 100)
+        self.write('Downloads/tool-x64/tool-x64/docs/release-v0.3.1.md', b'a' * 100, days=5)
+        self.write('Downloads/tool-x64/tool-x64/docs/release-v0.4.0.md', b'b' * 100, days=5)
+        self.assertNotIn('name_versions', self.run_insights())
+
+    def test_documents_inside_an_extracted_archive_are_not_versions(self):
+        pack = os.path.join(self.home, 'Downloads', 'pack.zip')
+        os.makedirs(os.path.dirname(pack), exist_ok=True)
+        with zipfile.ZipFile(pack, 'w') as zf:
+            zf.writestr('guide_v1.md', b'one')
+            zf.writestr('guide_v2.md', b'two')
+        self.write('Downloads/pack/guide_v1.md', b'one')
+        self.write('Downloads/pack/guide_v2.md', b'two')
+        found = self.run_insights()
+        self.assertIn('archive_extracted', found)
+        self.assertNotIn('name_versions', found)
+
     def test_folders_programs_manage_are_left_alone(self):
         for rel in ('Documents/WXWork/1688/Cache/Cache_Data/f_01.txt', 'Documents/WXWork/1688/Cache/Cache_Data/f_01 (1).txt',
                     'Documents/My Games/Game/LogFiles/x.mp4.part', 'Documents/proj/node_modules/pkg/setup.exe',

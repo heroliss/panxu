@@ -168,6 +168,18 @@ def is_copy_name(stem: str) -> bool:
     return bool(_COPY_MARK.search(stem))
 
 
+_ORDER_MARK = re.compile(r'(?:v|ver|版本)\s*(\d+(?:\.\d+)*)$|((?:19|20)\d{2})$|(\d{6,8})$|第(\d+)版$', re.I)
+
+
+def name_version(stem: str) -> tuple[int, ...] | None:
+    """The version a name states ('需求文档_v3' -> (3,), 'release-v0.4.0' -> (0, 4, 0), '简历_2025' -> (2025,))."""
+    m = _ORDER_MARK.search(_COPY_MARK.sub('', stem).strip(' _-.'))
+    if not m:
+        return None
+    text = next(g for g in m.groups() if g)
+    return tuple(int(x) for x in text.split('.'))
+
+
 def managed_dir(name: str) -> bool:
     """True for a folder a program manages itself (see CACHE_DIRS / APP_DIRS) or a tool's dot-folder."""
     low = name.lower().strip()
@@ -296,6 +308,9 @@ class Insights:
         self.files: list[FileRec] = []
         self.empty_dirs: list[str] = []
         self.roots: list[str] = []
+        # folders whose files came together as one package (a program's folder, an extracted archive):
+        # 「release-v0.3.1.md」 and 「release-v0.4.0.md」 there are two documents, not two versions of one
+        self.bundle_dirs: list[str] = []
         self.stats: dict = {}
 
     # -- collection ------------------------------------------------------------------
@@ -323,9 +338,11 @@ class Insights:
                     projects.append(dirpath)  # empty folders in a repository are often there on purpose
                 dirs[:] = kept
                 dir_children[dirpath] = [os.path.join(dirpath, d.name) for d in dirs]
+                program = False
                 for entry in files:
                     if entry.name.lower() in IGNORED_FILES:
                         continue
+                    program = program or entry.name.lower().endswith(('.exe', '.dll'))
                     has = True
                     try:
                         st = entry.stat(follow_symlinks=False)
@@ -340,6 +357,9 @@ class Insights:
                                               st.st_mtime, fsops.age_time(st), st.st_atime,
                                               paths.category_of(entry.name), root))
                 dir_has_files[dirpath] = has
+                if program and dirpath != root:
+                    # a program's folder (portable tool, unpacked package): its documents belong to the program
+                    self.bundle_dirs.append(dirpath)
                 if progress and len(self.files) % 2000 == 0:
                     progress({'files': len(self.files), 'current': dirpath})
                 if len(self.files) >= MAX_FILES:
@@ -459,6 +479,7 @@ class Insights:
             verified, total = _verify_zip(r.path, folder) if ext == '.zip' else (None, 0)
             if verified is False:
                 continue
+            self.bundle_dirs.append(folder)
             note = (f'其中 {total} 个文件都已在「{os.path.basename(folder)}」文件夹里，大小一致' if verified
                     else f'旁边有同名文件夹「{os.path.basename(folder)}」，可能已经解压过（这种格式无法自动核对内容）')
             out_files.append((self._file(r, note, remove=bool(verified)), verified))
@@ -471,9 +492,13 @@ class Insights:
 
     def _versions(self, claimed):
         groups: dict[tuple, list[FileRec]] = {}
+        bundles = [paths.key(d) for d in self.bundle_dirs]
         for r in self.files:
             if paths.key(r.path) in claimed or r.size == 0:
                 continue
+            folder = paths.key(r.folder)
+            if any(folder == b or folder.startswith(b + '\\') for b in bundles):
+                continue  # documents that came with a program or an archive
             stem, ext = os.path.splitext(r.name)
             ext = _FAMILY.get(ext.lower(), ext.lower())
             if ext in INCOMPLETE_EXTS or ext in INSTALLER_EXTS:
@@ -490,8 +515,12 @@ class Insights:
         for (_, base, _), members in groups.items():
             if len(members) < 2 or len(members) > 40:
                 continue
-            # oldest first; with equal times the name without a copy marker counts as the newer one
-            members.sort(key=lambda m: (m.mtime, not is_copy_name(os.path.splitext(m.name)[0])))
+            # oldest first: by the version the name states (v0.4.0 after v0.3.1, even when copying or
+            # unpacking gave both the same time), then by time; with equal times the name without a
+            # copy marker counts as the newer one
+            by_version = any(name_version(os.path.splitext(m.name)[0]) for m in members)
+            members.sort(key=lambda m: (name_version(os.path.splitext(m.name)[0]) or (), m.mtime,
+                                        not is_copy_name(os.path.splitext(m.name)[0])))
             digests = {}
             for m in members:
                 if m.size <= 512 * 1024 * 1024:
@@ -512,7 +541,7 @@ class Insights:
             for m in members:
                 same = [o for o in by_digest.get(f'{m.size}:{digests.get(m.path)}', []) if o is not m]
                 if m is newest:
-                    note, remove = '最新的一份（修改时间最晚）', False
+                    note, remove = ('最新的一份（版本号最大）' if by_version else '最新的一份（修改时间最晚）'), False
                 elif same:
                     # keep exactly one of each identical set: the one without a copy marker, else the oldest
                     keeper = min([m] + same, key=lambda x: (is_copy_name(os.path.splitext(x.name)[0]), x.mtime))
