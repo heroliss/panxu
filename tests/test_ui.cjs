@@ -50,6 +50,26 @@ assert.strictEqual(PX.scoreLevel(45), 'mid');
 assert.strictEqual(PX.scoreLevel(44), 'lo');
 PX.state.init = null;
 
+// 按分数勾选: a threshold ticks eligible items by score; guarded items and (unless included) your files are left alone
+const eight = { eligible: true, score: 80 }, six = { eligible: true, score: 60 }, mine = { personal: true, score: 90 },
+  guarded = { eligible: false, score: 95 };
+assert.deepStrictEqual([eight, six, mine, guarded].map((it) => PX.scoreTick(it, 7, false)), [true, false, null, null]);
+assert.strictEqual(PX.scoreTick(mine, 7, true), true);
+assert.deepStrictEqual([eight, six, mine, guarded].map((it) => PX.scoreTick(it, 'none', false)), [false, false, false, false]);
+// the highlighted choice follows the ticks: the one picked, a threshold giving the same ticks, or none (by hand)
+const plan = [eight, six, mine, guarded];
+const ticks = (...on) => (it) => on.includes(it);
+const ORDER = (picked) => [picked, 5, 'none', 9, 8, 7, 6, 5];
+assert.strictEqual(PX.scoreMatch(plan, ticks(eight, six), false, ORDER(null)), 5, 'the check-up threshold');
+assert.strictEqual(PX.scoreMatch(plan, ticks(eight), false, ORDER(7)), 7, 'the one just picked');
+assert.strictEqual(PX.scoreMatch(plan, ticks(eight), false, ORDER(null)), 8, 'the first that gives the same ticks');
+assert.strictEqual(PX.scoreMatch(plan, ticks(eight, guarded), false, ORDER(8)), 8, 'a guarded item ticked by hand does not count');
+assert.strictEqual(PX.scoreMatch(plan, ticks(six), false, ORDER(8)), null, 'ticked by hand');
+assert.strictEqual(PX.scoreMatch(plan, ticks(eight, six), true, ORDER(5)), null, 'your files included but not ticked');
+assert.strictEqual(PX.scoreMatch(plan, ticks(), false, ORDER('none')), 'none');
+assert.strictEqual(PX.scoreMatch(plan, ticks(), false, ORDER(8)), 'none', 'unticked by hand: 全不选, not ≥ 9 (which ticks nothing here either)');
+assert.strictEqual(PX.scoreMatch(plan, ticks(), false, ORDER(9)), 9, 'but ≥ 9 stays highlighted when it was clicked');
+
 // 「打开」 is for documents; programs, installers, scripts and shortcuts would run
 for (const p of [R`C:\a\report.PDF`, R`C:\a\movie.mkv`, R`C:\a\photos.zip`, R`C:\a\notes`, R`C:\a.b\readme.txt`]) assert.ok(PX.canOpen(p), p);
 for (const p of [R`C:\a\setup.EXE`, R`C:\a\run.bat`, R`C:\a\x.ps1`, R`C:\a\app.lnk`, R`C:\a\pkg.msi`, R`C:\a\w.vbs`, R`C:\a\k.reg`]) {

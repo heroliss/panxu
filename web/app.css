@@ -497,7 +497,6 @@ button.bl-row:hover .bl-label { color: var(--cobalt); }
 .score-bar { display: grid; gap: 6px; padding: 10px 14px; margin-bottom: 18px; border-radius: var(--r-l); background: var(--tint); }
 .sb-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .sb-row > b { font-weight: 600; margin-right: 4px; }
-.sb-row .btn.current { border-color: var(--cobalt); color: var(--cobalt); }
 .sb-legend { display: flex; align-items: center; gap: 6px 8px; flex-wrap: wrap; font-size: 12px; color: var(--ink-2); }
 .sb-legend .score { cursor: default; }
 

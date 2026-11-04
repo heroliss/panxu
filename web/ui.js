@@ -174,6 +174,16 @@
   PX.points = (s) => (s === null || s === undefined ? null : Math.floor(s / 10 + 0.5));
   PX.scoreLevel = (s) => { const p = PX.points(s); return p >= 8 ? 'hi' : p >= 5 ? 'mid' : 'lo'; };
   PX.scoreLabel = (s) => { const p = PX.points(s); return p >= 8 ? '建议清理' : p >= 5 ? '可以考虑' : '看你需要'; };
+  // 按分数勾选 (首页): what a threshold, or 'none' (全不选), does to one plan item. true/false: tick/untick;
+  // null: a guard holds it back (saves, programs in use, no undo; your files unless included), the user decides
+  PX.scoreTick = (it, t, withMine) => {
+    if (t === 'none') return false;
+    if (!(it.eligible || (withMine && it.personal))) return null;
+    return PX.points(it.score) >= t;
+  };
+  // which of `order` the current ticks follow (the first that agrees with every item), or null: ticked by hand
+  PX.scoreMatch = (items, ticked, withMine, order) => order.find((t) => t !== null && t !== undefined
+    && items.every((it) => { const want = PX.scoreTick(it, t, withMine); return want === null || ticked(it) === want; })) || null;
   PX.score = function (score, title) {
     if (score === null || score === undefined) return h('span.score.none');
     const p = PX.points(score);

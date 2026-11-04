@@ -16,9 +16,9 @@
   // where each category is handled in detail
   const CAT_PAGE = { 垃圾文件: ['junk', '垃圾清理'], 应用数据: ['space', '空间分析'], 重复文件: ['dups', '重复文件'],
     开机启动: ['startup', '开机与服务'] };
-  const THRESHOLDS = [[8, '≥ 8 分'], [7, '≥ 7 分'], [5, '≥ 5 分']];
+  const THRESHOLDS = [9, 8, 7, 6, 5].map((t) => [t, `≥ ${t} 分`]);
   const state = { status: 'idle', plan: null, planId: null, open: new Set(), progress: {}, report: null, jobId: null,
-    withMine: false };
+    withMine: false, picked: null };
   let root = null;
 
   function strata(drive, reclaim, cls) {
@@ -51,6 +51,7 @@
       if (PX.junk) PX.junk.state.touched = true;
       state.planId = plan.id;
       state.open = new Set();
+      state.picked = null;
     }
     state.plan = plan;
     state.status = 'done';
@@ -129,21 +130,33 @@
     draw();
   }
 
-  // 按分数勾选: tick every item that may be pre-ticked and reaches the threshold; items a guard holds back
-  // (saves, programs in use, no undo) keep whatever the user chose for them
-  function selectByScore(threshold) {
-    let picked = 0, size = 0, held = 0;
+  // 按分数勾选 (rule: PX.scoreTick): items a guard holds back keep whatever the user chose for them
+  function selectByScore(threshold, dropMine) {
+    const before = new Set(selectedItems());
+    let held = 0;
     for (const it of items()) {
       if (!selectable(it)) continue;
-      const bulk = it.eligible || (state.withMine && it.personal);
-      if (!bulk) { held += 1; continue; }
-      const on = threshold !== null && PX.points(it.score) >= threshold;
-      setSel(it, on);
-      if (on) { picked += 1; size += it.size || 0; }
+      const want = PX.scoreTick(it, threshold, state.withMine);
+      if (want !== null) { setSel(it, want); continue; }
+      held += 1;
+      // 「包括我的文件」 just switched off: your files the score had ticked are unticked again
+      if (dropMine && it.personal && PX.scoreTick(it, threshold, true)) setSel(it, false);
     }
+    state.picked = threshold;
     draw(true);
-    PX.toast(threshold === null ? '已全部取消' : `按 ≥ ${threshold} 分勾选了 ${picked} 项（${fmt.bytes(size)}）`
-      + (held ? `；${held} 项需要你单独决定` + (state.withMine ? '' : '（包括你的文件）') : ''));
+    const after = selectedItems();
+    const added = after.filter((it) => !before.has(it)).length;
+    const removed = before.size - (after.length - added);
+    const change = added && removed ? `新勾 ${added} 项、取消 ${removed} 项` : added ? `多勾了 ${added} 项` : removed ? `取消了 ${removed} 项` : '勾选没有变化';
+    if (threshold === 'none') { PX.toast(removed ? `已全部取消（${removed} 项）` : '本来就没有勾选'); return; }
+    PX.toast(`按 ≥ ${threshold} 分：${change}，现在共选 ${after.length} 项（${fmt.bytes(selectedSize())}）`
+      + (held ? `。另有 ${held} 项需要你单独决定` + (state.withMine ? '' : '（包括你的文件）') : ''));
+  }
+  // which 按分数勾选 choice the ticks follow right now: the threshold last picked (or the check-up's), another
+  // threshold that happens to give the same ticks, 'none', or null once the user ticked by hand since
+  function scoreMatch() {
+    return PX.scoreMatch(items().filter(selectable), isSel, state.withMine,
+      [state.picked, state.plan.threshold, 'none', ...THRESHOLDS.map(([t]) => t)]);
   }
 
   // ------------------------------------------------------------------ drawing
@@ -263,13 +276,16 @@
   // 按分数勾选 + what the numbers mean
   function scoreBar(c) {
     const used = state.plan.threshold;
+    const now = scoreMatch();
     const bar = c.appendChild(h('div.score-bar'));
     bar.appendChild(h('div.sb-row', h('b', '按分数勾选'),
-      THRESHOLDS.map(([t, label]) => h('button.btn.small' + (t === used ? '.current' : ''), { type: 'button', title: t === used ? '体检就是按这个门槛自动勾选的' : '',
-        onclick: () => selectByScore(t) }, label)),
-      h('button.btn.small.quiet', { type: 'button', onclick: () => selectByScore(null) }, '全不选'),
-      h('label.inline-check.small', h('input', { type: 'checkbox', checked: state.withMine, onchange: (e) => { state.withMine = e.target.checked; } }),
-        '包括我的文件')));
+      PX.seg([...THRESHOLDS, ['none', '全不选']], now, (t) => selectByScore(t)),
+      now === null ? h('span.small.muted', '你已经手动调整过勾选') : null,
+      // the box changes what the score ticks, so it applies to the current choice at once
+      h('label.inline-check.small', h('input', { type: 'checkbox', checked: state.withMine, onchange: (e) => {
+        state.withMine = e.target.checked;
+        if (typeof now === 'number') selectByScore(now, !state.withMine); else draw(true);
+      } }), '包括我的文件')));
     bar.appendChild(h('div.sb-legend', PX.score(90), h('span', '8–10 建议清理'), PX.score(60), h('span', '5–7 可以考虑'),
       PX.score(30), h('span', '0–4 看你需要'),
       h('span.muted', `· 体检按 ≥ ${used} 分自动勾选（设置里可以改）。存档、正在使用的程序、不能撤销的操作从不按分数勾选。`)));
@@ -453,15 +469,17 @@
     if (keepScroll) main.scrollTop = top;
   }
 
-  // a program named in 「请先关闭」 was closed (or opened): take the updated items, tick what became safe
+  // a program named in 「请先关闭」 was closed (or opened): take the updated items, tick what became safe —
+  // by the 按分数勾选 choice the user is on, or the check-up's own choice once they ticked by hand
   async function applyRunning(changed) {
     if (!changed || !changed.length || !state.plan) return;
     let fresh;
     try { fresh = await PX.api.call('plan'); } catch (e) { return; }
     if (!fresh) return;
+    const now = scoreMatch();
     state.plan = fresh;
     for (const it of fresh.items) {
-      if (changed.includes(it.id)) PX.sel.set(it, it.selected && selectable(it));
+      if (changed.includes(it.id)) PX.sel.set(it, !!(now === null ? it.selected : PX.scoreTick(it, now, state.withMine)) && selectable(it));
     }
     draw(true);
   }
