@@ -204,6 +204,7 @@ input[type=checkbox]:disabled { cursor: not-allowed; }
 .hero-figure { font-family: var(--font-num); font-size: 56px; line-height: 1; font-weight: 400; letter-spacing: -.01em; }
 .hero-figure small { font-size: 22px; margin-left: 4px; color: var(--ink-2); }
 .hero-caption { color: var(--ink-2); }
+.hero-gain { font-family: var(--font-num); font-size: 20px; color: var(--verdigris); margin-left: -6px; }
 .hero .strata { height: 26px; border-radius: 4px; }
 .hero-legend { display: flex; gap: 22px; margin-top: 12px; flex-wrap: wrap; color: var(--ink-2); font-size: 13px; }
 .hero-legend b { font-family: var(--font-num); font-weight: 500; color: var(--ink); margin-left: 4px; }
@@ -514,6 +515,37 @@ button.bl-row:hover .bl-label { color: var(--cobalt); }
 .sb-row > b { font-weight: 600; margin-right: 4px; }
 .sb-legend { display: flex; align-items: center; gap: 6px 8px; flex-wrap: wrap; font-size: 12px; color: var(--ink-2); }
 .sb-legend .score { cursor: default; }
+
+/* 首页 after a cleanup: what came of it -- freed now, waiting in the Recycle Bin, what did not work */
+.result-card { display: grid; gap: 12px; padding: 14px 16px; margin-bottom: 18px; border: 1px solid var(--rule);
+  border-left: 3px solid var(--verdigris); border-radius: var(--r-l); background: var(--raise); }
+.result-card.has-problems { border-left-color: var(--amber); }
+.rc-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.rc-head > svg { width: 18px; height: 18px; color: var(--verdigris); }
+.has-problems .rc-head > svg { color: var(--amber); }
+.rc-head b { font-size: 15px; }
+.rc-head .grow { flex: 1; }
+.rc-figures { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }
+.rc-figure { padding: 10px 12px; border-radius: var(--r-m); background: var(--tint); }
+.rc-value { font-family: var(--font-num); font-size: 24px; line-height: 1.2; }
+.rc-figure.good .rc-value { color: var(--verdigris); }
+.rc-label { font-size: 13px; font-weight: 600; margin-top: 2px; }
+.rc-note { font-size: 12px; line-height: 1.5; color: var(--ink-2); margin-top: 2px; }
+.rc-problems { display: grid; gap: 4px; padding-top: 10px; border-top: 1px dashed var(--rule); }
+.rc-problem { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 12.5px; }
+.rc-problem b { font-weight: 600; }
+.rc-problem span { color: var(--amber); }
+/* 已处理: folded away below the groups still to decide */
+.group-card.g-done { border-top-color: var(--ink-3); }
+.gc-toggle { width: 100%; border: 0; background: none; font: inherit; color: inherit; text-align: left; cursor: pointer; }
+.gc-toggle:hover { background: var(--tint); }
+.gc-toggle > svg:first-child { width: 16px; height: 16px; color: var(--verdigris); }
+.gc-chev { width: 14px; height: 14px; color: var(--ink-3); transition: transform .15s; }
+.gc-toggle[aria-expanded="true"] .gc-chev { transform: rotate(90deg); }
+.done-row { grid-template-columns: 22px minmax(0, 1fr) auto; }
+.done-row .ic { width: 16px; height: 16px; }
+.done-row .ic.good { color: var(--verdigris); }
+.done-row .ic.warn, .done-row .why.warn { color: var(--amber); }
 
 /* plan groups as cards: a coloured edge per group, categories as sub-headings */
 .group-card { border: 1px solid var(--rule); border-radius: var(--r-l); background: var(--raise); margin-bottom: 18px; overflow: hidden;

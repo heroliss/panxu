@@ -276,6 +276,7 @@
     }
   }
   let insights = null;
+  let freedNow = 0;  // what the mock cleanup deleted: the system drive's free space grows by it
 
   const A = (id, name, publisher, version, kind, size, installed, used, extra) => Object.assign({ id, name, publisher, version, kind,
     kind_label: { app: '应用', runtime: '运行库', driver: '驱动', game: '游戏' }[kind], size, size_source: size ? 'estimated' : '', installed: now - installed * day,
@@ -348,14 +349,23 @@
       return out;
     },
     plan_execute: ({ item_ids }) => job(6, () => {
-      let del = 0, rec = 0, recN = 0; const dis = [];
+      // like checkup.execute: freed sizes as numbers; one item, if chosen, is skipped to show a problem
+      let del = 0, rec = 0, recN = 0; const dis = [], failures = [], items = {};
       for (const it of plan.items) {
         if (!item_ids.includes(it.id)) continue;
-        it.status = 'done'; it.result = '已完成';
-        if (it.action === 'delete') del += it.size; else if (it.action === 'recycle') { rec += it.size; recN += 1; } else dis.push(it.title);
+        if (it.id === 'dir:idea21') {
+          it.status = 'skipped'; it.result = '文件在体检后被修改过，请重新体检';
+          failures.push({ title: it.title, reason: '文件在体检后被修改过' });
+        } else {
+          it.status = 'done'; it.freed = it.size;
+          it.result = it.action === 'delete' ? '已清理' : it.action === 'recycle' ? '已移到回收站' : '已禁用开机启动';
+          if (it.action === 'delete') del += it.size; else if (it.action === 'recycle') { rec += it.size; recN += 1; } else dis.push(it.title);
+        }
+        items[it.id] = { status: it.status, note: it.result, freed: it.freed };
       }
       plan.summary = summarize();
-      return { deleted: { count: 9000, bytes: del }, recycled: { count: recN, bytes: rec }, disabled: dis, failures: [], items: {}, summary: plan.summary };
+      freedNow += del;  // only what was deleted: the Recycle Bin still holds the rest
+      return { deleted: { count: 9000, bytes: del }, recycled: { count: recN, bytes: rec }, disabled: dis, failures, items, summary: plan.summary };
     }, (f) => ({ stage: 'junk', detail: '用户临时文件', freed: f * 4 * GB })),
     insights_roots: () => [U + '\\Desktop', U + '\\Documents', U + '\\Downloads'],
     insights_scan: () => job(6, () => { insights = { findings, stats: { files: 18233, bytes: 96 * GB, cloud_skipped: 0, seconds: 3, roots: [] }, roots: [U + '\\Desktop', U + '\\Documents', U + '\\Downloads'], time: now }; return insights; },
@@ -404,7 +414,7 @@
       presets: [{ id: 'deepseek', name: 'DeepSeek', base_url: 'https://api.deepseek.com', protocol: 'openai', models: ['deepseek-flash', 'deepseek-v4-pro'], json_mode: true, thinking_toggle: true, key_url: 'x' },
         { id: 'kimi', name: 'Kimi（月之暗面）', base_url: 'https://api.moonshot.cn/v1', protocol: 'openai', models: [], json_mode: true },
         { id: 'ollama', name: '本地 Ollama', base_url: 'http://127.0.0.1:11434/v1', protocol: 'openai', models: [], json_mode: true, needs_key: false }],
-      drives: [{ root: 'C:\\', label: '', fstype: 'NTFS', total: 476 * GB, used: 389 * GB, free: 87 * GB, system: true, removable: false },
+      drives: [{ root: 'C:\\', label: '', fstype: 'NTFS', total: 476 * GB, used: 389 * GB - freedNow, free: 87 * GB + freedNow, system: true, removable: false },
         { root: 'D:\\', label: '数据', fstype: 'NTFS', total: 931 * GB, used: 512 * GB, free: 419 * GB, system: false, removable: false },
         { root: 'E:\\', label: '工作', fstype: 'NTFS', total: 954 * GB, used: 702 * GB, free: 252 * GB, system: false, removable: false }],
       rules: catalogue, groups: [{ id: 'system', name: '系统垃圾' }, { id: 'browser', name: '浏览器缓存' }, { id: 'app', name: '应用缓存' }, { id: 'dev', name: '开发工具缓存' }, { id: 'advanced', name: '系统深度清理' }],

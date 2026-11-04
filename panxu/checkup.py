@@ -790,10 +790,13 @@ def execute(backend, plan: dict, item_ids: list[str], job) -> dict:
     report = {'deleted': {'count': 0, 'bytes': 0}, 'recycled': {'count': 0, 'bytes': 0}, 'disabled': [],
               'failures': [], 'items': {}}
 
-    def done(item, status, note=''):
+    def done(item, status, note='', freed=None):
+        """``note``: a few words on how it went; ``freed``: the bytes it gave back (the page writes the unit)."""
         item['status'] = status
         item['result'] = note
-        report['items'][item['id']] = {'status': status, 'note': note}
+        if freed is not None:
+            item['freed'] = int(freed)
+        report['items'][item['id']] = {'status': status, 'note': note, 'freed': item.get('freed')}
 
     # 1. junk rules (permanent deletion of rebuildable caches)
     rules = [i for i in chosen if i['kind'] == 'rule']
@@ -812,7 +815,7 @@ def execute(backend, plan: dict, item_ids: list[str], job) -> dict:
             else:
                 report['deleted']['count'] += row['files']
                 report['deleted']['bytes'] += row['freed']
-                done(item, 'done', f'释放 {row["freed"]} 字节')
+                done(item, 'done', '已清理', freed=row['freed'])
                 if row['failed']:
                     report['failures'].append({'title': item['title'], 'reason': f'{row["failed"]} 个文件正在使用，已跳过'})
 
@@ -866,10 +869,12 @@ def execute(backend, plan: dict, item_ids: list[str], job) -> dict:
             report['failures'].append({'path': f.get('path'), 'reason': f.get('reason')})
         for item in {id(i): i for i, _ in to_recycle}.values():
             ok = [p for p in item['paths'] if paths.key(p) in gone or any(paths.is_within(p, g) for g in recycled)]
+            # in the Recycle Bin: the space comes back when it is emptied (the size is the check-up's measure)
             if len(ok) == len(item['paths']):
-                done(item, 'done', '已移到回收站')
+                done(item, 'done', '已移到回收站', freed=item['size'] or 0)
             elif ok:
-                done(item, 'partial', f'{len(ok)}/{len(item["paths"])} 项已移到回收站')
+                done(item, 'partial', f'{len(ok)}/{len(item["paths"])} 项已移到回收站',
+                     freed=(item['size'] or 0) * len(ok) // len(item['paths']))
             else:
                 done(item, 'failed', '没有移到回收站')
         if recycled or stats.failed:

@@ -18,7 +18,7 @@
   const THRESHOLDS = [9, 8, 7, 6, 5].map((t) => [t, `≥ ${t} 分`]);
   const state = { status: 'idle', plan: null, planId: null, open: new Set(), progress: {}, report: null, jobId: null,
     withMine: false, picked: null, run: { started: Date.now(), stage: null, stageAt: Date.now(), shown: 0, left: null },
-    executing: 0, entering: null };
+    executing: 0, entering: null, freeBefore: null };
   let root = null;
 
   function strata(drive, reclaim, cls) {
@@ -120,6 +120,8 @@
     state.status = 'executing';
     state.progress = {};
     state.executing = chosen.reduce((s, it) => s + (it.size || 0), 0);
+    const sys = (PX.state.init.drives || []).find((d) => d.system);
+    state.freeBefore = sys ? sys.free : null;
     draw();
     try {
       state.report = await PX.api.run('plan_execute', { item_ids: chosen.map((it) => it.id) }, (p) => { state.progress = p; draw(true); },
@@ -173,8 +175,11 @@
     const reclaim = state.plan ? selectedSize() : 0;
     const [v, u] = fmt.split(sys.free);
     const name = sys.letter || sys.root.replace(/\\$/, '');
+    // after a cleanup: how much more free space the drive really has now (the Recycle Bin still holds the rest)
+    const gained = state.report && state.freeBefore !== null ? sys.free - state.freeBefore : 0;
     const box = c.appendChild(h('section.hero',
       h('div.hero-top', h('span.hero-figure', v, h('small', u)),
+        gained > 1024 * 1024 ? h('span.hero-gain', '+' + fmt.bytes(gained)) : null,
         h('span.hero-caption', `${name} ${sys.label || '系统盘'}的可用空间，共 ${fmt.bytes(sys.total)}`)),
       strata(sys, reclaim),
       h('div.hero-legend',
@@ -256,18 +261,67 @@
     box.appendChild(h('div.cur', p.detail ? PX.displayPath(p.detail) : ''));
   }
 
+  // the last cleanup at a glance: what was freed now, what waits in the Recycle Bin, what did not work and why
   function reportBox(c) {
     const r = state.report;
     if (!r) return;
-    const freed = r.deleted.bytes + r.recycled.bytes;
-    const parts = [];
-    if (r.deleted.bytes) parts.push(`永久删除 ${fmt.bytes(r.deleted.bytes)}`);
-    if (r.recycled.count) parts.push(`${r.recycled.count} 项移到回收站（${fmt.bytes(r.recycled.bytes)}）`);
-    if (r.disabled.length) parts.push(`禁用 ${r.disabled.length} 个开机启动项`);
-    c.appendChild(h('div.result', h('span.big', fmt.bytes(freed)),
-      h('div.grow', h('div', '清理完成：' + (parts.join('，') || '没有需要处理的内容')),
-        r.failures.length ? h('div.small.muted', `${r.failures.length} 项没有完成：` + r.failures.slice(0, 2).map((f) => (f.title || f.path || '') + '（' + f.reason + '）').join('；')) : null),
-      h('button.btn.small', { type: 'button', onclick: () => PX.go('history') }, '查看记录')));
+    const figures = [];
+    if (r.deleted.bytes) figures.push(['good', fmt.bytes(r.deleted.bytes), '已释放', '永久删除的缓存和临时文件']);
+    if (r.recycled.count) figures.push(['', fmt.bytes(r.recycled.bytes), '在回收站', `${r.recycled.count} 项，需要时可以还原；清空回收站后才真正释放`]);
+    if (r.disabled.length) figures.push(['', String(r.disabled.length), '个开机启动项已禁用', '随时可以在「开机与服务」里重新启用']);
+    const problems = r.failures || [];
+    const ok = Object.values(r.items || {}).filter((x) => x.status === 'done').length;
+    const card = c.appendChild(h('section.result-card' + (problems.length ? '.has-problems' : ''),
+      h('div.rc-head', PX.icon(problems.length ? 'warn' : 'check'),
+        h('b', problems.length ? `清理完成，${problems.length} 项没有完成` : '清理完成'),
+        h('span.muted', ok ? `处理了 ${ok} 项` : ''), h('span.grow'),
+        h('button.btn.small', { type: 'button', onclick: () => PX.go('history') }, '查看记录')),
+      figures.length ? h('div.rc-figures', figures.map(([kind, value, label, note]) =>
+        h('div.rc-figure' + (kind ? '.' + kind : ''), h('div.rc-value', value), h('div.rc-label', label), h('div.rc-note', note))))
+        : h('div.muted', '没有需要处理的内容')));
+    if (problems.length) {
+      card.appendChild(h('div.rc-problems', h('div.dp-label', '没有完成的'),
+        problems.slice(0, 5).map((f) => h('div.rc-problem', h('b', f.title || PX.displayPath(f.path || '')), h('span', f.reason))),
+        problems.length > 5 ? h('div.small.muted', `另有 ${problems.length - 5} 项，详见「操作记录」`) : null));
+    }
+  }
+
+  // how a handled item went, in words, with the size it gave back
+  function outcome(it) {
+    const size = fmt.bytes(it.freed !== undefined && it.freed !== null ? it.freed : it.size || 0);
+    if (it.status === 'done') {
+      if (it.result && /^已在|^已处理/.test(it.result)) return [it.result, 'good'];  // handled on a tool page
+      if (it.action === 'delete') return [`已清理，释放 ${size}`, 'good'];
+      if (it.action === 'recycle') return [`已移到回收站（${size}），需要时可以还原`, 'good'];
+      if (it.action === 'disable') return ['已禁用开机启动，随时可以重新启用', 'good'];
+      return [it.result || '已完成', 'good'];
+    }
+    if (it.status === 'partial') return [`只完成了一部分：${it.result}`, 'warn'];
+    return [`没有完成：${it.result || '原因未知'}`, 'warn'];
+  }
+
+  // everything handled (this session or on a tool page), out of the way of what is still to decide: folded by default
+  function handled(c) {
+    const done = items().filter((it) => it.status !== 'pending');
+    if (!done.length) return;
+    const ok = done.filter((it) => it.status === 'done');
+    const open = state.open.has('handled');
+    const sec = c.appendChild(h('section.group-card.g-done', { id: 'group-handled' }));
+    sec.appendChild(h('button.gc-head.gc-toggle', { type: 'button', 'aria-expanded': open ? 'true' : 'false',
+      onclick: () => { open ? state.open.delete('handled') : state.open.add('handled'); draw(true); } },
+    PX.icon('check'), h('h2', '已处理'), h('span.gc-count', `${done.length} 项`),
+    h('span.gc-note', `${ok.length} 项完成` + (done.length > ok.length ? `，${done.length - ok.length} 项没有完成` : '')),
+    h('span.gc-size', fmt.bytes(ok.reduce((s, it) => s + (it.freed !== undefined && it.freed !== null ? it.freed : it.size || 0), 0))),
+    PX.icon('chev', 'gc-chev')));
+    if (!open) return;
+    const list = sec.appendChild(h('div.list'));
+    for (const it of done) {
+      const [text, kind] = outcome(it);
+      const one = it.paths && it.paths.length === 1 ? it.paths[0] : '';
+      list.appendChild(h('div.row.done-row', PX.icon(kind === 'good' ? 'check' : 'warn', 'ic ' + kind),
+        h('div.cell-main', h('div.name-line', h('span.name-text', it.title), h('span.muted.small', it.category)), h('div.why.' + kind, text)),
+        h('div.row-actions', one ? PX.revealButton(one) : null)));
+    }
   }
 
   const scrollTo = (id) => PX.flash(document.getElementById(id));
@@ -275,27 +329,33 @@
   // the plan at a glance: three tiles (one per group) and where the space is, by category
   function overview(c) {
     const p = state.plan;
-    const s = p.summary;
-    const pending = items().filter((it) => it.status === 'pending' && it.action !== 'none');
+    // what is still to decide: handled items are counted in 「已处理」, not here
+    const open = items().filter((it) => it.status === 'pending');
+    const pending = open.filter((it) => it.action !== 'none');
     const sel = selectedItems();
     const box = c.appendChild(h('section.overview'));
     const head = box.appendChild(h('div.ov-head'));
-    if (!state.report && pending.length) {
+    const review = pending.filter((it) => it.group === 'review').length;
+    if (pending.length) {
       head.appendChild(h('div.ov-conclusion',
-        h('b', sel.length ? `已经替你勾好 ${sel.length} 项，可以释放 ${fmt.bytes(selectedSize())}` : '没有自动勾选的项目'),
-        h('span.muted', s.review.count ? `　另有 ${s.review.count} 项建议你看看，不会自动处理。` : '')));
+        h('b', state.report ? `还有 ${pending.length} 项可以处理` + (sel.length ? `，已选 ${sel.length} 项（${fmt.bytes(selectedSize())}）` : '')
+          : sel.length ? `已经替你勾好 ${sel.length} 项，可以释放 ${fmt.bytes(selectedSize())}` : '没有自动勾选的项目'),
+        h('span.muted', !state.report && review ? `　另有 ${review} 项建议你看看，不会自动处理。` : '')));
+    } else if (state.report) {
+      head.appendChild(h('div.ov-conclusion', h('b', '方案里能处理的都处理完了'), h('span.muted', '　想再找找，可以「重新体检」。')));
     }
-    const groupSel = (g) => items().filter((it) => it.group === g && isSel(it));
     const tiles = box.appendChild(h('div.tiles'));
     for (const g of p.groups) {
-      const sum = s[g.id];
-      if (!sum.count) continue;
-      const chosen = groupSel(g.id);
+      const rows = open.filter((it) => it.group === g.id);
+      if (!rows.length) continue;
+      const size = rows.reduce((a, it) => a + (it.size || 0), 0);
+      const chosen = rows.filter(isSel);
       const chosenSize = chosen.reduce((a, it) => a + (it.size || 0), 0);
-      tiles.appendChild(PX.statTile({ cls: GROUP[g.id][0], label: g.name, value: fmt.bytes(sum.size),
-        sub: g.id === 'info' ? `${sum.count} 项，只给说明和入口` : `${sum.count} 项 · 已选 ${chosen.length} 项（${fmt.bytes(chosenSize)}）`,
-        part: g.id === 'info' ? undefined : sum.size ? chosenSize / sum.size : 0, onclick: () => scrollTo('group-' + g.id) }));
+      tiles.appendChild(PX.statTile({ cls: GROUP[g.id][0], label: g.name, value: fmt.bytes(size),
+        sub: g.id === 'info' ? `${rows.length} 项，只给说明和入口` : `${rows.length} 项 · 已选 ${chosen.length} 项（${fmt.bytes(chosenSize)}）`,
+        part: g.id === 'info' ? undefined : size ? chosenSize / size : 0, onclick: () => scrollTo('group-' + g.id) }));
     }
+    if (!tiles.childNodes.length) tiles.remove();
     // where the space is: categories of the two actionable groups
     const cats = new Map();
     for (const it of items()) {
@@ -480,12 +540,11 @@
   }
 
   function group(c, id, name) {
-    const rows = items().filter((it) => it.group === id);
+    const rows = items().filter((it) => it.group === id && it.status === 'pending');  // handled ones: see handled()
     if (!rows.length) return;
-    const sum = state.plan.summary[id];
     const sec = c.appendChild(h('section.group-card.' + GROUP[id][0], { id: 'group-' + id }));
     sec.appendChild(h('div.gc-head', h('i.sw.' + GROUP[id][0]), h('h2', name), h('span.gc-count', `${rows.length} 项`),
-      h('span.gc-note', GROUP[id][1]), h('span.gc-size', fmt.bytes(sum.size))));
+      h('span.gc-note', GROUP[id][1]), h('span.gc-size', fmt.bytes(rows.reduce((s, it) => s + (it.size || 0), 0)))));
     const list = sec.appendChild(h('div.list'));
     const cats = [];
     for (const it of rows) { let cat = cats.find((x) => x.name === it.category); if (!cat) cats.push(cat = { name: it.category, rows: [] }); cat.rows.push(it); }
@@ -525,8 +584,9 @@
           h('button.btn.small', { type: 'button', onclick: () => PX.go('settings') }, '去设置')));
       }
       overview(c);
-      scoreBar(c);
+      if (items().some((it) => it.status === 'pending' && it.action !== 'none')) scoreBar(c);
       for (const g of p.groups) group(c, g.id, g.name);
+      handled(c);
       const n = selectedItems().length;
       if (n || state.status === 'executing') {
         c.appendChild(h('div.actionbar', h('div.grow', h('span.fig', fmt.bytes(selectedSize())), h('span.muted', `  已选 ${n} 项`)),

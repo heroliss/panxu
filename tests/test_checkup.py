@@ -491,8 +491,14 @@ class CheckupTest(TempDirTest):
         self.assertEqual(originals, {paths.key(p) for p in recycle_paths})
         temp_left = os.path.join(self.backend.env['TEMP'], 'still_in_use.tmp')
         self.assertTrue(os.path.exists(temp_left), 'files younger than 24 hours stay')
-        statuses = {i['status'] for i in self.call('plan')['items'] if i['id'] in ids}
-        self.assertEqual(statuses, {'done'})
+        done = [i for i in self.call('plan')['items'] if i['id'] in ids]
+        self.assertEqual({i['status'] for i in done}, {'done'})
+        # sizes come back as numbers (the page writes the unit), the words stay short
+        for item in done:
+            if item['action'] in ('delete', 'recycle'):
+                self.assertIsInstance(item.get('freed'), int, item['title'])
+            self.assertNotIn('字节', item['result'])
+        self.assertEqual(sum(i['freed'] for i in done if i['action'] == 'delete'), report['deleted']['bytes'])
         kinds = [h['kind'] for h in self.call('history')]
         for kind in ('junk', 'recycle', 'startup', 'ai'):
             self.assertIn(kind, kinds)
