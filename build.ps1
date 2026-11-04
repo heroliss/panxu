@@ -99,4 +99,4 @@ Compress-Archive -Path $package -DestinationPath $zip
 Write-Host ''
 Write-Host "Done: $exe"
 Write-Host "Zip:  $zip"
-Write-Host 'Build success is not acceptance: launch PanXu.exe and walk through the checklist in README.md.'
+Write-Host 'Build success is not acceptance: launch PanXu.exe and walk through docs/ACCEPTANCE.md.'

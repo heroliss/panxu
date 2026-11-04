@@ -251,7 +251,7 @@ class CheckupTest(TempDirTest):
         self.assertIn('演练环境', r['error'])
 
     def test_hibernation_off_and_undo(self):
-        plan = self.checkup(use_ai=False)
+        self.checkup(use_ai=False)
         hiberfil = os.path.join(self.backend.env['SystemDrive'], 'hiberfil.sys')
         self.assertTrue(os.path.exists(hiberfil))
         self.call('hibernate_set', enabled=False)
