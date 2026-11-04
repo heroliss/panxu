@@ -359,6 +359,8 @@ input[type=checkbox]:disabled { cursor: not-allowed; }
 .dup-head { display: flex; gap: 12px; align-items: baseline; padding: 0 6px 4px; }
 .dup-head .size { margin-left: auto; font-family: var(--font-num); }
 .dup-file { grid-template-columns: 22px minmax(0, 1fr) 140px 64px; padding: 6px; border-bottom: 0; align-items: center; }
+.dup-note { padding: 0 6px 6px; }
+.dup-place { margin-top: 3px; }
 .dup-file.keep .name::after { content: "保留"; flex: none; margin-left: 8px; font-size: 11.5px; color: var(--verdigris); font-weight: 600; }
 
 /* ---------- startup & services ---------- */

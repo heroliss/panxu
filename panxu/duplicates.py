@@ -1,22 +1,65 @@
 """Duplicate-file finder: size → partial hash → full hash.
 
 Cloud-only placeholders are skipped (hashing them would download them), and
-hard links to the same physical file are not reported as duplicates. Programs'
-folders and code projects are not searched: the same DLL in two portable
-programs, or an asset copied into a build folder, is needed in both places.
+hard links to the same physical file are not reported as duplicates. A copy
+inside a program's folder or a code project is marked with where it is
+(``place``): the same DLL in two portable programs, or a font two projects each
+load from their own folder, may be needed in both places.
 """
 from __future__ import annotations
 
 import hashlib
 import os
+import re
 import stat
 import time
 
-from . import fsops, winapi
+from . import fsops, paths, winapi
 from .insights import is_program_dir, is_project_dir
 
 CHUNK = 1024 * 1024
 EDGE = 64 * 1024
+# a project's build output: the build writes it again
+BUILD_DIRS = {'out', 'dist', 'build', 'target', 'bin', 'obj', 'release', 'debug', '.next', '.nuxt', 'coverage'}
+# which copy of a group to keep first: a program's file, then a project's source, then a build output, then a
+# copy next to a project, then a loose copy
+PLACE_RANK = {'program': 0, 'project': 1, 'build': 2, 'near': 3, None: 4}
+IN_USE = ('program', 'project', 'build')  # inside a program's folder or a project: the copy it may load
+
+
+def place_label(f: dict) -> str:
+    """'代码工程「萍萍瑜伽故事\\代码工程」' for a copy with a place: two levels, so that two projects whose own
+    folder has the same name can be told apart."""
+    parts = [p for p in re.split(r'[\\/]', f.get('place_root') or '') if p and not p.endswith(':')]
+    name = '\\'.join(parts[-2:])
+    if f.get('place') == 'build':
+        return f'工程「{name}」的构建输出'
+    if f.get('place') == 'near':
+        return f'「{name}」里的代码工程旁边'
+    return {'program': '程序文件夹', 'project': '代码工程'}.get(f.get('place'), '') + f'「{name}」'
+
+
+def place_of(path: str, homes: dict, near: dict | None = None) -> dict | None:
+    """{'place': 'program' | 'project' | 'build', 'place_root': folder} for a file inside a program's folder or
+    a code project (the nearest one); 'near' for one elsewhere in the folder that holds a project
+    (萍萍瑜伽故事\\audio next to 萍萍瑜伽故事\\代码工程: often the project's source material); None for a loose
+    file. ``homes``: folder key -> (kind, folder); ``near``: key of a folder holding a project -> folder."""
+    d, below, beside = os.path.dirname(path), [], None
+    while True:
+        k = paths.key(d)
+        found = homes.get(k)
+        if found:
+            kind, root = found
+            if kind == 'project' and any(p.lower() in BUILD_DIRS for p in below):
+                kind = 'build'
+            return {'place': kind, 'place_root': root}
+        if beside is None and near and k in near:
+            beside = near[k]
+        up = os.path.dirname(d)
+        if up == d:
+            return {'place': 'near', 'place_root': beside} if beside else None
+        below.append(os.path.basename(d))
+        d = up
 
 
 def _hash_partial(path: str, size: int) -> bytes | None:
@@ -59,6 +102,7 @@ def find_duplicates(roots: list[str], *, min_size: int = 1024 * 1024, skip=None,
     started = time.time()
     by_size: dict[int, list] = {}
     seen_dirs = set()
+    homes: dict[str, tuple[str, str]] = {}  # programs' folders and code projects met on the way
     files_seen = 0
 
     def report(phase, **extra):
@@ -75,9 +119,10 @@ def find_duplicates(roots: list[str], *, min_size: int = 1024 * 1024, skip=None,
             if skip and skip(dirpath):
                 dirs.clear()  # walk_files extends the stack after yield, so this prunes
                 continue
-            if dirpath != root and (is_program_dir(files, dirs) or is_project_dir(files, dirs)):
-                dirs.clear()
-                continue
+            if dirpath != root:
+                kind = 'program' if is_program_dir(files, dirs) else 'project' if is_project_dir(files, dirs) else None
+                if kind:
+                    homes[paths.key(dirpath)] = (kind, dirpath)
             for entry in files:
                 try:
                     st = entry.stat(follow_symlinks=False)
@@ -127,6 +172,15 @@ def find_duplicates(roots: list[str], *, min_size: int = 1024 * 1024, skip=None,
                 report('quick', done=done, total=total_candidates)
         partial_groups.extend((size, g) for g in groups.values() if len(g) > 1)
 
+    # folders that hold a code project (never a folder the user chose to search, nor a drive): what else lies in
+    # them is often the project's material
+    chosen = {paths.key(r) for r in roots}
+    near = {}
+    for kind, home in homes.values():
+        parent = os.path.dirname(home)
+        if kind == 'project' and paths.key(parent) not in chosen and os.path.dirname(parent) != parent:
+            near[paths.key(parent)] = parent
+
     bytes_total = sum(size * len(g) for size, g in partial_groups if size > 2 * EDGE)
     hashed = [0]
 
@@ -154,7 +208,7 @@ def find_duplicates(roots: list[str], *, min_size: int = 1024 * 1024, skip=None,
                 'id': len(groups_out),
                 'size': size,
                 'wasted': size * (len(group) - 1),
-                'files': [{'path': p, 'mtime': m} for p, m in group],
+                'files': [{'path': p, 'mtime': m, **(place_of(p, homes, near) or {})} for p, m in group],
             })
     groups_out.sort(key=lambda g: g['wasted'], reverse=True)
     for index, g in enumerate(groups_out):

@@ -3,7 +3,7 @@ import unittest
 
 from helpers import WIN_ENV, TempDirTest
 
-from panxu.duplicates import find_duplicates, verify_unchanged
+from panxu.duplicates import find_duplicates, place_label, verify_unchanged
 from panxu.knowledge import Knowledge
 from panxu.scanner import FLAG_LINKS, FLAG_PROGRAM, SpaceScan
 
@@ -103,7 +103,7 @@ class DuplicatesTest(TempDirTest):
         self.assertEqual(len(result['groups']), 1)
         self.assertEqual(len(result['groups'][0]['files']), 2)
 
-    def test_program_and_project_folders_are_not_searched(self):
+    def test_copies_in_programs_and_projects_say_where_they_are(self):
         # the same Qt DLL in two portable programs: recycling one copy breaks a program
         for app in ('appA', 'appB'):
             self.make(f'y/{app}/tool.exe', 100)
@@ -114,8 +114,33 @@ class DuplicatesTest(TempDirTest):
         self.make('y/photos/a.jpg', 3000)
         self.make('y/photos/a (1).jpg', 3000)
         result = find_duplicates([os.path.join(self.tmp, 'y')], min_size=1)
-        groups = [sorted(os.path.basename(f['path']) for f in g['files']) for g in result['groups']]
-        self.assertEqual(groups, [['a (1).jpg', 'a.jpg']])
+        places = {g['size']: {os.path.relpath(f['path'], self.tmp).replace('\\', '/'): f.get('place') for f in g['files']}
+                  for g in result['groups']}
+        self.assertEqual(places[5000], {'y/appA/Qt5Core.dll': 'program', 'y/appB/Qt5Core.dll': 'program'})
+        self.assertEqual(places[4000], {'y/proj/assets/logo.png': 'project', 'y/proj/build/logo.png': 'build'})
+        self.assertEqual(places[3000], {'y/photos/a.jpg': None, 'y/photos/a (1).jpg': None})
+        dll_group = next(g for g in result['groups'] if g['size'] == 5000)
+        self.assertEqual({os.path.basename(f['place_root']) for f in dll_group['files']}, {'appA', 'appB'})
+        self.assertEqual(place_label({'place': 'project', 'place_root': 'E:\\工程\\萍萍瑜伽故事\\代码工程'}),
+                         '代码工程「萍萍瑜伽故事\\代码工程」', 'two levels tell two 代码工程 folders apart')
+        self.assertEqual(place_label({'place': 'build', 'place_root': 'E:\\游戏'}), '工程「游戏」的构建输出')
+
+    def test_copies_next_to_a_project_are_its_material(self):
+        # found on a real PC: 萍萍瑜伽故事\audio\mix.wav next to 萍萍瑜伽故事\代码工程 (and its public\mix.wav)
+        self.make('z/story/code/package.json', 10)
+        self.make('z/story/code/public/mix.wav', 4000)
+        self.make('z/story/audio/mix.wav', 4000)
+        self.make('z/downloads/mix.wav', 4000)
+        self.make('z/top/package.json', 10)       # a project directly in the searched folder:
+        self.make('z/elsewhere/song.mp3', 3000)   # the searched folder itself is not 「next to」 it
+        self.make('z/other/song.mp3', 3000)
+        result = find_duplicates([os.path.join(self.tmp, 'z')], min_size=1)
+        places = {os.path.relpath(f['path'], self.tmp).replace('\\', '/'): f.get('place')
+                  for g in result['groups'] for f in g['files']}
+        self.assertEqual(places['z/story/code/public/mix.wav'], 'project')
+        self.assertEqual(places['z/story/audio/mix.wav'], 'near')
+        self.assertIsNone(places['z/downloads/mix.wav'])
+        self.assertIsNone(places['z/elsewhere/song.mp3'])
 
     def test_verify_unchanged(self):
         p = self.make('f', 10)

@@ -404,6 +404,20 @@
 
   // --- generic pieces ---
   PX.tag = (text, kind, icon) => h('span.tag' + (kind ? '.' + kind : ''), icon ? PX.icon(icon) : null, text);
+  // where a duplicate copy lives (duplicates.place_of, the same words as duplicates.place_label): a program or a
+  // code project may load its own copy, so deleting it there can break it; a build output is written again
+  PX.placeText = function (f) {
+    if (!f || !f.place) return '';
+    // two levels: 「萍萍瑜伽故事\代码工程」 tells two projects apart whose own folder has the same name
+    const name = (f.place_root || '').replace(/[\\/]+$/, '').split(/[\\/]/).filter((p) => p && !p.endsWith(':')).slice(-2).join('\\');
+    if (f.place === 'build') return `工程「${name}」的构建输出`;
+    if (f.place === 'near') return `「${name}」里的代码工程旁边`;
+    return (f.place === 'program' ? '程序文件夹' : '代码工程') + `「${name}」`;
+  };
+  const PLACE_HINT = { build: '重新构建时会再生成', near: '可能是旁边那个工程的素材来源，例如脚本从这里读取',
+    program: '这个程序可能用到自己的这一份，删掉可能让它不能运行', project: '这个工程可能引用自己的这一份，删掉可能让它出问题' };
+  PX.placeTag = (f) => (f && f.place ? h('span.tag' + (f.place === 'build' ? '' : '.warn'), { title: PLACE_HINT[f.place] || '' },
+    '在' + PX.placeText(f) + (f.place === 'near' ? '' : '里')) : null);
   PX.switchEl = function (checked, onchange, disabled) {
     const input = h('input', { type: 'checkbox', checked: !!checked, disabled: !!disabled, onchange });
     return h('label.switch', input, h('span'));

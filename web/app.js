@@ -117,6 +117,20 @@
   PX.isCurrent = (id) => current === id;
   PX.currentPage = () => current;
 
+  // ---- dragging across a row to copy its text (or double-clicking a word) ends in a click on the row, which
+  // would expand it and redraw it, losing the selection: such a click is not a click
+  let pressedAt = null;
+  document.addEventListener('mousedown', (e) => { pressedAt = [e.clientX, e.clientY]; }, true);
+  PX.endsSelection = function (e) {
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed || !sel.toString().trim()) return false;
+    const moved = pressedAt && Math.hypot(e.clientX - pressedAt[0], e.clientY - pressedAt[1]) > 3;
+    return moved || e.detail >= 2;
+  };
+  document.addEventListener('click', (e) => {
+    if (PX.endsSelection(e)) { e.stopPropagation(); e.preventDefault(); }
+  }, true);
+
   // ---- a job that took a while has finished: a short message with what came out, 「查看」 when the user has
   // moved to another page meanwhile, and the taskbar button flashes when PanXu is not the active window.
   // [what to say, the page that shows it (null: where it was started)]

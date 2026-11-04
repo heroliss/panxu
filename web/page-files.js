@@ -99,11 +99,17 @@
   const dup = { roots: null, min: 1, status: 'idle', progress: {}, result: null, selected: new Set(), keep: 'oldest', jobId: null, shown: 60 };
   let dupRoot = null;
 
+  // the copy to keep by the chosen rule; but copies in a program's folder or a code project may be in use there:
+  // they stay and only the loose copies are ticked, and a group of nothing but such copies is left to the user
   function autoSelect() {
     dup.selected.clear();
     for (const g of dup.result.groups) {
       const files = g.files.filter((f) => !f.blocked);
       if (files.length < 1) continue;
+      if (g.files.some((f) => f.place)) {
+        for (const f of files) if (!f.place) dup.selected.add(f.path);
+        continue;
+      }
       let keep;
       if (dup.keep === 'newest') keep = g.files.reduce((a, b) => (b.mtime > a.mtime ? b : a));
       else if (dup.keep === 'shortest') keep = g.files.reduce((a, b) => (b.path.length < a.path.length ? b : a));
@@ -174,11 +180,16 @@
 
     c.appendChild(h('div.filters', { style: { marginTop: '18px' } },
       h('label', '自动勾选：每组保留', PX.seg([['oldest', '最早的'], ['newest', '最新的'], ['shortest', '路径最短的']], dup.keep,
-        (v) => { dup.keep = v; autoSelect(); drawDups(true); }), '一份')));
+        (v) => { dup.keep = v; autoSelect(); drawDups(true); }), '一份'),
+      h('span.small.muted', '程序文件夹、代码工程里和工程旁边的副本不会自动勾选')));
     const list = c.appendChild(h('div', { style: { borderTop: '1px solid var(--rule)' } }));
     for (const g of dup.result.groups.slice(0, dup.shown)) {
       const grp = list.appendChild(h('div.dup-group', h('div.dup-head', h('b', `${g.files.length} 个相同文件`),
         h('span.muted.small', `每个 ${fmt.bytes(g.size)}`), h('span.size', '可节省 ' + fmt.bytes(g.wasted)))));
+      if (g.files.every((f) => f.place) && g.files.some((f) => f.place !== 'build')) {
+        grp.appendChild(h('div.small.muted.dup-note', '每一份都在程序文件夹、代码工程里或工程旁边，可能各自被用到，所以没有自动勾选。'
+          + '删掉其中一份前，先确认对应的程序或工程不再需要它。'));
+      }
       for (const f of g.files) {
         const checked = dup.selected.has(f.path);
         const box = h('input', { type: 'checkbox', checked, disabled: !!f.blocked, 'aria-label': '选择 ' + f.path,
@@ -191,7 +202,8 @@
             drawDups(true);
           } });
         grp.appendChild(h('div.row.dup-file' + (checked ? '' : '.keep'), box,
-          h('div.cell-main.ic-cell', PX.fileIcon(f.path), h('div.name', PX.pathText(f.path))),
+          h('div.cell-main.ic-cell', PX.fileIcon(f.path), h('div', h('div.name', PX.pathText(f.path)),
+            f.place ? h('div.dup-place', PX.placeTag(f)) : null)),
           h('div.size.muted.small', '修改于 ' + fmt.date(f.mtime)), PX.pathButtons(f.path)));
       }
     }

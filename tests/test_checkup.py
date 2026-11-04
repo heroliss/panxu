@@ -381,6 +381,49 @@ class CheckupTest(TempDirTest):
         self.assertNotIn('pack.rar', by_name, 'an archive 盘序 could not check against its folder is not offered')
         self.assertNotIn('plan.md', by_name, 'a 2 KB file frees nothing worth a place in the plan')
 
+    def test_duplicates_in_projects_are_shown_but_scored_low(self):
+        # found on a real PC: the same font in two projects' lib\fonts folders; each project loads its own copy
+        from panxu import checkup
+        policy = paths.ProtectionPolicy(self.backend.env, allowed_roots=[self.sb.root], drive_roots=self.sb.drive_roots)
+        docs = os.path.join(self.backend.env['USERPROFILE'], 'Documents')
+
+        def copy(rel, place=None, root=None):
+            f = {'path': os.path.join(docs, *rel.split('/')), 'mtime': 100.0}
+            if place:
+                f.update(place=place, place_root=os.path.join(docs, root))
+            return f
+        groups = [
+            {'size': 5 << 20, 'files': [copy('瑜伽/代码工程/lib/fonts/Noto.woff', 'project', '瑜伽/代码工程'),
+                                        copy('动画/代码工程/lib/fonts/Noto.woff', 'project', '动画/代码工程')]},
+            {'size': 6 << 20, 'files': [copy('游戏/assets/hero.png', 'project', '游戏'),
+                                        copy('游戏/dist/hero.png', 'build', '游戏')]},
+            {'size': 7 << 20, 'files': [copy('下载/score.wav'), copy('片子/public/score.wav', 'project', '片子')]},
+            {'size': 8 << 20, 'files': [copy('照片/a.jpg'), copy('照片/a (1).jpg')]},
+            # the story's audio folder next to its code project: maybe the material a script reads
+            {'size': 9 << 20, 'files': [copy('故事/代码工程/public/mix.wav', 'project', '故事/代码工程'),
+                                        copy('故事/audio/mix.wav', 'near', '故事')]},
+            {'size': 10 << 20, 'files': [copy('故事/audio/take.wav', 'near', '故事'), copy('下载/take.wav')]},
+        ]
+        builder = checkup.PlanBuilder(policy)
+        builder.add_duplicates({'groups': groups})
+        by_title = {i['title'].split(' 等')[0]: i for i in builder.items}
+        fonts = by_title['Noto.woff']
+        self.assertEqual(fonts['score'], 30, 'each project may load its own copy')
+        self.assertIn('可能各自引用', fonts['basis'][1])
+        self.assertFalse(fonts['selected'])
+        self.assertEqual(by_title['hero.png']['score'], 50, 'only the build output goes: a build writes it again')
+        self.assertIn('assets', by_title['hero.png']['keep'])
+        wav = by_title['score.wav']
+        self.assertEqual((wav['score'], len(wav['paths'])), (85, 1))
+        self.assertIn('下载', wav['paths'][0], 'the loose copy goes, the project keeps its own')
+        self.assertEqual(by_title['a.jpg']['score'], 85)
+        mix = by_title['mix.wav']
+        self.assertEqual(mix['score'], 50, 'the project keeps its copy; the one next to it may be its material')
+        self.assertTrue(any('素材来源' in line for line in mix['basis']))
+        take = by_title['take.wav']
+        self.assertEqual((take['score'], take['keep']), (85, os.path.join(docs, '故事', 'audio', 'take.wav')),
+                         'the copy next to the project stays, the one in 下载 goes')
+
     def test_without_ai_heuristics_fill_in(self):
         plan = self.checkup(use_ai=False, auto_select='careful')
         self.assertEqual(self.model.requests, [])

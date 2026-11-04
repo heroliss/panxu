@@ -70,6 +70,15 @@ assert.strictEqual(PX.scoreMatch(plan, ticks(), false, ORDER('none')), 'none');
 assert.strictEqual(PX.scoreMatch(plan, ticks(), false, ORDER(8)), 'none', 'unticked by hand: 全不选, not ≥ 9 (which ticks nothing here either)');
 assert.strictEqual(PX.scoreMatch(plan, ticks(), false, ORDER(9)), 9, 'but ≥ 9 stays highlighted when it was clicked');
 
+// where a duplicate copy lives: the same words as duplicates.place_label
+assert.strictEqual(PX.placeText({ place: 'project', place_root: R`E:\工程\萍萍瑜伽故事\代码工程` }), R`代码工程「萍萍瑜伽故事\代码工程」`);
+assert.strictEqual(PX.placeText({ place: 'build', place_root: R`E:\游戏\ `.trim() }), '工程「游戏」的构建输出');
+assert.strictEqual(PX.placeText({ place: 'program', place_root: R`D:\Tools\Snipaste` }), R`程序文件夹「Tools\Snipaste」`);
+assert.strictEqual(PX.placeText({ place: 'near', place_root: R`E:\公用工程\萍萍瑜伽故事` }), R`「公用工程\萍萍瑜伽故事」里的代码工程旁边`);
+assert.strictEqual(PX.placeText({ path: 'x' }), '');
+const dupPy = require('fs').readFileSync(require('path').join(__dirname, '..', 'panxu', 'duplicates.py'), 'utf8');
+for (const words of ['的构建输出', '里的代码工程旁边', "'程序文件夹'", "'代码工程'"]) assert.ok(dupPy.includes(words), 'python says it the same way: ' + words);
+
 // 「打开」 is for documents; programs, installers, scripts and shortcuts would run
 for (const p of [R`C:\a\report.PDF`, R`C:\a\movie.mkv`, R`C:\a\photos.zip`, R`C:\a\notes`, R`C:\a.b\readme.txt`]) assert.ok(PX.canOpen(p), p);
 for (const p of [R`C:\a\setup.EXE`, R`C:\a\run.bat`, R`C:\a\x.ps1`, R`C:\a\app.lnk`, R`C:\a\pkg.msi`, R`C:\a\w.vbs`, R`C:\a\k.reg`]) {
