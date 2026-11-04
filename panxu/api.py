@@ -619,6 +619,14 @@ class Backend:
             for s in result['suggestions']:
                 s['blocked'] = policy.reason(s['path'])
                 s['caution'] = policy.caution(s['path'])
+            # folders PanXu recognises itself (a drive's Temp folder): listed too, without asking the model
+            # (and not kept as AI verdicts for the check-up)
+            known = [k for k in self.analyst.known_cleanable(scan)
+                     if not any(paths.is_within(k['path'], s['path']) for s in result['suggestions'])]
+            for s in known:
+                s['blocked'] = policy.reason(s['path'])
+                s['caution'] = policy.caution(s['path'])
+            result['suggestions'] += known
             # the same score, reasons and auto-tick as the check-up
             checkup.assess_ai_dirs(result['suggestions'], policy, self.env, self.analyst, scan,
                                    settings.get('checkup', {}).get('auto_threshold', checkup.DEFAULT_THRESHOLD))

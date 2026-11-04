@@ -271,7 +271,7 @@ class PlanBuilder:
     def add_ai_dirs(self, suggestions: list[dict], env: dict, analyst=None, scan=None):
         app_bases = [env.get(k) for k in ('LOCALAPPDATA', 'APPDATA', 'LOCALLOW', 'ProgramData') if env.get(k)]
         for s in sorted(suggestions, key=lambda r: -r['size']):
-            if s.get('source') == 'none' or s.get('expanded') or s['verdict'] not in ('clean', 'review'):
+            if s.get('source') in ('none', 'knowledge') or s.get('expanded') or s['verdict'] not in ('clean', 'review'):
                 continue
             in_app_data = any(paths.is_within(s['path'], b) for b in app_bases)
             confidence = float(s.get('confidence') or 0)
@@ -456,6 +456,9 @@ def assess_ai_dirs(suggestions: list[dict], policy, env: dict, analyst=None, sca
         item = by_path.get(paths.key(s['path']))
         if item is not None:
             s.update(score=item['score'], basis=item['basis'], selected=item['selected'])
+        elif s.get('source') == 'knowledge':  # recognised without the model; may hold what someone parked there
+            s.update(score=60, basis=[f'盘序认得：{s.get("app") or "已知位置"}，没有问 AI',
+                                      '没有自动勾选：里面也可能有别人临时放的东西，请你看一眼再决定'], selected=False)
         else:  # 建议保留, or folders the model looked inside
             pct = round(float(s.get('confidence') or 0) * 100)
             s.update(score=None, basis=[f'AI：{s.get("verdict_label", "")}（把握 {pct}%）'], selected=False)

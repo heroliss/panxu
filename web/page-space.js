@@ -448,17 +448,24 @@
       PX.progressBar(p.budget ? (p.requests || 0) / p.budget : null), h('div.cur', stage + (p.current ? '：' + p.current : ''))));
       return;
     }
+    // which folders go to the model, and which do not (and why)
+    const minMb = PX.state.init.settings.ai.min_dir_mb || 200;
+    const which = h('details.ai-which', h('summary', '哪些文件夹会发给 AI？'),
+      h('ul',
+        h('li', `从磁盘最上层往下看，每条分支上第一个盘序不认识、而且大于 ${minMb >= 1024 ? minMb / 1024 + ' GB' : minMb + ' MB'} 的文件夹（最多 60 个，从大到小）。AI 说「里面混着不同的东西」时，再看它的子文件夹。`),
+        h('li', '小于这个大小的文件夹不发，省额度——在「设置 > AI 模型 > 最小文件夹」里可以调小。'),
+        h('li', '盘序自己认得的位置不发：系统、已安装的程序、你的个人文件夹、其他账户的文件夹，以及各种缓存和临时文件夹（例如每个磁盘最上层的 Temp，会直接列在下面，标着「盘序认得」）。')));
     if (!ai.result) {
       container.appendChild(h('div.empty', h('h2', '让 AI 判断陌生的大文件夹'),
         h('div', '系统、程序、个人文件夹和已知缓存由内置规则判断，不消耗额度。只有规则不认识的大文件夹才会把摘要发给模型。'),
-        h('div.actions', h('button.btn.primary', { type: 'button', onclick: () => startAI(true) }, PX.icon('spark'), '开始 AI 分析'))));
+        h('div.actions', h('button.btn.primary', { type: 'button', onclick: () => startAI(true) }, PX.icon('spark'), '开始 AI 分析')), which));
       return;
     }
     const res = ai.result;
     const groups = [['clean', '可以清理'], ['review', '需要你确认'], ['keep', '建议保留']];
     const usage = res.usage || {};
     container.appendChild(h('div.page-head', { style: { marginBottom: '8px' } },
-      h('div.grow', h('div.muted.small', `使用 ${res.requests} 次请求，约 ${fmt.count((usage.input_tokens || 0) + (usage.output_tokens || 0))} tokens。AI 的判断仅供参考，删除前请确认。`)),
+      h('div.grow', h('div.muted.small', `使用 ${res.requests} 次请求，约 ${fmt.count((usage.input_tokens || 0) + (usage.output_tokens || 0))} tokens。AI 的判断仅供参考，删除前请确认。`), which),
       h('div.actions', h('button.btn.small', { type: 'button', onclick: () => startAI(false) }, PX.icon('refresh'), '重新分析（不用缓存）'))));
     for (const [verdict, label] of groups) {
       const rows = res.suggestions.filter((s) => s.verdict === verdict && !s.expanded);
@@ -480,9 +487,11 @@
           h('div.cell-main',
             h('div.name', PX.pathText(s.path)),
             h('div.label', s.app && s.app !== '未知' ? PX.tag(s.app, 'info') : null, s.source === 'cache' ? PX.tag('缓存结果') : null,
+              s.source === 'knowledge' ? PX.tag('盘序认得') : null,
               s.blocked ? PX.tag(s.blocked, 'bad') : s.caution ? PX.tag(s.caution, 'warn') : null),
             h('div.why', s.reason), s.effect ? h('div.eff', '删除后：' + s.effect) : null,
-            h('div.conf', `AI 的把握 ${Math.round((s.confidence || 0) * 100)}%`, decision ? h('span.decision', decision) : null),
+            h('div.conf', s.source === 'knowledge' ? '盘序认得这类文件夹，没有问 AI' : `AI 的把握 ${Math.round((s.confidence || 0) * 100)}%`,
+              decision ? h('span.decision', decision) : null),
             h('div.ai-actions',
               h('button.btn.quiet.small', { type: 'button', title: '在资源管理器中打开这个文件夹，看看里面是什么',
                 onclick: () => PX.reveal(s.path) }, PX.icon('folder'), '打开文件夹'),

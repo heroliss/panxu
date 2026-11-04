@@ -12,7 +12,7 @@ from . import winapi
 
 log = logging.getLogger(__name__)
 
-SETTINGS_VERSION = 2
+SETTINGS_VERSION = 3
 DEFAULTS = {
     'version': SETTINGS_VERSION,
     'theme': 'system',  # system | light | dark
@@ -26,7 +26,7 @@ DEFAULTS = {
         'anonymize_paths': True,
         'send_file_content': False,  # allow sending the first lines of documents (asked again each time)
         'max_requests': 8,       # per analysis run
-        'min_dir_mb': 500,       # directories smaller than this are not sent
+        'min_dir_mb': 200,       # directories smaller than this are not sent (at most the 60 biggest are)
         'timeout': 120,
     },
     'checkup': {
@@ -82,12 +82,16 @@ class Settings:
 
     def _migrate(self, raw: dict):
         """Settings written by earlier builds (once; the file then carries the current version)."""
+        version = int(raw.get('version') or 1)
         old_ai = raw.get('ai') if isinstance(raw.get('ai'), dict) else {}
-        if old_ai.get('thinking') in (None, 'off'):
-            self._data['ai']['thinking'] = 'low'   # 'off' was the default, not a choice
-        old_checkup = raw.get('checkup') if isinstance(raw.get('checkup'), dict) else {}
-        if old_checkup.get('auto_select') == 'careful' and 'auto_threshold' not in old_checkup:
-            self._data['checkup']['auto_threshold'] = 8   # 自动勾选 稳妥/积极 -> 勾选门槛 8/5
+        if version < 2:
+            if old_ai.get('thinking') in (None, 'off'):
+                self._data['ai']['thinking'] = 'low'   # 'off' was the default, not a choice
+            old_checkup = raw.get('checkup') if isinstance(raw.get('checkup'), dict) else {}
+            if old_checkup.get('auto_select') == 'careful' and 'auto_threshold' not in old_checkup:
+                self._data['checkup']['auto_threshold'] = 8   # 自动勾选 稳妥/积极 -> 勾选门槛 8/5
+        if version < 3 and old_ai.get('min_dir_mb') in (None, 500):
+            self._data['ai']['min_dir_mb'] = 200   # 500 MB was the default: a 300 MB Temp folder was never looked at
         self._data['version'] = SETTINGS_VERSION
         try:
             self._write(self.path, self._data)

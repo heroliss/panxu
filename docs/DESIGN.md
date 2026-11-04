@@ -49,7 +49,7 @@
 
 ## AI 分析流程
 
-`analyst.Analyst.analyze_space` 的步骤见 README。几个具体选择：
+`analyst.Analyst.analyze_space` 的步骤见 README。最小文件夹默认 200 MB（1.1 早期是 500 MB：真实电脑上 0.3 GB 的 E:\Temp 从没被看过；最多也只发最大的 60 个，8 次 × 12 个的额度够用，旧设置里的 500 迁移一次）。每个磁盘最上层的 Temp / Tmp 由知识库认得（`*:\Temp`，在演练环境里也匹配模拟的 C:\ D:\），不发给模型，作为「盘序认得」的建议列出（`Analyst.known_cleanable`）——只是说明不是清理规则：有人也会把东西临时放在那里，所以不自动勾选，也不进体检方案。几个具体选择：
 
 - `knowledge.Knowledge.ai_role` 把路径分成 skip（已知，不问）、descend（结构性文件夹，展开看子文件夹）和 ask（发给模型）。个人文件夹属于 skip，既节省额度，也不把个人目录名发出去。
 - 每个请求要求模型只返回一个 JSON 对象。支持时开启 JSON 模式，服务端返回 400 时自动关闭重试；解析失败会带提示重试一次。

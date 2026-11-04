@@ -95,7 +95,7 @@
   }
 
   const settings = { theme: 'system', ai: { preset: 'deepseek', base_url: 'https://api.deepseek.com', model: 'deepseek-flash', protocol: 'openai',
-    json_mode: true, thinking: 'off', anonymize_paths: true, send_file_content: false, max_requests: 8, min_dir_mb: 500, timeout: 120 },
+    json_mode: true, thinking: 'off', anonymize_paths: true, send_file_content: false, max_requests: 8, min_dir_mb: 200, timeout: 120 },
   checkup: { space_scan: true, duplicates: true, use_ai: true, auto_threshold: 5 }, insights: { stale_days: 365, large_mb: 100, download_days: 180 },
   duplicates: { min_size_mb: 1 }, large_files: { min_size_mb: 100 }, excluded_paths: [], extra_personal_paths: ['D:\\资料'] };
   let hasKey = true;
@@ -149,6 +149,10 @@
       score: 55, selected: false, basis: ['AI：需要你确认（把握 62%）', '没有自动勾选：AI 也拿不准'] },
     { node_id: 17, path: 'C:\\Users\\herol\\AppData\\Roaming\\Tencent', size: 6.3 * GB, files: 9200, verdict: 'keep', verdict_label: '建议保留', app: 'QQ / 微信', reason: '聊天记录数据库与账号配置', effect: '', confidence: 0.9, source: 'cache', expanded: false, caution: '位于应用配置目录，可能包含应用设置或账号数据',
       score: null, selected: false, basis: ['AI：建议保留（把握 90%）'] },
+    { node_id: 998, path: 'D:\\Temp', size: 2.4 * GB, files: 46073, verdict: 'clean', verdict_label: '可以清理', app: '临时文件夹',
+      reason: '名字叫 Temp 的文件夹按惯例只放临时文件，程序或你自己用完就不再需要。看一眼里面没有要留的，就可以删除；正在被程序使用的文件会删不掉，跳过即可。',
+      effect: '', confidence: null, source: 'knowledge', expanded: false,
+      score: 60, selected: false, basis: ['盘序认得：临时文件夹，没有问 AI', '没有自动勾选：里面也可能有别人临时放的东西，请你看一眼再决定'] },
   ];
 
   // ---- 1.1: check-up plan, 我的文件, installed programs, sandbox

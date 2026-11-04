@@ -278,6 +278,27 @@ class Analyst:
         out.sort(key=lambda n: n.size, reverse=True)
         return out[:limit]
 
+    def known_cleanable(self, scan, min_size: int = 10 * 1024 * 1024) -> list[dict]:
+        """Folders the built-in knowledge recognises as cleanable but no cleanup rule covers (a drive's Temp
+        folder): listed with the AI's suggestions, without asking the model."""
+        out = []
+        stack = [(scan.root, 0)]
+        while stack:
+            node, depth = stack.pop()
+            if node.size < min_size:
+                continue
+            path = scan.path_of(node)
+            if node is not scan.root:
+                entry, exact = self.knowledge.match(path)
+                if exact and entry is not None and entry.kind == 'cache' and not entry.rule:
+                    out.append({'node_id': node.id, 'path': path, 'size': node.size, 'files': node.files, 'mtime': node.mtime,
+                                'verdict': 'clean', 'verdict_label': '可以清理', 'app': entry.label, 'reason': entry.advice,
+                                'effect': '', 'confidence': None, 'source': 'knowledge', 'expanded': False})
+                    continue
+            if depth < 2:
+                stack.extend((c, depth + 1) for c in node.children or ())
+        return sorted(out, key=lambda r: -r['size'])
+
     def summarize(self, scan, node, ident: int, anonymize: bool, cancel=None) -> dict:
         path = scan.path_of(node)
         shown = paths.anonymize(path, self.env) if anonymize else path
@@ -322,7 +343,7 @@ class Analyst:
 
     def preview(self, scan, settings: dict) -> dict:
         ai = settings['ai']
-        min_size = int(ai.get('min_dir_mb', 500)) * 1024 * 1024
+        min_size = int(ai.get('min_dir_mb', 200)) * 1024 * 1024
         nodes = self.frontier(scan, min_size)
         rows = []
         for node in nodes:
@@ -338,7 +359,7 @@ class Analyst:
     def analyze_space(self, scan, client, settings: dict, cancel=None, progress=None, use_cache=True) -> dict:
         ai = settings['ai']
         anonymize = bool(ai.get('anonymize_paths', True))
-        min_size = int(ai.get('min_dir_mb', 500)) * 1024 * 1024
+        min_size = int(ai.get('min_dir_mb', 200)) * 1024 * 1024
         budget = max(1, int(ai.get('max_requests', 8)))
         queue = [(n, 1) for n in self.frontier(scan, min_size)]
         results: dict[int, dict] = {}

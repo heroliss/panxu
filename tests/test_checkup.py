@@ -185,6 +185,17 @@ class CheckupTest(TempDirTest):
         self.assertFalse([f['path'] for x in found['findings'] for f in x['files'] if paths.is_within(f['path'], prog)])
         self.assertTrue(any(f['kind'] == 'installer_installed' for f in found['findings']), 'real installers still are')
 
+    def test_a_drives_temp_folder_is_listed_without_asking_the_model(self):
+        plan = self.checkup()  # scans the system drive
+        sent = [row['path'] for req in self.model.requests if isinstance(req, list) for row in req if 'subdirs' in row]
+        result = self.wait(self.call('ai_analyze', use_cache=False))
+        temp = [s for s in result['suggestions'] if s['source'] == 'knowledge']
+        self.assertEqual([os.path.basename(s['path']) for s in temp], ['Temp'])
+        self.assertEqual((temp[0]['app'], temp[0]['verdict'], temp[0]['selected'], temp[0]['score']), ('临时文件夹', 'clean', False, 60))
+        self.assertIn('没有问 AI', temp[0]['basis'][0])
+        self.assertFalse([p for p in sent if p.lower().endswith('\\temp')], 'the model is not asked about it')
+        self.assertFalse([i for i in plan['items'] if i['source'] == 'ai' and i['paths'] and i['paths'][0] == temp[0]['path']])
+
     def test_uninstall_then_leftovers_through_the_bridge(self):
         qv = next(a for a in self.call('apps_list')['apps'] if a['name'] == '快看图大师')
         self.assertEqual(self.call('app_installed', app_ids=[qv['id']]), {qv['id']: True})

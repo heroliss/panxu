@@ -115,6 +115,12 @@ ENTRIES: list[Entry] = [
     Entry('%USERPROFILE%\\.vscode\\extensions', 'dev', 'VS Code 扩展', '在 VS Code 中卸载不用的扩展。'),
     Entry('%USERPROFILE%\\.cache', 'dev', '命令行工具缓存', '通常可清理，具体看子目录对应的工具。', final=False),
     Entry('*:\\SteamLibrary', 'game', 'Steam 游戏库', '在 Steam 中卸载不玩的游戏。'),
+    # a Temp folder at the top of a drive: by convention only for temporary files -- but people park things
+    # there too, so this is advice, not a cleanup rule
+    Entry('*:\\Temp', 'cache', '临时文件夹',
+          '名字叫 Temp 的文件夹按惯例只放临时文件，程序或你自己用完就不再需要。看一眼里面没有要留的，就可以删除；'
+          '正在被程序使用的文件会删不掉，跳过即可。'),
+    Entry('*:\\Tmp', 'cache', '临时文件夹', '和 Temp 一样，按惯例只放临时文件。看一眼里面没有要留的，就可以删除。'),
     Entry('%ProgramFiles(x86)%\\Steam\\steamapps', 'game', 'Steam 游戏', '在 Steam 中卸载不玩的游戏。'),
 ]
 
@@ -141,6 +147,10 @@ class Knowledge:
             expanded = paths.expand(entry.path, self.env) if '%' in entry.path else entry.path
             if expanded:
                 compiled.append((_split(expanded), entry))
+            if entry.path.startswith('*:\\'):
+                # the 演练环境's C:\ and D:\ are folders: "the top of any drive" means the top of those too
+                for root in paths.simulated_drives():
+                    compiled.append((_split(root) + _split(entry.path)[1:], entry))
         for folder, label in (('desktop', '桌面'), ('documents', '文档'), ('downloads', '下载'),
                               ('pictures', '图片'), ('videos', '视频'), ('music', '音乐')):
             try:

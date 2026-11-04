@@ -321,6 +321,9 @@ def _layout() -> tuple[list[_Spec], list[tuple[str, float]]]:
     add(F(f'{u}/Music/歌单/夜曲.mp3', data=_blob(51, 4 * MB + 9, b'ID3'), age=900))
 
     # -- D: drive --------------------------------------------------------------------------
+    # a Temp folder at the top of a drive (recognised by the knowledge base, not by a rule)
+    add(F('C/Temp/build-20260301/obj.zip', 120 * MB, age=200))
+    add(F('D/Temp/render-cache/frames.bin', 300 * MB, age=90))
     add(F('D/资料/旧电脑备份/backup_2020.zip', 3500 * MB, age=2000))
     add(F('D/资料/照片备份/IMG_20230101.jpg', data=_blob(201, 2 * MB + 333, JPEG), age=1000))
     add(F('D/Games/Genshin Impact/GenshinImpact_Data/blocks.pak', 64000 * MB, age=60))
