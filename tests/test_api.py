@@ -86,6 +86,25 @@ class BridgeTest(TempDirTest):
                                                             'min_size_mb': 0.001})['data'])
         self.assertEqual(len(s['result']['groups']), 1)
 
+    def test_reveal_opens_the_nearest_folder_that_is_still_there(self):
+        from unittest import mock
+        from panxu import winapi
+        f = self.make('area/sub/file.txt', 10)
+        with mock.patch.object(winapi, 'reveal_in_explorer') as shown:
+            r = self.bridge.call('reveal', {'path': f})['data']
+            self.assertEqual((r['shown'], r['missing']), (f, False))
+            gone = os.path.join(self.tmp, 'area', 'sub', 'cleaned', 'deep', 'x.tmp')  # cleaned, folders and all
+            r = self.bridge.call('reveal', {'path': gone})['data']
+            self.assertEqual((r['shown'], r['missing']), (os.path.join(self.tmp, 'area', 'sub'), True))
+            self.assertEqual([c.args[0] for c in shown.call_args_list], [f, os.path.join(self.tmp, 'area', 'sub')])
+            self.assertFalse(self.bridge.call('reveal', {'path': 'relative\\x'})['ok'])
+            self.assertFalse(self.bridge.call('reveal', {'path': 7})['ok'])
+
+    def test_type_icons_only_for_types(self):
+        r = self.bridge.call('type_icons', {'kinds': ['..\\x', 'C:\\a.pdf', '.pdf' + 'x' * 30]})
+        self.assertTrue(r['ok'])
+        self.assertEqual(r['data'], {}, 'only "folder" and plain extensions are asked for')
+
     def test_ai_requires_key(self):
         self.make('x/sub/y', 10)
         wait(self.bridge, self.bridge.call('space_scan', {'root': os.path.join(self.tmp, 'x')})['data'])

@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import ctypes
 import os
+import re
 import struct
 import zlib
 
@@ -75,10 +76,7 @@ def _shortcut_icon(path: str) -> tuple[str, int] | None:
             ole32.CoUninitialize()
 
 
-def file_icon(path: str, index: int = 0, size: int = SIZE) -> bytes | None:
-    """PNG of an icon in an .exe/.dll/.ico (index as in DisplayIcon, negative = resource id), or None."""
-    if winapi.simulation() is not None or not winapi.IS_WINDOWS or not path or not os.path.isfile(path):
-        return None
+def _gdi():
     from ctypes import wintypes
     user32 = ctypes.WinDLL('user32', use_last_error=True)
     gdi32 = ctypes.WinDLL('gdi32', use_last_error=True)
@@ -100,15 +98,13 @@ def file_icon(path: str, index: int = 0, size: int = SIZE) -> bytes | None:
     gdi32.SelectObject.restype = wintypes.HGDIOBJ
     gdi32.DeleteObject.argtypes = [wintypes.HGDIOBJ]
     gdi32.DeleteDC.argtypes = [wintypes.HDC]
+    return user32, gdi32
 
-    icon = wintypes.HICON()
-    icon_id = wintypes.UINT()
-    found = user32.PrivateExtractIconsW(path, index, size, size, ctypes.byref(icon), ctypes.byref(icon_id), 1, 0)
-    if found in (0, 0xFFFFFFFF) or not icon:
-        if path.lower().endswith('.lnk'):
-            where = _shortcut_icon(path)  # a Startup-folder shortcut: the icon it shows in Explorer
-            return file_icon(where[0], where[1], size) if where else None
-        return None
+
+def _render(icon, size: int) -> bytes | None:
+    """PNG of an HICON (which is destroyed afterwards)."""
+    from ctypes import wintypes
+    user32, gdi32 = _gdi()
 
     class BITMAPINFOHEADER(ctypes.Structure):
         _fields_ = [('biSize', wintypes.DWORD), ('biWidth', ctypes.c_long), ('biHeight', ctypes.c_long),
@@ -141,3 +137,52 @@ def file_icon(path: str, index: int = 0, size: int = SIZE) -> bytes | None:
         gdi32.DeleteDC(dc)
         user32.ReleaseDC(None, screen)
         user32.DestroyIcon(icon)
+
+
+def file_icon(path: str, index: int = 0, size: int = SIZE) -> bytes | None:
+    """PNG of an icon in an .exe/.dll/.ico (index as in DisplayIcon, negative = resource id), or None."""
+    if winapi.simulation() is not None or not winapi.IS_WINDOWS or not path or not os.path.isfile(path):
+        return None
+    from ctypes import wintypes
+    user32, _ = _gdi()
+    icon = wintypes.HICON()
+    icon_id = wintypes.UINT()
+    found = user32.PrivateExtractIconsW(path, index, size, size, ctypes.byref(icon), ctypes.byref(icon_id), 1, 0)
+    if found in (0, 0xFFFFFFFF) or not icon:
+        if path.lower().endswith('.lnk'):
+            where = _shortcut_icon(path)  # a Startup-folder shortcut: the icon it shows in Explorer
+            return file_icon(where[0], where[1], size) if where else None
+        return None
+    return _render(icon, size)
+
+
+TYPE_KEY = re.compile(r'^(folder|\.[a-z0-9_+~-]{1,16})$')
+
+
+def type_icon(kind: str, size: int = SIZE) -> bytes | None:
+    """PNG of the icon Explorer shows for a file type ('.pdf') or for 'folder'. Only the name is passed to
+    the shell (SHGFI_USEFILEATTRIBUTES): no file is read, so this also works for files that are gone."""
+    if not winapi.IS_WINDOWS or not TYPE_KEY.match(kind or ''):
+        return None
+    from ctypes import wintypes
+
+    class SHFILEINFOW(ctypes.Structure):
+        _fields_ = [('hIcon', wintypes.HICON), ('iIcon', ctypes.c_int), ('dwAttributes', wintypes.DWORD),
+                    ('szDisplayName', wintypes.WCHAR * 260), ('szTypeName', wintypes.WCHAR * 80)]
+
+    shell32 = ctypes.WinDLL('shell32', use_last_error=True)
+    ole32 = ctypes.WinDLL('ole32', use_last_error=True)
+    shell32.SHGetFileInfoW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(SHFILEINFOW), wintypes.UINT, wintypes.UINT]
+    shell32.SHGetFileInfoW.restype = ctypes.c_size_t
+    ole32.CoInitializeEx.argtypes = [ctypes.c_void_p, wintypes.DWORD]
+    ole32.CoInitializeEx.restype = ctypes.c_long
+    name, attrs = ('folder', 0x10) if kind == 'folder' else ('file' + kind, 0x80)  # DIRECTORY / NORMAL
+    com = ole32.CoInitializeEx(None, 0x2)
+    try:
+        info = SHFILEINFOW()
+        if not shell32.SHGetFileInfoW(name, attrs, ctypes.byref(info), ctypes.sizeof(info), 0x100 | 0x10) or not info.hIcon:
+            return None  # SHGFI_ICON | SHGFI_USEFILEATTRIBUTES (large, 32 px)
+        return _render(info.hIcon, size)
+    finally:
+        if com in (0, 1):
+            ole32.CoUninitialize()

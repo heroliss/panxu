@@ -116,7 +116,7 @@
     if (x.blocked) tags.appendChild(PX.tag(x.blocked, 'warn', 'lock'));
     const folder = x.path.slice(0, x.path.length - x.name.length).replace(/[\\/]$/, '');
     list.appendChild(h('div.row.mine-row', box,
-      h('div.cell-main', h('div.name-line', h('span.name-text', { title: x.path }, x.name), tags),
+      h('div.cell-main', h('div.name-line', PX.fileIcon(x.path, x.category === 'folder'), h('span.name-text', { title: x.path }, x.name), tags),
         h('div.sub', { title: folder }, fmt.place(folder, PX.state.init.home)),
         x.note ? h('div.why', x.note) : null,
         x.ai ? h('div.ai-note', h('span', x.ai.what), h('span.muted', x.ai.reason)) : null),
@@ -124,7 +124,7 @@
       h('div.size', x.size ? fmt.bytes(x.size) : ''),
       h('div.small.muted', x.mtime ? fmt.date(x.mtime) : ''),
       h('div.row-actions',
-        h('button.btn.quiet.small', { type: 'button', title: '在资源管理器中显示', onclick: () => PX.api.call('reveal', { path: x.path }).catch(PX.fail) }, PX.icon('open')),
+        PX.revealButton(x.path),
         h('button.btn.quiet.small', { type: 'button', onclick: () => PX.ask({ type: 'file', path: x.path }, x.name) }, PX.icon('spark'), '问 AI'))));
   }
 

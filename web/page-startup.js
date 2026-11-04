@@ -121,7 +121,7 @@
             aiNote(state.ai.startup[it.id]))),
         h('div.sub', { title: PX.displayText(it.command) }, (it.exists ? '' : '文件不存在：') + PX.displayText(it.command)),
         h('div.row-actions', it.exists ? h('button.btn.quiet.small', { type: 'button', title: '打开位置',
-          onclick: () => PX.api.call('reveal', { path: it.location }).catch(PX.fail) }, PX.icon('open')) : PX.tag('文件不存在', 'warn'),
+          onclick: () => PX.reveal(it.location) }, PX.icon('open')) : PX.tag('文件不存在', 'warn'),
         h('button.btn.quiet.small', { type: 'button', onclick: () => PX.ask({ type: 'startup', id: it.id }, it.display_name) }, PX.icon('spark'), '问 AI'))));
     }
   }
@@ -163,7 +163,8 @@
         h('div.cell-main', h('div.sub', s.publisher || '未知发布者'), h('div.sub', { title: PX.displayText(s.binpath) }, PX.displayText(s.exe || s.binpath))),
         h('div.small', s.status === 'running' ? PX.tag(s.status_label, 'good') : h('span.muted', s.status_label)),
         control,
-        h('button.btn.quiet.small', { type: 'button', title: '问 AI', onclick: () => PX.ask({ type: 'service', id: s.name }, s.display_name) }, PX.icon('spark'))));
+        h('div.row-actions', s.exe ? PX.revealButton(s.exe) : null,
+          h('button.btn.quiet.small', { type: 'button', title: '问 AI', onclick: () => PX.ask({ type: 'service', id: s.name }, s.display_name) }, PX.icon('spark')))));
     }
     if (!rows.length) list.appendChild(PX.empty('没有匹配的服务', ''));
   }

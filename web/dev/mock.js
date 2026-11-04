@@ -339,6 +339,10 @@
     ai_review_files: () => job(5, { files: {}, usage: { requests: 1 }, errors: [] }),
     apps_list: () => ({ apps, admin: true, usage_known: true }),
     file_icons: () => ({}),
+    // stand-ins for the shell's type icons: a yellow folder, a page with the extension on it
+    type_icons: ({ kinds }) => Object.fromEntries(kinds.map((k) => [k, 'data:image/svg+xml,' + encodeURIComponent(k === 'folder'
+      ? '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><path d="M2 7h11l3 3h14v17H2z" fill="#F2C14E"/><path d="M2 12h28v15H2z" fill="#F7D774"/></svg>'
+      : `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><path d="M6 2h14l6 6v22H6z" fill="#fff" stroke="#9AA3AF"/><text x="16" y="24" font-size="8" text-anchor="middle" font-family="sans-serif" fill="${{ '.mp4': '#C2410C', '.docx': '#2B579A', '.iso': '#6B7280', '.zip': '#B45309', '.png': '#0E7490', '.jpg': '#0E7490', '.pdf': '#B91C1C' }[k] || '#4B5563'}">${k.slice(1, 5).toUpperCase()}</text></svg>`)])),
     app_icons: ({ ids }) => Object.fromEntries(ids.filter((id) => id === 'a1' || id === 'a2').map((id) => [id,
       'data:image/svg+xml;base64,' + btoa('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><rect width="24" height="24" rx="5" fill="' + (id === 'a1' ? '#4285f4' : '#07c160') + '"/></svg>')])),
     app_measure: ({ app_id }) => ({ id: app_id, size: 2.3 * GB, files: 812 }),
@@ -440,7 +444,7 @@
     ai_test: () => ({ reply: { ok: true }, model: settings.ai.model }),
     ai_clear_cache: () => true,
     pick_folder: () => 'D:\\Projects',
-    reveal: () => true,
+    reveal: ({ path }) => ({ shown: path, missing: false }),
     open_system_page: () => true,
     open_key_page: () => true,
     restart_as_admin: () => { throw new Error('预览模式不能重启'); },

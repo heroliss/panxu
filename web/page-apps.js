@@ -129,7 +129,7 @@
       h('div.small.muted', a.installed ? fmt.date(a.installed) : '—'),
       h('div.small' + (idle ? '.idle' : a.last_used ? '.muted' : '.faint'), { title: a.last_used ? fmt.datetime(a.last_used) : '' }, used || '—'),
       h('div.row-actions',
-        a.location_exists ? h('button.btn.quiet.small', { type: 'button', title: '打开安装位置', onclick: () => PX.api.call('reveal', { path: a.location }).catch(PX.fail) }, PX.icon('open')) : null,
+        a.location_exists ? h('button.btn.quiet.small.reveal', { type: 'button', title: '打开安装位置', onclick: () => PX.reveal(a.location) }, PX.icon('open')) : null,
         h('button.btn.quiet.small', { type: 'button', onclick: () => PX.ask({ type: 'app', id: a.id }, a.name) }, PX.icon('spark'), '问 AI'),
         h('button.btn.small', { type: 'button', disabled: !a.can_uninstall, title: a.can_uninstall ? '' : '这个程序没有提供卸载程序',
           onclick: () => uninstall(a) }, '卸载…'))));

@@ -155,7 +155,9 @@
       const detail = h('div.junk-detail');
       if (res.count) detail.appendChild(h('div', `${fmt.count(res.count)} 个文件`));
       if (rule.note) detail.appendChild(h('div', '注意：' + rule.note));
-      for (const loc of res.locations || []) detail.appendChild(h('div', loc));
+      for (const loc of res.locations || []) {
+        detail.appendChild(h('div.path-line', PX.fileIcon(loc, true), h('span.mono-path', PX.displayPath(loc)), PX.revealButton(loc, '打开位置')));
+      }
       if (!res.locations || !res.locations.length) detail.appendChild(h('div', rule.mode === 'command' ? '通过系统命令清理' : '未找到对应的位置'));
       out.push(detail);
     }

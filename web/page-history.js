@@ -19,8 +19,11 @@
     try { await PX.api.call('revert', { entry_id: entry.id }); PX.toast('已撤销'); load(); } catch (e) { PX.fail(e); }
   }
 
+  const isPath = (text) => /^([A-Za-z]:\\|\\\\)/.test(text || '');
+  const pathLine = (p, note) => h('div.path-line', h('span.mono-path', PX.displayPath(p) + (note ? '：' + note : '')), PX.revealButton(p));
+
   function itemLine(it) {
-    if (typeof it === 'string') return h('div', it);
+    if (typeof it === 'string') return isPath(it) ? pathLine(it) : h('div', it);
     if (it.freed !== undefined) {
       return h('div', `${it.name}：释放 ${fmt.bytes(it.freed)}` + (it.failed ? `，${it.failed} 个文件未能删除` : '') + (it.skipped ? `（${it.skipped}）` : ''));
     }
@@ -76,7 +79,7 @@
         if (e.item_count > 200) d.appendChild(h('div', `另有 ${e.item_count - 200} 项`));
         if ((e.failures || []).length) {
           d.appendChild(h('div', { style: { marginTop: '8px', fontWeight: 600, color: 'var(--ink)' } }, '没有完成的项目'));
-          for (const f of e.failures.slice(0, 100)) d.appendChild(h('div', `${f.path}：${f.reason}`));
+          for (const f of e.failures.slice(0, 100)) d.appendChild(isPath(f.path) ? pathLine(f.path, f.reason) : h('div', `${f.path}：${f.reason}`));
         }
         if (!(e.items || []).length && !(e.failures || []).length) d.appendChild(h('div', '没有更多信息'));
       }

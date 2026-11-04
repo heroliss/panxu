@@ -237,6 +237,68 @@
     void el.offsetWidth;
     el.classList.add('flash');
   };
+  // 「在资源管理器中显示」: a file is selected in its folder, a folder opened; a path that is gone (cleaned,
+  // in the Recycle Bin) opens the nearest folder that is still there
+  PX.reveal = async function (path) {
+    try {
+      const r = await PX.api.call('reveal', { path });
+      if (r && r.missing) PX.toast('它已经不在原来的位置了，打开了它所在的文件夹');
+    } catch (e) { PX.fail(e); }
+  };
+  PX.revealButton = (path, label) => h('button.btn.quiet.small.reveal', { type: 'button', title: '在资源管理器中显示',
+    'aria-label': '在资源管理器中显示', onclick: (e) => { e.stopPropagation(); PX.reveal(path); } }, PX.icon('open'), label || null);
+
+  // the icon Explorer shows for a file or folder: a placeholder now, the real icon once loaded (type icons by
+  // extension; programs and shortcuts their own icon)
+  const iconCache = new Map();
+  const iconWanted = new Set();
+  let iconTimer = null;
+  const iconKey = (path, isDir) => {
+    if (isDir) return 'folder';
+    const ext = ((path || '').match(/\.[^.\\/]{1,16}$/) || [''])[0].toLowerCase();
+    return ext === '.exe' || ext === '.lnk' ? 'file:' + path : ext || '.';
+  };
+  function iconImg(url) { return h('img.file-ic', { src: url, alt: '', 'aria-hidden': 'true', draggable: false }); }
+  async function loadIcons() {
+    iconTimer = null;
+    const keys = [...iconWanted];
+    iconWanted.clear();
+    const types = keys.filter((k) => !k.startsWith('file:'));
+    const files = keys.filter((k) => k.startsWith('file:')).map((k) => k.slice(5));
+    let got = {};
+    try {
+      const [t, f] = await Promise.all([types.length ? PX.api.call('type_icons', { kinds: types }) : {},
+        files.length ? PX.api.call('file_icons', { files }) : {}]);
+      got = Object.assign({}, t, Object.fromEntries(Object.entries(f).map(([p, u]) => ['file:' + p, u])));
+      // a program without an icon of its own: the one Explorer shows for any program (or shortcut)
+      const bare = files.filter((p) => !got['file:' + p]);
+      const exts = [...new Set(bare.map((p) => p.slice(p.lastIndexOf('.')).toLowerCase()))];
+      if (exts.length) {
+        const generic = await PX.api.call('type_icons', { kinds: exts });
+        for (const p of bare) got['file:' + p] = generic[p.slice(p.lastIndexOf('.')).toLowerCase()];
+      }
+    } catch (e) { /* placeholders stay */ }
+    for (const k of keys) {
+      iconCache.set(k, got[k] || null);
+      if (!got[k]) continue;
+      for (const el of document.querySelectorAll('[data-icon-key]')) {
+        if (el.dataset.iconKey === k) el.replaceWith(iconImg(got[k]));
+      }
+    }
+  }
+  PX.fileIcon = function (path, isDir) {
+    const key = iconKey(path, isDir);
+    const url = iconCache.get(key);
+    if (url) return iconImg(url);
+    const ph = PX.icon(isDir ? 'folder' : 'file', 'file-ic');
+    if (url === undefined) {
+      ph.dataset.iconKey = key;
+      iconWanted.add(key);
+      if (!iconTimer) iconTimer = setTimeout(loadIcons, 30);
+    }
+    return ph;
+  };
+
   // the score bands as chart parts (colours match the score pips)
   PX.SCORE_LEGEND = [['s-hi', '8–10 建议清理'], ['s-mid', '5–7 可以考虑'], ['s-lo', '0–4 看你需要']];
   PX.big = function (n, cls) {

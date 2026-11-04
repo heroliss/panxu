@@ -63,7 +63,7 @@
     if (large.sort === 'mtime') rows.sort((a, b) => a.mtime - b.mtime);
     const sortBtn = (key, label, cls) => h('button' + (large.sort === key ? '.on' : ''), { type: 'button', class: cls || null,
       onclick: () => { large.sort = key; drawLarge(); } }, label);
-    c.appendChild(h('div.thead.file-row', h('span'), h('span', '文件'), h('span', '类型'), sortBtn('mtime', '修改时间', 'r'), sortBtn('size', '大小', 'r')));
+    c.appendChild(h('div.thead.file-row', h('span'), h('span', '文件'), h('span', '类型'), sortBtn('mtime', '修改时间', 'r'), sortBtn('size', '大小', 'r'), h('span')));
     const list = c.appendChild(h('div.list'));
     if (!rows.length) list.appendChild(PX.empty('没有符合条件的文件', '换个筛选条件试试。'));
     for (const f of rows) {
@@ -71,8 +71,9 @@
         'aria-label': '选择 ' + f.name,
         onchange: (e) => { e.target.checked ? large.selected.add(f.path) : large.selected.delete(f.path); bar(); } });
       list.appendChild(h('div.row.file-row' + (f.blocked ? '.disabled' : ''), box,
-        h('div.cell-main', h('div.name', f.name), h('div.sub', (f.blocked ? f.blocked + '：' : '') + PX.displayPath(f.path))),
-        h('div.sub', f.category_label), h('div.size.muted.small', fmt.date(f.mtime)), h('div.size', fmt.bytes(f.size), PX.meter(f.size / largest))));
+        h('div.cell-main.ic-cell', PX.fileIcon(f.path), h('div', h('div.name', f.name), h('div.sub', (f.blocked ? f.blocked + '：' : '') + PX.displayPath(f.path)))),
+        h('div.sub', f.category_label), h('div.size.muted.small', fmt.date(f.mtime)), h('div.size', fmt.bytes(f.size), PX.meter(f.size / largest)),
+        PX.revealButton(f.path)));
     }
     const barEl = c.appendChild(h('div.actionbar'));
     function bar() {
@@ -80,7 +81,7 @@
       const sel = rows.filter((f) => large.selected.has(f.path));
       const size = sel.reduce((s, f) => s + f.size, 0);
       barEl.appendChild(h('div.grow', sel.length ? h('span', `已选 ${sel.length} 个，共 `, h('span.fig', fmt.bytes(size))) : h('span.muted', '勾选不再需要的文件')));
-      barEl.appendChild(h('button.btn', { type: 'button', disabled: sel.length !== 1, onclick: () => PX.api.call('reveal', { path: sel[0].path }).catch(PX.fail) }, PX.icon('open'), '打开位置'));
+      barEl.appendChild(h('button.btn', { type: 'button', disabled: sel.length !== 1, onclick: () => PX.reveal(sel[0].path) }, PX.icon('open'), '打开位置'));
       barEl.appendChild(h('button.btn.primary', { type: 'button', disabled: !sel.length, onclick: async () => {
         const r = await PX.deleteFlow({ paths: sel.map((f) => f.path), title: `删除 ${sel.length} 个文件`, source: 'large_files' });
         if (r) { r.done.forEach((p) => large.selected.delete(p)); loadLarge(); }
@@ -146,8 +147,9 @@
     // folders
     const folders = h('div.folder-list');
     for (const r of dup.roots || []) {
-      folders.appendChild(h('div.row', PX.icon('folder'), h('div.name.mono-path', r),
-        h('button.btn.quiet.small', { type: 'button', disabled: busy, onclick: () => { dup.roots = dup.roots.filter((x) => x !== r); drawDups(); } }, '移除')));
+      folders.appendChild(h('div.row', PX.fileIcon(r, true), h('div.name.mono-path', PX.displayPath(r)),
+        h('div.row-actions', PX.revealButton(r),
+          h('button.btn.quiet.small', { type: 'button', disabled: busy, onclick: () => { dup.roots = dup.roots.filter((x) => x !== r); drawDups(); } }, '移除'))));
     }
     c.appendChild(h('h2.section-title', '在这些文件夹中查找', h('span.muted', '系统和程序文件夹会自动跳过')));
     c.appendChild(folders);
@@ -187,8 +189,9 @@
             } else dup.selected.delete(f.path);
             drawDups(true);
           } });
-        grp.appendChild(h('div.row.dup-file' + (checked ? '' : '.keep'), box, h('div.cell-main', h('div.name.mono-path', PX.displayPath(f.path))),
-          h('div.size.muted.small', '修改于 ' + fmt.date(f.mtime))));
+        grp.appendChild(h('div.row.dup-file' + (checked ? '' : '.keep'), box,
+          h('div.cell-main.ic-cell', PX.fileIcon(f.path), h('div.name.mono-path', PX.displayPath(f.path))),
+          h('div.size.muted.small', '修改于 ' + fmt.date(f.mtime)), PX.revealButton(f.path)));
       }
     }
     if (dup.result.groups.length > dup.shown) {

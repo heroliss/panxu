@@ -315,9 +315,14 @@
       }
       PX.toast(`已复制：${a.arg}（在 PowerShell 或终端里运行）`);
     } else if (a.kind === 'reveal') {
-      PX.api.call('reveal', { path: it.location }).catch(PX.fail);
+      PX.reveal(it.location);
     }
   }
+
+  // folders: AI and heuristic suggestions (app data), empty folders, explained locations without an extension
+  // (Docker, but not hiberfil.sys); everything else offered by path is a file
+  const isFolder = (it) => it.source === 'ai' || it.source === 'heuristic' || it.category === '空文件夹' ||
+    (it.source === 'knowledge' && !/\.[a-z0-9]{2,5}$/i.test(it.location || ''));
 
   function itemRow(list, it) {
     const can = selectable(it);
@@ -333,19 +338,23 @@
       if (it.blocked.startsWith('请先关闭')) flags.appendChild(PX.closedButton());
     }
     if (it.ai && it.ai.verdict_label) flags.appendChild(PX.tag('AI：' + it.ai.verdict_label, it.ai.verdict === 'delete' ? 'good' : it.ai.verdict === 'keep' ? 'warn' : 'info', 'spark'));
+    // one file or folder: its icon, and a button to see it in Explorer right in the row
+    const one = it.paths && it.paths.length === 1 ? it.paths[0] : !(it.paths && it.paths.length) && it.location ? it.location : '';
     const row = h('div.row.plan-row' + (it.status !== 'pending' ? '.disabled' : ''), {
       onclick: () => { state.open.has(it.id) ? state.open.delete(it.id) : state.open.add(it.id); draw(true); } },
     it.group === 'info' ? PX.icon('info', 'ic') : box,
     h('div.cell-main',
-      h('div.name-line', h('span.name-text', it.title), PX.tag(srcLabel, srcKind), flags),
+      h('div.name-line', one && it.kind !== 'rule' ? PX.fileIcon(one, isFolder(it)) : null,
+        h('span.name-text', it.title), PX.tag(srcLabel, srcKind), flags),
       h('div.why', it.group === 'info' && it.what ? it.what : it.why || it.what),
       it.group === 'info' && it.status === 'pending' && it.actions && it.actions.length
         ? h('div.info-actions', it.actions.map((a) => h('button.btn.small' + (a.kind === 'hibernate' ? '.primary' : ''), {
           type: 'button', onclick: (e) => { e.stopPropagation(); infoAction(it, a); } }, a.label))) : null),
     PX.score(it.score, (it.basis || []).join('\n')),
     h('div.size', it.size ? fmt.bytes(it.size) : ''),
-    h('button.btn.quiet.small', { type: 'button', title: '问 AI', onclick: (e) => { e.stopPropagation(); PX.ask({ type: 'plan_item', id: it.id }, it.title); } },
-      PX.icon('spark'), '问 AI'));
+    h('div.row-actions', one ? PX.revealButton(one) : null,
+      h('button.btn.quiet.small', { type: 'button', title: '问 AI', onclick: (e) => { e.stopPropagation(); PX.ask({ type: 'plan_item', id: it.id }, it.title); } },
+        PX.icon('spark'), '问 AI')));
     list.appendChild(row);
     if (state.open.has(it.id)) {
       const d = list.appendChild(h('div.plan-detail'));
@@ -357,12 +366,11 @@
           h('ul', (it.basis || []).map((line) => h('li', line)))));
       }
       if (it.caution) d.appendChild(h('div', PX.tag('注意', 'warn'), ' ', it.caution));
-      if (it.keep) d.appendChild(h('div', h('b', '保留：'), h('span.mono-path', PX.displayPath(it.keep))));
+      if (it.keep) d.appendChild(h('div.path-line', h('b', '保留：'), h('span.mono-path', PX.displayPath(it.keep)), PX.revealButton(it.keep, '打开位置')));
       const all = it.paths && it.paths.length ? it.paths : it.location ? [it.location] : it.locations || [];
       const showAll = state.open.has('paths:' + it.id);
       for (const p of showAll ? all : all.slice(0, 6)) {
-        d.appendChild(h('div.path-line', h('span.mono-path', PX.displayPath(p)), h('button.btn.quiet.small', { type: 'button',
-          onclick: () => PX.api.call('reveal', { path: p }).catch(PX.fail) }, '打开位置')));
+        d.appendChild(h('div.path-line', h('span.mono-path', PX.displayPath(p)), PX.revealButton(p, '打开位置')));
       }
       if (all.length > 6) {
         d.appendChild(h('button.fold', { type: 'button', onclick: (e) => {

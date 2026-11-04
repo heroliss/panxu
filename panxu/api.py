@@ -89,6 +89,7 @@ class Backend:
         self.plan: dict | None = None
         self._app_index: tuple[float, list] | None = None
         self._icons: dict[tuple, str | None] = {}
+        self._type_icons: dict[str, str | None] = {}
         self._window = window_provider
         self._relaunch = relaunch
         self.app_dirs = [os.path.dirname(os.path.abspath(__file__)), data_dir]
@@ -261,10 +262,22 @@ class Backend:
         return True
 
     def m_reveal(self, path: str):
-        if not isinstance(path, str) or not os.path.isabs(path) or not os.path.exists(path):
+        """Show a path in Explorer (a file selected in its folder, a folder opened). A path that is gone --
+        cleaned, moved to the Recycle Bin -- opens the nearest folder that is still there."""
+        if not isinstance(path, str) or not os.path.isabs(path):
             raise UserError('路径不存在')
-        winapi.reveal_in_explorer(path)
-        return True
+        target = path
+        for _ in range(8):
+            if os.path.exists(target):
+                break
+            parent = os.path.dirname(target.rstrip('\\/'))
+            if not parent or parent == target:
+                raise UserError('路径不存在')
+            target = parent
+        else:
+            raise UserError('路径不存在')
+        winapi.reveal_in_explorer(target)
+        return {'shown': target, 'missing': target != path}
 
     def m_open_system_page(self, page: str):
         uri = SETTINGS_URIS.get(page)
@@ -716,10 +729,26 @@ class Backend:
         """{path: PNG data URL} for executables (startup items, services)."""
         out = {}
         for p in (files or [])[:300]:
-            if isinstance(p, str) and p.lower().endswith(('.exe', '.dll', '.ico')):
+            if isinstance(p, str) and p.lower().endswith(('.exe', '.dll', '.ico', '.lnk')):
                 url = self._icon(p)
                 if url:
                     out[p] = url
+        return out
+
+    def m_type_icons(self, kinds: list):
+        """{'.pdf' | 'folder': PNG data URL}: the icon Explorer shows for a file type, for file lists."""
+        from . import icons
+        out = {}
+        for k in (kinds or [])[:200]:
+            k = str(k).lower()
+            if k not in self._type_icons:
+                try:
+                    png = icons.type_icon(k)
+                except (OSError, ValueError):
+                    png = None
+                self._type_icons[k] = icons.data_url(png) if png else None
+            if self._type_icons[k]:
+                out[k] = self._type_icons[k]
         return out
 
     def m_apps_measure_all(self):

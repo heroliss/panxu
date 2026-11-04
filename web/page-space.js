@@ -196,12 +196,12 @@
       if (i) crumbs.appendChild(h('i', '›'));
       crumbs.appendChild(h('button', { type: 'button', onclick: () => open(c.id) }, i ? c.name : PX.displayPath(c.name)));
     });
-    container.appendChild(crumbs);
+    container.appendChild(h('div.crumbs-line', crumbs, data.node.path ? PX.revealButton(data.node.path, '在资源管理器中打开') : null));
 
     const parentSize = data.node.size || 1;
     const items = [...data.children, ...data.files].sort((a, b) => b.size - a.size);
     const listWrap = h('div');
-    listWrap.appendChild(h('div.thead.space-head', h('span'), h('span', '名称'), h('span.r', '大小'), h('span.r', '文件数'), h('span.r', '修改时间')));
+    listWrap.appendChild(h('div.thead.space-head', h('span'), h('span', '名称'), h('span.r', '大小'), h('span.r', '文件数'), h('span.r', '修改时间'), h('span')));
     const list = listWrap.appendChild(h('div.list'));
     if (data.note && data.note.advice) list.appendChild(PX.notice(data.note.label + '：' + data.note.advice, 'info'));
     for (const it of items) {
@@ -217,11 +217,12 @@
         title: it.path,
       }, box,
       h('div.cell-main',
-        h('div.nm', PX.icon(isDir ? 'folder' : 'file', isDir ? 'dir-ic' : ''), h('span.name', it.name)),
+        h('div.nm', PX.fileIcon(it.path, isDir), h('span.name', it.name)),
         tags.length ? h('div.label', tags) : null, share),
       h('div.size', fmt.bytes(it.size)),
       h('div.size.muted', isDir ? fmt.count(it.files) : ''),
-      h('div.size.muted.small', fmt.date(it.mtime))));
+      h('div.size.muted.small', fmt.date(it.mtime)),
+      PX.revealButton(it.path)));
     }
     if (data.more_files) list.appendChild(h('div.row.muted.small', { style: { gridTemplateColumns: '1fr' } },
       `另有 ${fmt.count(data.more_files)} 个较小的文件，共 ${fmt.bytes(data.more_bytes)}`));
@@ -248,7 +249,7 @@
     const size = sel.reduce((s, p) => s + ((lookup.get(p) || {}).size || 0), 0);
     barEl.appendChild(h('div.grow', sel.length ? h('span', `已选 ${sel.length} 项，约 `, h('span.fig', fmt.bytes(size)))
       : h('span.muted', '点击文件夹查看内容；勾选后可以删除')));
-    barEl.appendChild(h('button.btn', { type: 'button', disabled: sel.length !== 1, onclick: () => PX.api.call('reveal', { path: sel[0] }).catch(PX.fail) },
+    barEl.appendChild(h('button.btn', { type: 'button', disabled: sel.length !== 1, onclick: () => PX.reveal(sel[0]) },
       PX.icon('open'), '在资源管理器中显示'));
     barEl.appendChild(h('button.btn.primary', { type: 'button', disabled: !sel.length, onclick: deleteSelected }, PX.icon('trash'), '删除…'));
   }
@@ -416,7 +417,7 @@
             h('div.conf', `AI 的把握 ${Math.round((s.confidence || 0) * 100)}%`, decision ? h('span.decision', decision) : null),
             h('div.ai-actions',
               h('button.btn.quiet.small', { type: 'button', title: '在资源管理器中打开这个文件夹，看看里面是什么',
-                onclick: () => PX.api.call('reveal', { path: s.path }).catch(PX.fail) }, PX.icon('open'), '打开文件夹'),
+                onclick: () => PX.reveal(s.path) }, PX.icon('open'), '打开文件夹'),
               h('button.btn.quiet.small', { type: 'button', title: '在左边的文件夹视图里找到它', onclick: () => locate(s) }, PX.icon('map'), '在空间图中定位'),
               h('button.btn.quiet.small', { type: 'button', onclick: () => PX.ask({ type: 'path', path: s.path }, s.app && s.app !== '未知' ? s.app : PX.displayPath(s.path)) },
                 PX.icon('spark'), '问 AI'))),

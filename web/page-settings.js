@@ -115,8 +115,9 @@
     const extra = s.extra_personal_paths || [];
     const exList = secMine.appendChild(h('div.folder-list'));
     for (const p of extra) {
-      exList.appendChild(h('div.row', PX.icon('folder'), h('div.name.mono-path', p), h('button.btn.quiet.small', { type: 'button',
-        onclick: async () => { await save({ extra_personal_paths: extra.filter((x) => x !== p) }); draw(); } }, '移除')));
+      exList.appendChild(h('div.row', PX.fileIcon(p, true), h('div.name.mono-path', p), h('div.row-actions', PX.revealButton(p),
+        h('button.btn.quiet.small', { type: 'button',
+          onclick: async () => { await save({ extra_personal_paths: extra.filter((x) => x !== p) }); draw(); } }, '移除'))));
     }
     if (!extra.length) exList.appendChild(h('div.row.muted.small', { style: { gridTemplateColumns: '1fr' } }, '没有额外的文件夹'));
     secMine.appendChild(h('div', { style: { marginBottom: '16px' } }, h('button.btn', { type: 'button', onclick: async () => {
@@ -135,8 +136,9 @@
     sec3.appendChild(h('div.small.muted', { style: { marginBottom: '10px' } }, '这些文件夹里的内容不会被删除，也不会出现在重复文件结果中（垃圾清理的固定项目不受影响）。'));
     const ex = sec3.appendChild(h('div.folder-list'));
     for (const p of s.excluded_paths) {
-      ex.appendChild(h('div.row', PX.icon('folder'), h('div.name.mono-path', p), h('button.btn.quiet.small', { type: 'button',
-        onclick: async () => { await save({ excluded_paths: s.excluded_paths.filter((x) => x !== p) }); draw(); } }, '移除')));
+      ex.appendChild(h('div.row', PX.fileIcon(p, true), h('div.name.mono-path', p), h('div.row-actions', PX.revealButton(p),
+        h('button.btn.quiet.small', { type: 'button',
+          onclick: async () => { await save({ excluded_paths: s.excluded_paths.filter((x) => x !== p) }); draw(); } }, '移除'))));
     }
     if (!s.excluded_paths.length) ex.appendChild(h('div.row.muted.small', { style: { gridTemplateColumns: '1fr' } }, '没有排除的文件夹'));
     sec3.appendChild(h('button.btn', { type: 'button', onclick: async () => {
@@ -156,7 +158,7 @@
     const sec5 = form.appendChild(h('section', { style: { borderBottom: 0 } }, h('h2', '关于')));
     sec5.appendChild(field('版本', h('span', '盘序 ' + init.version)));
     sec5.appendChild(field('数据文件夹', h('div.inline', h('span.mono-path.small', init.data_dir),
-      h('button.btn.quiet.small', { type: 'button', onclick: () => PX.api.call('reveal', { path: init.data_dir }).catch(PX.fail) }, '打开')),
+      PX.revealButton(init.data_dir, '打开')),
     '设置、操作记录和 AI 缓存保存在这里。'));
     sec5.appendChild(field('许可', h('span.small', 'PolyForm Noncommercial 1.0.0，© 2026 Liss')));
   }

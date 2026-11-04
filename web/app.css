@@ -297,7 +297,7 @@ input[type=checkbox]:disabled { cursor: not-allowed; }
 .crumbs button:last-child { color: var(--ink); font-weight: 600; }
 .crumbs i { color: var(--ink-3); font-style: normal; }
 .space-grid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(300px, 1fr); gap: 26px; align-items: start; }
-.space-row { grid-template-columns: 22px minmax(0, 1fr) 90px 84px 84px; cursor: default; }
+.space-row { grid-template-columns: 22px minmax(0, 1fr) 90px 84px 84px 32px; cursor: default; }
 .space-row.dir { cursor: pointer; }
 .space-row .nm { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .space-row .nm svg { width: 16px; height: 16px; flex: none; color: var(--ink-3); }
@@ -305,7 +305,7 @@ input[type=checkbox]:disabled { cursor: not-allowed; }
 .space-row .label { display: flex; gap: 6px; margin-top: 3px; flex-wrap: wrap; }
 .share { height: 4px; border-radius: 2px; background: var(--rule-2); margin-top: 5px; }
 .share > i { display: block; height: 100%; border-radius: 2px; background: var(--ink-3); }
-.space-head { grid-template-columns: 22px minmax(0, 1fr) 90px 84px 84px; }
+.space-head { grid-template-columns: 22px minmax(0, 1fr) 90px 84px 84px 32px; }
 .treemap-wrap { position: sticky; top: 12px; }
 .treemap { position: relative; width: 100%; aspect-ratio: 1 / 1; border-radius: var(--r-m); overflow: hidden; background: var(--rule-2); }
 .treemap .tm { position: absolute; border: 1px solid var(--sheet); overflow: hidden; cursor: pointer;
@@ -332,19 +332,19 @@ input[type=checkbox]:disabled { cursor: not-allowed; }
 .chips { display: flex; gap: 6px; flex-wrap: wrap; }
 .chip { border: 1px solid var(--rule); background: var(--raise); border-radius: 14px; height: 28px; padding: 0 12px; cursor: pointer; color: var(--ink-2); }
 .chip.on { border-color: var(--cobalt); background: var(--cobalt-tint); color: var(--cobalt); }
-.file-row { grid-template-columns: 22px minmax(0, 1fr) 80px 92px 96px; }
+.file-row { grid-template-columns: 22px minmax(0, 1fr) 80px 92px 96px 32px; }
 .folder-list { border: 1px solid var(--rule); border-radius: var(--r-m); margin-bottom: 14px; }
 .folder-list .row { grid-template-columns: 18px 1fr auto; border-bottom: 1px solid var(--rule-2); }
 .folder-list .row:last-child { border-bottom: 0; }
 .dup-group { border-bottom: 1px solid var(--rule); padding: 10px 0; }
 .dup-head { display: flex; gap: 12px; align-items: baseline; padding: 0 6px 4px; }
 .dup-head .size { margin-left: auto; font-family: var(--font-num); }
-.dup-file { grid-template-columns: 22px minmax(0, 1fr) 140px; padding: 6px; border-bottom: 0; }
+.dup-file { grid-template-columns: 22px minmax(0, 1fr) 140px 32px; padding: 6px; border-bottom: 0; align-items: center; }
 .dup-file.keep .name::after { content: "保留"; margin-left: 8px; font-size: 11.5px; color: var(--verdigris); font-weight: 600; }
 
 /* ---------- startup & services ---------- */
 .su-row { grid-template-columns: 40px minmax(0, 1fr) minmax(0, 0.9fr) auto; align-items: start; }
-.svc-row { grid-template-columns: minmax(0, 1fr) minmax(0, 0.9fr) 90px 160px 36px; align-items: start; }
+.svc-row { grid-template-columns: minmax(0, 1fr) minmax(0, 0.9fr) 90px 160px 72px; align-items: start; }
 .ai-note { font-size: 12.5px; margin-top: 4px; display: flex; gap: 6px; align-items: baseline; flex-wrap: wrap; }
 
 /* ---------- history ---------- */
@@ -496,6 +496,16 @@ button.bl-row:hover .bl-label { color: var(--cobalt); }
   display: grid; gap: 3px; }
 .plan-detail b { color: var(--ink); font-weight: 600; }
 .path-line { display: flex; align-items: center; gap: 6px; }
+/* the icon Explorer shows for a file or folder (an outline icon until it has loaded) */
+.file-ic { width: 18px; height: 18px; flex: none; object-fit: contain; }
+svg.file-ic { color: var(--ink-3); padding: 1px; }
+.ic-cell { display: flex; gap: 10px; align-items: flex-start; }
+.ic-cell > .file-ic { margin-top: 1px; }
+.ic-cell > div { min-width: 0; flex: 1; }
+.btn.reveal { color: var(--ink-3); }
+.btn.reveal:hover { color: var(--cobalt); }
+.crumbs-line { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 12px; }
+.crumbs-line .crumbs { flex: 1; margin-bottom: 0; }
 .path-line .mono-path { flex: 1; min-width: 0; }
 .cat-head { display: flex; align-items: center; gap: 10px; padding: 9px 10px 7px 14px; border-bottom: 1px solid var(--rule-2);
   background: var(--tint); scroll-margin-top: 60px; }
