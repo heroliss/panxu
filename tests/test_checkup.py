@@ -563,6 +563,53 @@ class CheckupTest(TempDirTest):
         self.assertEqual(next(x for x in shown['files'] if x['path'] == older['path'])['score'], 35,
                          'a name-only 「可以删除」 does not raise an older version on 我的文件 either')
 
+    def test_progress_says_how_far_each_stage_is_and_remembers_how_long_it_took(self):
+        from panxu import checkup
+
+        def watch():
+            seen, job_id = [], self.call('checkup')
+            while True:
+                s = self.call('job', job_id=job_id)
+                seen.append(dict(s['progress']))
+                if s['status'] != 'running':
+                    self.assertEqual(s['status'], 'done', s.get('error'))
+                    return seen
+                time.sleep(0.005)
+        first = watch()
+        parts = [p['part'] for p in first if isinstance(p.get('part'), (int, float))]
+        self.assertTrue(parts and all(0 <= x <= 1 for x in parts))
+        self.assertTrue(any(p.get('count') for p in first), 'a count shows it is working')
+        learned = checkup.load_timings(self.backend.data_dir)
+        self.assertTrue({'junk', 'insights', 'ai', 'plan'} <= set(learned), learned)
+        # the next check-up's bar is in the proportions this PC took
+        self.assertEqual(watch()[-1]['expected'].keys(), learned.keys())
+        # find_duplicates' phases as one part of the stage; listing has no total
+        self.assertEqual(checkup.dup_progress({'phase': 'listing', 'files': 12}), (None, '列出文件', '已找到 12 个文件'))
+        self.assertAlmostEqual(checkup.dup_progress({'phase': 'quick', 'done': 5, 'total': 10})[0], 0.4)
+        self.assertAlmostEqual(checkup.dup_progress({'phase': 'full', 'bytes_done': 1, 'bytes_total': 2})[0], 0.725)
+
+    def test_the_user_chooses_which_duplicate_copies_go(self):
+        plan = self.checkup(use_ai=False)
+        fonts = next(i for i in plan['items'] if i['source'] == 'dup' and 'NotoSerifJP' in i['title'])
+        copies = [f['path'] for f in fonts['dup_files']]
+        mentioned = next(f['path'] for f in fonts['dup_files'] if (f.get('refs') or {}).get('count'))
+        self.assertNotIn(mentioned, fonts['paths'], 'by default the copy style.css loads stays')
+        # the user removes the mentioned one instead: allowed, and the item says what that risks
+        item = self.call('plan_dup_choose', item_id=fonts['id'], remove=[mentioned])
+        self.assertEqual(item['paths'], [mentioned])
+        self.assertEqual(item['score'], 20)
+        self.assertTrue(any('提到' in line for line in item['basis']))
+        self.assertTrue(item['basis'][-1].startswith('没有自动勾选'))
+        self.assertEqual(self.call('plan')['items'][[i['id'] for i in plan['items']].index(fonts['id'])]['paths'], [mentioned])
+        for bad in ([], copies):
+            r = self.bridge.call('plan_dup_choose', {'item_id': fonts['id'], 'remove': bad})
+            self.assertFalse(r['ok'], 'none, or all of them: refused')
+        # what runs is what was chosen
+        report = self.wait(self.call('plan_execute', item_ids=[fonts['id']]))
+        self.assertEqual(report['recycled']['count'], 1)
+        self.assertFalse(os.path.exists(mentioned))
+        self.assertTrue(all(os.path.exists(p) for p in copies if p != mentioned))
+
     def test_duplicates_page_asks_the_ai_about_copies(self):
         docs = os.path.join(self.backend.env['USERPROFILE'], 'Documents')
         result = self.wait(self.call('dup_scan', roots=[docs], min_size_mb=1))

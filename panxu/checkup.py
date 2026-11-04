@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import glob
 import hashlib
+import json
 import os
 import time
 import uuid
@@ -195,7 +196,7 @@ class PlanBuilder:
         return any(paths.is_within(path, c) or paths.is_within(c, path) for c in self._claimed)
 
     def add(self, item: dict) -> dict | None:
-        base = {'id': '', 'group': 'review', 'category': '', 'title': '', 'size': 0, 'count': 0, 'what': '', 'why': '',
+        base = {'id': '', 'group': 'review', 'category': '', 'title': '', 'size': 0, 'count': 0, 'what': '', 'advice': '', 'why': '',
                 'effect': '', 'action': 'none', 'source': 'heuristic', 'confidence': None, 'selected': False,
                 'paths': [], 'blocked': None, 'caution': None, 'ask': None, 'status': 'pending', 'ai': None,
                 'score': None, 'basis': []}
@@ -253,7 +254,7 @@ class PlanBuilder:
                 'id': 'rule:' + rule.id, 'kind': 'rule', 'rule': rule.id,
                 'category': '垃圾文件', 'title': rule.name, 'size': size or 0, 'count': row.get('count') or 0,
                 'what': '', 'why': rule.description,
-                'effect': rule.note or '相关程序会在需要时重新生成这些文件。', 'action': 'delete', 'source': 'rule',
+                'effect': rule.note or '', 'action': 'delete', 'source': 'rule',
                 'confidence': 1.0 if rule.default else 0.7, 'blocked': blocked,
                 'locations': row.get('locations', [])[:5], 'score': score, 'basis': basis,
                 'eligible': hold is None, 'auto_reason': auto, 'hold_reason': hold})
@@ -336,7 +337,7 @@ class PlanBuilder:
                     hold = self._folder_guards(p, n, None, basis)
                     self.add({'id': _ident('dir', p), 'kind': 'paths', 'category': '应用数据', 'title': n.name,
                               'eligible': not hold,
-                              'size': n.size, 'count': n.files, 'what': f'「{n.name}」的数据，旁边还有更新的版本「{newer}」。',
+                              'size': n.size, 'count': n.files, 'what': '',
                               'why': f'可能是旧版本留下的：{_ago(n.mtime, self.now)}没有修改过。',
                               'effect': '如果还在用旧版本，它的设置和缓存会丢失。', 'action': 'recycle',
                               'source': 'heuristic', 'confidence': 0.6, 'paths': [p], 'score': 60, 'basis': basis,
@@ -347,7 +348,7 @@ class PlanBuilder:
                 self.add({'id': _ident('dir', path), 'kind': 'paths', 'category': '应用数据', 'title': node.name,
                           'eligible': not hold,
                           'size': node.size, 'count': node.files,
-                          'what': '找不到对应的已安装程序，可能是已卸载程序的残留。',
+                          'what': '',
                           'why': f'在「已安装的应用」里没有找到对应的程序，而且 {_ago(node.mtime, self.now)}没有修改过。',
                           'effect': '如果程序其实还在（例如绿色版），它的设置、存档或缓存会丢失。', 'action': 'recycle',
                           'source': 'heuristic', 'confidence': 0.5, 'paths': [path], 'score': 50, 'basis': basis,
@@ -361,8 +362,8 @@ class PlanBuilder:
                 folders = [x['path'] for x in f['files']]
                 self.add({'id': 'empty:' + f['id'], 'kind': 'paths', 'group': 'review', 'category': f['kind_label'],
                           'finding': f['id'], 'finding_kind': f['kind'], 'title': f'{len(folders)} 个空文件夹', 'size': 0,
-                          'count': 0, 'what': f['advice'], 'why': f['reason'],
-                          'effect': '移到回收站，需要时可以从回收站还原。不释放空间，只是更整洁。', 'action': 'recycle',
+                          'count': 0, 'what': '', 'advice': f['advice'], 'why': f['reason'],
+                          'effect': '不释放空间，只是更整洁。', 'action': 'recycle',
                           'source': 'insight', 'confidence': f['confidence'], 'paths': folders, 'personal': True,
                           'score': KIND_SCORE['empty_folders'], 'basis': ['里面没有任何文件（包括子文件夹）']})
                 continue
@@ -384,8 +385,8 @@ class PlanBuilder:
                 self.add({
                     'id': _ident('file', x['path']), 'kind': 'paths', 'group': 'review', 'category': f['kind_label'],
                     'finding': f['id'], 'finding_kind': f['kind'], 'title': x['name'], 'size': x['size'],
-                    'count': 1 if x.get('category') != 'folder' else 0, 'what': f['advice'], 'why': why,
-                    'effect': '移到回收站，需要时可以从回收站还原。', 'action': 'recycle', 'source': 'insight',
+                    'count': 1 if x.get('category') != 'folder' else 0, 'what': '', 'advice': f['advice'], 'why': why,
+                    'effect': '', 'action': 'recycle', 'source': 'insight',
                     'confidence': f['confidence'] if x.get('remove') else min(f['confidence'], 0.4),
                     'paths': [x['path']], 'ai': ai, 'personal': True, 'score': with_ai(base_score, ai, bool(question)),
                     'basis': basis})
@@ -409,40 +410,16 @@ class PlanBuilder:
             else:  # keep the copy most likely needed: a program's, a project's source, ..., then the plain name
                 keepers = [min(files, key=lambda f: (PLACE_RANK[f.get('place')], not (f.get('refs') or {}).get('count'),
                                                      AI_RANK.get((ai(f) or {}).get('verdict'), 1), *plain_first(f)))]
-            remove = [f for f in files if f not in keepers]
-            rated = [(f, *removal_score(f, ai(f))) for f in remove]
-            score = min(s for _, s, _ in rated)
-            basis, effect = ['内容逐字节相同'], '每组保留一份，内容不会丢失。'
-            if all(f.get('place') in IN_USE for f in files) and any(f.get('place') != 'build' for f in files):
-                # e.g. the same font in two projects' lib folders: each project may load its own copy
-                basis.append('每一份都在程序文件夹或代码工程里：它们可能各自引用自己的那一份，删掉一份可能让那个程序或工程出问题')
-            elif all(why is None for _, _, why in rated):
-                where = place_label(keepers[0]) if keepers[0].get('place') else ''
-                basis.append(f'保留{where}里的那份，只删零散的副本，内容不会丢失' if where else '保留一份，内容不会丢失')
-            mentioned = [f for f in keepers if (f.get('refs') or {}).get('count')]
-            if mentioned:
-                more = f'等 {len(mentioned)} 份' if len(mentioned) > 1 else ''
-                basis.append(f'保留的「{os.path.basename(mentioned[0]["path"])}」{more}有文件提到：「{mentioned[0]["refs"]["found"][0]}」')
-            basis += list(dict.fromkeys(why for _, _, why in rated if why))[:3]
-            advice = [f'AI：「{os.path.basename(f["path"])}」{ai(f).get("verdict_label", "")}'
-                      + (f'——{ai(f)["reason"]}' if ai(f).get('reason') else '') for f in files if ai(f)]
-            basis += list(dict.fromkeys(advice))[:3]
-            if score < 85:
-                effect = '内容还在保留的那份里，但用到被删那份的程序或工程可能会找不到它。'
-            keep = keepers[0]['path']
+            # the group's copies with what is known about each: the item keeps them, so a later choice of the user
+            # (api.m_plan_dup_choose) is scored by the same rules
+            copies = [{**{k: f[k] for k in ('path', 'mtime', 'place', 'place_root', 'refs') if k in f}, 'ai': ai(f)}
+                      for f in files]
             self._claimed.extend(f['path'] for f in keepers)  # what stays must not be offered by anything else
             self.add({
                 'id': f'dup:{_ident("g", "|".join(sorted(f["path"] for f in files)))[2:]}', 'kind': 'dup',
-                'group': 'review', 'category': '重复文件',
-                'title': f'{os.path.basename(keep)} 等 {len(files)} 份', 'size': g['size'] * len(remove),
-                'count': len(remove), 'what': f'{len(files)} 个文件内容完全相同（逐字节比较）。',
-                'why': f'保留「{keep}」' + (f'等 {len(keepers)} 份' if len(keepers) > 1 else '') +
-                       f'，其余 {len(remove)} 份移到回收站。',
-                'effect': effect, 'action': 'recycle', 'source': 'dup', 'confidence': 0.9 if score >= 85 else 0.4,
-                'paths': [f['path'] for f in remove], 'keep': keep, 'dup_size': g['size'],
-                'dup_files': [{**{k: f[k] for k in ('path', 'mtime', 'place', 'place_root', 'refs') if k in f},
-                               'ai': ai(f)} for f in files],
-                'personal': True, 'score': score, 'basis': basis})
+                'group': 'review', 'category': '重复文件', 'what': '', 'action': 'recycle', 'source': 'dup',
+                'dup_size': g['size'], 'dup_files': copies, 'personal': True,
+                **dup_choice(g['size'], copies, {f['path'] for f in keepers})})
 
     def add_startup(self, items: list[dict], explained: dict, env: dict):
         system_root = env.get('SystemRoot')
@@ -455,7 +432,7 @@ class PlanBuilder:
             self.add({
                 'id': 'startup:' + item['id'], 'kind': 'startup', 'startup_id': item['id'], 'group': 'review',
                 'category': '开机启动', 'title': item['display_name'], 'what': info.get('what', ''),
-                'why': 'AI 建议禁用：' + info.get('reason', ''), 'effect': '开机时不再自动运行，需要时可以手动打开；随时可以在「开机与服务」里重新启用。',
+                'why': 'AI 建议禁用：' + info.get('reason', ''), 'effect': '',
                 'action': 'disable', 'source': 'ai', 'confidence': 0.7,
                 'blocked': '需要管理员权限' if item.get('needs_admin') else None,
                 'score': 60, 'basis': ['AI 建议禁用', '随时可以重新启用'],
@@ -482,7 +459,7 @@ class PlanBuilder:
                 note = self.knowledge.annotate(path) if self.knowledge else None
                 self.add({'id': _ident('info', path), 'kind': 'info', 'group': 'info', 'category': '说明',
                           'title': (note or {}).get('label') or os.path.basename(path), 'size': size,
-                          'what': (note or {}).get('advice', ''), 'why': '体积较大，但不能直接删除。',
+                          'what': '', 'advice': (note or {}).get('advice', ''), 'why': '体积较大，但不能直接删除。',
                           'action': 'none', 'source': 'knowledge', 'location': path, 'actions': info_actions(path)})
 
     # -- result ---------------------------------------------------------------------
@@ -491,6 +468,39 @@ class PlanBuilder:
         self.items.sort(key=lambda i: (order[i['group']], i.get('personal', False), -(i['score'] or 0), -(i['size'] or 0)))
         return {'id': uuid.uuid4().hex[:10], 'created': time.time(), 'items': self.items, 'threshold': self.threshold,
                 'groups': [{'id': g, 'name': n} for g, n in GROUPS.items()], **(extra or {})}
+
+
+def dup_choice(size: int, copies: list[dict], keep: set[str]) -> dict:
+    """The fields of a duplicates item that follow from which copies stay (``keep``: their paths): what goes,
+    its 建议清理度 (the riskiest copy to remove, duplicates.removal_score) and the reasons. ``copies`` carry their
+    place, refs and the model's advice ('ai')."""
+    keepers = [f for f in copies if f['path'] in keep]
+    remove = [f for f in copies if f['path'] not in keep]
+    rated = [(f, *removal_score(f, f.get('ai'))) for f in remove]
+    score = min(s for _, s, _ in rated)
+    basis = ['内容逐字节相同']
+    if all(f.get('place') in IN_USE for f in copies) and any(f.get('place') != 'build' for f in copies):
+        # e.g. the same font in two projects' lib folders: each project may load its own copy
+        basis.append('每一份都在程序文件夹或代码工程里：它们可能各自引用自己的那一份，删掉一份可能让那个程序或工程出问题')
+    elif all(why is None for _, _, why in rated):
+        where = place_label(keepers[0]) if keepers[0].get('place') else ''
+        basis.append(f'保留{where}里的那份，只删零散的副本，内容不会丢失' if where else '保留一份，内容不会丢失')
+    mentioned = [f for f in keepers if (f.get('refs') or {}).get('count')]
+    if mentioned:
+        more = f'等 {len(mentioned)} 份' if len(mentioned) > 1 else ''
+        basis.append(f'保留的「{os.path.basename(mentioned[0]["path"])}」{more}有文件提到：「{mentioned[0]["refs"]["found"][0]}」')
+    basis += list(dict.fromkeys(why for _, _, why in rated if why))[:3]
+    advice = [f'AI：「{os.path.basename(f["path"])}」{f["ai"].get("verdict_label", "")}'
+              + (f'——{f["ai"]["reason"]}' if f['ai'].get('reason') else '') for f in copies if f.get('ai')]
+    basis += list(dict.fromkeys(advice))[:3]
+    first = keepers[0]['path']
+    folder = os.path.basename(os.path.dirname(first)) or os.path.dirname(first)
+    return {
+        'title': f'{os.path.basename(first)} 等 {len(copies)} 份', 'size': size * len(remove), 'count': len(remove),
+        'why': f'保留「{folder}」里的那份' + (f'等 {len(keepers)} 份' if len(keepers) > 1 else '') + f'，其余 {len(remove)} 份移到回收站',
+        'effect': '内容还在保留的那份里，但用到被删那份的程序或工程可能会找不到它。' if score < 85 else '',
+        'confidence': 0.9 if score >= 85 else 0.4, 'paths': [f['path'] for f in remove], 'keep': first,
+        'keeps': [f['path'] for f in keepers], 'score': score, 'basis': basis}
 
 
 def assess_ai_dirs(suggestions: list[dict], policy, env: dict, analyst=None, scan=None,
@@ -568,19 +578,27 @@ def run(backend, job, options: dict | None = None) -> dict:
               and (s[0] != 'dups' or opts.get('duplicates', True)) and (s[0] != 'ai' or client is not None)]
     total = len(stages)
     timings = {}
+    # how long each stage took here last time (seconds): the progress bar's proportions and the time estimate
+    learned = load_timings(backend.data_dir)
+    expected = {s: learned[s] for s, _ in stages if s in learned}
 
     def stage(key, **extra):
         index = [s[0] for s in stages].index(key)
         job.update(stage=key, stage_label=dict(STAGES)[key], step=index + 1, steps=total,
-                   stages=[{'id': s, 'label': lbl} for s, lbl in stages], detail='', **extra)
+                   stages=[{'id': s, 'label': lbl} for s, lbl in stages], detail='', part=None, count=None,
+                   expected=expected, **extra)
         timings[key] = time.time()
+
+    def part(value, **extra):
+        """How far the current stage is (0-1), when it can tell; ``count``: a number that shows it is working."""
+        job.update(part=max(0.0, min(1.0, value)) if value is not None else None, **extra)
 
     policy = backend.policy()
     env = backend.env
 
     stage('junk')
     junk_rows = backend.junk.scan(cancel=job.cancel,
-                                  progress=lambda i, n, name: job.update(detail=name, done=i, total=n))
+                                  progress=lambda i, n, name: part(i / n if n else None, detail=name, done=i, total=n))
     backend.junk_rows = junk_rows
 
     if opts.get('space_scan', True):
@@ -589,8 +607,12 @@ def run(backend, job, options: dict | None = None) -> dict:
         root = paths.native(root)
         if winapi.IS_WINDOWS and winapi.simulation() is None:
             root = os.path.realpath(root)
+        # the drive's used space is about what the scan will count
+        used = next((d['used'] for d in backend.m_drives() if d.get('system')), 0)
         scan = SpaceScan(root)
-        scan.run(cancel=job.cancel, progress=lambda p: job.update(detail=p.get('current', ''), files=p.get('files')))
+        scan.run(cancel=job.cancel, progress=lambda p: part(
+            min(0.98, p.get('bytes', 0) / used) if used else None, detail=p.get('current', ''),
+            count=f'已统计 {p.get("files", 0):,} 个文件'))
         backend.scan = scan
         backend.ai_results = {}
 
@@ -598,7 +620,8 @@ def run(backend, job, options: dict | None = None) -> dict:
     skip = system_skip(env, policy, roots)
     stage('insights')
     ins = Insights(env, settings, apps=backend.apps).collect(
-        roots, skip=skip, cancel=job.cancel, progress=lambda p: job.update(detail=p.get('current', '')))
+        roots, skip=skip, cancel=job.cancel,
+        progress=lambda p: part(None, detail=p.get('current', ''), count=f'已看过 {p.get("files", 0):,} 个文件'))
     findings = ins.findings()
     backend.insights = {'findings': findings, 'stats': ins.stats, 'roots': ins.roots, 'time': time.time()}
 
@@ -606,7 +629,7 @@ def run(backend, job, options: dict | None = None) -> dict:
         stage('dups')
         min_mb = float(settings.get('duplicates', {}).get('min_size_mb', 1))
         dups = find_duplicates(roots, min_size=int(min_mb * 1024 * 1024), skip=skip, cancel=job.cancel,
-                               progress=lambda p: job.update(detail=p.get('phase', '')))
+                               progress=lambda p: (lambda f, label, count: part(f, detail=label, count=count))(*dup_progress(p)))
         for g in dups['groups']:
             for f in g['files']:
                 f['blocked'] = policy.reason(f['path'])
@@ -623,35 +646,49 @@ def run(backend, job, options: dict | None = None) -> dict:
         stage('ai')
         ai_info['used'] = True
         anonymize = settings['ai'].get('anonymize_paths', True)
-        if backend.scan is not None and backend.scan.complete:
-            job.update(detail='空间分析')
-            result = backend.analyst.analyze_space(backend.scan, client, settings, cancel=job.cancel)
+        files = backend.files_for_ai([f['id'] for f in findings], include_content=False)[:FILES_FOR_AI]
+        # duplicates that need judging: a copy in a program, a project or next to one (loose copies are clear)
+        unclear = [g for g in (backend.dups or {}).get('groups', []) if any(f.get('place') for f in g['files'])] \
+            if opts.get('duplicates', True) else []
+        enabled = [i for i in startup_items if i['enabled']]
+        # the AI stage in steps, each with its share of the bar: (name, will it run)
+        steps = [s for s, on in (('space', backend.scan is not None and backend.scan.complete), ('files', bool(files)),
+                                 ('dups', bool(unclear)), ('startup', bool(enabled))) if on]
+
+        def ai_part(name, label, fraction=0.0, **extra):
+            i = steps.index(name)
+            part((i + min(1.0, fraction)) / len(steps), detail=label, **extra)
+
+        def asked(p):
+            return f'已问 {p.get("requests", 0)} 次'
+        if 'space' in steps:
+            ai_part('space', '空间分析')
+            result = backend.analyst.analyze_space(
+                backend.scan, client, settings, cancel=job.cancel,
+                progress=lambda p: ai_part('space', '空间分析', p.get('requests', 0) / max(1, p.get('budget', 1)), count=asked(p)))
             backend.ai_results = {s['node_id']: s for s in result['suggestions']}
             for s in result['suggestions']:
                 s['blocked'] = policy.reason(s['path'])
                 s['caution'] = policy.caution(s['path'])
             ai_info['errors'] += result['errors']
-        files = backend.files_for_ai([f['id'] for f in findings], include_content=False)[:FILES_FOR_AI]
         if files:
-            job.update(detail='我的文件（只发送文件名和大小）')
-            result = backend.analyst.review_files(files, client, anonymize,
-                                                  max_requests=int(settings['ai'].get('max_requests', 8)),
-                                                  cancel=job.cancel)
+            ai_part('files', '我的文件（只发送文件名和大小）')
+            result = backend.analyst.review_files(
+                files, client, anonymize, max_requests=int(settings['ai'].get('max_requests', 8)), cancel=job.cancel,
+                progress=lambda p: ai_part('files', '我的文件（只发送文件名和大小）', p.get('done', 0) / max(1, p.get('total', 1)),
+                                           count=f'{p.get("done", 0)} / {p.get("total", 0)} 个文件'))
             file_ai = result['files']
             backend.file_ai.update(file_ai)
             ai_info['errors'] += result['errors']
-        # duplicates that need judging: a copy in a program, a project or next to one (loose copies are clear)
-        unclear = [g for g in (backend.dups or {}).get('groups', []) if any(f.get('place') for f in g['files'])] \
-            if opts.get('duplicates', True) else []
         if unclear:
-            job.update(detail='重复文件（只发送路径）')
-            result = backend.analyst.review_duplicates(unclear[:DUPS_FOR_AI], client, anonymize,
-                                                       max_requests=DUPS_FOR_AI // 12, cancel=job.cancel)
+            ai_part('dups', '重复文件（只发送路径）')
+            result = backend.analyst.review_duplicates(
+                unclear[:DUPS_FOR_AI], client, anonymize, max_requests=DUPS_FOR_AI // 12, cancel=job.cancel,
+                progress=lambda p: ai_part('dups', '重复文件（只发送路径）', p.get('done', 0) / max(1, p.get('total', 1))))
             backend.dup_ai.update(result['copies'])
             ai_info['errors'] += result['errors']
-        enabled = [i for i in startup_items if i['enabled']]
         if enabled:
-            job.update(detail='开机启动项')
+            ai_part('startup', '开机启动项')
             items = backend.startup_items_for_ai(enabled)
             result = backend.analyst.explain_items(items, client, anonymize)
             startup_ai = {i['id']: result['items'].get(i['key']) for i in items if result['items'].get(i['key'])}
@@ -678,7 +715,49 @@ def run(backend, job, options: dict | None = None) -> dict:
                                    'scanned_bytes': backend.scan.stats.get('bytes') if backend.scan else None}})
     plan['summary'] = summarize(plan)
     backend.plan = plan
+    starts = sorted(timings.items(), key=lambda kv: kv[1]) + [('', time.time())]
+    save_timings(backend.data_dir, {k: max(0.1, round(starts[i + 1][1] - t, 1)) for i, (k, t) in enumerate(starts[:-1])})
     return plan
+
+
+TIMINGS_FILE = 'checkup_timings.json'
+
+
+def load_timings(data_dir: str) -> dict:
+    """Seconds each stage of the last check-up took on this PC (empty the first time)."""
+    try:
+        with open(os.path.join(data_dir, TIMINGS_FILE), encoding='utf-8') as fh:
+            data = json.load(fh)
+        return {k: float(v) for k, v in data.items() if isinstance(v, (int, float)) and v >= 0}
+    except (OSError, ValueError, AttributeError):
+        return {}
+
+
+def save_timings(data_dir: str, timings: dict) -> None:
+    try:
+        tmp = os.path.join(data_dir, TIMINGS_FILE + '.tmp')
+        with open(tmp, 'w', encoding='utf-8') as fh:
+            json.dump(timings, fh)
+        os.replace(tmp, os.path.join(data_dir, TIMINGS_FILE))
+    except OSError:
+        pass  # only the next progress bar's proportions depend on it
+
+
+DUP_PHASES = {'listing': ('列出文件', 0.0, 0.3), 'quick': ('快速比对', 0.3, 0.5), 'full': ('逐字节比对内容', 0.5, 0.95),
+              'refs': ('查看工程里有没有用到', 0.95, 1.0)}
+
+
+def dup_progress(p: dict) -> tuple[float | None, str, str]:
+    """find_duplicates' progress as (part of the stage, or None while listing has no total; what it does; a count)."""
+    label, start, end = DUP_PHASES.get(p.get('phase'), ('', 0.0, 0.0))
+    count = f'已找到 {p.get("files", 0):,} 个文件'
+    if p.get('phase') == 'full' and p.get('bytes_total'):
+        f = p.get('bytes_done', 0) / p['bytes_total']
+    elif p.get('total'):
+        f = p.get('done', 0) / p['total']
+    else:
+        return None, label, count
+    return start + (end - start) * min(1.0, f), label, count
 
 
 # ---------------------------------------------------------------------------

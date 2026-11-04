@@ -445,7 +445,7 @@
       const stage = p.stage === 'ask' ? `正在等待模型回答（第 ${p.requests || 1} 次请求）` : p.stage === 'summarize' ? '正在整理文件夹摘要' : '准备中';
       container.appendChild(h('div.working', h('div.line', h('span.big', `${p.done || 0}`), h('span.muted', '个文件夹已有结论'),
         ai.jobId ? h('button.btn.small', { type: 'button', onclick: () => PX.api.cancel(ai.jobId) }, '停止') : null),
-      PX.progressBar(p.budget ? (p.requests || 0) / p.budget : null), h('div.cur', stage + (p.current ? '：' + p.current : ''))));
+      PX.progressBar(p.budget ? (p.requests || 0) / p.budget : null, 'space-ai'), h('div.cur', stage + (p.current ? '：' + p.current : ''))));
       return;
     }
     // which folders go to the model, and which do not (and why)

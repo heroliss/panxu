@@ -355,9 +355,11 @@
   // action: {label, onClick} -- a button in the message (it then stays a little longer)
   PX.toast = function (msg, isError, action) {
     if (!toastWrap) toastWrap = document.body.appendChild(h('div.toast-wrap', { role: 'status', 'aria-live': 'polite' }));
+    // slides in; fades out before it is removed
+    const leave = () => { if (!t.classList.contains('out')) { t.classList.add('out'); setTimeout(() => t.remove(), 200); } };
     const t = toastWrap.appendChild(h('div.toast' + (isError ? '.err' : ''), h('span', msg),
-      action ? h('button.toast-btn', { type: 'button', onclick: () => { t.remove(); action.onClick(); } }, action.label) : null));
-    setTimeout(() => t.remove(), action ? 9000 : isError ? 6000 : 3200);
+      action ? h('button.toast-btn', { type: 'button', onclick: () => { leave(); action.onClick(); } }, action.label) : null));
+    setTimeout(leave, action ? 9000 : isError ? 6000 : 3200);
   };
   PX.fail = (err) => PX.toast(err && err.message ? err.message : String(err), true);
 
@@ -447,8 +449,13 @@
   // evidence for cleaning it (「可能是旧版本留下的」 is evidence)
   const CAUTION = /还有改动|可能是存档|可能是程序本身|仍在使用|只能由你|由你决定|无法恢复|默认不勾|各自引用|出问题|有文件提到|可能引用|素材来源|请你|不能运行|没有经过|拿不准|不到 ?\d/;
   PX.basisKind = (line) => (/^AI/.test(line) ? 'ai' : CAUTION.test(line) ? 'warn' : 'plus');
-  PX.detailPanel = function ({ warn, facts, score, places }) {
-    const panel = h('div.dp');
+  // what a cleanup does, in one line: [icon, what, the one thing to know about it]
+  PX.ACTIONS = { delete: ['trash', '永久删除', '不经过回收站'], recycle: ['trash', '移到回收站', '需要时可以还原'],
+    disable: ['power', '禁用开机启动', '随时可以重新启用'] };
+  PX.detailPanel = function ({ warn, action, facts, score, places, enter }) {
+    const panel = h('div.dp' + (enter ? '.enter' : ''));
+    const act = PX.ACTIONS[action];
+    if (act) panel.appendChild(h('div.dp-action.' + action, PX.icon(act[0]), h('b', act[1]), h('span', act[2])));
     if (warn) panel.appendChild(h('div.dp-warn', PX.icon('warn'), h('span', warn)));
     const left = (facts || []).filter((f) => f && f[1]).map(([label, text, kind]) =>
       h('div.dp-fact' + (kind ? '.' + kind : ''), h('div.dp-label', kind === 'ai' ? PX.icon('spark') : null, label), h('div.dp-body', text)));
@@ -471,9 +478,12 @@
     }
     return panel;
   };
-  // one place in a detail panel: [保留] icon path (facts below it) 打开 / 打开位置
-  PX.placeRow = (path, o) => h('div.dp-place',
-    o && o.badge ? PX.tag(o.badge[0], o.badge[1]) : h('span'),
+  // one place in a detail panel: [☐ 保留] icon path (facts below it) 打开 / 打开位置; ``pick`` {checked, onchange}
+  // lets the user choose (a duplicate's copies: ticked goes to the Recycle Bin)
+  PX.placeRow = (path, o) => h('div.dp-place' + (o && o.pick ? '.pickable' : ''),
+    o && o.pick ? h('label.dp-pick', h('input', { type: 'checkbox', checked: !!o.pick.checked, disabled: !!o.pick.disabled,
+      'aria-label': '移到回收站：' + path, onchange: (e) => o.pick.onchange(e.target.checked, e.target) }), o.badge ? PX.tag(o.badge[0], o.badge[1]) : null)
+      : o && o.badge ? PX.tag(o.badge[0], o.badge[1]) : h('span'),
     PX.fileIcon(path, !!(o && o.folder)),
     h('div.dp-path', PX.pathText(path)),
     h('div.row-actions', o && o.folder ? null : PX.openButton(path, '打开'), PX.revealButton(path, '打开位置')),
@@ -493,11 +503,31 @@
     const input = h('input', { type: 'checkbox', checked: !!checked, disabled: !!disabled, onchange });
     return h('label.switch', input, h('span'));
   };
-  PX.progressBar = function (fraction) {
-    const bar = h('div.progress' + (fraction === null || fraction === undefined ? '.indeterminate' : ''), h('i'));
-    if (fraction !== null && fraction !== undefined) bar.firstChild.style.width = Math.round(fraction * 100) + '%';
+  // Pages redraw every few hundred milliseconds while a job runs, so a bar is a new element each time. With a
+  // ``key`` it starts where the last one of that key stopped and glides to the new value (never backwards: a new
+  // run snaps to its start); an unknown amount sweeps in step with a clock instead of restarting every redraw.
+  const lastBar = {};
+  const SWEEP_MS = 1400;
+  PX.progressBar = function (fraction, key) {
+    const known = fraction !== null && fraction !== undefined;
+    const bar = h('div.progress' + (known ? '' : '.indeterminate'), h('i'));
+    const fill = bar.firstChild;
+    if (!known) {
+      fill.style.animationDelay = -(performance.now() % SWEEP_MS) + 'ms';
+      return bar;
+    }
+    const to = Math.round(Math.max(0, Math.min(1, fraction)) * 1000) / 10;
+    const from = key && lastBar[key] !== undefined && lastBar[key] <= to ? lastBar[key] : to;
+    fill.style.width = from + '%';
+    if (key) {
+      lastBar[key] = to;
+      if (from !== to) requestAnimationFrame(() => requestAnimationFrame(() => { fill.style.width = to + '%'; }));
+    }
     return bar;
   };
+  // 1:05 for an elapsed time; how long is left in words, rounded so it does not twitch
+  PX.fmt.clock = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+  PX.fmt.left = (s) => (s < 15 ? '马上就好' : s < 50 ? '还要不到 1 分钟' : s < 100 ? '还要约 1 分钟' : `还要约 ${Math.round(s / 60)} 分钟`);
   PX.seg = function (options, value, onpick) {
     const wrap = h('div.seg', { role: 'group' });
     for (const [v, label] of options) {

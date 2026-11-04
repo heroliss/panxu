@@ -165,20 +165,20 @@
     confidence: null, selected: false, paths: [], blocked: null, caution: null, status: 'pending', ai: null }, o);
   const planItems = [
     P({ id: 'rule:user_temp', group: 'safe', category: '垃圾文件', title: '用户临时文件', size: 2.31 * GB, count: 9120, action: 'delete', source: 'rule', selected: true,
-      what: rules[0][3], why: '盘序内置的清理规则，只清理公认可以重建的缓存和临时文件。', effect: '相关程序会在需要时重新生成这些文件。', locations: [U + '\\AppData\\Local\\Temp'] }),
-    P({ id: 'rule:chrome', group: 'safe', category: '垃圾文件', title: 'Google Chrome', size: 1.46 * GB, action: 'delete', source: 'rule', selected: true, what: rules[8][3], why: '盘序内置的清理规则。' }),
+      why: rules[0][3], locations: [U + '\\AppData\\Local\\Temp'] }),
+    P({ id: 'rule:chrome', group: 'safe', category: '垃圾文件', title: 'Google Chrome', size: 1.46 * GB, action: 'delete', source: 'rule', selected: true, why: rules[8][3] }),
     P({ id: 'rule:crash_dumps', group: 'safe', category: '垃圾文件', title: '崩溃转储文件', size: 640 * MB, action: 'delete', source: 'rule', selected: true, why: '程序崩溃时保存的内存快照，只在排查故障时有用。' }),
     P({ id: 'dir:unity', group: 'safe', category: '应用数据', title: 'Unity 编辑器', size: 6.2 * GB, source: 'ai', confidence: 0.86, selected: true,
-      what: 'Unity 的资源导入与着色器缓存，打开项目时会自动重建', why: 'AI 判断：可清理', effect: '下次打开项目时重新导入，耗时较长', paths: [U + '\\AppData\\Local\\Unity'] }),
+      why: 'Unity 的资源导入与着色器缓存，打开项目时会自动重建', effect: '下次打开项目时重新导入，耗时较长', paths: [U + '\\AppData\\Local\\Unity'] }),
     P({ id: 'rule:edge', category: '垃圾文件', title: 'Microsoft Edge', size: 720 * MB, action: 'delete', source: 'rule', blocked: '请先关闭 msedge.exe', why: '盘序内置的清理规则。' }),
     P({ id: 'rule:npm', category: '垃圾文件', title: 'npm 缓存', size: 3.4 * GB, action: 'delete', source: 'rule', why: 'Node.js 包下载缓存。删除后再次安装依赖时会重新下载。' }),
-    P({ id: 'dir:idea21', category: '应用数据', title: 'IntelliJIdea2021.1', size: 1.6 * GB, confidence: 0.6, what: '「IntelliJIdea2021.1」的数据，旁边还有更新的版本「IntelliJIdea2025.3」。',
+    P({ id: 'dir:idea21', category: '应用数据', title: 'IntelliJIdea2021.1', size: 1.6 * GB, confidence: 0.6,
       why: '可能是旧版本留下的：3 年没有修改过。', effect: '如果还在用旧版本，它的设置和缓存会丢失。', paths: [U + '\\AppData\\Local\\JetBrains\\IntelliJIdea2021.1'] }),
-    P({ id: 'dir:oldgame', category: '应用数据', title: 'OldGameStudio', size: 1.1 * GB, confidence: 0.5, what: '找不到对应的已安装程序，可能是已卸载程序的残留。',
+    P({ id: 'dir:oldgame', category: '应用数据', title: 'OldGameStudio', size: 1.1 * GB, confidence: 0.5,
       why: '在「已安装的应用」里没有找到对应的程序，而且 2 年没有修改过。', effect: '如果程序其实还在（例如绿色版），它的设置、存档或缓存会丢失。',
       paths: [U + '\\AppData\\Local\\OldGameStudio'], caution: '位于本地应用数据目录，可能是程序正在使用的数据' }),
     P({ id: 'file:iso', category: '很久没动过的大文件', title: 'Ubuntu-24.04.1-desktop-amd64.iso', size: 5.9 * GB, count: 1, source: 'insight', confidence: 0.4, personal: true,
-      what: '这些大文件很久没有修改过。', why: '1.9 年没有修改过，系统镜像可以随时重新下载', effect: '移到回收站，需要时可以从回收站还原。', paths: [U + '\\Downloads\\Ubuntu-24.04.1-desktop-amd64.iso'],
+      advice: '这些大文件很久没有修改过。不需要的可以删除；珍贵的照片视频建议移到移动硬盘或网盘。', why: '1.9 年没有修改过，系统镜像可以随时重新下载', paths: [U + '\\Downloads\\Ubuntu-24.04.1-desktop-amd64.iso'],
       ai: { verdict: 'delete', verdict_label: '可以删除', what: 'Ubuntu 安装镜像', reason: '可以从官网重新下载' } }),
     P({ id: 'file:wechat', category: '已安装程序的安装包', title: 'WeChatSetup_3.9.12.17.exe', size: 186 * MB, count: 1, source: 'insight', confidence: 0.85, personal: true,
       why: '已安装：微信', paths: [U + '\\Downloads\\WeChatSetup_3.9.12.17.exe'] }),
@@ -188,16 +188,18 @@
       why: '30 天前中断', paths: [U + '\\Downloads\\电影.mkv.crdownload'] }),
     P({ id: 'file:thesis', category: '同一文件的多个版本', title: '毕业论文_最终版 - 副本.docx', size: 1.7 * MB, count: 1, source: 'insight', confidence: 0.85, personal: true,
       why: '和「毕业论文_最终版.docx」内容完全相同', paths: [U + '\\Documents\\毕业论文_最终版 - 副本.docx'] }),
-    P({ id: 'dup:1', category: '重复文件', title: '截图 2026-03-01 101530.png 等 2 份', size: 3 * MB, count: 1, source: 'dup', confidence: 0.9, personal: true,
-      what: '2 个文件内容完全相同（逐字节比较）。', why: `保留「${U}\\Desktop\\截图 2026-03-01 101530.png」，其余 1 份移到回收站。`, keep: U + '\\Desktop\\截图 2026-03-01 101530.png',
-      paths: [U + '\\Pictures\\截图 2026-03-01 101530.png'] }),
+    P({ id: 'dup:1', category: '重复文件', title: '截图 2026-03-01 101530.png 等 3 份', size: 3 * MB, count: 1, source: 'dup', confidence: 0.9, personal: true,
+      why: '保留「Desktop」里的那份，其余 1 份移到回收站', keep: U + '\\Desktop\\截图 2026-03-01 101530.png',
+      paths: [U + '\\Pictures\\截图 2026-03-01 101530.png'], dup_size: 3 * MB,
+      dup_files: [{ path: U + '\\Desktop\\截图 2026-03-01 101530.png', mtime: now - 40 * day }, { path: U + '\\Pictures\\截图 2026-03-01 101530.png', mtime: now - 30 * day },
+        { path: U + '\\Downloads\\截图 2026-03-01 101530 (1).png', mtime: now - 20 * day }] }),
     P({ id: 'startup:qv', category: '开机启动', title: '快看图大师 资讯助手', action: 'disable', source: 'ai', confidence: 0.7, what: '看图软件附带的资讯弹窗程序',
-      why: 'AI 建议禁用：开机弹出广告和资讯，禁用不影响看图', effect: '开机时不再自动运行，需要时可以手动打开；随时可以在「开机与服务」里重新启用。' }),
+      why: 'AI 建议禁用：开机弹出广告和资讯，禁用不影响看图' }),
     P({ id: 'info:hiber', group: 'info', category: '说明', title: '休眠文件', size: 12.7 * GB, action: 'none', source: 'knowledge', location: 'C:\\hiberfil.sys',
-      what: '用于休眠和快速启动。不需要这两项时，可用管理员命令 powercfg /h off 关闭，文件会自动消失。', why: '体积较大，但不能直接删除。',
+      advice: '用于休眠和快速启动。不需要这两项时，可用管理员命令 powercfg /h off 关闭，文件会自动消失。', why: '体积较大，但不能直接删除。',
       actions: [{ kind: 'hibernate', label: '关闭休眠，删除这个文件' }] }),
     P({ id: 'info:docker', group: 'info', category: '说明', title: 'Docker Desktop 数据', size: 28.4 * GB, action: 'none', source: 'knowledge', location: U + '\\AppData\\Local\\Docker',
-      what: '镜像和容器存放在虚拟磁盘里。先用 docker system prune 清理，再在 Docker 设置中压缩磁盘。', why: '体积较大，但不能直接删除。',
+      advice: '镜像和容器存放在虚拟磁盘里。先用 docker system prune 清理，再在 Docker 设置中压缩磁盘。', why: '体积较大，但不能直接删除。',
       actions: [{ kind: 'copy', arg: 'docker system prune', label: '复制清理命令' }, { kind: 'reveal', label: '打开文件夹' }] }),
   ];
   const SCORES = { 'rule:user_temp': 95, 'rule:chrome': 95, 'rule:crash_dumps': 95, 'dir:unity': 86, 'rule:edge': 95, 'rule:npm': 70,
@@ -299,7 +301,7 @@
   ];
 
   const handlers = {
-    checkup: () => job(14, () => {
+    checkup: () => job(40, () => {
       const t = settings.checkup.auto_threshold || 5;
       plan = { id: 'p' + Date.now(), created: now, threshold: t, items: decide(JSON.parse(JSON.stringify(planItems)), t),
         groups: planGroups, ai: { used: hasKey, errors: [], usage: { requests: 3 } } };
@@ -307,8 +309,13 @@
       insights = { findings, stats: { files: 18233, bytes: 96 * GB, cloud_skipped: 12, seconds: 3, roots: [] }, roots: [U + '\\Desktop', U + '\\Documents', U + '\\Downloads', 'D:\\资料'], time: now };
       return plan;
     }, (f) => {
+      // like checkup.run: each stage says how far it is (part), except 整理我的文件, which has no total
       const step = Math.min(6, 1 + Math.floor(f * 6));
-      return { stage: stages[step - 1].id, stage_label: stages[step - 1].label, step, steps: 6, stages, detail: [U + '\\AppData\\Local\\Temp', 'C:\\Program Files', U + '\\Documents', '比较文件内容', '空间分析', ''][step - 1] };
+      const part = f * 6 - (step - 1);
+      return { stage: stages[step - 1].id, stage_label: stages[step - 1].label, step, steps: 6, stages,
+        part: step === 3 ? null : part, count: [`${Math.round(part * 52)} / 52 条规则`, `已统计 ${Math.round(part * 412000).toLocaleString()} 个文件`,
+          `已看过 ${Math.round(part * 18233).toLocaleString()} 个文件`, '已找到 3,120 个文件', `已问 ${Math.round(part * 6)} 次`, ''][step - 1],
+        detail: [U + '\\AppData\\Local\\Temp', 'C:\\Program Files', U + '\\Documents', '逐字节比对内容', '空间分析', ''][step - 1] };
     }),
     plan: () => { if (plan) plan.summary = summarize(); return plan; },
     hibernate_set: ({ enabled }) => ({ enabled, freed: enabled ? 0 : 12.7 * GB }),
@@ -322,6 +329,13 @@
         changed.push(edge.id);
       }
       return { running: { edge: [], chrome: [] }, plan_changed: changed };
+    },
+    plan_dup_choose: ({ item_id, remove }) => {
+      const it = plan.items.find((i) => i.id === item_id);
+      const keep = it.dup_files.filter((f) => !remove.includes(f.path));
+      Object.assign(it, { paths: remove, keep: keep[0].path, count: remove.length, size: it.dup_size * remove.length,
+        why: `保留「${keep[0].path.split('\\').slice(-2, -1)[0]}」里的那份，其余 ${remove.length} 份移到回收站` });
+      return it;
     },
     plan_preview: ({ item_ids }) => {
       const out = { delete: { count: 0, size: 0, titles: [] }, recycle: { count: 0, size: 0, titles: [] }, disable: { count: 0, titles: [] }, skipped: [] };

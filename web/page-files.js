@@ -216,7 +216,7 @@
       const frac = p.phase === 'full' && p.bytes_total ? p.bytes_done / p.bytes_total
         : (p.phase === 'quick' || p.phase === 'refs') && p.total ? p.done / p.total : null;
       c.appendChild(h('div.working', h('div.line', h('span.muted', phase),
-        dup.jobId ? h('button.btn.small', { type: 'button', onclick: () => PX.api.cancel(dup.jobId) }, '停止') : null), PX.progressBar(frac)));
+        dup.jobId ? h('button.btn.small', { type: 'button', onclick: () => PX.api.cancel(dup.jobId) }, '停止') : null), PX.progressBar(frac, 'dups')));
       return;
     }
     if (!dup.result) return;

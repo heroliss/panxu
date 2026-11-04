@@ -7,7 +7,6 @@
   const { h, fmt } = PX;
   const SOURCE = { rule: ['规则', 'good'], ai: ['AI', 'info'], insight: ['我的文件', ''], dup: ['重复文件', ''],
     heuristic: ['盘序判断', 'warn'], knowledge: ['说明', ''] };
-  const ACTION = { delete: '永久删除', recycle: '移到回收站', disable: '禁用开机启动', none: '' };
   const GROUP = {
     safe: ['g-safe', '已经替你勾好：可以重建的缓存（直接删除），以及很可能没用的残留（进回收站，可以还原）。'],
     review: ['g-review', '可能可以清理，但需要你看一眼再决定。你的文件只会移到回收站。'],
@@ -18,7 +17,8 @@
     开机启动: ['startup', '开机与服务'] };
   const THRESHOLDS = [9, 8, 7, 6, 5].map((t) => [t, `≥ ${t} 分`]);
   const state = { status: 'idle', plan: null, planId: null, open: new Set(), progress: {}, report: null, jobId: null,
-    withMine: false, picked: null };
+    withMine: false, picked: null, run: { started: Date.now(), stage: null, stageAt: Date.now(), shown: 0, left: null },
+    executing: 0, entering: null };
   let root = null;
 
   function strata(drive, reclaim, cls) {
@@ -70,6 +70,7 @@
     state.status = 'running';
     state.progress = {};
     state.report = null;
+    state.run = { started: Date.now(), stage: null, stageAt: Date.now(), shown: 0, left: null };
     draw();
     try {
       const plan = await PX.api.run('checkup', {}, (p) => { state.progress = p; draw(true); }, (id) => { state.jobId = id; });
@@ -114,6 +115,7 @@
     if (!ok) return;
     state.status = 'executing';
     state.progress = {};
+    state.executing = chosen.reduce((s, it) => s + (it.size || 0), 0);
     draw();
     try {
       state.report = await PX.api.run('plan_execute', { item_ids: chosen.map((it) => it.id) }, (p) => { state.progress = p; draw(true); },
@@ -193,13 +195,45 @@
     }
   }
 
+  // the check-up as one bar: each stage has its share (how long it took here last time, checkup.load_timings, or a
+  // typical split); inside a stage the backend says how far it is (p.part), or the bar creeps on at last time's pace
+  // so that it never stands still -- and never goes back
+  const STAGE_SHARE = { junk: 8, space: 35, insights: 22, dups: 15, ai: 18, plan: 2 };
+  const STAGE_SECONDS = { junk: 6, space: 40, insights: 20, dups: 20, ai: 30, plan: 2 };
+  function checkupProgress(p) {
+    const run = state.run;
+    const now = Date.now();
+    if (p.stage && p.stage !== run.stage) { run.stage = p.stage; run.stageAt = now; }
+    const ids = (p.stages || []).map((s) => s.id);
+    const i = ids.indexOf(p.stage);
+    if (i < 0) return { fraction: 0, elapsed: (now - run.started) / 1000, left: null };
+    const learned = p.expected || {};
+    const known = ids.every((s) => learned[s]);
+    const share = (s) => (known ? learned[s] : STAGE_SHARE[s] || 5);
+    const total = ids.reduce((a, s) => a + share(s), 0) || 1;
+    const inStage = (now - run.stageAt) / 1000;
+    const pace = learned[p.stage] || STAGE_SECONDS[p.stage] || 10;
+    const part = typeof p.part === 'number' ? p.part : 0.9 * (1 - Math.exp(-inStage / (pace / 2)));
+    const before = ids.slice(0, i).reduce((a, s) => a + share(s), 0);
+    run.shown = Math.max(run.shown, Math.min(0.995, (before + share(p.stage) * part) / total));
+    const elapsed = (now - run.started) / 1000;
+    let left = null;
+    if (known) left = ids.slice(i + 1).reduce((a, s) => a + learned[s], 0) + Math.max(learned[p.stage] - inStage, learned[p.stage] * (1 - part), 2);
+    else if (run.shown > 0.15 && elapsed > 8) left = elapsed * (1 - run.shown) / run.shown;
+    if (left !== null) run.left = run.left === null ? left : run.left * 0.85 + left * 0.15;  // steady, not jumpy
+    return { fraction: run.shown, elapsed, left: run.left };
+  }
+
   function stepper(c) {
     const p = state.progress || {};
     const stages = p.stages || PX.state.init.checkup_stages || [];
     const box = c.appendChild(h('section.working'));
     if (state.status === 'executing') {
-      box.appendChild(h('div.line', h('span.big', fmt.bytes(p.freed || 0)), h('span.muted', '正在清理…')));
-      box.appendChild(PX.progressBar(null));
+      // what has been freed of what was chosen
+      const total = state.executing || 0;
+      box.appendChild(h('div.line', h('span.big', fmt.bytes(p.freed || 0)),
+        h('span.muted', total ? `正在清理，共 ${fmt.bytes(total)}` : '正在清理…')));
+      box.appendChild(PX.progressBar(total && p.freed ? Math.min(0.98, p.freed / total) : null, 'execute'));
       box.appendChild(h('div.cur', p.detail || ''));
       return;
     }
@@ -207,10 +241,15 @@
     const at = p.step || 1;
     stages.forEach((s, i) => {
       const n = i + 1;
-      list.appendChild(h('li' + (n < at ? '.done' : n === at ? '.on' : ''), n < at ? PX.icon('check') : h('span.n', String(n)), s.label));
+      list.appendChild(h('li' + (n < at ? '.done' : n === at ? '.on' : ''), n < at ? PX.icon('check')
+        : h('span.n', n === at ? { style: { animationDelay: -(performance.now() % 1600) + 'ms' } } : null, String(n)), s.label));
     });
-    box.appendChild(PX.progressBar(p.steps ? (at - 1) / p.steps : null));
-    box.appendChild(h('div.cur', p.detail ? PX.displayPath(p.detail) : p.stage ? '' : '准备中…'));
+    const prog = checkupProgress(p);
+    box.appendChild(PX.progressBar(p.stage ? prog.fraction : null, 'checkup'));
+    box.appendChild(h('div.work-meta',
+      h('span.work-count', p.count || (p.stage ? '' : '准备中…')),
+      h('span.work-time', `已用 ${fmt.clock(prog.elapsed)}`, prog.left !== null ? ` · 预计${fmt.left(prog.left)}` : '')));
+    box.appendChild(h('div.cur', p.detail ? PX.displayPath(p.detail) : ''));
   }
 
   function reportBox(c) {
@@ -340,6 +379,9 @@
   const isFolder = (it) => it.source === 'ai' || it.source === 'heuristic' || it.category === '空文件夹' ||
     (it.source === 'knowledge' && !/\.[a-z0-9]{2,5}$/i.test(it.location || ''));
 
+  // the line under a row's title: why it is offered; for 仅供了解, what to do about it
+  const rowText = (it) => (it.group === 'info' ? it.advice || it.what || it.why : it.why || it.what);
+
   function itemRow(list, it) {
     const can = selectable(it);
     const box = h('input', { type: 'checkbox', checked: isSel(it), disabled: !can,
@@ -357,12 +399,17 @@
     // one file or folder: its icon, and a button to see it in Explorer right in the row
     const one = it.paths && it.paths.length === 1 ? it.paths[0] : !(it.paths && it.paths.length) && it.location ? it.location : '';
     const row = h('div.row.plan-row' + (it.status !== 'pending' ? '.disabled' : ''), {
-      onclick: () => { state.open.has(it.id) ? state.open.delete(it.id) : state.open.add(it.id); draw(true); } },
+      onclick: () => {
+        if (state.open.has(it.id)) state.open.delete(it.id);
+        else { state.open.add(it.id); state.entering = it.id; }  // only a panel that just opened slides in
+        draw(true);
+        state.entering = null;
+      } },
     it.group === 'info' ? PX.icon('info', 'ic') : box,
     h('div.cell-main',
       h('div.name-line', one && it.kind !== 'rule' ? PX.fileIcon(one, isFolder(it)) : null,
         h('span.name-text', it.title), PX.tag(srcLabel, srcKind), flags),
-      h('div.why', it.group === 'info' && it.what ? it.what : it.why || it.what),
+      h('div.why', rowText(it)),
       it.group === 'info' && it.status === 'pending' && it.actions && it.actions.length
         ? h('div.info-actions', it.actions.map((a) => h('button.btn.small' + (a.kind === 'hibernate' ? '.primary' : ''), {
           type: 'button', onclick: (e) => { e.stopPropagation(); infoAction(it, a); } }, a.label))) : null),
@@ -375,6 +422,19 @@
     if (state.open.has(it.id)) list.appendChild(detail(it));
   }
 
+  // a duplicate's copies picked by hand: the backend scores the new choice by the same rules
+  async function chooseCopies(it, path, want, box) {
+    const remove = new Set(it.paths);
+    want ? remove.add(path) : remove.delete(path);
+    if (remove.size >= (it.dup_files || []).length) { box.checked = false; PX.toast('每组至少保留一份'); return; }
+    if (!remove.size) { box.checked = true; PX.toast('至少留一份要移到回收站的；不想处理这一组，取消它前面的勾选就好'); return; }
+    try {
+      const fresh = await PX.api.call('plan_dup_choose', { item_id: it.id, remove: [...remove] });
+      Object.assign(it, fresh);
+    } catch (e) { PX.fail(e); }
+    draw(true);
+  }
+
   // what is behind a row: what it is and what happens, why it scored what it did, and where it is
   function detail(it) {
     const copies = new Map((it.dup_files || []).map((f) => [f.path, f]));  // a duplicate's copies: where each lives
@@ -382,24 +442,35 @@
     const showAll = state.open.has('paths:' + it.id);
     const dup = it.kind === 'dup';
     const rows = [];
-    if (it.keep) rows.push(PX.placeRow(it.keep, { badge: ['保留', 'good'], facts: PX.copyFacts(copies.get(it.keep), true) }));
-    for (const p of showAll ? all : all.slice(0, 6)) {
-      rows.push(PX.placeRow(p, { badge: dup ? ['移到回收站', ''] : null, folder: isFolder(it) || it.kind === 'rule',
-        facts: PX.copyFacts(copies.get(p), true) }));
+    if (dup) {
+      // every copy, in a fixed order: ticked ones go to the Recycle Bin; the user may tick any but the last one kept
+      const going = new Set(it.paths);
+      const editable = it.status === 'pending';
+      for (const f of it.dup_files || []) {
+        const on = going.has(f.path);
+        rows.push(PX.placeRow(f.path, { badge: on ? ['移到回收站', 'warn'] : ['保留', 'good'], facts: PX.copyFacts(f, true),
+          pick: { checked: on, disabled: !editable, onchange: (want, box) => chooseCopies(it, f.path, want, box) } }));
+      }
+    } else {
+      for (const p of showAll ? all : all.slice(0, 6)) rows.push(PX.placeRow(p, { folder: isFolder(it) || it.kind === 'rule' }));
     }
-    const more = all.length > 6 ? h('button.fold', { type: 'button', onclick: (e) => {
+    const more = !dup && all.length > 6 ? h('button.fold', { type: 'button', onclick: (e) => {
       e.stopPropagation();
       showAll ? state.open.delete('paths:' + it.id) : state.open.add('paths:' + it.id);
       draw(true);
     } }, showAll ? '收起' : `显示全部 ${all.length} 项`) : null;
-    const title = dup ? '这几份副本' : it.kind === 'rule' ? '清理这些位置' : it.action === 'recycle' ? '会移到回收站' : '位置';
+    const title = dup ? '这几份副本' : it.kind === 'rule' ? '清理这些位置' : '位置';
+    const shown = rowText(it);  // the row already says this: never again below
+    const fact = (text) => (text && text !== shown ? text : '');
     return PX.detailPanel({
+      action: it.status === 'pending' ? it.action : null,
       warn: it.caution,
-      facts: [['是什么', it.what && it.what !== it.why ? it.what : ''],
-        [ACTION[it.action] ? ACTION[it.action] + '后' : '影响', it.effect],
-        ['AI 认为它是', it.ai && it.ai.what, 'ai']],
-      score: { score: it.score, basis: it.basis },
-      places: { title, note: all.length > 1 ? `${all.length} 项` : '', rows, more },
+      facts: [['是什么', fact(it.what)], ['AI 认为它是', fact(it.ai && it.ai.what), 'ai'], ['建议', fact(it.advice)],
+        ['还要知道', fact(it.effect)]],
+      // 「很久没动过的大文件：1.9 年没有修改过」 when the row says 「1.9 年没有修改过」: once is enough
+      score: { score: it.score, basis: (it.basis || []).filter((l) => l !== shown && l.replace(/^[^：]{1,12}：/, '') !== shown) },
+      places: { title, note: dup ? `${(it.dup_files || []).length} 份，勾选的移到回收站` : all.length > 1 ? `${all.length} 项` : '', rows, more },
+      enter: state.entering === it.id,
     });
   }
 

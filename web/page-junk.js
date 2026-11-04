@@ -210,7 +210,7 @@
         h('div.line', state.status === 'cleaning' ? h('span.big', fmt.bytes(p.freed || 0)) : null,
           h('span.muted', state.status === 'cleaning' ? '已释放' : '正在检查'),
           state.status === 'cleaning' && state.jobId ? h('button.btn.small', { type: 'button', onclick: () => PX.api.cancel(state.jobId) }, '停止') : null),
-        PX.progressBar(frac), h('div.cur', p.current || '')));
+        PX.progressBar(frac, 'junk'), h('div.cur', p.current || '')));
     }
     if (state.status === 'idle' && !Object.keys(state.results).length) {
       container.appendChild(PX.empty('还没有扫描', '扫描只读取文件信息，不会删除任何东西。',

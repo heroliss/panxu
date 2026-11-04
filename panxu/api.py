@@ -977,6 +977,26 @@ class Backend:
         self.plan['summary'] = checkup.summarize(self.plan)
         return self.plan
 
+    def m_plan_dup_choose(self, item_id: str, remove: list):
+        """The user picks which copies of a duplicates item go to the Recycle Bin (at least one stays); the item is
+        scored again by the same rules and returned."""
+        plan = self._require_plan()
+        item = next((i for i in plan['items'] if i['id'] == item_id and i.get('kind') == 'dup'), None)
+        if item is None or item['status'] != 'pending':
+            raise UserError('这一项已经不在清理方案里了，请重新体检')
+        wanted = {paths.key(p) for p in remove or [] if isinstance(p, str)}
+        copies = item['dup_files']
+        keep = {f['path'] for f in copies if paths.key(f['path']) not in wanted}
+        if len(keep) == len(copies):
+            raise UserError('至少选一份要移到回收站的副本')
+        if not keep:
+            raise UserError('每组至少保留一份')
+        item.update(checkup.dup_choice(item['dup_size'], copies, keep), chosen=True)
+        threshold = plan.get('threshold', checkup.DEFAULT_THRESHOLD)
+        item['basis'] = item['basis'] + checkup.decision_note(item, threshold)
+        plan['summary'] = checkup.summarize(plan)
+        return item
+
     def m_plan_preview(self, item_ids: list):
         """Totals for the confirmation dialog, split by what will happen."""
         plan = self._require_plan()
@@ -1103,8 +1123,10 @@ class Backend:
                 raise UserError('清理方案已更新，请重新打开')
             ctx['about'] = {'type': '清理方案中的一项', 'title': item['title'], 'group': checkup.GROUPS[item['group']],
                             'action': checkup.ACTIONS[item['action']], 'source': checkup.SOURCES[item['source']],
-                            'size': fmt_size(item['size'] or 0), 'what': item['what'], 'why': item['why'],
-                            'effect': item['effect'], 'paths': [self._anon(p) for p in item['paths'][:5]]}
+                            'size': fmt_size(item['size'] or 0), 'what': item['what'], 'why': self._anon_text(item['why']),
+                            'advice': item.get('advice', ''), 'effect': item['effect'],
+                            'basis': [self._anon_text(b) for b in item.get('basis', [])[:8]],
+                            'paths': [self._anon(p) for p in item['paths'][:5]]}
             if item.get('blocked'):
                 ctx['about']['protected'] = item['blocked']
             if len(item['paths']) == 1:

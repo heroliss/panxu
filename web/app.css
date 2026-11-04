@@ -261,8 +261,22 @@ input[type=checkbox]:disabled { cursor: not-allowed; }
 
 /* ---------- progress ---------- */
 .progress { height: 4px; border-radius: 2px; background: var(--rule-2); overflow: hidden; }
-.progress > i { display: block; height: 100%; background: var(--cobalt); transition: width .25s; }
-.progress.indeterminate > i { width: 35%; animation: slide 1.2s ease-in-out infinite; }
+/* polls come every 300 ms: a linear glide of about that long makes the bar move continuously (PX.progressBar) */
+.progress > i { display: block; height: 100%; background: var(--cobalt); border-radius: 2px; transition: width .35s linear; }
+.progress.indeterminate > i { width: 35%; animation: slide 1.4s ease-in-out infinite; }
+.working .progress { height: 6px; border-radius: 3px; }
+.work-meta { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-top: 8px; font-size: 12.5px; }
+.work-count { color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.work-time { color: var(--ink-3); font-variant-numeric: tabular-nums; margin-left: auto; }
+.working .work-meta + .cur { margin-top: 2px; color: var(--ink-3); }
+@keyframes step-pulse { 0% { box-shadow: 0 0 0 0 var(--cobalt-tint); } 70%, 100% { box-shadow: 0 0 0 6px transparent; } }
+.steps li.on .n { animation: step-pulse 1.6s ease-out infinite; }
+.toast { animation: toast-in .22s ease-out; }
+.toast.out { animation: toast-out .2s ease-in forwards; }
+@keyframes toast-in { from { opacity: 0; transform: translateY(8px); } }
+@keyframes toast-out { to { opacity: 0; transform: translateY(4px); } }
+.dp.enter { animation: dp-in .2s ease-out; }
+@keyframes dp-in { from { opacity: 0; transform: translateY(-4px); } }
 @keyframes slide { from { transform: translateX(-100%); } to { transform: translateX(290%); } }
 .working { padding: 20px 0 26px; }
 .working .line { display: flex; gap: 24px; align-items: baseline; margin-bottom: 12px; flex-wrap: wrap; }
@@ -527,6 +541,12 @@ button.bl-row:hover .bl-label { color: var(--cobalt); }
   letter-spacing: .08em; color: var(--ink-3); }
 .dp-label svg { width: 12px; height: 12px; }
 .dp-note { font-weight: 400; letter-spacing: 0; margin-left: 2px; }
+.dp-action { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--ink-2); }
+.dp-action b { color: var(--ink); font-weight: 600; }
+.dp-action svg { width: 15px; height: 15px; }
+.dp-action.delete svg { color: var(--danger); }
+.dp-action.recycle svg { color: var(--verdigris); }
+.dp-action.disable svg { color: var(--cobalt); }
 .dp-warn { display: flex; gap: 8px; align-items: flex-start; padding: 8px 10px; border-radius: var(--r-m);
   background: var(--amber-tint); color: var(--amber); font-size: 12.5px; line-height: 1.5; }
 .dp-warn svg { width: 15px; height: 15px; flex: none; margin-top: 2px; }
@@ -567,7 +587,8 @@ button.bl-row:hover .bl-label { color: var(--cobalt); }
   padding: 4px 6px; margin: 0 -6px; border-radius: var(--r-m); }
 .dp-place:hover { background: var(--raise); }
 .dp-place > span:empty { margin-right: -8px; }
-.dp-place > .tag { min-width: 76px; justify-content: center; }
+.dp-place > .tag, .dp-pick .tag { min-width: 76px; justify-content: center; }
+.dp-pick { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
 .dp-path { display: flex; min-width: 0; font-size: 12.5px; }
 .dp-place-facts { grid-column: 3 / 5; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: 12px; }
 .dp .fold { padding: 4px 0 0; }
