@@ -126,6 +126,7 @@ class CheckupTest(TempDirTest):
                 self.assertNotIn(paths.key(item['keep']), offered)
         invoice = [p for p in offered if os.path.basename(p).startswith('发票')]
         self.assertEqual(len(invoice), 1, 'two identical invoices: only one may ever be offered')
+        self.assertFalse([p for p in offered if 'engine_film' in p], "a code project's documents are not old versions")
 
     def test_folders_of_installed_programs_are_never_pre_ticked(self):
         plan = self.checkup()
@@ -338,6 +339,30 @@ class CheckupTest(TempDirTest):
         bold.add_ai_dirs(rows, self.backend.env)
         self.assertEqual([i['selected'] for i in bold.items], [True, False])
         self.assertIn('70%', bold.items[1]['basis'][-1])
+
+    def test_the_model_cannot_raise_an_older_version_it_only_knew_by_name(self):
+        # found on a real PC: delivery_notes.md (an older version, not identical) got 7 points because the model,
+        # which saw only names, sizes and 盘序's own note 「较旧的版本」, said 「可以删除」
+        from panxu import checkup
+        policy = paths.ProtectionPolicy(self.backend.env, allowed_roots=[self.sb.root], drive_roots=self.sb.drive_roots)
+        docs = os.path.join(self.backend.env['USERPROFILE'], 'Documents')
+        older = {'path': os.path.join(docs, 'delivery_notes.md'), 'name': 'delivery_notes.md', 'size': 2039,
+                 'note': '较旧的版本', 'remove': False, 'score': 35, 'category': 'document'}
+        copy = {'path': os.path.join(docs, 'notes - 副本.md'), 'name': 'notes - 副本.md', 'size': 900,
+                'note': '和「notes.md」内容完全相同', 'remove': True, 'score': 85, 'category': 'document'}
+        finding = {'id': 'ver-1', 'kind': 'name_versions', 'kind_label': '同一文件的多个版本', 'files': [older, copy],
+                   'reason': '名字相近', 'advice': '保留最新的一份', 'confidence': 0.45}
+        said = {'verdict': 'delete', 'verdict_label': '可以删除', 'reason': '已有 v9 版本', 'with_content': False}
+
+        def scores(ai):
+            builder = checkup.PlanBuilder(policy)
+            builder.add_insights([finding], {older['path']: ai, copy['path']: ai})
+            return {i['title']: i for i in builder.items}
+        by_name = scores(said)
+        self.assertEqual(by_name['delivery_notes.md']['score'], 35)
+        self.assertTrue(any('只看了文件名' in line for line in by_name['delivery_notes.md']['basis']))
+        self.assertEqual(by_name['notes - 副本.md']['score'], 85, 'an identical copy needs no content to be judged')
+        self.assertEqual(scores({**said, 'with_content': True})['delivery_notes.md']['score'], 65)
 
     def test_without_ai_heuristics_fill_in(self):
         plan = self.checkup(use_ai=False, auto_select='careful')

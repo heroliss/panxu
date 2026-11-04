@@ -48,6 +48,11 @@ class ScoreTest(unittest.TestCase):
         self.assertEqual(insights.with_ai(90, {'verdict': 'keep'}), 15)
         self.assertEqual(insights.with_ai(90, {'verdict': 'archive'}), 40)
         self.assertEqual(insights.with_ai(30, None), 30)
+        # an older version that differs from the newer one: only its content tells whether it is still needed
+        older = {'verdict': 'delete'}
+        self.assertEqual(insights.with_ai(35, older, needs_content=True), 35, 'a name alone raises nothing')
+        self.assertEqual(insights.with_ai(35, {**older, 'with_content': True}, needs_content=True), 65)
+        self.assertEqual(insights.with_ai(35, {'verdict': 'keep'}, needs_content=True), 15, 'lowering needs no content')
 
 
 class FakeApps:
@@ -122,6 +127,23 @@ class FindingsTest(TempDirTest):
         self.write('Downloads/tool-x64/tool-x64/docs/release-v0.3.1.md', b'a' * 100, days=5)
         self.write('Downloads/tool-x64/tool-x64/docs/release-v0.4.0.md', b'b' * 100, days=5)
         self.assertNotIn('name_versions', self.run_insights())
+
+    def test_documents_inside_a_code_project_are_not_versions(self):
+        # found on a real PC: docs/delivery_notes.md next to docs/delivery_notes_v9.md in a Node project, whose
+        # docs are named after the project's own versions (treatment.md, cinematic_treatment_v9.md...)
+        self.write('Documents/engine_film_v9/package.json', b'{}')
+        self.write('Documents/engine_film_v9/docs/delivery_notes.md', b'a' * 2000, days=2)
+        self.write('Documents/engine_film_v9/docs/delivery_notes_v9.md', b'b' * 1900, days=1)
+        self.write('Documents/repo/.git/HEAD', b'ref: refs/heads/main')
+        self.write('Documents/repo/notes/plan_v1.md', b'a' * 100, days=2)
+        self.write('Documents/repo/notes/plan_v2.md', b'b' * 100, days=1)
+        self.write('Documents/tool/Tool.sln', b'sln')
+        self.write('Documents/tool/spec_v1.docx', sandbox.docx(['v1']), days=2)
+        self.write('Documents/tool/spec_v2.docx', sandbox.docx(['v2']), days=1)
+        self.assertNotIn('name_versions', self.run_insights())
+        self.write('Documents/plan_v1.md', b'a' * 100, days=2)
+        self.write('Documents/plan_v2.md', b'b' * 100, days=1)
+        self.assertEqual(len(self.run_insights()['name_versions']['files']), 2, 'outside a project they still are')
 
     def test_documents_inside_an_extracted_archive_are_not_versions(self):
         pack = os.path.join(self.home, 'Downloads', 'pack.zip')

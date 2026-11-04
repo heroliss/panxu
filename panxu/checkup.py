@@ -366,15 +366,21 @@ class PlanBuilder:
                 why = x.get('note') or f['reason']
                 base_score = x.get('score', file_score(f['kind'], x))
                 basis = [f'{f["kind_label"]}：{why}']
+                # an older version that differs from the newer one: only its content tells
+                needs_content = f['kind'] == 'name_versions' and not x.get('remove')
                 if ai:
                     basis.append(f'AI：{ai.get("verdict_label", "")}' + (f'——{ai["reason"]}' if ai.get('reason') else ''))
+                    if needs_content and ai.get('verdict') == 'delete' and not ai.get('with_content'):
+                        basis.append('AI 只看了文件名，没有看内容：旧版本里有没有新版本缺少的东西要看内容才知道，'
+                                     '所以分数不因此提高')
                 self.add({
                     'id': _ident('file', x['path']), 'kind': 'paths', 'group': 'review', 'category': f['kind_label'],
                     'finding': f['id'], 'finding_kind': f['kind'], 'title': x['name'], 'size': x['size'],
                     'count': 1 if x.get('category') != 'folder' else 0, 'what': f['advice'], 'why': why,
                     'effect': '移到回收站，需要时可以从回收站还原。', 'action': 'recycle', 'source': 'insight',
                     'confidence': f['confidence'] if x.get('remove') else min(f['confidence'], 0.4),
-                    'paths': [x['path']], 'ai': ai, 'personal': True, 'score': with_ai(base_score, ai), 'basis': basis})
+                    'paths': [x['path']], 'ai': ai, 'personal': True, 'score': with_ai(base_score, ai, needs_content),
+                    'basis': basis})
 
     def add_duplicates(self, dups: dict | None):
         for g in (dups or {}).get('groups', []):

@@ -76,12 +76,18 @@ def file_score(kind: str, f: dict) -> int:
     return KIND_SCORE[kind]
 
 
-def with_ai(score: int, ai: dict | None) -> int:
-    """The model's verdict on a file moves the score; it can lower it freely but raise it only so far."""
+def with_ai(score: int, ai: dict | None, needs_content: bool = False) -> int:
+    """The model's verdict on a file moves the score; it can lower it freely but raise it only so far.
+
+    ``needs_content``: only the file's content tells whether it may go (an older version that differs from the
+    newer one). A model that saw nothing but names would only repeat 盘序's own 「较旧的版本」, so its
+    「可以删除」 raises nothing then."""
     if not ai:
         return score
     verdict = ai.get('verdict')
     if verdict == 'delete':
+        if needs_content and not ai.get('with_content'):
+            return score
         return max(score, min(85, score + 30))
     if verdict == 'keep':
         return min(score, 15)
@@ -301,6 +307,18 @@ def _hash(path: str, limit: int = 64 * 1024 * 1024) -> str | None:
     return h.hexdigest()
 
 
+PROJECT_FILES = {'package.json', 'pyproject.toml', 'setup.py', 'requirements.txt', 'cargo.toml', 'go.mod', 'pom.xml',
+                 'build.gradle', 'build.gradle.kts', 'cmakelists.txt', 'composer.json', 'gemfile', 'pubspec.yaml'}
+PROJECT_EXTS = ('.sln', '.csproj', '.vcxproj', '.uproject', '.xcodeproj')
+
+
+def _is_project_dir(files, dirs) -> bool:
+    """A code project's root: version control or a build file. Its documents are named on purpose
+    (treatment.md and cinematic_treatment_v9.md), and its empty folders are often there on purpose too."""
+    return (any(d.name.lower() in ('.git', '.svn', '.hg') or d.name.lower().endswith(PROJECT_EXTS) for d in dirs)
+            or any(e.name.lower() in PROJECT_FILES or e.name.lower().endswith(PROJECT_EXTS) for e in files))
+
+
 def _is_program_dir(files, dirs) -> bool:
     """A program's own folder: DLLs, or an .exe together with the sub-folders programs bring along."""
     names = [e.name.lower() for e in files]
@@ -324,6 +342,8 @@ class Insights:
         # folders that are a program (a portable app unpacked in Downloads: its .exe, DLLs, plugins, its own
         # config and history): nothing inside is the user's loose file, and its .exe is no installer
         self.program_dirs: list[str] = []
+        # code projects (see _is_project_dir): no versions are guessed and no empty folders offered inside
+        self.project_dirs: list[str] = []
         self.stats: dict = {}
 
     # -- collection ------------------------------------------------------------------
@@ -333,7 +353,7 @@ class Insights:
         seen = set()
         dir_children: dict[str, list[str]] = {}
         dir_has_files: dict[str, bool] = {}
-        projects: list[str] = []
+        self.project_dirs = projects = []
         cloud = 0
         for root in roots:
             k = paths.key(root)
@@ -352,8 +372,8 @@ class Insights:
                     continue
                 kept = [d for d in dirs if not managed_dir(d.name)]
                 has = len(kept) != len(dirs)  # holds a program-managed folder (node_modules, .git...): not empty
-                if any(d.name.lower() in ('.git', '.svn', '.hg') for d in dirs):
-                    projects.append(dirpath)  # empty folders in a repository are often there on purpose
+                if dirpath != root and _is_project_dir(files, dirs):  # a stray package.json on the Desktop is no project
+                    projects.append(dirpath)
                 dirs[:] = kept
                 dir_children[dirpath] = [os.path.join(dirpath, d.name) for d in dirs]
                 program = False
@@ -511,13 +531,12 @@ class Insights:
 
     def _versions(self, claimed):
         groups: dict[tuple, list[FileRec]] = {}
-        bundles = [paths.key(d) for d in self.bundle_dirs]
+        packaged = {paths.key(d) for d in self.bundle_dirs + self.project_dirs}
         for r in self.files:
             if paths.key(r.path) in claimed or r.size == 0:
                 continue
-            folder = paths.key(r.folder)
-            if any(folder == b or folder.startswith(b + '\\') for b in bundles):
-                continue  # documents that came with a program or an archive
+            if paths.within_any(r.folder, packaged):
+                continue  # documents that came with a program or an archive, or belong to a code project
             stem, ext = os.path.splitext(r.name)
             ext = _FAMILY.get(ext.lower(), ext.lower())
             if ext in INCOMPLETE_EXTS or ext in INSTALLER_EXTS:

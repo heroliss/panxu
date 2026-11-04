@@ -278,6 +278,10 @@ def _layout() -> tuple[list[_Spec], list[tuple[str, float]]]:
     add(F(f'{u}/Documents/项目A/需求文档_v3.docx', data=docx(['项目 A 需求文档 v3', '功能列表（最终确认）']), age=380))
     add(F(f'{u}/Documents/财务/2023年报销汇总.xlsx', data=xlsx(['日期', '项目', '金额', '2023-03-02', '差旅', '1280']), age=600))
     add(F(f'{u}/Documents/Notes/读书笔记.md', data='# 读书笔记\n\n《人类简史》读后感：……\n'.encode('utf-8'), age=200))
+    # a code project: docs named after the project's versions are separate documents, never offered as old versions
+    add(F(f'{u}/Documents/engine_film/package.json', data=b'{"name": "engine-film"}', age=20))
+    add(F(f'{u}/Documents/engine_film/docs/delivery_notes.md', data='# 交付说明\n\n第一版的交付清单。\n'.encode('utf-8'), age=21))
+    add(F(f'{u}/Documents/engine_film/docs/delivery_notes_v9.md', data='# 交付说明 v9\n\n成片与字幕。\n'.encode('utf-8'), age=20))
     add(F(f'{u}/Documents/WeChat Files/wxid_demo/FileStorage/File/2025-05/合同扫描件.pdf', 15 * MB, age=180))
     add(F(f'{u}/Desktop/项目汇报.pptx', data=pptx(['2026 年第三季度项目汇报', '进度：已完成 80%', '下一步计划'],
                                                    pad=900 * KB, seed=21), age=40))
