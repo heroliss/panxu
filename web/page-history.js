@@ -67,14 +67,20 @@
       const action = e.revert && !reverted ? h('button.btn.small', { type: 'button', onclick: (ev) => { ev.stopPropagation(); revert(e); } }, '撤销')
         : reverted ? PX.tag('已撤销') : e.kind === 'recycle' ? h('span.small.muted', '可在回收站恢复') : h('span');
       const usage = e.kind === 'ai' && e.details && e.details.usage ? `${e.details.usage.requests} 次请求，${fmt.count((e.details.usage.input_tokens || 0) + (e.details.usage.output_tokens || 0))} tokens` : '';
+      // begun but never finished: PanXu was closed or killed while it ran (or it is running now)
+      const cut = e.state === 'interrupted' ? '没有完成：盘序在进行中被关闭。' +
+        (e.done_count ? `被打断前已处理约 ${e.done_count} 项` + (e.freed ? `、${fmt.bytes(e.freed)}` : '') : '被打断前处理了一部分') +
+        '；已经删除的不会恢复，移到回收站的可以在回收站里找回。' : '';
       list.appendChild(h('div.row.hist-row', { onclick: () => { open.has(e.id) ? open.delete(e.id) : open.add(e.id); draw(); } },
         h('div.small.muted', fmt.datetime(e.time)),
-        h('div.cell-main', h('div.name', PX.tag(label, kind), ' ', e.title),
-          e.failure_count ? h('div.sub', `${e.failure_count} 项没有完成`) : usage ? h('div.sub', usage) : null),
+        h('div.cell-main', h('div.name', PX.tag(label, kind), ' ', e.title,
+          e.state === 'interrupted' ? PX.tag('没有完成', 'warn', 'warn') : e.state === 'running' ? PX.tag('进行中', 'info') : null),
+        cut ? h('div.sub', { title: cut }, cut) : e.failure_count ? h('div.sub', `${e.failure_count} 项没有完成`) : usage ? h('div.sub', usage) : null),
         h('div.size', e.freed ? fmt.bytes(e.freed) : ''),
         action));
       if (open.has(e.id)) {
         const d = list.appendChild(h('div.hist-detail'));
+        if (e.state) d.appendChild(h('div', { style: { fontWeight: 600, color: 'var(--ink)' } }, '原计划处理的：'));
         for (const it of (e.items || []).slice(0, 200)) d.appendChild(itemLine(it));
         if (e.item_count > 200) d.appendChild(h('div', `另有 ${e.item_count - 200} 项`));
         if ((e.failures || []).length) {

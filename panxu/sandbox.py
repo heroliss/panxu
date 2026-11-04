@@ -668,7 +668,7 @@ class Sandbox:
                 shutil.move(path, stored)
                 self.state.setdefault('recycle', []).append({'id': ident, 'original': path, 'stored': stored,
                                                              'time': time.time(), 'size': size})
-            self.save()
+                self.save()  # after each one: stopped half way, every moved file can still be restored
         return 0, False
 
     def recycle_bin_info(self) -> tuple[int, int]:

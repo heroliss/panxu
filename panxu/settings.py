@@ -108,9 +108,12 @@ class Settings:
             return {}
 
     def _write(self, path, value):
+        # written next to it, on disk, then swapped in: a crash or power cut leaves the old file or the new one
         tmp = path + '.tmp'
         with open(tmp, 'w', encoding='utf-8') as fh:
             json.dump(value, fh, ensure_ascii=False, indent=2)
+            fh.flush()
+            os.fsync(fh.fileno())
         os.replace(tmp, path)
 
     def get(self) -> dict:

@@ -84,6 +84,23 @@ def report_crash(data_dir: str | None = None) -> None:
     winapi.message_box(f'盘序遇到问题，没能继续运行：\n{error}\n\n详细信息记在 {os.path.join(data_dir, "panxu.log")}', APP_NAME)
 
 
+def confirm_close(backend, ask) -> bool:
+    """The window is being closed. While files are being deleted or moved: ask (``ask(text) -> bool``), then let
+    the job stop after the file it is on and write its 操作记录 entry, instead of cutting it off (job threads die
+    with the process). False keeps the window open."""
+    busy = backend.changes_running()
+    if not busy:
+        return True
+    done = sum(int((j.get('progress') or {}).get('done') or 0) for j in busy)
+    if not ask('盘序正在清理文件' + (f'（已处理 {done} 项）' if done else '') + '。\n\n'
+               '现在关闭，会在当前这个文件处理完后停下：已经删除或移到回收站的不会恢复，'
+               '其余的不再处理，经过会记在「操作记录」里。\n\n确定要关闭吗？'):
+        return False
+    if not backend.stop_changes(timeout=8):
+        log.warning('a cleanup did not stop within 8 s; closing anyway (its begun record shows 「没有完成」)')
+    return True
+
+
 def _self_command() -> tuple[str, list[str]]:
     """How to start this program again (frozen exe or python + run.py)."""
     if getattr(sys, 'frozen', False):
@@ -99,7 +116,7 @@ def main(argv=None):
     parser.add_argument('--elevated', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--user-env', help=argparse.SUPPRESS)
     parser.add_argument('--sandbox', nargs='?', const='', metavar='DIR',
-                        help='演练环境: run against a simulated PC (default %%LOCALAPPDATA%%\PanXu\sandbox)')
+                        help=r'演练环境: run against a simulated PC (default %%LOCALAPPDATA%%\PanXu\sandbox)')
     args = parser.parse_args(argv)
 
     if args.user_env:
@@ -158,6 +175,9 @@ def main(argv=None):
     window = webview.create_window(title, html=html, js_api=Bridge(backend), width=1320, height=860,
                                    min_size=(1040, 700), text_select=True, background_color='#F4F5F7')
     window_ref['w'] = window
+
+    window.events.closing += lambda: confirm_close(
+        backend, lambda text: winapi.ask_yes_no(text, APP_NAME, winapi.find_window(title)))
     # Separate WebView2 profile folders: an elevated and a normal WebView2 must
     # never share one user-data folder.
     storage = os.path.join(data_dir, 'webview-admin' if winapi.is_admin() else 'webview')

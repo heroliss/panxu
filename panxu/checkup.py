@@ -695,12 +695,21 @@ def execute(backend, plan: dict, item_ids: list[str], job) -> dict:
                     to_recycle.append((item, p))
     if to_recycle:
         job.update(stage='recycle', detail='移到回收站')
-        unique = []
+        unique, taken = [], set()
         for _, p in sorted(to_recycle, key=lambda ip: len(ip[1])):
-            if not any(paths.is_within(p, u) for u in unique):
+            if not paths.within_any(p, taken):
                 unique.append(p)
-        stats, recycled = fsops.recycle(unique, cancel=job.cancel, hwnd=winapi.find_window(APP_NAME),
-                                        progress=lambda s: job.update(freed=s.bytes))
+                taken.add(paths.key(p))
+        pending = backend.oplog.begin('recycle', f'清理方案：移到回收站 {len(unique)} 项', items=unique)
+
+        def on_progress(s):
+            job.update(freed=s.bytes)
+            backend.oplog.progress(pending, freed=s.bytes, done=s.files)
+        try:
+            stats, recycled = fsops.recycle(unique, cancel=job.cancel, hwnd=winapi.find_window(APP_NAME), progress=on_progress)
+        except fsops.Cancelled:
+            backend.oplog.drop(pending)  # stopped while sizing, before anything moved
+            raise
         gone = {paths.key(p) for p in recycled}
         report['recycled']['count'] += len(recycled)
         report['recycled']['bytes'] += stats.bytes
@@ -716,7 +725,9 @@ def execute(backend, plan: dict, item_ids: list[str], job) -> dict:
                 done(item, 'failed', '没有移到回收站')
         if recycled or stats.failed:
             backend.oplog.add('recycle', f'清理方案：移到回收站 {len(recycled)} 项', freed=stats.bytes, items=recycled,
-                              failures=stats.failures, details={'source': 'plan', 'mode': 'recycle'})
+                              failures=stats.failures, details={'source': 'plan', 'mode': 'recycle'}, replaces=pending)
+        else:
+            backend.oplog.drop(pending)
         backend.forget_paths(recycled)
 
     # 3. startup items

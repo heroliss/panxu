@@ -109,6 +109,19 @@ def is_within(path: str, base: str) -> bool:
     return p == b or p.startswith(b + '\\')
 
 
+def within_any(path: str, keys: set[str]) -> bool:
+    """Is ``path`` one of ``keys`` (``key()`` values) or inside one of them? Looks up the path's parent folders,
+    so it costs the folder depth, not the number of keys (deleting 20 000 files must not take n x n steps)."""
+    k = key(path)
+    while True:
+        if k in keys:
+            return True
+        up = key(ntpath.dirname(k))
+        if up == k or not up:
+            return False
+        k = up
+
+
 def is_drive_root(path: str) -> bool:
     """C:\\, C:, \\\\server\\share and a bare \\ (root of the current drive)."""
     drive, rest = ntpath.splitdrive(ntpath.normpath(path))

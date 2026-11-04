@@ -8,6 +8,7 @@ UI never sees a raw Python exception.
 from __future__ import annotations
 
 import logging
+import ntpath
 import os
 import shutil
 import subprocess
@@ -142,11 +143,10 @@ class Backend:
                     self.scan.remove_path(p, 0, 0)
                 except (ValueError, KeyError):
                     pass
-        gone = [paths.key(p) for p in removed]
+        gone = {paths.key(p) for p in removed}
 
         def alive(path):
-            k = paths.key(path)
-            return not any(k == g or k.startswith(g + '\\') for g in gone)
+            return not paths.within_any(path, gone)
         # the plan on 首页 shows what was done on the tool pages too
         for item in (self.plan or {}).get('items', []):
             if item['status'] == 'pending' and item.get('paths') and not any(alive(p) for p in item['paths']):
@@ -283,6 +283,14 @@ class Backend:
             raise UserError('路径不存在')
         winapi.reveal_in_explorer(target)
         return {'shown': target, 'missing': target != path}
+
+    def changes_running(self) -> list[dict]:
+        """Jobs that delete or move files right now (closing PanXu would cut them off)."""
+        return self.jobs.running('modify')
+
+    def stop_changes(self, timeout: float = 8.0) -> bool:
+        """Stop them cleanly: each finishes the file it is on and writes its 操作记录 entry."""
+        return self.jobs.stop('modify', timeout)
 
     def m_flash_window(self):
         """Flash PanXu's taskbar button (a slow job finished while another window was in front)."""
@@ -555,27 +563,38 @@ class Backend:
         blocked = [(p, policy.reason(p)) for p in items if policy.reason(p)]
         if blocked:
             raise UserError(f'「{blocked[0][0]}」不能删除：{blocked[0][1]}')
-        # drop paths nested inside another selected path
-        keys = sorted(set(items), key=len)
-        selected = []
-        for p in keys:
-            if not any(paths.is_within(p, s) for s in selected):
-                selected.append(p)
+        # drop duplicates and paths nested inside another selected path
+        chosen = {paths.key(p) for p in items}
+        selected, seen = [], set()
+        for p in sorted(items, key=len):
+            k = paths.key(p)
+            parent = paths.key(ntpath.dirname(k))
+            if k in seen or (parent != k and paths.within_any(parent, chosen)):
+                continue
+            seen.add(k)
+            selected.append(p)
 
         def run(job):
             total = len(selected)
             stats = fsops.DeleteStats()
             done = []
+            kind, verb = ('recycle', '移到回收站') if mode == 'recycle' else ('delete', '永久删除')
+            # on record before the first file goes: if PanXu is killed half way, 操作记录 still says so
+            pending = self.oplog.begin(kind, f'{verb} {total} 项', items=selected)
             try:
                 if mode == 'recycle':
+                    def on_progress(s):
+                        job.update(total=total, freed=s.bytes, failed=s.failed)
+                        self.oplog.progress(pending, freed=s.bytes, done=s.files)
                     part, recycled = fsops.recycle(selected, cancel=job.cancel, hwnd=winapi.find_window(APP_NAME),
-                                                   progress=lambda s: job.update(total=total, freed=s.bytes, failed=s.failed))
+                                                   progress=on_progress)
                     done.extend(recycled)
                     stats.merge(part)
                 else:
                     for i, p in enumerate(selected):
                         fsops.check_cancel(job.cancel)
                         job.update(done=i, total=total, current=p, freed=stats.bytes)
+                        self.oplog.progress(pending, freed=stats.bytes, done=len(done))
                         try:
                             fsops.delete_path(p, cancel=job.cancel, stats=stats)
                         finally:
@@ -585,9 +604,11 @@ class Backend:
                 # always record what was actually removed, even when stopped midway
                 cancelled = job.cancel.is_set()
                 if done or stats.failed:
-                    title = ('移到回收站' if mode == 'recycle' else '永久删除') + f' {len(done)} 项' + ('（已停止）' if cancelled else '')
-                    self.oplog.add('recycle' if mode == 'recycle' else 'delete', title, freed=stats.bytes, items=done,
-                                   failures=stats.failures, details={'source': source, 'mode': mode, 'cancelled': cancelled})
+                    title = f'{verb} {len(done)} 项' + ('（已停止）' if cancelled else '')
+                    self.oplog.add(kind, title, freed=stats.bytes, items=done, failures=stats.failures,
+                                   details={'source': source, 'mode': mode, 'cancelled': cancelled}, replaces=pending)
+                else:
+                    self.oplog.drop(pending)
                 self.forget_paths(done)
                 if after is not None:
                     after(done)

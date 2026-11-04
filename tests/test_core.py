@@ -19,6 +19,20 @@ class PathPolicyTest(unittest.TestCase):
         self.assertFalse(paths.is_within('C:\\Users\\alice2', 'C:\\Users\\alice'))
         self.assertTrue(paths.is_within('C:\\Users\\alice', 'C:\\Users\\alice\\'))
 
+    def test_within_any_looks_at_the_parents(self):
+        import time
+        keys = {paths.key('C:\\Users\\alice\\Downloads\\old'), paths.key('D:\\Temp')}
+        self.assertTrue(paths.within_any('c:\\users\\ALICE\\downloads\\old', keys))
+        self.assertTrue(paths.within_any('C:\\Users\\alice\\Downloads\\old\\a\\b.zip', keys))
+        self.assertFalse(paths.within_any('C:\\Users\\alice\\Downloads\\older', keys))
+        self.assertFalse(paths.within_any('C:\\Users\\alice', keys))
+        self.assertTrue(paths.within_any('D:\\Temp\\x', keys))
+        # found while kill-testing: 20 000 files to delete took n x n steps before the first one went
+        many = {paths.key(f'C:\\data\\f{i:05d}.tmp') for i in range(20000)}
+        started = time.time()
+        self.assertFalse(any(paths.within_any(f'C:\\other\\f{i:05d}.tmp', many) for i in range(20000)))
+        self.assertLess(time.time() - started, 2)
+
     def test_anonymize_uses_the_most_specific_base(self):
         self.assertEqual(paths.anonymize('C:\\Users\\alice\\AppData\\Local\\JetBrains', WIN_ENV), '%LOCALAPPDATA%\\JetBrains')
         self.assertEqual(paths.anonymize('C:\\Users\\alice\\.gradle', WIN_ENV), '%USERPROFILE%\\.gradle')
@@ -124,7 +138,111 @@ class FsOpsTest(TempDirTest):
         self.assertTrue(os.path.exists(f))
 
 
+class JobStopTest(unittest.TestCase):
+    def test_closing_stops_changes_after_the_current_step(self):
+        import time
+        from panxu.jobs import JobManager
+        jobs = JobManager()
+        steps, recorded = [], []
+
+        def cleanup(job):
+            try:
+                while not job.cancel.is_set():
+                    steps.append(1)
+                    time.sleep(0.01)
+            finally:
+                recorded.append(len(steps))  # what a real cleanup does: write its record on the way out
+
+        jobs.start('delete', cleanup, group='modify')
+        jobs.start('space_scan', lambda job: job.cancel.wait(5), group='space')
+        time.sleep(0.1)
+        self.assertEqual(len(jobs.running('modify')), 1)
+        self.assertTrue(jobs.stop('modify', timeout=3))
+        self.assertEqual(recorded, [len(steps)], 'it stopped and wrote its record')
+        self.assertEqual(len(jobs.running('space')), 1, 'only the changes are stopped')
+        jobs.stop()
+
+
+class CloseWindowTest(unittest.TestCase):
+    def test_closing_during_a_cleanup_asks_and_stops_it_cleanly(self):
+        from panxu.app import confirm_close
+
+        class FakeBackend:
+            def __init__(self, busy):
+                self.busy, self.stopped = busy, False
+
+            def changes_running(self):
+                return self.busy
+
+            def stop_changes(self, timeout):
+                self.stopped = True
+                return True
+        asked = []
+        idle = FakeBackend([])
+        self.assertTrue(confirm_close(idle, lambda text: asked.append(text)))
+        self.assertEqual(asked, [], 'nothing running: closes without a question')
+        busy = FakeBackend([{'progress': {'done': 12}}])
+        self.assertFalse(confirm_close(busy, lambda text: asked.append(text) or False))
+        self.assertIn('已处理 12 项', asked[-1])
+        self.assertFalse(busy.stopped, 'the user kept it open: the cleanup goes on')
+        self.assertTrue(confirm_close(busy, lambda text: True))
+        self.assertTrue(busy.stopped, 'stopped cleanly before the window closes')
+
+
 class OpLogTest(TempDirTest):
+    def test_a_line_cut_off_by_a_crash_does_not_take_the_next_one_along(self):
+        path = os.path.join(self.tmp, 'h.jsonl')
+        log = OperationLog(path)
+        log.add('junk', '第一次')
+        with open(path, 'ab') as fh:  # killed while writing: half a line, cut inside a Chinese character
+            fh.write('{"id": "x", "title": "移到回收站'.encode('utf-8')[:-1])
+        again = OperationLog(path)  # the next run
+        again.add('recycle', '第二次')
+        self.assertEqual([r['title'] for r in again.entries()], ['第二次', '第一次'])
+
+    def test_a_change_cut_off_half_way_stays_on_record(self):
+        path = os.path.join(self.tmp, 'h.jsonl')
+        log = OperationLog(path)
+        log.PROGRESS_EVERY = 0
+        begun = log.begin('delete', '永久删除 300 项', items=['C:\\a', 'C:\\b'])
+        log.progress(begun, freed=4096, done=120)
+        self.assertEqual(log.entries()[0]['state'], 'running', 'still going in this run')
+        after_restart = OperationLog(path).entries()[0]  # PanXu was killed; the next run reads the log
+        self.assertEqual((after_restart['state'], after_restart['freed'], after_restart['done_count']), ('interrupted', 4096, 120))
+        self.assertEqual(after_restart['items'], ['C:\\a', 'C:\\b'])
+        log.add('delete', '永久删除 300 项', freed=9000, replaces=begun)  # finished normally instead
+        rows = log.entries()
+        self.assertEqual(len(rows), 1)
+        self.assertNotIn('state', rows[0])
+        dropped = log.begin('delete', '永久删除 1 项')
+        log.drop(dropped)  # stopped before the first file
+        self.assertEqual(len(log.entries()), 1)
+
+    def test_killed_while_writing(self):
+        import subprocess
+        import sys
+        import time
+        path = os.path.join(self.tmp, 'h.jsonl')
+        script = ('import sys; sys.path.insert(0, sys.argv[2]); from panxu.oplog import OperationLog\n'
+                  'log = OperationLog(sys.argv[1]); log.PROGRESS_EVERY = 0; i = 0\n'
+                  'while True:\n'
+                  '    b = log.begin("delete", "永久删除 " + "很长的标题" * 50, items=["C:\\\\文件%d" % k for k in range(200)])\n'
+                  '    log.progress(b, freed=i, done=i); log.add("delete", "完成", replaces=b); i += 1\n')
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        proc = subprocess.Popen([sys.executable, '-c', script, path, root])
+        try:
+            end = time.time() + 10
+            while time.time() < end and (not os.path.exists(path) or os.path.getsize(path) < 200_000):
+                time.sleep(0.02)
+        finally:
+            proc.kill()  # as Task Manager would
+            proc.wait()
+        log = OperationLog(path)
+        rows = log.entries(limit=100000)  # whatever the last line looks like, reading works
+        self.assertTrue(rows)
+        log.add('junk', '重新打开后的第一条')
+        self.assertEqual(log.entries()[0]['title'], '重新打开后的第一条')
+
     def test_add_mark_and_read_newest_first(self):
         log = OperationLog(os.path.join(self.tmp, 'h.jsonl'))
         a = log.add('junk', 'first', freed=5)

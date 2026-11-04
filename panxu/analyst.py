@@ -414,6 +414,7 @@ class Analyst:
                 self.cache.put(paths.anonymize(scan.path_of(node), self.env),
                                {**verdict, 'size': node.size, 'model': client.model})
                 self._record(scan, node, verdict, results, queue, depth, min_size, source='ai')
+            self.cache.save()  # after every answer: closing PanXu mid-way must not waste what was paid for
         self.cache.save()
         suggestions = sorted(results.values(), key=lambda r: r['size'], reverse=True)
         return {'suggestions': suggestions, 'usage': client.usage.as_dict(), 'errors': errors,
@@ -503,6 +504,7 @@ class Analyst:
                          'reason': str(row.get('reason') or '')[:120]}
                 self.cache.put('item:' + item['key'], value)
                 out[item['key']] = {**value, 'source': 'ai'}
+            self.cache.save()
         self.cache.save()
         return {'items': out, 'usage': client.usage.as_dict(), 'errors': errors}
 
@@ -561,6 +563,7 @@ class Analyst:
                          'with_content': bool(f.get('excerpt'))}
                 self.cache.put(self._file_key(f), value)
                 out[f['path']] = {**value, 'source': 'ai'}
+            self.cache.save()
         self.cache.save()
         return {'files': out, 'usage': client.usage.as_dict(), 'errors': errors, 'requests': requests}
 

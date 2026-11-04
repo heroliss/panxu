@@ -392,14 +392,22 @@ class JunkEngine:
         running = self.processes()
         outcome = []
         total_freed = 0
+        # on record before anything goes (see OperationLog.begin): a PanXu killed half way still left a trace
+        pending = self.oplog.begin('junk', '垃圾清理', items=[RULES_BY_ID[r].name for r in rule_ids if r in RULES_BY_ID]) \
+            if self.oplog is not None else None
+
+        def step(i, name, freed):
+            if progress:
+                progress(i, len(rule_ids), name, freed)
+            if self.oplog is not None:
+                self.oplog.progress(pending, freed=freed, done=i)
         try:
             for index, rule_id in enumerate(rule_ids):
                 fsops.check_cancel(cancel)
                 rule = RULES_BY_ID.get(rule_id)
                 if rule is None:
                     continue
-                if progress:
-                    progress(index, len(rule_ids), rule.name, total_freed)
+                step(index, rule.name, total_freed)
                 row = {'id': rule.id, 'name': rule.name, 'freed': 0, 'files': 0, 'failed': 0, 'in_use': 0,
                        'skipped': '', 'failures': []}
                 outcome.append(row)
@@ -411,8 +419,7 @@ class JunkEngine:
                 else:
                     base = total_freed
                     try:
-                        self._clean_rule(rule, row, cancel, progress=lambda freed: progress and progress(
-                            index, len(rule_ids), rule.name, base + freed))
+                        self._clean_rule(rule, row, cancel, progress=lambda freed: step(index, rule.name, base + freed))
                     except fsops.Cancelled:
                         raise
                     except Exception as exc:  # noqa: BLE001 - report per rule, keep going
@@ -427,7 +434,9 @@ class JunkEngine:
                                freed=sum(r['freed'] for r in outcome),
                                items=[{'id': r['id'], 'name': r['name'], 'freed': r['freed'], 'files': r['files'],
                                        'failed': r['failed'], 'skipped': r['skipped']} for r in outcome],
-                               failures=failures, details={'mode': 'permanent', 'cancelled': cancelled})
+                               failures=failures, details={'mode': 'permanent', 'cancelled': cancelled}, replaces=pending)
+            elif self.oplog is not None:
+                self.oplog.drop(pending)
             with self._lock:
                 for rule_id in rule_ids:
                     self.last_scan.pop(rule_id, None)

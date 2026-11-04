@@ -407,6 +407,14 @@ def flash_window(titles: tuple[str, ...]) -> bool:
     return False
 
 
+def ask_yes_no(text: str, title: str, owner=None) -> bool:
+    """A Windows question box (是 / 否, warning icon); No is the default button. Off Windows: yes."""
+    if not IS_WINDOWS:
+        return True
+    MB_YESNO, MB_ICONWARNING, MB_DEFBUTTON2, IDYES = 0x4, 0x30, 0x100, 6
+    return _user32.MessageBoxW(owner, text, title, MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) == IDYES
+
+
 def message_box(text: str, title: str) -> None:
     if IS_WINDOWS:
         _user32.MessageBoxW(None, text, title, 0x40)

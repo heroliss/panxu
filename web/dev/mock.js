@@ -120,6 +120,10 @@
     status_label: st === 'running' ? '正在运行' : '已停止', start_type: start, start_label: { auto: '自动', manual: '手动', disabled: '禁用', delayed: '自动（延迟启动）' }[start],
     binpath: 'C:\\Program Files\\' + name + '\\service.exe', exe: 'C:\\Program Files\\' + name + '\\service.exe', publisher, kind, editable: kind === 'third_party', needs_admin: true }));
   const history = [
+    // PanXu was closed (or killed) half way through this one
+    { id: 'h0', time: now - 600, kind: 'delete', title: '永久删除 2400 项', freed: 1.6 * GB, items: ['C:\\Users\\herol\\Downloads\\旧素材\\clip_0001.mp4',
+      'C:\\Users\\herol\\Downloads\\旧素材\\clip_0002.mp4'], item_count: 2400, failures: [], failure_count: 0, details: { pending: true },
+    state: 'interrupted', done_count: 1370 },
     { id: 'h1', time: now - 3600, kind: 'junk', title: '垃圾清理', freed: 3.2 * GB, items: [{ name: '用户临时文件', freed: 2.1 * GB, files: 4211, failed: 37, skipped: '' }, { name: 'Google Chrome', freed: 1.1 * GB, files: 9120, failed: 0, skipped: '' }], item_count: 2, failures: [], failure_count: 37 },
     { id: 'h2', time: now - 7200, kind: 'startup', title: '禁用开机启动：Adobe Updater Startup Utility', freed: 0, items: [{ name: 'Adobe Updater', command: 'UpdaterStartupUtility.exe' }], item_count: 1, failures: [], failure_count: 0, revert: { action: 'startup' } },
     { id: 'h3', time: now - 86400, kind: 'recycle', title: '移到回收站 3 项', freed: 9.4 * GB, items: ['C:\\Users\\herol\\Downloads\\ubuntu-24.04-desktop-amd64.iso', 'C:\\Users\\herol\\Downloads\\VSCodeUserSetup-x64.exe'], item_count: 3, failures: [], failure_count: 0 },

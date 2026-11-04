@@ -218,6 +218,25 @@ class AnalystTest(TempDirTest):
         self.assertEqual(client2.calls, [])
         self.assertEqual(len(result2['suggestions']), len(result['suggestions']))
 
+    def test_answers_are_kept_when_stopped_half_way(self):
+        import threading
+        from panxu.fsops import Cancelled
+        a = self.analyst()
+        a.frontier = lambda scan, min_size, limit=60: Analyst.frontier(a, scan, 1000, limit)
+        stop = threading.Event()
+        client = ScriptedClient(self.answer)
+        first = client.complete_json
+
+        def answer_then_close(system, user):  # PanXu is closed right after the first answer arrived
+            reply = first(system, user)
+            stop.set()
+            return reply
+        client.complete_json = answer_then_close
+        with self.assertRaises(Cancelled):
+            a.analyze_space(self.scan, client, self.settings, cancel=stop)
+        saved = VerdictCache(os.path.join(self.tmp, 'cache.json'))  # what the next run finds on disk
+        self.assertTrue(any(k.endswith('bigcache') for k in saved.data), 'the paid-for answer was kept')
+
     def test_budget_and_config_errors(self):
         a = self.analyst()
         a.frontier = lambda scan, min_size, limit=60: Analyst.frontier(a, scan, 1000, limit)

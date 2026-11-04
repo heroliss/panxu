@@ -104,9 +104,21 @@ class JobManager:
             return True
         return False
 
-    def running(self) -> list[dict]:
+    def running(self, group: str | None = None) -> list[dict]:
         with self._lock:
-            return [j.snapshot() for j in self._jobs.values() if j.status == 'running']
+            return [j.snapshot() for j in self._jobs.values() if j.status == 'running' and (group is None or j.group == group)]
+
+    def stop(self, group: str | None = None, timeout: float = 8.0) -> bool:
+        """Ask running jobs to stop and wait until they did (they finish the current file and write their
+        record first). True when all of them stopped in time."""
+        with self._lock:
+            jobs = [j for j in self._jobs.values() if j.status == 'running' and (group is None or j.group == group)]
+        for j in jobs:
+            j.cancel.set()
+        end = time.time() + timeout
+        while time.time() < end and any(j.finished is None for j in jobs):
+            time.sleep(0.05)
+        return all(j.finished is not None for j in jobs)
 
     def _prune(self):
         now = time.time()
