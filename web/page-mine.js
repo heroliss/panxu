@@ -78,6 +78,9 @@
     draw(true);
   }
 
+  // 「同一文件的多个版本」 with every version ticked: the document itself goes
+  const everyVersion = (f) => f.kind === 'name_versions' && f.files.length > 0 && f.files.every((x) => state.selected.has(x.path));
+
   async function recycle() {
     const byFinding = [];
     let size = 0;
@@ -86,8 +89,11 @@
       if (files.length) { byFinding.push([f, files]); size += files.reduce((s, x) => s + x.size, 0); }
     }
     const count = byFinding.reduce((s, [, files]) => s + files.length, 0);
+    const whole = state.result.findings.filter(everyVersion);
     const ok = await PX.confirm({ title: `把 ${count} 项移到回收站`, ok: '移到回收站', body: h('div',
       h('div.summary', fmt.bytes(size)),
+      whole.length ? PX.notice(`其中 ${whole.length} 份文件你选了全部版本，一个版本都不保留，只能从回收站还原：`
+        + whole.slice(0, 3).map((f) => f.files[0].name).join('、') + (whole.length > 3 ? ' 等' : ''), 'warn') : null,
       h('div', '这些是你自己的文件，只会移到回收站，需要时可以还原。'),
       h('div.confirm-list', byFinding.flatMap(([, files]) => files).slice(0, 200).map((x) => h('div.row', h('div.sub', x.path), h('span.num.small', fmt.bytes(x.size)))))) });
     if (!ok) return;
@@ -151,15 +157,16 @@
     const sec = c.appendChild(h('section.group.finding', { id: 'finding-' + f.id }));
     const can = f.files.filter((x) => !x.blocked);
     const removable = can.filter((x) => x.remove);
-    // versions: ticking every one would leave none, so that group has no box (only 「只选可以删除的」)
-    const box = f.kind === 'name_versions' ? null : PX.groupBox(can.length, can.filter((x) => state.selected.has(x.path)).length,
+    const box = PX.groupBox(can.length, can.filter((x) => state.selected.has(x.path)).length,
       (on) => { for (const x of can) on ? state.selected.add(x.path) : state.selected.delete(x.path); draw(true); }, '选择这一组：' + f.title);
-    sec.appendChild(h('div.group-head' + (box ? '.with-box' : ''), box, h('h2', f.title), PX.tag(f.kind_label), h('span.size', fmt.bytes(f.size))));
+    sec.appendChild(h('div.group-head.with-box', box, h('h2', f.title), PX.tag(f.kind_label), h('span.size', fmt.bytes(f.size))));
     const onlyRemovable = removable.length && removable.length !== can.length;
     sec.appendChild(h('div.finding-why', h('div', f.advice), h('div.small.muted', f.reason),
       onlyRemovable ? h('div.actions', h('button.btn.small', { type: 'button', onclick: () => {
         for (const x of removable) state.selected.add(x.path); draw(true);
       } }, `只选可以删除的 ${removable.length} 项`)) : null));
+    // every version ticked is allowed (the user's call), and said plainly
+    if (everyVersion(f)) sec.appendChild(PX.notice(`这 ${f.files.length} 个版本都勾上了：这份文件一个版本都不保留，只能从回收站还原。`, 'warn'));
     const list = sec.appendChild(h('div.list'));
     const key = 'f:' + f.id;
     const limit = f.files.length > 10 && !state.open.has(key) ? 6 : f.files.length;

@@ -924,9 +924,8 @@ class Backend:
         chosen = [known[paths.key(p)] for p in paths_to_delete or [] if isinstance(p, str) and paths.key(p) in known]
         if not chosen:
             raise UserError('没有选择任何文件')
-        if finding['kind'] == 'name_versions' and len(chosen) >= len(finding['files']):
-            raise UserError('同一文件的多个版本至少要保留一份')
-        # personal files only ever go to the Recycle Bin
+        # every version of a document is the user's call too (the page warns); personal files only ever go to
+        # the Recycle Bin
         return self._delete(chosen, 'recycle', 'insights')
 
     def m_ai_review_preview(self, finding_ids: list):

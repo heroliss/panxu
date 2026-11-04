@@ -652,9 +652,13 @@ class CheckupTest(TempDirTest):
         self.wait(self.call('insights_delete', finding_id=finding['id'], paths_to_delete=[target, stranger]))
         self.assertFalse(os.path.exists(target))
         self.assertTrue(os.path.exists(stranger), 'paths not in the finding are ignored')
+        # every version of a document: the user's call too (the page warns), and all of them go to the Recycle Bin
         versions = next(f for f in self.call('insights_result')['findings'] if f['kind'] == 'name_versions')
-        r = self.bridge.call('insights_delete', {'finding_id': versions['id'], 'paths_to_delete': [x['path'] for x in versions['files']]})
-        self.assertFalse(r['ok'])
+        every = [x['path'] for x in versions['files']]
+        result = self.wait(self.call('insights_delete', finding_id=versions['id'], paths_to_delete=every))
+        self.assertEqual(sorted(result['done']), sorted(every))
+        self.assertEqual(result['mode'], 'recycle')
+        self.assertFalse(any(os.path.exists(p) for p in every))
 
     def test_sandbox_reset_restores_everything(self):
         target = os.path.join(self.backend.env['USERPROFILE'], 'Downloads', 'SteamSetup.exe')
