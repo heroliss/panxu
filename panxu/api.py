@@ -580,6 +580,9 @@ class Backend:
             for s in result['suggestions']:
                 s['blocked'] = policy.reason(s['path'])
                 s['caution'] = policy.caution(s['path'])
+            # the same score, reasons and auto-tick as the check-up
+            checkup.assess_ai_dirs(result['suggestions'], policy, self.env, self.analyst, scan,
+                                   settings.get('checkup', {}).get('auto_threshold', checkup.DEFAULT_THRESHOLD))
             return result
         return self.jobs.start('ai_analyze', run, group='ai')
 

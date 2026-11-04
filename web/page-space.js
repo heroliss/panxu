@@ -356,7 +356,8 @@
       const result = await PX.api.run('ai_analyze', { use_cache: useCache }, (p) => { state.ai.progress = p; rerender(true); },
         (id) => { state.ai.jobId = id; });
       state.ai.result = result;
-      state.ai.selected = new Set(result.suggestions.filter((s) => s.verdict === 'clean' && s.confidence >= 0.75 && !s.blocked).map((s) => s.path));
+      // ticked by the backend with the check-up's rule (score, threshold and guards), never by confidence alone
+      state.ai.selected = new Set(result.suggestions.filter((s) => s.selected && !s.blocked).map((s) => s.path));
       if (result.errors && result.errors.length) PX.toast(result.errors[0], true);
       await open(state.nodeId, true);
       state.view = 'ai';
@@ -404,14 +405,22 @@
         const box = verdict === 'keep' ? h('span') : h('input', { type: 'checkbox', checked: ai.selected.has(s.path), disabled: !!s.blocked,
           title: s.blocked || '', 'aria-label': '选择 ' + s.path,
           onchange: (e) => { e.target.checked ? ai.selected.add(s.path) : ai.selected.delete(s.path); rerender(true); } });
+        const basis = s.basis || [];
+        const decision = basis.length && /^(自动勾选|没有)/.test(basis[basis.length - 1]) ? basis[basis.length - 1] : '';
         list.appendChild(h('div.row.ai-row', box,
           h('div.cell-main',
             h('div.name.mono-path', PX.displayPath(s.path)),
             h('div.label', s.app && s.app !== '未知' ? PX.tag(s.app, 'info') : null, s.source === 'cache' ? PX.tag('缓存结果') : null,
               s.blocked ? PX.tag(s.blocked, 'bad') : s.caution ? PX.tag(s.caution, 'warn') : null),
             h('div.why', s.reason), s.effect ? h('div.eff', '删除后：' + s.effect) : null,
-            h('div.conf', `把握 ${Math.round((s.confidence || 0) * 100)}%`, ' ',
-              h('button.btn.quiet.small', { type: 'button', onclick: () => locate(s) }, '定位'))),
+            h('div.conf', `AI 的把握 ${Math.round((s.confidence || 0) * 100)}%`, decision ? h('span.decision', decision) : null),
+            h('div.ai-actions',
+              h('button.btn.quiet.small', { type: 'button', title: '在资源管理器中打开这个文件夹，看看里面是什么',
+                onclick: () => PX.api.call('reveal', { path: s.path }).catch(PX.fail) }, PX.icon('open'), '打开文件夹'),
+              h('button.btn.quiet.small', { type: 'button', title: '在左边的文件夹视图里找到它', onclick: () => locate(s) }, PX.icon('map'), '在空间图中定位'),
+              h('button.btn.quiet.small', { type: 'button', onclick: () => PX.ask({ type: 'path', path: s.path }, s.app && s.app !== '未知' ? s.app : PX.displayPath(s.path)) },
+                PX.icon('spark'), '问 AI'))),
+          verdict === 'keep' ? h('span') : PX.score(s.score, basis.join('\n')),
           h('div.size', fmt.bytes(s.size))));
       }
     }

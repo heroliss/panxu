@@ -154,6 +154,27 @@ class CheckupTest(TempDirTest):
         self.assertTrue(any('最近' in b for b in busy['basis']))
         self.assertTrue(quiet['selected'])
 
+    def test_space_ai_suggestions_are_ticked_like_the_plan(self):
+        plan = self.checkup()  # also scans the system drive
+        result = self.wait(self.call('ai_analyze', use_cache=False))
+        rows = [s for s in result['suggestions'] if not s.get('expanded') and s['verdict'] in ('clean', 'review')]
+        self.assertTrue(rows)
+        in_plan = {paths.key(i['paths'][0]): i for i in plan['items'] if i['source'] == 'ai' and i['kind'] == 'paths'}
+        for s in rows:
+            self.assertIsNotNone(s['score'], s['path'])
+            self.assertTrue(s['basis'][-1].startswith(('自动勾选', '没有')), s['basis'])
+            if s['verdict'] == 'review':
+                self.assertFalse(s['selected'])
+            item = in_plan.get(paths.key(s['path']))
+            if item is not None:
+                self.assertEqual(s['selected'], item['selected'], s['path'])
+        foo = next(s for s in rows if 'FooSoft' in s['path'])
+        self.assertEqual(foo['verdict'], 'clean')
+        self.assertFalse(foo['selected'], 'a 95% verdict on an installed program is still not ticked')
+        self.assertTrue(foo['basis'][-1].startswith('没有自动勾选'), foo['basis'])
+        self.assertTrue(any('仍在使用的程序' in line for line in foo['basis']), foo['basis'])
+        self.assertTrue(next(s for s in rows if s['path'].endswith('Unity'))['selected'])
+
     def test_closing_a_program_unlocks_its_rule_without_rescanning(self):
         plan = self.checkup(use_ai=False)
         edge = next(i for i in plan['items'] if i['id'] == 'rule:edge')

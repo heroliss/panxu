@@ -139,10 +139,16 @@
     .sort((a, b) => b.size - a.size);
 
   const suggestions = () => [
-    { node_id: 12, path: 'C:\\Users\\herol\\AppData\\Local\\Unity', size: 6.2 * GB, files: 18000, verdict: 'clean', verdict_label: '可清理', app: 'Unity 编辑器', reason: 'Unity 的资源导入与着色器缓存，打开项目时会自动重建', effect: '下次打开项目时重新导入，耗时较长', confidence: 0.86, source: 'ai', expanded: false },
-    { node_id: 14, path: 'C:\\Users\\herol\\AppData\\Local\\ms-playwright', size: 2.6 * GB, files: 3100, verdict: 'clean', verdict_label: '可清理', app: 'Playwright', reason: '自动化测试下载的浏览器内核，需要时可重新安装', effect: '运行测试前需执行 playwright install', confidence: 0.8, source: 'ai', expanded: false },
-    { node_id: 10, path: 'C:\\Users\\herol\\AppData\\Local\\JetBrains\\IntelliJIdea2025.3', size: 7.1 * GB, files: 51000, verdict: 'review', verdict_label: '需要你确认', app: 'IntelliJ IDEA', reason: '含索引缓存和本地历史；若已不用这个版本可整体删除', effect: '重新打开会重建索引', confidence: 0.62, source: 'ai', expanded: false, caution: null },
-    { node_id: 17, path: 'C:\\Users\\herol\\AppData\\Roaming\\Tencent', size: 6.3 * GB, files: 9200, verdict: 'keep', verdict_label: '建议保留', app: 'QQ / 微信', reason: '聊天记录数据库与账号配置', effect: '', confidence: 0.9, source: 'cache', expanded: false, caution: '位于应用配置目录，可能包含应用设置或账号数据' },
+    { node_id: 12, path: 'C:\\Users\\herol\\AppData\\Local\\Unity', size: 6.2 * GB, files: 18000, verdict: 'clean', verdict_label: '可清理', app: 'Unity 编辑器', reason: 'Unity 的资源导入与着色器缓存，打开项目时会自动重建', effect: '下次打开项目时重新导入，耗时较长', confidence: 0.86, source: 'ai', expanded: false,
+      score: 86, selected: true, basis: ['AI：可清理（把握 86%）', '自动勾选：AI 判断可清理（把握 86%），不属于仍在使用的程序，最近也没有改动，9 分达到勾选门槛（5 分）'] },
+    { node_id: 999, path: 'C:\\Users\\herol\\AppData\\Local\\Adobe', size: 3.4 * GB, files: 7400, verdict: 'clean', verdict_label: '可清理', app: 'Adobe Photoshop', reason: '大部分是媒体缓存和字体缓存', effect: '下次打开时重新生成缓存', confidence: 0.9, source: 'ai', expanded: false,
+      score: 70, selected: false, basis: ['AI：可清理（把握 90%）', '属于仍在使用的程序「Adobe Photoshop 2025」：里面可能还有设置或许可证', '没有自动勾选：属于仍在使用的程序「Adobe Photoshop 2025」'] },
+    { node_id: 14, path: 'C:\\Users\\herol\\AppData\\Local\\ms-playwright', size: 2.6 * GB, files: 3100, verdict: 'clean', verdict_label: '可清理', app: 'Playwright', reason: '自动化测试下载的浏览器内核，需要时可重新安装', effect: '运行测试前需执行 playwright install', confidence: 0.8, source: 'ai', expanded: false,
+      score: 80, selected: true, basis: ['AI：可清理（把握 80%）', '自动勾选：AI 判断可清理（把握 80%），不属于仍在使用的程序，最近也没有改动，8 分达到勾选门槛（5 分）'] },
+    { node_id: 10, path: 'C:\\Users\\herol\\AppData\\Local\\JetBrains\\IntelliJIdea2025.3', size: 7.1 * GB, files: 51000, verdict: 'review', verdict_label: '需要你确认', app: 'IntelliJ IDEA', reason: '含索引缓存和本地历史；若已不用这个版本可整体删除', effect: '重新打开会重建索引', confidence: 0.62, source: 'ai', expanded: false, caution: null,
+      score: 55, selected: false, basis: ['AI：需要你确认（把握 62%）', '没有自动勾选：AI 也拿不准'] },
+    { node_id: 17, path: 'C:\\Users\\herol\\AppData\\Roaming\\Tencent', size: 6.3 * GB, files: 9200, verdict: 'keep', verdict_label: '建议保留', app: 'QQ / 微信', reason: '聊天记录数据库与账号配置', effect: '', confidence: 0.9, source: 'cache', expanded: false, caution: '位于应用配置目录，可能包含应用设置或账号数据',
+      score: null, selected: false, basis: ['AI：建议保留（把握 90%）'] },
   ];
 
   // ---- 1.1: check-up plan, 我的文件, installed programs, sandbox

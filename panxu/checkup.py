@@ -445,6 +445,22 @@ class PlanBuilder:
                 'groups': [{'id': g, 'name': n} for g, n in GROUPS.items()], **(extra or {})}
 
 
+def assess_ai_dirs(suggestions: list[dict], policy, env: dict, analyst=None, scan=None,
+                   threshold: int = DEFAULT_THRESHOLD) -> None:
+    """Write the check-up's judgement onto 空间分析's AI suggestions: the same 建议清理度, basis and
+    auto-tick, so a folder is ticked there exactly when it would be in the plan on 首页."""
+    builder = PlanBuilder(policy, threshold=threshold)
+    builder.add_ai_dirs(suggestions, env, analyst, scan)
+    by_path = {paths.key(item['paths'][0]): item for item in builder.items}
+    for s in suggestions:
+        item = by_path.get(paths.key(s['path']))
+        if item is not None:
+            s.update(score=item['score'], basis=item['basis'], selected=item['selected'])
+        else:  # 建议保留, or folders the model looked inside
+            pct = round(float(s.get('confidence') or 0) * 100)
+            s.update(score=None, basis=[f'AI：{s.get("verdict_label", "")}（把握 {pct}%）'], selected=False)
+
+
 def refresh_running(plan: dict, running: dict[str, list[str]]) -> list[str]:
     """Re-evaluate 「请先关闭」 on rule items after programs were opened or closed.
 
