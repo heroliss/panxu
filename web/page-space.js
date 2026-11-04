@@ -6,7 +6,8 @@
 
   // ------------------------------------------------------------------ shared delete flow
   // paths: list of absolute paths. Returns the job result, or null if cancelled.
-  PX.deleteFlow = async function ({ paths, title, allowPermanent = true, defaultMode = 'recycle', source = 'space', method = 'delete_paths', params }) {
+  // warning: what the user should read before confirming (shown above the list)
+  PX.deleteFlow = async function ({ paths, title, allowPermanent = true, defaultMode = 'recycle', source = 'space', method = 'delete_paths', params, warning }) {
     let checks;
     try { checks = await PX.api.call('check_paths', { items: paths }); } catch (e) { PX.fail(e); return null; }
     const blocked = checks.filter((c) => c.blocked);
@@ -33,6 +34,7 @@
     drawChoices();
     const body = h('div',
       h('div.summary', fmt.bytes(size)),
+      warning ? PX.notice(warning, 'warn') : null,
       list,
       blocked.length ? PX.notice(`${blocked.length} 项受保护，已排除：${blocked[0].blocked}`) : null,
       cautions.length ? PX.notice(`${cautions.length} 项需要注意：${cautions[0].caution}`) : null,

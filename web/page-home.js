@@ -110,6 +110,10 @@
         preview.disable.titles.join('、') + '。随时可以在「开机与服务」里重新启用。')), h('span')));
     }
     body.appendChild(lines);
+    if ((preview.all_copies || []).length) {
+      body.appendChild(PX.notice(`${preview.all_copies.length} 组重复文件你选了全部副本，这些文件一份都不保留，只能从回收站还原：`
+        + preview.all_copies.slice(0, 3).join('、') + (preview.all_copies.length > 3 ? ' 等' : ''), 'warn'));
+    }
     if (preview.skipped.length) body.appendChild(h('div.small.muted', `${preview.skipped.length} 项会跳过：` + preview.skipped.slice(0, 3).map((s) => `${s.title}（${s.reason}）`).join('；')));
     const ok = await PX.confirm({ title: `执行选中的 ${chosen.length} 项`, body, ok: '开始清理', wide: true });
     if (!ok) return;
@@ -422,11 +426,11 @@
     if (state.open.has(it.id)) list.appendChild(detail(it));
   }
 
-  // a duplicate's copies picked by hand: the backend scores the new choice by the same rules
+  // a duplicate's copies picked by hand, every one of them too (the detail then warns); the backend scores the new
+  // choice by the same rules
   async function chooseCopies(it, path, want, box) {
     const remove = new Set(it.paths);
     want ? remove.add(path) : remove.delete(path);
-    if (remove.size >= (it.dup_files || []).length) { box.checked = false; PX.toast('每组至少保留一份'); return; }
     if (!remove.size) { box.checked = true; PX.toast('至少留一份要移到回收站的；不想处理这一组，取消它前面的勾选就好'); return; }
     try {
       const fresh = await PX.api.call('plan_dup_choose', { item_id: it.id, remove: [...remove] });
@@ -443,7 +447,7 @@
     const dup = it.kind === 'dup';
     const rows = [];
     if (dup) {
-      // every copy, in a fixed order: ticked ones go to the Recycle Bin; the user may tick any but the last one kept
+      // every copy, in a fixed order: ticked ones go to the Recycle Bin, any of them, all of them too
       const going = new Set(it.paths);
       const editable = it.status === 'pending';
       for (const f of it.dup_files || []) {
@@ -462,9 +466,10 @@
     const title = dup ? '这几份副本' : it.kind === 'rule' ? '清理这些位置' : '位置';
     const shown = rowText(it);  // the row already says this: never again below
     const fact = (text) => (text && text !== shown ? text : '');
+    const everyCopy = dup && !it.keep && it.status === 'pending';
     return PX.detailPanel({
       action: it.status === 'pending' ? it.action : null,
-      warn: it.caution,
+      warn: everyCopy ? `你选了全部 ${(it.dup_files || []).length} 份：这个文件一份都不保留，只能从回收站还原。` : it.caution,
       facts: [['是什么', fact(it.what)], ['AI 认为它是', fact(it.ai && it.ai.what), 'ai'], ['建议', fact(it.advice)],
         ['还要知道', fact(it.effect)]],
       // 「很久没动过的大文件：1.9 年没有修改过」 when the row says 「1.9 年没有修改过」: once is enough

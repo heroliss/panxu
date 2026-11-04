@@ -722,8 +722,7 @@ class Backend:
             members = [f for f in g['files'] if paths.key(f['path']) in chosen]
             if not members:
                 continue
-            if len(members) >= len(g['files']):
-                raise UserError('每组重复文件至少要保留一份')
+            # every copy of a group is the user's call too: the page warns, and all go to the Recycle Bin
             for f in members:
                 if not verify_unchanged(f['path'], g['size'], f['mtime']):
                     raise UserError(f'「{f["path"]}」在查找后被修改过，请重新查找')
@@ -978,8 +977,8 @@ class Backend:
         return self.plan
 
     def m_plan_dup_choose(self, item_id: str, remove: list):
-        """The user picks which copies of a duplicates item go to the Recycle Bin (at least one stays); the item is
-        scored again by the same rules and returned."""
+        """The user picks which copies of a duplicates item go to the Recycle Bin (all of them too: the item then
+        says so and scores low); the item is scored again by the same rules and returned."""
         plan = self._require_plan()
         item = next((i for i in plan['items'] if i['id'] == item_id and i.get('kind') == 'dup'), None)
         if item is None or item['status'] != 'pending':
@@ -989,8 +988,6 @@ class Backend:
         keep = {f['path'] for f in copies if paths.key(f['path']) not in wanted}
         if len(keep) == len(copies):
             raise UserError('至少选一份要移到回收站的副本')
-        if not keep:
-            raise UserError('每组至少保留一份')
         item.update(checkup.dup_choice(item['dup_size'], copies, keep), chosen=True)
         threshold = plan.get('threshold', checkup.DEFAULT_THRESHOLD)
         item['basis'] = item['basis'] + checkup.decision_note(item, threshold)
@@ -1002,13 +999,15 @@ class Backend:
         plan = self._require_plan()
         wanted = {str(i) for i in item_ids or []}
         out = {'delete': {'count': 0, 'size': 0, 'titles': []}, 'recycle': {'count': 0, 'size': 0, 'titles': []},
-               'disable': {'count': 0, 'titles': []}, 'skipped': []}
+               'disable': {'count': 0, 'titles': []}, 'skipped': [], 'all_copies': []}
         for item in plan['items']:
             if item['id'] not in wanted:
                 continue
             if item['blocked'] or item['status'] != 'pending' or item['action'] == 'none':
                 out['skipped'].append({'title': item['title'], 'reason': item['blocked'] or '不需要操作'})
                 continue
+            if item.get('kind') == 'dup' and not item.get('keep'):
+                out['all_copies'].append(item['title'])  # every copy chosen: the dialog says so
             slot = out[item['action']]
             slot['count'] += 1
             slot['titles'].append(item['title'])

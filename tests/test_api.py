@@ -63,17 +63,6 @@ class BridgeTest(TempDirTest):
         r = self.bridge.call('delete_paths', {'items': ['/x'], 'mode': 'shred'})
         self.assertFalse(r['ok'])
 
-    def test_duplicates_must_keep_one(self):
-        for name in ('a', 'b'):
-            with open(os.path.join(self.tmp, name), 'wb') as fh:
-                fh.write(b'z' * 5000)
-        s = wait(self.bridge, self.bridge.call('dup_scan', {'roots': [self.tmp], 'min_size_mb': 0.001})['data'])
-        group = s['result']['groups'][0]
-        both = [f['path'] for f in group['files']]
-        r = self.bridge.call('dup_delete', {'paths_to_delete': both})
-        self.assertFalse(r['ok'])
-        self.assertIn('保留', r['error'])
-
     def test_duplicates_skip_folders_programs_manage(self):
         for rel in ('area/proj/node_modules/a/lib.js', 'area/proj/node_modules/b/lib.js', 'area/app/Cache/x.bin',
                     'area/app/Cache/y.bin', 'area/mine/one.bin', 'area/mine/two.bin'):

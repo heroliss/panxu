@@ -601,14 +601,35 @@ class CheckupTest(TempDirTest):
         self.assertTrue(any('提到' in line for line in item['basis']))
         self.assertTrue(item['basis'][-1].startswith('没有自动勾选'))
         self.assertEqual(self.call('plan')['items'][[i['id'] for i in plan['items']].index(fonts['id'])]['paths'], [mentioned])
-        for bad in ([], copies):
-            r = self.bridge.call('plan_dup_choose', {'item_id': fonts['id'], 'remove': bad})
-            self.assertFalse(r['ok'], 'none, or all of them: refused')
+        r = self.bridge.call('plan_dup_choose', {'item_id': fonts['id'], 'remove': []})
+        self.assertFalse(r['ok'], 'nothing to remove is no choice')
         # what runs is what was chosen
         report = self.wait(self.call('plan_execute', item_ids=[fonts['id']]))
         self.assertEqual(report['recycled']['count'], 1)
         self.assertFalse(os.path.exists(mentioned))
         self.assertTrue(all(os.path.exists(p) for p in copies if p != mentioned))
+
+    def test_every_copy_of_a_duplicate_may_go_when_the_user_says_so(self):
+        plan = self.checkup(use_ai=False)
+        fonts = next(i for i in plan['items'] if i['source'] == 'dup' and 'NotoSerifJP' in i['title'])
+        copies = [f['path'] for f in fonts['dup_files']]
+        item = self.call('plan_dup_choose', item_id=fonts['id'], remove=copies)
+        self.assertEqual((sorted(item['paths']), item['keep']), (sorted(copies), None))
+        self.assertEqual(item['score'], 15, 'the file itself goes: 2 points')
+        self.assertTrue(any('一份都不剩' in line for line in item['basis']))
+        self.assertEqual(self.call('plan_preview', item_ids=[fonts['id']])['all_copies'], [item['title']], 'the dialog warns')
+        report = self.wait(self.call('plan_execute', item_ids=[fonts['id']]))
+        self.assertEqual(report['recycled']['count'], len(copies))
+        self.assertFalse(any(os.path.exists(p) for p in copies))
+        # 重复文件 page: the same
+        self.call('sandbox_reset')
+        docs = os.path.join(self.backend.env['USERPROFILE'], 'Documents')
+        group = next(g for g in self.wait(self.call('dup_scan', roots=[docs], min_size_mb=1))['groups']
+                     if g['files'][0]['path'].endswith('NotoSerifJP-600.woff'))
+        every = [f['path'] for f in group['files']]
+        result = self.wait(self.call('dup_delete', paths_to_delete=every))
+        self.assertEqual(sorted(result['done']), sorted(every))
+        self.assertFalse(any(os.path.exists(p) for p in every))
 
     def test_duplicates_page_asks_the_ai_about_copies(self):
         docs = os.path.join(self.backend.env['USERPROFILE'], 'Documents')

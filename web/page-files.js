@@ -146,7 +146,7 @@
     drawDups(true);
   }
 
-  // tick what the model says is safer to delete; a group always keeps at least one copy unticked
+  // tick what the model says is safer to delete; a suggestion never ticks a whole group (only the user does that)
   function followAI() {
     let n = 0;
     for (const g of dup.result.groups) {
@@ -239,17 +239,14 @@
         grp.appendChild(h('div.small.muted.dup-note', '每一份都在程序文件夹、代码工程里或工程旁边，可能各自被用到，所以没有自动勾选。'
           + '删掉其中一份前，先确认对应的程序或工程不再需要它。'));
       }
+      // every copy ticked is allowed (the user's call), and said plainly
+      if (g.files.every((f) => dup.selected.has(f.path))) {
+        grp.appendChild(PX.notice(`这 ${g.files.length} 份都勾上了：这个文件一份都不保留，只能从回收站还原。`, 'warn'));
+      }
       for (const f of g.files) {
         const checked = dup.selected.has(f.path);
         const box = h('input', { type: 'checkbox', checked, disabled: !!f.blocked, 'aria-label': '选择 ' + f.path,
-          onchange: (e) => {
-            if (e.target.checked) {
-              const others = g.files.filter((x) => x !== f && !dup.selected.has(x.path));
-              if (!others.length) { e.target.checked = false; PX.toast('每组至少保留一份'); return; }
-              dup.selected.add(f.path);
-            } else dup.selected.delete(f.path);
-            drawDups(true);
-          } });
+          onchange: (e) => { e.target.checked ? dup.selected.add(f.path) : dup.selected.delete(f.path); drawDups(true); } });
         grp.appendChild(h('div.row.dup-file' + (checked ? '' : '.keep'), box,
           h('div.cell-main.ic-cell', PX.fileIcon(f.path), h('div', h('div.name', PX.pathText(f.path)),
             f.place || f.ai ? h('div.dup-facts', PX.copyFacts(f)) : null)),
@@ -266,8 +263,11 @@
     c.appendChild(h('div.actionbar',
       h('div.grow', sel.length ? h('span', `已选 ${sel.length} 个副本，共 `, h('span.fig', fmt.bytes(size))) : h('span.muted', '勾选要删除的副本')),
       h('button.btn.primary', { type: 'button', disabled: !sel.length, onclick: async () => {
+        const whole = dup.result.groups.filter((g) => g.files.every((f) => dup.selected.has(f.path)));
         const r = await PX.deleteFlow({ paths: sel, title: `把 ${sel.length} 个重复副本移到回收站`, allowPermanent: false,
-          method: 'dup_delete', params: { paths_to_delete: sel } });
+          method: 'dup_delete', params: { paths_to_delete: sel },
+          warning: whole.length ? `其中 ${whole.length} 组你选了全部副本，这些文件一份都不保留，只能从回收站还原：`
+            + whole.slice(0, 3).map((g) => g.files[0].path.split('\\').pop()).join('、') + (whole.length > 3 ? ' 等' : '') : '' });
         if (r) {
           const gone = new Set(r.done);
           for (const g of dup.result.groups) g.files = g.files.filter((f) => !gone.has(f.path));

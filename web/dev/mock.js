@@ -333,8 +333,10 @@
     plan_dup_choose: ({ item_id, remove }) => {
       const it = plan.items.find((i) => i.id === item_id);
       const keep = it.dup_files.filter((f) => !remove.includes(f.path));
-      Object.assign(it, { paths: remove, keep: keep[0].path, count: remove.length, size: it.dup_size * remove.length,
-        why: `保留「${keep[0].path.split('\\').slice(-2, -1)[0]}」里的那份，其余 ${remove.length} 份移到回收站` });
+      Object.assign(it, { paths: remove, keep: keep.length ? keep[0].path : null, count: remove.length, size: it.dup_size * remove.length,
+        score: keep.length ? 85 : 15,
+        why: keep.length ? `保留「${keep[0].path.split('\\').slice(-2, -1)[0]}」里的那份，其余 ${remove.length} 份移到回收站`
+          : `这 ${remove.length} 份全部移到回收站` });
       return it;
     },
     plan_preview: ({ item_ids }) => {

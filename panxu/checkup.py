@@ -64,6 +64,8 @@ FILES_FOR_AI = 120
 DUPS_FOR_AI = 36   # groups of duplicates the check-up asks about (three requests)
 # 「需要你确认」: the model cannot tell, so its confidence in saying so is no reason to clean (5 points, held)
 AI_REVIEW_SCORE = 50
+# every copy of a duplicates group chosen: that is deleting the file itself, not a spare copy (2 points)
+ALL_COPIES_SCORE = 15
 
 # big things worth explaining, in the order they are shown
 INFO_TARGETS = [
@@ -479,6 +481,16 @@ def dup_choice(size: int, copies: list[dict], keep: set[str]) -> dict:
     rated = [(f, *removal_score(f, f.get('ai'))) for f in remove]
     score = min(s for _, s, _ in rated)
     basis = ['内容逐字节相同']
+    if not keepers:
+        # the user chose to let every copy go: the file itself goes, only the Recycle Bin still has it
+        name = os.path.basename(copies[0]['path'])
+        return {
+            'title': f'{name} 等 {len(copies)} 份', 'size': size * len(remove), 'count': len(remove),
+            'why': f'这 {len(copies)} 份全部移到回收站', 'effect': '一份都不保留：这个文件只能从回收站还原了。',
+            'confidence': 0.2, 'paths': [f['path'] for f in remove], 'keep': None, 'keeps': [],
+            'score': min(score, ALL_COPIES_SCORE),
+            'basis': basis + [f'你选了全部 {len(copies)} 份：「{name}」一份都不剩，只能从回收站还原']
+                     + list(dict.fromkeys(why for _, _, why in rated if why))[:3]}
     if all(f.get('place') in IN_USE for f in copies) and any(f.get('place') != 'build' for f in copies):
         # e.g. the same font in two projects' lib folders: each project may load its own copy
         basis.append('每一份都在程序文件夹或代码工程里：它们可能各自引用自己的那一份，删掉一份可能让那个程序或工程出问题')
@@ -818,7 +830,8 @@ def execute(backend, plan: dict, item_ids: list[str], job) -> dict:
             files = {paths.key(f['path']): f for f in item['dup_files']}
             changed = [p for p in item['paths'] if not verify_unchanged(p, item['dup_size'],
                                                                           files[paths.key(p)]['mtime'])]
-            keeper_ok = verify_unchanged(item['keep'], item['dup_size'], files[paths.key(item['keep'])]['mtime'])
+            keeper_ok = not item['keep'] or verify_unchanged(item['keep'], item['dup_size'],
+                                                             files[paths.key(item['keep'])]['mtime'])
             if changed or not keeper_ok:
                 done(item, 'skipped', '文件在体检后被修改过，请重新体检')
                 report['failures'].append({'title': item['title'], 'reason': '文件在体检后被修改过'})
