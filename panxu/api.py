@@ -585,7 +585,8 @@ class Backend:
             try:
                 if mode == 'recycle':
                     def on_progress(s):
-                        job.update(total=total, freed=s.bytes, failed=s.failed)
+                        job.update(total=s.total_items or total, done=s.done_items, current=s.current, freed=s.bytes,
+                                   failed=s.failed)
                         self.oplog.progress(pending, freed=s.bytes, done=s.files)
                     part, recycled = fsops.recycle(selected, cancel=job.cancel, hwnd=winapi.find_window(APP_NAME),
                                                    progress=on_progress)
@@ -606,15 +607,20 @@ class Backend:
                 cancelled = job.cancel.is_set()
                 if done or stats.failed:
                     title = f'{verb} {len(done)} 项' + ('（已停止）' if cancelled else '')
+                    if stats.permanent:  # too large for the bin: Windows deleted them, on the user's yes
+                        title = (f'移到回收站 {len(done) - len(stats.permanent)} 项，{len(stats.permanent)} 项回收站放不下、已直接删除'
+                                 + ('（已停止）' if cancelled else ''))
                     self.oplog.add(kind, title, freed=stats.bytes, items=done, failures=stats.failures,
-                                   details={'source': source, 'mode': mode, 'cancelled': cancelled}, replaces=pending)
+                                   details={'source': source, 'mode': mode, 'cancelled': cancelled,
+                                            'permanent': stats.permanent[:200], 'permanent_bytes': stats.permanent_bytes},
+                                   replaces=pending)
                 else:
                     self.oplog.drop(pending)
                 self.forget_paths(done)
                 if after is not None:
                     after(done)
             return {'done': done, 'freed': stats.bytes, 'failed': stats.failed, 'failures': stats.failures,
-                    'mode': mode}
+                    'mode': mode, 'permanent': stats.permanent, 'permanent_bytes': stats.permanent_bytes}
         return self.jobs.start('delete', run, group='modify')
 
     # ------------------------------------------------------------------ AI on space

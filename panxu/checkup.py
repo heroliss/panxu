@@ -788,6 +788,7 @@ def execute(backend, plan: dict, item_ids: list[str], job) -> dict:
         raise ValueError('没有可以执行的项目')
     policy = backend.policy()
     report = {'deleted': {'count': 0, 'bytes': 0}, 'recycled': {'count': 0, 'bytes': 0}, 'disabled': [],
+              'permanent': {'count': 0, 'bytes': 0, 'paths': []},
               'failures': [], 'items': {}}
 
     def done(item, status, note='', freed=None):
@@ -855,7 +856,7 @@ def execute(backend, plan: dict, item_ids: list[str], job) -> dict:
         pending = backend.oplog.begin('recycle', f'清理方案：移到回收站 {len(unique)} 项', items=unique)
 
         def on_progress(s):
-            job.update(freed=s.bytes)
+            job.update(freed=s.bytes, detail=s.current or '移到回收站')
             backend.oplog.progress(pending, freed=s.bytes, done=s.files)
         try:
             stats, recycled = fsops.recycle(unique, cancel=job.cancel, hwnd=winapi.find_window(APP_NAME), progress=on_progress)
@@ -863,23 +864,33 @@ def execute(backend, plan: dict, item_ids: list[str], job) -> dict:
             backend.oplog.drop(pending)  # stopped while sizing, before anything moved
             raise
         gone = {paths.key(p) for p in recycled}
-        report['recycled']['count'] += len(recycled)
-        report['recycled']['bytes'] += stats.bytes
+        nuked = [p for p in stats.permanent]  # too large for the bin: Windows deleted them on the user's yes
+        nuked_keys = {paths.key(p) for p in nuked}
+        report['recycled']['count'] += len(recycled) - len(nuked)
+        report['recycled']['bytes'] += stats.bytes - stats.permanent_bytes
+        report['permanent'] = {'count': len(nuked), 'bytes': stats.permanent_bytes, 'paths': nuked[:50]}
         for f in stats.failures:
             report['failures'].append({'path': f.get('path'), 'reason': f.get('reason')})
         for item in {id(i): i for i, _ in to_recycle}.values():
             ok = [p for p in item['paths'] if paths.key(p) in gone or any(paths.is_within(p, g) for g in recycled)]
+            share = (item['size'] or 0) * len(ok) // max(1, len(item['paths']))
             # in the Recycle Bin: the space comes back when it is emptied (the size is the check-up's measure)
-            if len(ok) == len(item['paths']):
+            if ok and any(paths.within_any(p, nuked_keys) for p in ok):
+                item['permanent'] = True
+                done(item, 'done' if len(ok) == len(item['paths']) else 'partial', '回收站放不下，按你在 Windows 提示里的选择直接删除了',
+                     freed=share)
+            elif len(ok) == len(item['paths']):
                 done(item, 'done', '已移到回收站', freed=item['size'] or 0)
             elif ok:
-                done(item, 'partial', f'{len(ok)}/{len(item["paths"])} 项已移到回收站',
-                     freed=(item['size'] or 0) * len(ok) // len(item['paths']))
+                done(item, 'partial', f'{len(ok)}/{len(item["paths"])} 项已移到回收站', freed=share)
             else:
                 done(item, 'failed', '没有移到回收站')
         if recycled or stats.failed:
-            backend.oplog.add('recycle', f'清理方案：移到回收站 {len(recycled)} 项', freed=stats.bytes, items=recycled,
-                              failures=stats.failures, details={'source': 'plan', 'mode': 'recycle'}, replaces=pending)
+            title = f'清理方案：移到回收站 {len(recycled) - len(nuked)} 项' + (
+                f'，{len(nuked)} 项回收站放不下、已直接删除' if nuked else '')
+            backend.oplog.add('recycle', title, freed=stats.bytes, items=recycled, failures=stats.failures,
+                              details={'source': 'plan', 'mode': 'recycle', 'permanent': nuked[:200],
+                                       'permanent_bytes': stats.permanent_bytes}, replaces=pending)
         else:
             backend.oplog.drop(pending)
         backend.forget_paths(recycled)

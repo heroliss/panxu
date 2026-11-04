@@ -127,6 +127,14 @@ class DeleteStats:
     failed: int = 0
     in_use: int = 0
     failures: list = field(default_factory=list)
+    # recycle(): what left its place but never reached the Recycle Bin -- Windows deleted it for good (too large
+    # for the bin, and the user said yes to Windows' prompt). Counted in files / bytes as well.
+    permanent: list = field(default_factory=list)
+    permanent_bytes: int = 0
+    # recycle(): the item being moved right now and how many are done, for a progress display
+    current: str = ''
+    done_items: int = 0
+    total_items: int = 0
 
     def fail(self, path: str, exc_or_reason):
         reason = exc_or_reason if isinstance(exc_or_reason, str) else error_reason(exc_or_reason)
@@ -145,6 +153,8 @@ class DeleteStats:
         room = MAX_RECORDED_FAILURES - len(self.failures)
         if room > 0:
             self.failures.extend(other.failures[:room])
+        self.permanent.extend(other.permanent)
+        self.permanent_bytes += other.permanent_bytes
 
     def as_dict(self) -> dict:
         return {'files': self.files, 'dirs': self.dirs, 'bytes': self.bytes, 'failed': self.failed,
@@ -332,11 +342,27 @@ def path_size(path: str, cancel=None) -> tuple[int, int]:
     return total, count
 
 
+def _arrived_in_bin(gone: list[str], since: float) -> set[str] | None:
+    """Of the paths that left their place, the ones the Recycle Bin now holds (normcased), or None when a bin
+    could not be read -- then they are taken to be there, as before."""
+    if not gone:
+        return set()
+    out: set[str] = set()
+    for root in {os.path.splitdrive(os.path.abspath(p))[0] + os.sep for p in gone}:
+        found = winapi.recycled_since(root, since)
+        if found is None:
+            return None
+        out |= {os.path.normcase(os.path.abspath(p)) for p in found}
+    return out
+
+
 def recycle(paths: list[str], *, batch: int = 64, cancel=None, progress=None, hwnd=None) -> tuple[DeleteStats, list[str]]:
-    """Move paths to the Recycle Bin. Returns (stats, list of recycled paths).
+    """Move paths to the Recycle Bin. Returns (stats, list of paths gone from their place).
 
     Paths must already be validated by the caller's ProtectionPolicy. ``hwnd``
-    parents Windows' own "cannot recycle, delete permanently?" prompt.
+    parents Windows' own "cannot recycle, delete permanently?" prompt; what the
+    user let Windows delete that way is in ``stats.permanent`` (and still among
+    the returned paths: it is gone either way).
     """
     stats = DeleteStats()
     done: list[str] = []
@@ -348,6 +374,7 @@ def recycle(paths: list[str], *, batch: int = 64, cancel=None, progress=None, hw
             continue
         size, count = path_size(path, cancel)
         pending.append((path, size, count))
+    stats.total_items = len(pending)
     for start in range(0, len(pending), batch):
         if cancel is not None and cancel.is_set():
             for path, _, _ in pending[start:]:
@@ -360,19 +387,29 @@ def recycle(paths: list[str], *, batch: int = 64, cancel=None, progress=None, hw
         chunk = [p for p in chunk if len(p[0]) < 260]
         if not chunk:
             continue
+        stats.current = chunk[0][0]
+        if progress:
+            progress(stats)  # what is being moved now: one large folder can take minutes
+        started = time.time()
         try:
             rc, aborted = winapi.recycle_paths([p[0] for p in chunk], hwnd)
         except OSError as exc:
             for path, _, _ in chunk:
                 stats.fail(path, exc)
             continue
+        gone = [(path, size, count) for path, size, count in chunk if not os.path.lexists(path)]
+        binned = _arrived_in_bin([p for p, _, _ in gone], started)
         for path, size, count in chunk:
             if os.path.lexists(path):
                 stats.fail(path, '已取消' if aborted else f'移到回收站失败（代码 {rc}）')
-            else:
-                stats.files += count
-                stats.bytes += size
-                done.append(path)
+                continue
+            stats.files += count
+            stats.bytes += size
+            done.append(path)
+            if binned is not None and os.path.normcase(os.path.abspath(path)) not in binned:
+                stats.permanent.append(path)
+                stats.permanent_bytes += size
+        stats.done_items += len(chunk)
         if progress:
             progress(stats)
         if aborted:

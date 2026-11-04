@@ -268,6 +268,8 @@
     const figures = [];
     if (r.deleted.bytes) figures.push(['good', fmt.bytes(r.deleted.bytes), '已释放', '永久删除的缓存和临时文件']);
     if (r.recycled.count) figures.push(['', fmt.bytes(r.recycled.bytes), '在回收站', `${r.recycled.count} 项，需要时可以还原；清空回收站后才真正释放`]);
+    const nuked = r.permanent || {};
+    if (nuked.count) figures.push(['warn', fmt.bytes(nuked.bytes), '已直接删除', `${nuked.count} 项回收站放不下，你在 Windows 的提示里选了直接删除，不能还原`]);
     if (r.disabled.length) figures.push(['', String(r.disabled.length), '个开机启动项已禁用', '随时可以在「开机与服务」里重新启用']);
     const problems = r.failures || [];
     const ok = Object.values(r.items || {}).filter((x) => x.status === 'done').length;
@@ -289,6 +291,7 @@
   // how a handled item went, in words, with the size it gave back
   function outcome(it) {
     const size = fmt.bytes(it.freed !== undefined && it.freed !== null ? it.freed : it.size || 0);
+    if (it.permanent) return [`回收站放不下，按你在 Windows 提示里的选择直接删除了（${size}），不能还原`, 'warn'];
     if (it.status === 'done') {
       if (it.result && /^已在|^已处理/.test(it.result)) return [it.result, 'good'];  // handled on a tool page
       if (it.action === 'delete') return [`已清理，释放 ${size}`, 'good'];

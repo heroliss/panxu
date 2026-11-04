@@ -667,6 +667,10 @@ class Sandbox:
     def recycle_dir(self) -> str:
         return self.native('C/$Recycle.Bin/S-1-5-21-1000')
 
+    # like a real Recycle Bin that is too small for an item, and a user who answers Windows' 「直接删除?」 with yes:
+    # anything larger than this many bytes is deleted for good (None: everything fits)
+    recycle_limit: int | None = None
+
     def recycle_paths(self, items: list[str]) -> tuple[int, bool]:
         bin_dir = self.recycle_dir()
         os.makedirs(bin_dir, exist_ok=True)
@@ -678,6 +682,9 @@ class Sandbox:
                 if not inside:
                     continue  # never move anything from outside the simulation
                 size = _tree_size(path)
+                if self.recycle_limit is not None and size > self.recycle_limit:
+                    shutil.rmtree(path) if os.path.isdir(path) and not os.path.islink(path) else os.remove(path)
+                    continue
                 ident = uuid.uuid4().hex[:8].upper()
                 stored = os.path.join(bin_dir, '$R' + ident + os.path.splitext(path)[1])
                 shutil.move(path, stored)
@@ -685,6 +692,11 @@ class Sandbox:
                                                              'time': time.time(), 'size': size})
                 self.save()  # after each one: stopped half way, every moved file can still be restored
         return 0, False
+
+    def recycled_since(self, since: float) -> set[str]:
+        """Like winapi.recycled_since: the original paths put into the bin since then."""
+        with self.lock:
+            return {r['original'] for r in self.state.get('recycle', []) if r.get('time', 0) >= since - 2}
 
     def recycle_bin_info(self) -> tuple[int, int]:
         with self.lock:

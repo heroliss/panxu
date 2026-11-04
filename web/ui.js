@@ -364,7 +364,8 @@
   PX.fail = (err) => PX.toast(err && err.message ? err.message : String(err), true);
 
   // --- modal ---
-  PX.modal = function ({ title, body, actions, wide, onClose }) {
+  // locked: a dialog about work in progress -- a click beside it or Esc must not hide it (the work goes on unseen)
+  PX.modal = function ({ title, body, actions, wide, onClose, locked }) {
     const layer = document.getElementById('layer');
     const prevFocus = document.activeElement;
     const foot = h('div.foot');
@@ -377,9 +378,9 @@
       if (prevFocus && prevFocus.focus) prevFocus.focus();
       if (onClose) onClose(value);
     }
-    function onKey(e) { if (e.key === 'Escape') close(false); }
+    function onKey(e) { if (e.key === 'Escape' && !locked) close(false); }
     document.addEventListener('keydown', onKey);
-    back.addEventListener('mousedown', (e) => { if (e.target === back) close(false); });
+    back.addEventListener('mousedown', (e) => { if (e.target === back && !locked) close(false); });
     for (const a of actions || []) {
       if (a.spacer) { foot.appendChild(h('div.grow', a.node || null)); continue; }
       const btn = h('button.btn' + (a.kind ? '.' + a.kind : ''), { type: 'button' }, a.label);

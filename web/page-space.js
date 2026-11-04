@@ -42,33 +42,66 @@
     const confirmed = await PX.confirm({ title: title || `删除 ${ok.length} 项`, body, ok: '确认', okKind: 'primary' });
     if (!confirmed) return null;
 
-    const bar = PX.progressBar(null);
-    const status = h('div.small.muted', '正在处理…');
+    // stays until the work is done (a click beside it must not hide it): what is being moved, how far, for how long
+    const slot = h('div');
+    const current = h('div.del-current');
+    const meta = h('div.work-meta', h('span.work-count', '准备中…'), h('span.work-time', '已用 0:00'));
+    const hint = h('div.small.muted.del-hint', mode === 'recycle'
+      ? '大文件夹可能要几分钟，Windows 会显示自己的进度窗口；回收站放不下的，Windows 会问你是否直接删除。' : '');
     let jobId = null;
-    const dlg = PX.modal({ title: mode === 'recycle' ? '正在移到回收站' : '正在删除', body: h('div', bar, h('div', { style: { height: '10px' } }), status),
+    const started = Date.now();
+    let last = {};
+    const paint = () => {
+      const p = last;
+      PX.clear(slot).appendChild(PX.progressBar(p.total > 1 ? (p.done || 0) / p.total : null, 'delete-flow'));
+      current.textContent = p.current ? PX.displayPath(p.current) : '';
+      meta.firstChild.textContent = p.total ? `${p.done || 0} / ${p.total} 项` + (p.freed ? ` · ${fmt.bytes(p.freed)}` : '') : '准备中…';
+      meta.lastChild.textContent = `已用 ${fmt.clock((Date.now() - started) / 1000)}`;
+    };
+    paint();
+    const ticker = setInterval(paint, 500);
+    const dlg = PX.modal({ title: mode === 'recycle' ? '正在移到回收站' : '正在删除', locked: true,
+      body: h('div', slot, meta, current, hint),
       actions: [{ label: '停止', onClick: () => { if (jobId) PX.api.cancel(jobId); return false; } }] });
     let result = null;
     try {
       const callParams = params ? { ...params } : { items: ok.map((c) => c.path), mode, source };
       if (params && method === 'delete_paths') callParams.mode = mode;
-      result = await PX.api.run(method, callParams, (p) => {
-        if (p.total) { bar.className = 'progress'; bar.firstChild.style.width = Math.round(((p.done || 0) / p.total) * 100) + '%'; }
-        status.textContent = p.freed ? `已处理 ${fmt.bytes(p.freed)}` : '正在处理…';
-      }, (id) => { jobId = id; });
+      result = await PX.api.run(method, callParams, (p) => { last = p; paint(); }, (id) => { jobId = id; });
     } catch (e) {
+      clearInterval(ticker);
       dlg.close();
       if (!e.cancelled) PX.fail(e);
       return null;
     }
+    clearInterval(ticker);
     dlg.close();
+    PX.deleteResult(result);
+    return result;
+  };
+
+  // what a deletion did, honestly: what is in the Recycle Bin, and what Windows deleted for good because it did not
+  // fit there (the user said yes to Windows' own prompt)
+  PX.deleteResult = function (result) {
     const failures = result.failures || [];
-    const body2 = h('div',
+    const nuked = result.permanent || [];
+    const binned = result.done.length - nuked.length;
+    const lines = h('div.confirm-list');
+    if (result.mode === 'recycle') {
+      if (binned) lines.appendChild(h('div.row', h('div', h('b', `移到回收站 ${binned} 项`), h('div.small.muted', '需要时可以从回收站还原')),
+        h('span.num', fmt.bytes(result.freed - (result.permanent_bytes || 0)))));
+      if (nuked.length) lines.appendChild(h('div.row', h('div', h('b', `直接删除 ${nuked.length} 项`), h('div.small.muted', nuked.slice(0, 3).map(PX.displayPath).join('、'))),
+        h('span.num', fmt.bytes(result.permanent_bytes || 0))));
+    } else {
+      lines.appendChild(h('div.row', h('div', h('b', `永久删除 ${result.done.length} 项`)), h('span.num', fmt.bytes(result.freed))));
+    }
+    const body = h('div',
       h('div.summary', fmt.bytes(result.freed)),
-      h('div', result.mode === 'recycle' ? `已将 ${result.done.length} 项移到回收站。` : `已删除 ${result.done.length} 项。`),
+      nuked.length ? PX.notice(`${nuked.length} 项太大，回收站放不下，你在 Windows 的提示里选了直接删除：已经彻底删除，不能从回收站还原。`, 'warn') : null,
+      lines,
       failures.length ? h('div', { style: { marginTop: '10px' } }, h('b', `${result.failed} 项没有完成：`),
         h('div.confirm-list', failures.slice(0, 50).map((f) => h('div.row', h('div.name.mono-path', f.path), h('div.small.muted', f.reason))))) : null);
-    PX.modal({ title: '完成', body: body2, actions: [{ label: '好的', kind: 'primary' }] });
-    return result;
+    PX.modal({ title: nuked.length ? '完成，部分已直接删除' : '完成', body, actions: [{ label: '好的', kind: 'primary' }] });
   };
 
   // ------------------------------------------------------------------ state

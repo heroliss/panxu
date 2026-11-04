@@ -32,10 +32,14 @@
     return h('div', JSON.stringify(it));
   }
 
+  const nuked = (e) => (e.details && e.details.permanent_bytes) || 0;
+  const nukedCount = (e) => ((e.details && e.details.permanent) || []).length;
+
   // what PanXu has done so far: freed space (and how much of it still sits in the Recycle Bin), what can be undone
   function overview(c) {
     const freed = rows.reduce((s, e) => s + (e.freed || 0), 0);
-    const inBin = rows.filter((e) => e.kind === 'recycle').reduce((s, e) => s + (e.freed || 0), 0);
+    // what Windows deleted for good during a 「移到回收站」 (too large for the bin) is not in the bin
+    const inBin = rows.filter((e) => e.kind === 'recycle').reduce((s, e) => s + (e.freed || 0) - nuked(e), 0);
     const undo = rows.filter((e) => e.revert && !(e.followup && e.followup.reverted)).length;
     const first = rows.reduce((t, e) => Math.min(t, e.time), Infinity);
     const tiles = c.appendChild(h('div.tiles'));
@@ -65,7 +69,8 @@
       const [label, kind] = KIND[e.kind] || [e.kind, ''];
       const reverted = e.followup && e.followup.reverted;
       const action = e.revert && !reverted ? h('button.btn.small', { type: 'button', onclick: (ev) => { ev.stopPropagation(); revert(e); } }, '撤销')
-        : reverted ? PX.tag('已撤销') : e.kind === 'recycle' ? h('span.small.muted', '可在回收站恢复') : h('span');
+        : reverted ? PX.tag('已撤销') : e.kind === 'recycle' ? (nukedCount(e) ? PX.tag(`${nukedCount(e)} 项已直接删除`, 'warn', 'warn')
+          : h('span.small.muted', '可在回收站恢复')) : h('span');
       const usage = e.kind === 'ai' && e.details && e.details.usage ? `${e.details.usage.requests} 次请求，${fmt.count((e.details.usage.input_tokens || 0) + (e.details.usage.output_tokens || 0))} tokens` : '';
       // begun but never finished: PanXu was closed or killed while it ran (or it is running now)
       const cut = e.state === 'interrupted' ? '没有完成：盘序在进行中被关闭。' +

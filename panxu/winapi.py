@@ -209,9 +209,57 @@ def recycle_paths(paths: list[str], hwnd=None) -> tuple[int, bool]:
     op.wFunc = FO_DELETE
     op.pFrom = buffer
     op.pTo = None
-    op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI | FOF_NOCONFIRMMKDIR | FOF_WANTNUKEWARNING
+    # not FOF_SILENT: a large folder takes minutes, and Windows' own progress window (with its 取消) shows how far
+    op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_NOCONFIRMMKDIR | FOF_WANTNUKEWARNING
     rc = _shell32.SHFileOperationW(ctypes.byref(op))
     return rc, bool(op.fAnyOperationsAborted)
+
+
+def _dollar_i_original(path: str) -> str | None:
+    """The original path in a Recycle Bin $I record: an 8-byte version, size, deletion time, then the path
+    (version 2, Windows 10+: a 4-byte length in characters first; version 1: 260 characters)."""
+    try:
+        with open(path, 'rb') as fh:
+            data = fh.read(4096)
+    except OSError:
+        return None
+    if len(data) < 24:
+        return None
+    if int.from_bytes(data[0:8], 'little') == 2 and len(data) >= 28:
+        n = int.from_bytes(data[24:28], 'little')
+        raw = data[28:28 + 2 * n]
+    else:
+        raw = data[24:24 + 520]
+    text = raw.decode('utf-16-le', 'ignore').split('\0', 1)[0]
+    return text or None
+
+
+def recycled_since(root: str, since: float) -> set[str] | None:
+    """Original paths of what went into this drive's Recycle Bin since ``since`` (each item there has a $I record
+    holding it), or None when the bin cannot be read. Something that left its place without such a record was
+    deleted for good -- e.g. too large for the bin, and the user answered Windows' 「直接删除?」 with yes."""
+    if _sim is not None:
+        return _sim.recycled_since(since)
+    if not IS_WINDOWS:
+        return None
+    base = os.path.join(root, '$Recycle.Bin')
+    found, readable = set(), False
+    try:
+        with os.scandir(base) as users:
+            for user in users:
+                try:
+                    with os.scandir(user.path) as it:  # other users' folders are not readable: skipped
+                        readable = True
+                        for entry in it:
+                            if entry.name.upper().startswith('$I') and entry.stat().st_mtime >= since - 2:
+                                original = _dollar_i_original(entry.path)
+                                if original:
+                                    found.add(original)
+                except OSError:
+                    continue
+    except OSError:
+        return None
+    return found if readable else None
 
 
 def recycle_bin_info(root: str | None = None) -> tuple[int, int]:

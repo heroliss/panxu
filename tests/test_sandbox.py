@@ -107,6 +107,40 @@ class RecycleTest(SandboxTestCase):
         self.assertTrue(winapi.empty_recycle_bin())
         self.assertEqual(winapi.recycle_bin_info(), (0, 0))
 
+    def test_what_did_not_fit_in_the_bin_is_reported_as_deleted(self):
+        # found on a real PC: D:\Temp was too large for the bin, the user said yes to Windows' 「直接删除?」, and
+        # 盘序 reported 「已经移到回收站」
+        from panxu import fsops
+        small = self.sb.native('C/Users/demo/Downloads/SteamSetup.exe')
+        big = self.sb.native('C/Users/demo/Downloads/WeChatSetup_3.9.12.17.exe')
+        small_size, big_size = os.path.getsize(small), os.path.getsize(big)
+        self.assertLess(small_size, big_size)
+        self.sb.recycle_limit = (small_size + big_size) // 2
+        seen = []
+        stats, done = fsops.recycle([small, big], progress=lambda s: seen.append((s.current, s.done_items, s.total_items)))
+        self.assertEqual(sorted(done), sorted([small, big]), 'both left their place')
+        self.assertEqual(stats.permanent, [big], 'but only one is in the bin')
+        self.assertEqual((stats.permanent_bytes, stats.bytes), (big_size, small_size + big_size))
+        self.assertEqual([r['original'] for r in self.sb.recycle_items()], [small])
+        self.assertEqual(seen[0], (small, 0, 2), 'what is being moved is reported before it starts')
+        self.assertEqual(seen[-1][1:], (2, 2))
+
+    def test_recycle_bin_records_are_read(self):
+        # the $I record of each item in the bin: version 2 (Windows 10+) and version 1
+        original = 'D:\\Temp\\大文件夹'
+        name = original.encode('utf-16-le') + b'\0\0'
+        v2 = (2).to_bytes(8, 'little') + (123).to_bytes(8, 'little') + (0).to_bytes(8, 'little') \
+            + (len(original) + 1).to_bytes(4, 'little') + name
+        v1 = (1).to_bytes(8, 'little') + (123).to_bytes(8, 'little') + (0).to_bytes(8, 'little') + name.ljust(520, b'\0')
+        for data in (v2, v1):
+            p = os.path.join(self.tmp, '$IABC123')
+            with open(p, 'wb') as fh:
+                fh.write(data)
+            self.assertEqual(winapi._dollar_i_original(p), original)
+        with open(p, 'wb') as fh:
+            fh.write(b'short')
+        self.assertIsNone(winapi._dollar_i_original(p))
+
 
 class SystemStateTest(SandboxTestCase):
     def test_startup_items_come_from_the_fake_registry(self):

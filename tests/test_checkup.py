@@ -615,6 +615,28 @@ class CheckupTest(TempDirTest):
         self.assertFalse(os.path.exists(mentioned))
         self.assertTrue(all(os.path.exists(p) for p in copies if p != mentioned))
 
+    def test_what_windows_deleted_instead_of_recycling_is_said_and_recorded(self):
+        plan = self.checkup(use_ai=False)
+        going = [i for i in plan['items'] if i['action'] == 'recycle' and not i['blocked'] and i['size']]
+        biggest = max(going, key=lambda i: i['size'])
+        self.sb.recycle_limit = biggest['size'] - 1  # only the largest does not fit (the user said yes to Windows)
+        report = self.wait(self.call('plan_execute', item_ids=[i['id'] for i in going]))
+        self.assertEqual(report['permanent']['count'], len(biggest['paths']))
+        self.assertGreater(report['permanent']['bytes'], 0)
+        item = next(i for i in self.call('plan')['items'] if i['id'] == biggest['id'])
+        self.assertTrue(item.get('permanent'))
+        self.assertIn('直接删除', item['result'])
+        entry = next(h for h in self.call('history') if h['kind'] == 'recycle')
+        self.assertIn('直接删除', entry['title'])
+        self.assertEqual(entry['details']['permanent_bytes'], report['permanent']['bytes'])
+        # a deletion from a tool page says it too
+        self.call('sandbox_reset')
+        self.sb.recycle_limit = 0
+        target = os.path.join(self.backend.env['USERPROFILE'], 'Downloads', 'SteamSetup.exe')
+        result = self.wait(self.call('delete_paths', items=[target], mode='recycle'))
+        self.assertEqual((result['permanent'], result['mode']), ([target], 'recycle'))
+        self.assertIn('直接删除', self.call('history')[0]['title'])
+
     def test_every_copy_of_a_duplicate_may_go_when_the_user_says_so(self):
         plan = self.checkup(use_ai=False)
         fonts = next(i for i in plan['items'] if i['source'] == 'dup' and 'NotoSerifJP' in i['title'])

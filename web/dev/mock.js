@@ -460,7 +460,11 @@
     large_files: ({ min_mb, category }) => ({ files: largeFiles.filter((f) => f.size >= min_mb * MB && (!category || f.category === category)), scanned_root: 'C:\\', scanned_at: now }),
     check_paths: ({ items }) => items.map((p) => ({ path: p, exists: true, size: (nodes.find((n) => n.path === p) || largeFiles.find((f) => f.path === p) || { size: 1.5 * GB }).size,
       files: 10, blocked: null, caution: p.includes('Roaming') ? '位于应用配置目录，可能包含应用设置或账号数据' : null, note: null })),
-    delete_paths: ({ items, mode }) => job(4, { done: items, freed: items.length * 1.5 * GB, failed: 0, failures: [], mode }, (f) => ({ total: items.length, freed: f * items.length * GB })),
+    // a folder named Temp is too large for the Recycle Bin here, and the user says yes to Windows' prompt
+    delete_paths: ({ items, mode }) => job(12, () => {
+      const permanent = mode === 'recycle' ? items.filter((p) => /\\Temp$/i.test(p)) : [];
+      return { done: items, freed: items.length * 1.5 * GB, failed: 0, failures: [], mode, permanent, permanent_bytes: permanent.length * 1.5 * GB };
+    }, (f) => ({ total: items.length, done: Math.floor(f * items.length), current: items[Math.min(items.length - 1, Math.floor(f * items.length))], freed: f * items.length * GB })),
     ai_preview: () => ({ candidates: suggestions().map((s) => ({ id: s.node_id, path: s.path, size: s.size, shown_as: s.path.replace('C:\\Users\\herol\\AppData\\Local', '%LOCALAPPDATA%').replace('C:\\Users\\herol\\AppData\\Roaming', '%APPDATA%'), cached: s.source === 'cache' })), fresh: 4, requests_estimate: 1 }),
     ai_analyze: () => job(8, () => { const s = suggestions(); aiResults = {}; s.forEach((x) => { aiResults[x.node_id] = x; }); return { suggestions: s, usage: { requests: 2, input_tokens: 6230, output_tokens: 1520 }, errors: [], requests: 2, budget: 8 }; },
       (f) => ({ stage: f < 0.4 ? 'summarize' : 'ask', requests: f < 0.6 ? 1 : 2, budget: 8, done: Math.round(f * 5), current: 'C:\\Users\\herol\\AppData\\Local\\Unity' })),

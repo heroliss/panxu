@@ -270,6 +270,8 @@ input[type=checkbox]:disabled { cursor: not-allowed; }
 .work-count { color: var(--ink-2); font-variant-numeric: tabular-nums; }
 .work-time { color: var(--ink-3); font-variant-numeric: tabular-nums; margin-left: auto; }
 .working .work-meta + .cur { margin-top: 2px; color: var(--ink-3); }
+.del-current { font-size: 12.5px; color: var(--ink-2); margin-top: 4px; min-height: 1.5em; word-break: break-all; }
+.del-hint { margin-top: 10px; line-height: 1.5; }
 @keyframes step-pulse { 0% { box-shadow: 0 0 0 0 var(--cobalt-tint); } 70%, 100% { box-shadow: 0 0 0 6px transparent; } }
 .steps li.on .n { animation: step-pulse 1.6s ease-out infinite; }
 .toast { animation: toast-in .22s ease-out; }
@@ -529,6 +531,8 @@ button.bl-row:hover .bl-label { color: var(--cobalt); }
 .rc-figure { padding: 10px 12px; border-radius: var(--r-m); background: var(--tint); }
 .rc-value { font-family: var(--font-num); font-size: 24px; line-height: 1.2; }
 .rc-figure.good .rc-value { color: var(--verdigris); }
+.rc-figure.warn { background: var(--amber-tint); }
+.rc-figure.warn .rc-value, .rc-figure.warn .rc-label { color: var(--amber); }
 .rc-label { font-size: 13px; font-weight: 600; margin-top: 2px; }
 .rc-note { font-size: 12px; line-height: 1.5; color: var(--ink-2); margin-top: 2px; }
 .rc-problems { display: grid; gap: 4px; padding-top: 10px; border-top: 1px dashed var(--rule); }
