@@ -74,6 +74,59 @@ class AppsTest(TempDirTest):
         self.assertTrue(foo['usage_known'])
         self.assertAlmostEqual(foo['last_used'], os.stat(pf).st_mtime, delta=1)
 
+    def prefetch(self, exe, days):
+        pf = self.make(f'Windows/Prefetch/{exe}-{abs(hash(exe)) % 0xFFFFFFFF:08X}.pf', 10)
+        age(pf, days)
+        return os.stat(pf).st_mtime
+
+    def listed(self):
+        return {a['name']: a for a in AppManager(registry=self.reg, env=self.env, admin=True).list()}
+
+    def test_programs_sharing_one_registered_folder(self):
+        # found on a real PC: Creative Cloud registers C:\Program Files\Adobe for eight programs, so each was
+        # credited with every Adobe exe -- and Acrobat's sync helper starts with Windows every day
+        adobe = os.path.join(self.pf, 'Adobe')
+        self.make('Program Files/Adobe/Adobe Premiere Pro 2023/Adobe Premiere Pro.exe', 10)
+        self.make('Program Files/Adobe/Adobe Media Encoder 2023/Adobe Media Encoder.exe', 10)
+        self.make('Program Files/Adobe/Acrobat DC/Acrobat/AdobeCollabSync.exe', 10)
+        for key, name in (('PPRO', 'Adobe Premiere Pro 2023'), ('AME', 'Adobe Media Encoder 2023')):
+            self.reg.keys[('HKLM', BASE + '\\' + key)] = {'DisplayName': name, 'Publisher': 'Adobe Inc.', 'InstallLocation': adobe,
+                                                          'UninstallString': 'x.exe'}
+        self.prefetch('ADOBECOLLABSYNC.EXE', 0)
+        premiere = self.prefetch('ADOBE PREMIERE PRO.EXE', 400)
+        rows = self.listed()
+        self.assertEqual(rows['Adobe Premiere Pro 2023']['location'], os.path.join(adobe, 'Adobe Premiere Pro 2023'))
+        self.assertAlmostEqual(rows['Adobe Premiere Pro 2023']['last_used'], premiere, delta=1)
+        self.assertIsNone(rows['Adobe Media Encoder 2023']['last_used'], 'never ran: not "today"')
+
+    def test_a_program_without_install_location(self):
+        # found on a real PC: 46 of 97 programs (网易云音乐, 哔哩哔哩, Steam...) have no InstallLocation
+        uninst = self.make('Program Files/Netease/CloudMusic/uninst.exe', 10)
+        self.make('Program Files/Netease/CloudMusic/cloudmusic.exe', 10)
+        self.reg.keys[('HKLM', BASE + '\\cloudmusic')] = {'DisplayName': '网易云音乐', 'UninstallString': f'"{uninst}"'}
+        self.reg.keys[('HKLM', BASE + '\\MsiOnly')] = {'DisplayName': 'Msi Only', 'UninstallString': 'MsiExec.exe /I{1}'}
+        used = self.prefetch('CLOUDMUSIC.EXE', 2)
+        self.prefetch('UNINST.EXE', 0)
+        rows = self.listed()
+        music = rows['网易云音乐']
+        self.assertEqual(music['location'], os.path.dirname(uninst))
+        self.assertTrue(music['location_exists'])
+        self.assertAlmostEqual(music['last_used'], used, delta=1)
+        self.assertFalse(rows['Msi Only']['location_exists'])
+        self.assertIsNone(rows['Msi Only']['last_used'])
+
+    def test_helpers_that_run_on_their_own_do_not_count(self):
+        for exe in ('FooSoftTray.exe', 'FooUpdate.exe', 'FooSoftService64.exe', 'node.exe'):
+            self.make(f'Program Files/FooSoft/{exe}', 10)
+            self.prefetch(exe.upper(), 0)
+        used = self.prefetch('FOOSOFT.EXE', 30)
+        self.assertAlmostEqual(self.listed()['FooSoft 设计工具']['last_used'], used, delta=1)
+        self.assertTrue(apps._helper_exe('卸载哔哩哔哩.exe'))
+        self.assertTrue(apps._helper_exe('OneDriveSetup.exe'))
+        self.assertFalse(apps._helper_exe('Stray.exe'))
+        best = apps._word_fit('ACDSeeUltimate2019', 'ACDSee Photo Studio Ultimate 2019', 'ACD Systems')
+        self.assertGreater(best, apps._word_fit('ACDSeeIndexerUltimate12', 'ACDSee Photo Studio Ultimate 2019', 'ACD Systems'))
+
     def test_folder_matching(self):
         index = self.apps.match_index()
         self.assertEqual(self.apps.match_folder('FooSoft', index)['name'], 'FooSoft 设计工具')

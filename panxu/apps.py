@@ -34,6 +34,54 @@ _DRIVER = re.compile(r'driver|驱动|chipset|芯片组', re.I)
 # generic folder names that must never be matched to a program by name alone
 _GENERIC = {'cache', 'caches', 'temp', 'tmp', 'logs', 'log', 'data', 'config', 'common', 'shared', 'microsoft',
             'windows', 'programs', 'packages', 'local', 'roaming', 'user', 'users', 'default', 'crashdumps', 'updater'}
+# programs that run without the user opening the program (updaters, crash reporters, tray and sync helpers,
+# services, embedded browsers): their Prefetch time says nothing about when the program was last used
+_HELPER_START = re.compile(r'(unins|uninst|setup|update|crash|helper|install)')
+_HELPER_ANY = re.compile(r'helper|updater|crash|report|broker|sniffer|collabsync|notification|elevat|cefsharp|webview|'
+                         r'setup|install|卸载|安装|更新|升级')
+_HELPER_END = ('tray', 'svc', 'service', 'agent', 'daemon')
+_VERSION_DIR = re.compile(r'^\[?v?\d+(\.\d+)+\]?$', re.I)
+# interpreters and runtimes many programs ship: by name alone they could be anyone's
+_SHARED_EXES = {'node', 'python', 'pythonw', 'java', 'javaw', 'git', 'bash', 'sh', 'cmd', 'powershell', 'pwsh', 'electron',
+                'qtwebengineprocess', 'crashpad_handler', 'conhost', 'rundll32', 'msiexec'}
+
+
+def _helper_exe(filename: str) -> bool:
+    stem = os.path.splitext(filename)[0]
+    low = stem.lower()
+    if _HELPER_START.match(low) or _HELPER_ANY.search(low):
+        return True
+    bare = re.sub(r'[\s_.-]*(x64|x86|64|32)$', '', stem)  # HuaweiHiSuiteService64
+    m = re.search('(' + '|'.join(_HELPER_END) + ')$', bare.lower())
+    if not m:
+        return False
+    # a word of its own: AcroTray, FooSoftSvc, Hi-Suite_Service, or steamservice -- but not the game Stray
+    i = m.start()
+    return i == 0 or bare[i - 1] in ' _.-' or bare[i].isupper() or (bare.islower() and m.group(1) != 'tray')
+
+
+def _resembles(stem: str, name: str, publisher: str = '') -> bool:
+    """Is an exe named like the program? ("Adobe Premiere Pro.exe" / "Adobe Premiere Pro 2023", AfterFX / After Effects)"""
+    s, n = compact(stem), compact(name)
+    if len(s) >= 3 and n and (s in n or n in s):
+        return True
+    vendor = set(tokens(publisher))
+    return any(len(t) >= 4 and t not in vendor and s.startswith(t) for t in tokens(name))
+
+
+def _words(text: str) -> set[str]:
+    return {re.sub(r'\d+$', '', t) for t in tokens(text)} - {''}
+
+
+def _word_fit(stem: str, name: str, publisher: str = '') -> tuple[int, int] | None:
+    """How well an exe's words fit the program name: (shared words, -extra words), or None.
+    ACDSeeUltimate2019 fits "ACDSee Photo Studio Ultimate 2019" better than ACDSeeIndexerUltimate12."""
+    vendor = _words(publisher)
+    want, have = _words(name) - vendor, _words(stem)
+    shared = want & have
+    if not any(len(t) >= 4 for t in shared):
+        return None
+    return len(shared), -len(have - want - vendor)
 
 
 def _date(text) -> float | None:
@@ -66,7 +114,7 @@ class AppManager:
             return [dict(a) for a in self._cache[1]]
         reg = self._reg()
         prefetch = self._prefetch()
-        out, seen = [], set()
+        entries, seen = [], set()
         for hive, base, scope in UNINSTALL_KEYS:
             for sub in reg.subkeys(hive, base):
                 values = dict(reg.values(hive, base + '\\' + sub))
@@ -78,33 +126,42 @@ class AppManager:
                 if dedupe in seen:
                     continue
                 seen.add(dedupe)
-                location = str(values.get('InstallLocation') or '').strip().strip('"')
-                uninstall = str(values.get('QuietUninstallString') and values.get('UninstallString') or
-                                values.get('UninstallString') or '').strip()
-                est = values.get('EstimatedSize')
-                try:
-                    size = int(est) * 1024 if est not in (None, '') else None
-                except (TypeError, ValueError):
-                    size = None
-                exists = bool(location) and os.path.isdir(location)
-                last_used = self._last_used(location, values, prefetch) if exists else None
-                app_id = f'{hive}|{base}|{sub}'
-                if app_id in self._measured:  # 「计算大小」 survives 「刷新」
-                    size = self._measured[app_id]
-                icon, icon_index = self._icon_source({**values, '_key': sub}, location if exists else '', name)
-                kind = 'runtime' if _RUNTIME.search(name) else 'driver' if _DRIVER.search(name) else \
-                    'game' if sub.startswith('Steam App') or 'steamapps' in location.lower() else 'app'
-                out.append({
-                    'id': app_id, 'name': name, 'version': str(values.get('DisplayVersion') or ''),
-                    'publisher': str(values.get('Publisher') or ''), 'installed': _date(values.get('InstallDate')),
-                    'location': location, 'location_exists': exists, 'size': size,
-                    'size_source': 'measured' if app_id in self._measured else 'estimated' if size is not None else '',
-                    'scope': scope, 'kind': kind, 'icon': icon, 'icon_index': icon_index,
-                    'kind_label': KIND_LABELS[kind],
-                    'can_uninstall': bool(uninstall), 'msi': bool(values.get('WindowsInstaller')),
-                    'last_used': last_used, 'usage_known': prefetch is not None,
-                    'needs_admin': hive == HKLM and not self.admin, 'registry_key': sub,
-                })
+                entries.append((hive, base, scope, sub, values, name))
+        # several programs may register one parent folder (Adobe: C:\Program Files\Adobe for eight of them)
+        registered: dict[str, int] = {}
+        for *_, values, _ in entries:
+            loc = str(values.get('InstallLocation') or '').strip().strip('"')
+            if loc:
+                registered[paths.key(loc)] = registered.get(paths.key(loc), 0) + 1
+        out = []
+        for hive, base, scope, sub, values, name in entries:
+            location, own = self._own_folder(values, name, registered)
+            uninstall =str(values.get('QuietUninstallString') and values.get('UninstallString') or
+                            values.get('UninstallString') or '').strip()
+            est = values.get('EstimatedSize')
+            try:
+                size = int(est) * 1024 if est not in (None, '') else None
+            except (TypeError, ValueError):
+                size = None
+            exists = bool(location) and os.path.isdir(location)
+            last_used = self._last_used(own, values, prefetch, name)
+            app_id = f'{hive}|{base}|{sub}'
+            if app_id in self._measured:  # 「计算大小」 survives 「刷新」
+                size = self._measured[app_id]
+            icon, icon_index = self._icon_source({**values, '_key': sub}, own, name)
+            kind = 'runtime' if _RUNTIME.search(name) else 'driver' if _DRIVER.search(name) else \
+                'game' if sub.startswith('Steam App') or 'steamapps' in location.lower() else 'app'
+            out.append({
+                'id': app_id, 'name': name, 'version': str(values.get('DisplayVersion') or ''),
+                'publisher': str(values.get('Publisher') or ''), 'installed': _date(values.get('InstallDate')),
+                'location': location, 'location_exists': exists, 'size': size,
+                'size_source': 'measured' if app_id in self._measured else 'estimated' if size is not None else '',
+                'scope': scope, 'kind': kind, 'icon': icon, 'icon_index': icon_index,
+                'kind_label': KIND_LABELS[kind],
+                'can_uninstall': bool(uninstall), 'msi': bool(values.get('WindowsInstaller')),
+                'last_used': last_used, 'usage_known': prefetch is not None,
+                'needs_admin': hive == HKLM and not self.admin, 'registry_key': sub,
+            })
         out.sort(key=lambda a: a['name'].lower())
         self._cache = (time.time(), out)
         return [dict(a) for a in out]
@@ -174,21 +231,91 @@ class AppManager:
                     best, best_score = os.path.join(dirpath, f), score
         return best, 0
 
-    def _last_used(self, location: str, values: dict, prefetch: dict | None) -> float | None:
+    def _own_folder(self, values: dict, name: str, registered: dict[str, int]) -> tuple[str, str]:
+        """(location to show and measure, the program's own folder for finding its exes; '' if unknown).
+
+        InstallLocation is often missing, and several programs may register one parent folder; then the
+        program's own folder is a sub-folder named like it, or the folder of its icon or uninstaller."""
+        location = str(values.get('InstallLocation') or '').strip().strip('"')
+        if location and os.path.isdir(location):
+            if registered.get(paths.key(location), 0) <= 1:
+                return location, location
+            # shared: C:\Program Files\Adobe -> C:\Program Files\Adobe\Adobe Premiere Pro 2023
+            child = self._child_named(location, name, values)
+            return (child, child) if child else (location, '')
+        icon = expand_vars(str(values.get('DisplayIcon') or '').split(',')[0].strip().strip('"'), self.env)
+        uninstaller = split_command(str(values.get('UninstallString') or ''), self.env)[0]
+        for source in (icon if icon.lower().endswith('.exe') else '', uninstaller):
+            folder = self._program_folder(source)
+            if folder:
+                return folder, folder
+        return location, ''
+
+    def _child_named(self, parent: str, name: str, values: dict) -> str:
+        try:
+            children = [e.name for e in os.scandir(parent) if e.is_dir(follow_symlinks=False)]
+        except OSError:
+            return ''
+        exact = [c for c in children if c.lower() == name.lower()]
+        if exact:
+            return os.path.join(parent, exact[0])
+        icon = expand_vars(str(values.get('DisplayIcon') or '').split(',')[0].strip().strip('"'), self.env)
+        if icon and paths.is_within(icon, parent) and paths.key(icon) != paths.key(parent):
+            first = paths.key(icon)[len(paths.key(parent)):].strip('\\').split('\\')[0]
+            match = [c for c in children if c.lower() == first]
+            if match and os.path.isdir(os.path.join(parent, match[0])):
+                return os.path.join(parent, match[0])
+        named = [c for c in children if _resembles(c, name) and compact(c) not in _GENERIC]
+        return os.path.join(parent, named[0]) if len(named) == 1 else ''
+
+    def _program_folder(self, file: str) -> str:
+        """The folder of a program's icon or uninstaller, if it is a program's own folder (not System32, the
+        installer caches, Common Files or a top-level folder such as Program Files)."""
+        if not file or not os.path.isfile(file):
+            return ''
+        folder = os.path.dirname(file)
+        if _VERSION_DIR.match(os.path.basename(folder)):  # OneDrive\23.071.0402.0001\OneDriveSetup.exe
+            folder = os.path.dirname(folder)
+        k = paths.key(folder)
+        if any(w in k for w in ('\\package cache', '\\installer', '\\common files', '\\windowsapps')):
+            return ''
+        system = paths.expand('%SystemRoot%', self.env)
+        if system and paths.is_within(folder, system):
+            return ''
+        tops = {paths.key(v) for v in (paths.expand(f'%{n}%', self.env) for n in (
+            'ProgramFiles', 'ProgramFiles(x86)', 'ProgramData', 'LOCALAPPDATA', 'APPDATA', 'USERPROFILE', 'SystemDrive'))
+            if v}
+        if k in tops or k in {paths.key(t + '\\Programs') for t in tops} or len(k.rstrip('\\')) <= 3:
+            return ''
+        return folder
+
+    def _last_used(self, folder: str, values: dict, prefetch: dict | None, name: str = '') -> float | None:
+        """When the program last ran: Prefetch times of its main exes. Helpers that run on their own (updaters,
+        tray and sync helpers, services) and runtimes shipped by many programs (node.exe) do not count."""
         if not prefetch:
             return None
         exes = set()
-        icon = str(values.get('DisplayIcon') or '').split(',')[0].strip('"')
-        if icon.lower().endswith('.exe'):
+        icon = expand_vars(str(values.get('DisplayIcon') or '').split(',')[0].strip().strip('"'), self.env)
+        if icon.lower().endswith('.exe') and not _helper_exe(ntpath.basename(icon)):
             exes.add(ntpath.basename(icon).upper())
+        found: list[tuple[int, str]] = []
         count = 0
-        for dirpath, dirnames, filenames in os.walk(location):
-            for f in filenames:
-                if f.lower().endswith('.exe') and not re.match(r'(unins|uninst|setup|update|crash|helper)', f.lower()):
-                    exes.add(f.upper())
+        top = folder.rstrip('\\/').count(os.sep)
+        # three folders down: Illustrator keeps its exe in Support Files\Contents\Windows
+        for dirpath, dirnames, filenames in (os.walk(folder) if folder else ()):
+            depth = dirpath.rstrip('\\/').count(os.sep) - top
+            found += [(depth, f) for f in filenames if f.lower().endswith('.exe') and not _helper_exe(f)]
             count += 1
-            if count > 60 or dirpath.count(os.sep) - location.count(os.sep) >= 2:
+            if count > 150 or depth >= 3:
                 dirnames[:] = []
+        publisher = str(values.get('Publisher') or '')
+        named = [f for _, f in found if _resembles(os.path.splitext(f)[0], name, publisher)]
+        if not named:  # no exe named like the program: the ones whose words fit its name best
+            fits = [(fit, f) for fit, f in ((_word_fit(os.path.splitext(f)[0], name, publisher), f) for _, f in found) if fit]
+            named = [f for fit, f in fits if fit == max(x for x, _ in fits)] if fits else []
+        # programs with an exe named like them: only that one; otherwise the exes near the top of their folder
+        exes.update(f.upper() for f in named or [f for d, f in found
+                                                 if d <= 1 and os.path.splitext(f.lower())[0] not in _SHARED_EXES])
         times = [prefetch[e] for e in exes if e in prefetch]
         return max(times) if times else None
 
@@ -253,7 +380,7 @@ class AppManager:
         hive, base, sub = app_id.split('|', 2)
         sim = winapi.simulation()
         if sim is not None:
-            result = sim.uninstall(hive, base + '\\' + sub)
+            result = sim.uninstall(hive, base + '\\' + sub, app['location'] if app['location_exists'] else '')
             self._cache = None
             self._log(app, '模拟卸载完成（程序文件夹已删除，应用数据保留）')
             return {'started': True, 'simulated': True, **result}

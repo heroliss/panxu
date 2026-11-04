@@ -94,7 +94,7 @@ NTFS 默认不在大于 128 GB 的卷上更新访问时间，所以「很久没�
 
 ### 已安装的应用（`apps.py`）
 
-读三个 Uninstall 键，隐藏系统组件和更新包；有管理员权限时从 `Windows\Prefetch` 得到最近运行时间。卸载只运行程序自己的卸载程序（MSI 的 `/I` 改成 `/X`，Steam 游戏走 `steam://uninstall`），盘序不直接删除程序文件夹。程序图标（应用列表和开机与服务）按 DisplayIcon → MSI 缓存里的图标 → 安装目录里的主程序找来源，用 GDI 分别画在黑底和白底上还原透明度，编码成 PNG（`icons.py`，只用标准库）；找不到时显示首字母头像。`match_folder()` 让 AI 摘要和启发式知道一个 AppData 文件夹是否属于仍然安装的程序——只发送匹配结果，不发送整个程序列表。
+读三个 Uninstall 键，隐藏系统组件和更新包；有管理员权限时从 `Windows\Prefetch` 得到最近运行时间。Prefetch 只记 exe 的名字，所以「最近运行」只看程序自己的主程序：名字像程序的 exe（Adobe Premiere Pro.exe、AfterFX.exe），没有时取名字最贴近的（ACDSeeUltimate2019 而不是 ACDSeeIndexer），再没有才取文件夹顶层的 exe；更新程序、托盘和同步助手、服务、崩溃报告、卸载程序和 node.exe 这类很多程序都带的运行时不算——它们自己会启动，说明不了你用没用过。程序自己的文件夹也要找对：真实电脑上 Creative Cloud 给八个程序都登记了 `C:\Program Files\Adobe`，以前每个都算上了全部 Adobe 的 exe（包括每天开机自启的 Acrobat 同步助手），全都显示「今天」；现在共用的登记位置下找名字对应的子文件夹。97 个程序里有 46 个没有登记安装位置，以前永远「没有记录」；现在用图标或卸载程序所在的文件夹（版本号子文件夹取上一层，系统目录、安装包缓存和 Common Files 不算）。卸载只运行程序自己的卸载程序（MSI 的 `/I` 改成 `/X`，Steam 游戏走 `steam://uninstall`），盘序不直接删除程序文件夹。程序图标（应用列表和开机与服务）按 DisplayIcon → MSI 缓存里的图标 → 安装目录里的主程序找来源，用 GDI 分别画在黑底和白底上还原透明度，编码成 PNG（`icons.py`，只用标准库）；找不到时显示首字母头像。`match_folder()` 让 AI 摘要和启发式知道一个 AppData 文件夹是否属于仍然安装的程序——只发送匹配结果，不发送整个程序列表。
 
 ### 问 AI（`analyst.ask`）
 

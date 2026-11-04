@@ -1,4 +1,5 @@
 import os
+import time
 import unittest
 
 from helpers import TempDirTest
@@ -140,6 +141,19 @@ class SystemStateTest(SandboxTestCase):
         run = dict(self.sb.registry.values('HKCU', sandbox.RUN))
         self.assertNotIn('QuickViewHelper', run)
         self.assertNotIn('QVUpdateSvc', [s['name'] for s in self.sb.services()])
+
+    def test_programs_in_a_shared_folder(self):
+        apps = AppManager(registry=self.sb.registry, admin=True)
+        rows = {a['name']: a for a in apps.list()}
+        premiere, acrobat = rows['Adobe Premiere Pro 2023'], rows['Adobe Acrobat (64-bit)']
+        self.assertTrue(premiere['location'].endswith('Adobe Premiere Pro 2023'))
+        self.assertGreater(time.time() - premiere['last_used'], 300 * 86400, "Acrobat's daily helper is not Premiere")
+        self.assertGreater(time.time() - acrobat['last_used'], 20 * 86400, 'nor is it Acrobat itself')
+        self.assertLess(time.time() - rows['网易云音乐']['last_used'], 86400, 'found without an InstallLocation')
+        apps.uninstall(premiere['id'])
+        self.assertFalse(os.path.exists(self.sb.native('C/Program Files/Adobe/Adobe Premiere Pro 2023')))
+        self.assertTrue(os.path.exists(self.sb.native('C/Program Files/Adobe/Acrobat DC')), 'only its own folder')
+        self.assertTrue(os.path.exists(self.sb.native('C/Program Files/Adobe/Adobe Media Encoder 2023')))
 
     def test_cleanup_commands_are_simulated(self):
         folder = self.sb.native('C/Windows/WinSxS/Temp/PendingDeletes')

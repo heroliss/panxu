@@ -149,7 +149,9 @@ def _layout() -> tuple[list[_Spec], list[tuple[str, float]]]:
     add(F('C/Windows/ServiceProfiles/NetworkService/AppData/Local/Microsoft/Windows/DeliveryOptimization/Cache/a1b2/c3d4',
           390 * MB, age=20))
     for exe, age in (('CHROME.EXE', 0.2), ('WECHAT.EXE', 1), ('CODE.EXE', 2), ('FOOSOFT.EXE', 5), ('ACRORD32.EXE', 30),
-                     ('STEAM.EXE', 210), ('HOLLOW_KNIGHT.EXE', 420), ('QUICKVIEW.EXE', 400)):
+                     ('STEAM.EXE', 210), ('HOLLOW_KNIGHT.EXE', 420), ('QUICKVIEW.EXE', 400),
+                     ('ADOBECOLLABSYNC.EXE', 0.1), ('ADOBE PREMIERE PRO.EXE', 400), ('ADOBE MEDIA ENCODER.EXE', 300),
+                     ('CLOUDMUSIC.EXE', 0.5)):
         add(F(f'C/Windows/Prefetch/{exe}-{abs(hash(exe)) % 0xFFFFFFFF:08X}.pf', 40 * KB, age=age))
     add(F('C/Windows.old/Windows/System32/ntoskrnl.exe', 3600 * MB, age=200))
     add(F('C/Windows.old/Users/demo/Documents/旧电脑上的笔记.txt', data='升级前的备忘'.encode('utf-8'), age=200))
@@ -182,6 +184,14 @@ def _layout() -> tuple[list[_Spec], list[tuple[str, float]]]:
     add(F(f'{PF}/QuickView/QVUpdateSvc.exe', 1 * MB, age=410))
     add(F(f'{PF}/QuickView/plugins/ads.dll', 118 * MB, age=410))
     add(F(f'{PF}/Adobe/Acrobat DC/Acrobat/AcroRd32.exe', 410 * MB, age=120))
+    add(F(f'{PF}/Adobe/Acrobat DC/Acrobat/AdobeCollabSync.exe', 2 * MB, age=120))  # starts with Windows, every day
+    # Creative Cloud registers C:\Program Files\Adobe for each of its programs: each one is a folder below it
+    add(F(f'{PF}/Adobe/Adobe Premiere Pro 2023/Adobe Premiere Pro.exe', 6 * MB, age=400))
+    add(F(f'{PF}/Adobe/Adobe Premiere Pro 2023/Plug-ins/Common/ImporterQuickTime.prm', 300 * MB, age=400))
+    add(F(f'{PF}/Adobe/Adobe Media Encoder 2023/Adobe Media Encoder.exe', 5 * MB, age=300))
+    # no InstallLocation in the registry: found through its uninstaller
+    add(F(f'{PF86}/Netease/CloudMusic/cloudmusic.exe', 3 * MB, age=60))
+    add(F(f'{PF86}/Netease/CloudMusic/uninst.exe', 1 * MB, age=60))
     add(F(f'{PF}/NVIDIA Corporation/Display.NvContainer/NVDisplay.Container.exe', 3 * MB, age=50))
     add(F(f'{PF86}/Common Files/Adobe/ARM/1.0/AdobeARM.exe', 3 * MB, age=120))
     add(F(f'{PF86}/Common Files/Adobe/ARM/1.0/armsvc.exe', 1 * MB, age=120))
@@ -363,6 +373,12 @@ def _state(native) -> dict:
          f'{PF86}/Steam/steamapps/common/Hollow Knight', '"steam://uninstall/367520"'),
         (HKLM, UNINSTALL, '{AC76BA86-1033-1033-7760-BC15014EA700}', 'Adobe Acrobat (64-bit)', '24.004.20219',
          'Adobe', '20250701', f'{PF}/Adobe/Acrobat DC', 'MsiExec.exe /I{AC76BA86-1033-1033-7760-BC15014EA700}'),
+        (HKLM, UNINSTALL, 'PPRO_23_0', 'Adobe Premiere Pro 2023', '23.0', 'Adobe Inc.', '20230501', f'{PF}/Adobe',
+         q(f'{PF86}/Common Files/Adobe/Adobe Desktop Common/HDBox/Uninstaller.exe') + ' --uninstall=1 --sapCode=PPRO'),
+        (HKLM, UNINSTALL, 'AME_23_0', 'Adobe Media Encoder 2023', '23.0', 'Adobe Inc.', '20230501', f'{PF}/Adobe',
+         q(f'{PF86}/Common Files/Adobe/Adobe Desktop Common/HDBox/Uninstaller.exe') + ' --uninstall=1 --sapCode=AME'),
+        (HKLM, UNINSTALL32, 'cloudmusic', '网易云音乐', '3.0.1', 'NetEase', '20250301', '',
+         q(f'{PF86}/Netease/CloudMusic/uninst.exe')),
         (HKCU, UNINSTALL, '{771FD6B0-FA20-440A-A002-3B3BAC16DC50}_is1', 'Microsoft Visual Studio Code (User)', '1.95.3',
          'Microsoft Corporation', '20251010', f'{L}/Programs/Microsoft VS Code',
          q(f'{L}/Programs/Microsoft VS Code/unins000.exe')),
@@ -752,14 +768,15 @@ class Sandbox:
                     full = os.path.join(path, name)
                     shutil.rmtree(full, onerror=_force_remove) if os.path.isdir(full) else os.remove(full)
 
-    def uninstall(self, hive: str, key: str) -> dict:
+    def uninstall(self, hive: str, key: str, location: str | None = None) -> dict:
         """Act like a typical uninstaller: remove the program folder, its registry entry, Run entries and
         services — and leave its AppData behind, as most uninstallers do."""
         with self.lock:
             values = dict(self.registry.values(hive, key))
             if not values:
                 raise FileNotFoundError('这个程序已经不在了')
-            location = values.get('InstallLocation') or ''
+            # the program's own folder (its InstallLocation may be a parent shared with other programs)
+            location = (values.get('InstallLocation') or '') if location is None else location
             removed = 0
             if location and any(paths.is_within(location, r) for r in self.drive_roots) and os.path.isdir(location):
                 removed = _tree_size(location)
