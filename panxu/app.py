@@ -182,9 +182,14 @@ def main(argv=None):
     # never share one user-data folder.
     storage = os.path.join(data_dir, 'webview-admin' if winapi.is_admin() else 'webview')
     options = dict(gui='edgechromium' if winapi.IS_WINDOWS else None, debug=args.debug)
+    extra = {'storage_path': storage}
+    # The packaged exe carries the icon itself; from source the window would show Python's.
+    icon = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'assets', 'panxu.ico')
+    if not getattr(sys, 'frozen', False) and os.path.isfile(icon):
+        extra['icon'] = icon
     try:
         try:
-            webview.start(storage_path=storage, **options)
+            webview.start(**extra, **options)
         except TypeError:  # very old pywebview without storage_path
             webview.start(**options)
     finally:

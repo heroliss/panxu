@@ -42,7 +42,8 @@ panxu/
   settings.py     设置与密钥
 web/              界面（原生 JS，无构建步骤；启动时内联成一个页面）
 web/dev/mock.js   浏览器预览用的假后端，不会打包
-tools/            开发工具（见下）
+tools/            开发工具（见下；make_icon.py 重新生成 assets/panxu.ico，需要 Pillow）
+assets/panxu.ico  程序图标（打包时嵌进 exe）
 tests/            单元测试（只用临时目录里的夹具）
 ```
 

@@ -18,14 +18,21 @@ Set-StrictMode -Version Latest
 $root = [IO.Path]::GetFullPath($PSScriptRoot)
 Set-Location $root
 
+# Python and PyInstaller log to stderr. Windows PowerShell turns that into errors when output is
+# redirected, which 'Stop' would end the build on; native commands are judged by their exit code.
+function Invoke-Python {
+    $ErrorActionPreference = 'Continue'
+    & $Python @args
+}
+
 $version = (& $Python -c "import panxu; print(panxu.__version__)").Trim()
 if ($LASTEXITCODE -ne 0) { throw 'Cannot import panxu with the selected Python.' }
-& $Python -c "import webview, psutil, PyInstaller" 2>$null
+Invoke-Python -c "import webview, psutil, PyInstaller" 2>$null
 if ($LASTEXITCODE -ne 0) { throw 'Missing build dependencies. Run: python -m pip install -r requirements.txt pyinstaller' }
 Write-Host "Building PanXu $version"
 
 if (-not $SkipTests) {
-    & $Python -W error::ResourceWarning -m unittest discover -s tests -q
+    Invoke-Python -W error::ResourceWarning -m unittest discover -s tests -q
     if ($LASTEXITCODE -ne 0) { throw 'Unit tests failed; package not built.' }
 }
 
@@ -70,6 +77,7 @@ $arguments = @(
     '--name', 'PanXu', '--contents-directory', '_internal',
     '--distpath', $dist, '--workpath', (Join-Path $build 'work'), '--specpath', $build,
     '--version-file', $versionFile,
+    '--icon', (Join-Path $root 'assets\panxu.ico'),
     '--add-data', ($webStage + ';web'),
     '--hidden-import', 'webview.platforms.winforms',
     '--hidden-import', 'webview.platforms.edgechromium',
@@ -81,7 +89,7 @@ foreach ($module in @('tests', 'tools', 'pytest', 'tkinter', 'webview.platforms.
     $arguments += @('--exclude-module', $module)
 }
 $arguments += (Join-Path $root 'run.py')
-& $Python @arguments
+Invoke-Python @arguments
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed with exit code $LASTEXITCODE" }
 
 foreach ($name in @('LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES.md')) {
