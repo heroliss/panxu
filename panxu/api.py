@@ -15,7 +15,7 @@ import subprocess
 import sys
 import time
 
-from . import APP_NAME, __version__, ai_client, checkup, fsops, insights, paths, winapi
+from . import APP_NAME, __version__, ai_client, checkup, fsops, insights, itemfacts, paths, winapi
 from .analyst import Analyst, VerdictCache
 from .analyst import _fmt_date as fmt_date
 from .analyst import _fmt_size as fmt_size
@@ -193,9 +193,23 @@ class Backend:
         return out
 
     def startup_items_for_ai(self, items: list[dict]) -> list[dict]:
+        running = itemfacts.running_programs()
         return [{'key': 'startup:' + i['name'] + '|' + i['command'], 'id': i['id'], 'kind': 'startup',
                  'name': i['display_name'], 'command': i['command'], 'publisher': i['publisher'],
-                 'description': ''} for i in items]
+                 'description': '', 'facts': itemfacts.startup_facts(i, running)} for i in items]
+
+    def services_for_ai(self, services: list[dict]) -> list[dict]:
+        """Third-party services with what 盘序 checked about them (running, the app they belong to, is it open)."""
+        running = itemfacts.running_programs()
+        out = []
+        for s in services:
+            if s['kind'] != 'third_party':
+                continue
+            facts, publisher = itemfacts.service_facts(s, running)
+            out.append({'key': 'service:' + s['name'] + '|' + s['binpath'], 'id': s['name'], 'kind': 'service',
+                        'name': s['display_name'], 'command': s['binpath'], 'publisher': publisher,
+                        'description': s['description'], 'facts': facts})
+        return out
 
     def _require_scan(self) -> SpaceScan:
         if self.scan is None or not self.scan.complete:
@@ -760,15 +774,15 @@ class Backend:
         if kind == 'startup':
             items = self.startup_items_for_ai(self.startup.list())
         elif kind == 'services':
-            items = [{'key': 'service:' + s['name'] + '|' + s['binpath'], 'id': s['name'], 'kind': 'service',
-                      'name': s['display_name'], 'command': s['binpath'], 'publisher': s['publisher'],
-                      'description': s['description']} for s in self.services.list() if s['kind'] == 'third_party']
+            items = self.services_for_ai(self.services.list())
         elif kind == 'apps':
-            items = [self._app_for_ai(a) for a in self.apps.list()]
+            running = itemfacts.running_programs()
+            items = [self._app_for_ai(a, running) for a in self.apps.list()]
         else:
             raise UserError('未知类型')
         s = self.settings.get()
-        needs_model = any(self.cache.get('item:' + i['key']) is None for i in items) or not use_cache
+        prefix = 'item:' if kind == 'apps' else 'item2:'  # as Analyst.explain_items keys them
+        needs_model = any(self.cache.get(prefix + i['key']) is None for i in items) or not use_cache
         client = self._client() if needs_model else _NoCallClient()
 
         def run(job):
@@ -878,7 +892,7 @@ class Backend:
             return rows
         return self.jobs.start('app_leftovers', run, group='apps')
 
-    def _app_for_ai(self, a: dict) -> dict:
+    def _app_for_ai(self, a: dict, running: set[str] | None = None) -> dict:
         extra = {'version': a['version'], 'category': APP_KINDS.get(a['kind'], '应用')}
         if a['size']:
             extra['size'] = fmt_size(a['size'])
@@ -886,6 +900,11 @@ class Backend:
             extra['installed'] = fmt_date(a['installed'])
         if a['usage_known']:
             extra['last_run'] = fmt_date(a['last_used']) if a['last_used'] else '没有运行记录'
+        # without administrator rights there is no run history: a program open right now is still plainly in use
+        if running and a.get('location') and a.get('location_exists'):
+            base = os.path.normcase(os.path.normpath(a['location'])) + os.sep
+            if any(p.startswith(base) for p in running):
+                extra['open_now'] = '现在正开着'
         return {'key': 'app:' + a['name'] + '|' + a['version'], 'id': a['id'], 'kind': 'app', 'name': a['name'],
                 'publisher': a['publisher'], 'command': '', 'extra': extra}
 

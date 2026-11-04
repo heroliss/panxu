@@ -57,7 +57,8 @@
   function aiNote(info) {
     if (!info) return null;
     const [label, kind] = SUGGEST[info.suggestion] || SUGGEST.keep;
-    return h('div.ai-note', PX.tag(label, kind, 'spark'), h('span', info.what), h('span.muted', info.reason));
+    return h('div.ai-note', PX.tag(label, kind, 'spark'), h('span', info.what), h('span.muted', info.reason),
+      info.note ? h('span.small.muted', { title: '盘序改了 AI 的结论' }, `（${info.note}）`) : null);
   }
 
   async function toggle(item, enabled, input) {

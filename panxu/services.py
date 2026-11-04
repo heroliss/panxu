@@ -9,7 +9,7 @@ from __future__ import annotations
 import ntpath
 import os
 
-from . import paths, startup, winapi
+from . import itemfacts, paths, startup, winapi
 
 START_TYPES = {'auto': '自动', 'delayed': '自动（延迟启动）', 'manual': '手动', 'disabled': '禁用'}
 _SC_START = {'auto': 'auto', 'delayed': 'delayed-auto', 'manual': 'demand', 'disabled': 'disabled'}
@@ -71,13 +71,15 @@ class ServiceManager:
             if start == 'auto' and (delayed if delayed is not None else self._delayed(name)):
                 start = 'delayed'
             kind, exe, info = classify(row.get('binpath', ''), self.env)
+            # a Store app's service often has no company in its version info: its package manifest names it
+            publisher = info.get('CompanyName', '') or itemfacts.package_publisher(itemfacts.app_root(exe))
             status = row.get('status') or ''
             out.append({
                 'name': name, 'display_name': row.get('display_name') or name,
                 'description': (row.get('description') or '').strip(), 'status': status,
                 'status_label': STATUS_LABELS.get(status, status), 'start_type': start,
                 'start_label': START_TYPES.get(start, start), 'binpath': row.get('binpath', ''),
-                'exe': exe, 'publisher': info.get('CompanyName', ''), 'kind': kind,
+                'exe': exe, 'publisher': publisher, 'kind': kind,
                 'editable': kind == 'third_party', 'needs_admin': not self.admin,
             })
         out.sort(key=lambda s: (s['kind'] != 'third_party', s['display_name'].lower()))

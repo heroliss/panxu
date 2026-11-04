@@ -154,6 +154,27 @@ class SystemStateTest(SandboxTestCase):
         again = {i['name']: i for i in StartupManager(registry=self.sb.registry, admin=True).list()}
         self.assertFalse(again['QuickViewHelper']['enabled'])
 
+    def test_a_service_is_told_to_the_ai_with_the_app_it_belongs_to(self):
+        # found on a real PC: the Claude and ChatGPT apps' services were 「可以禁用」 while both apps were open
+        from panxu import itemfacts
+        from panxu.api import Backend
+        backend = Backend(os.path.join(self.tmp, 'data'), sandbox=self.sb)
+        claude = next(s for s in backend.services.list() if s['name'] == 'CoworkVMService')
+        self.assertEqual(claude['publisher'], 'Anthropic, PBC', 'from the package manifest')
+        item = next(i for i in backend.services_for_ai(backend.services.list()) if i['id'] == 'CoworkVMService')
+        self.assertEqual(item['facts'][0], '正在运行，开机自动启动')
+        self.assertIn('应用「Claude」自己的应用包', item['facts'][1])
+        self.assertIn('现在正开着', item['facts'][2])
+        # the app is closed: no such claim
+        self.sb.state['process_paths'] = [claude['exe']]
+        facts = next(i for i in backend.services_for_ai(backend.services.list()) if i['id'] == 'CoworkVMService')['facts']
+        self.assertFalse(any('正开着' in f for f in facts), 'its own service running is not the app being open')
+        root = itemfacts.app_root(claude['exe'])
+        self.assertTrue(root.endswith('Claude_1.2.0.0_x64__pzs8sxrjxfjjc'))
+        self.assertEqual(itemfacts.package_name(root), 'Claude')
+        self.assertEqual(itemfacts.app_root('C:\\Program Files\\FooSoft\\FooSoftSvc.exe'), 'C:\\Program Files\\FooSoft')
+        self.assertEqual(itemfacts.package_name('C:\\Program Files\\FooSoft'), '')
+
     def test_services_through_simulated_sc(self):
         sm = ServiceManager(admin=True, source=self.sb.services, runner=self.sb.sc)
         svc = {s['name']: s for s in sm.list()}

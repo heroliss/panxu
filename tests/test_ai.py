@@ -274,6 +274,33 @@ class AnalystTest(TempDirTest):
         again = self.analyst().explain_items(items, ScriptedClient(lambda i: {}))
         self.assertEqual(again['items']['k1']['source'], 'cache')
 
+    def test_a_reason_that_says_it_breaks_is_a_keep(self):
+        from panxu.analyst import says_it_breaks
+        # what the model really answered for the ChatGPT and Claude services, with 「可以禁用」
+        for reason in ('为 ChatGPT 应用提供沙箱支持，禁用后应用可能无法正常运行，需要时手动启动即可。',
+                       'Claude 桌面应用的后台组件，禁用后应用功能可能受限，需要时手动启动即可。',
+                       '禁用后会影响软件的使用', '可能导致同步无法完成'):
+            self.assertTrue(says_it_breaks(reason), reason)
+        for reason in ('只用于检查更新，禁用后不影响使用', '禁用后不会影响软件使用，需要时手动打开', '开机更快，没有影响'):
+            self.assertFalse(says_it_breaks(reason), reason)
+        items = [{'key': 'service:CoworkVMService|x', 'kind': 'service', 'name': 'Claude', 'command': 'x', 'publisher': '',
+                  'description': '', 'facts': ['正在运行，开机自动启动', '「Claude」这个应用现在正开着：用户在用它']}]
+        client = ScriptedClient(lambda i: {'id': i['id'], 'what': 'Claude 桌面应用服务', 'suggestion': 'optional',
+                                           'reason': 'Claude 桌面应用的后台组件，禁用后应用功能可能受限'})
+        out = self.analyst().explain_items(items, client, use_cache=False)['items']['service:CoworkVMService|x']
+        self.assertEqual(out['suggestion'], 'keep')
+        self.assertIn('影响使用', out['note'])
+        self.assertEqual(client.calls[0][0]['facts'][1], '「Claude」这个应用现在正开着：用户在用它', 'the model sees the facts')
+        # a program open right now is never 「建议卸载」, not even from an answer cached while it was closed
+        app = {'key': 'app:Claude|1.2', 'kind': 'app', 'name': 'Claude', 'publisher': 'Anthropic', 'command': '',
+               'extra': {'version': '1.2'}}
+        uninstall = ScriptedClient(lambda i: {'id': i['id'], 'what': 'AI 助手', 'suggestion': 'uninstall', 'reason': '很久没有运行'})
+        self.assertEqual(self.analyst().explain_items([app], uninstall)['items'][app['key']]['suggestion'], 'uninstall')
+        opened = {**app, 'extra': {'version': '1.2', 'open_now': '现在正开着'}}
+        again = self.analyst().explain_items([opened], ScriptedClient(lambda i: {}))['items'][app['key']]
+        self.assertEqual((again['suggestion'], again['source']), ('optional', 'cache'))
+        self.assertIn('正开着', again['note'])
+
     def test_review_duplicates(self):
         docs = os.path.join(self.env['USERPROFILE'], 'Documents')
         yoga = {'path': os.path.join(docs, 'yoga', 'code', 'lib', 'Noto.woff'), 'mtime': 1.0, 'place': 'project',

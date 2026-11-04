@@ -192,7 +192,8 @@
     const idle = isIdle(a);
     const el = list.appendChild(h('div.row.app-row',
       h('div.app-main', avatar(a), h('div.cell-main', h('div.name', a.name), h('div.sub', [a.publisher || '未知发布者', a.version].filter(Boolean).join(' · ')),
-        info ? h('div.ai-note', PX.tag(label, kind, 'spark'), h('span', info.what), h('span.muted', info.reason)) : null)),
+        info ? h('div.ai-note', PX.tag(label, kind, 'spark'), h('span', info.what), h('span.muted', info.reason),
+          info.note ? h('span.small.muted', { title: '盘序改了 AI 的结论' }, `（${info.note}）`) : null) : null)),
       h('div', PX.tag(a.kind_label || '应用')),
       h('div.size', a.size ? [fmt.bytes(a.size), PX.meter(a.size / largest, idle ? 's-mid' : '')]
         : a.location_exists ? h('button.btn.quiet.small', { type: 'button', onclick: () => measure(a) }, '计算') : '—'),

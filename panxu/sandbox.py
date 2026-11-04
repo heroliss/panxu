@@ -179,6 +179,12 @@ def _layout() -> tuple[list[_Spec], list[tuple[str, float]]]:
     add(F(f'{PF}/FooSoft/FooUpdate.exe', 1 * MB, age=200))
     add(F(f'{PF}/FooSoft/FooSoftSvc.exe', 1 * MB, age=200))
     add(F(f'{PF}/FooSoft/resources/core.pak', 610 * MB, age=200))
+    # a Store (MSIX) app with a service in its own package, open right now (CoworkVMService of the Claude app)
+    add(F(f'{PF}/WindowsApps/Claude_1.2.0.0_x64__pzs8sxrjxfjjc/app/Claude.exe', 180 * MB, age=3))
+    add(F(f'{PF}/WindowsApps/Claude_1.2.0.0_x64__pzs8sxrjxfjjc/app/resources/cowork-svc.exe', 12 * MB, age=3))
+    add(F(f'{PF}/WindowsApps/Claude_1.2.0.0_x64__pzs8sxrjxfjjc/AppxManifest.xml', age=3, data=(
+        '<Package><Properties><DisplayName>Claude</DisplayName><PublisherDisplayName>Anthropic, PBC</PublisherDisplayName>'
+        '</Properties></Package>').encode('utf-8')))
     add(F(f'{PF}/QuickView/QuickView.exe', 4 * MB, age=410))
     add(F(f'{PF}/QuickView/QVHelper.exe', 2 * MB, age=410))
     add(F(f'{PF}/QuickView/QVUpdateSvc.exe', 1 * MB, age=410))
@@ -455,6 +461,8 @@ def _state(native) -> dict:
             'automatic', 'running', 'Container service for NVIDIA root features'),
         svc('GoogleUpdaterService', 'Google Updater Service', f'{PF86}/Google/GoogleUpdater/updater.exe',
             '--system --windows-service', 'automatic', 'stopped', 'Keeps your Google software up to date.', True),
+        svc('CoworkVMService', 'Claude', f'{PF}/WindowsApps/Claude_1.2.0.0_x64__pzs8sxrjxfjjc/app/resources/cowork-svc.exe',
+            '', 'automatic', 'running', ''),
     ]
 
     info = {
@@ -480,7 +488,9 @@ def _state(native) -> dict:
         'registry': reg,
         'services': services,
         'exe_info': {k: {'CompanyName': c, 'FileDescription': d, 'ProductName': d} for k, (c, d) in info.items()},
-        'processes': ['msedge.exe', 'explorer.exe'],
+        'processes': ['msedge.exe', 'explorer.exe', 'claude.exe'],
+        'process_paths': [native(f'{PF}/WindowsApps/Claude_1.2.0.0_x64__pzs8sxrjxfjjc/app/Claude.exe'),
+                          native(f'{PF}/WindowsApps/Claude_1.2.0.0_x64__pzs8sxrjxfjjc/app/resources/cowork-svc.exe')],
         'admin': True,
         'recycle': [],
         'created': time.time(),
@@ -663,6 +673,10 @@ class Sandbox:
 
     def processes(self) -> set[str]:
         return {p.lower() for p in self.state.get('processes', [])}
+
+    def process_paths(self) -> list[str]:
+        """Full paths of the simulated running programs (itemfacts.running_programs)."""
+        return list(self.state.get('process_paths', []))
 
     def recycle_dir(self) -> str:
         return self.native('C/$Recycle.Bin/S-1-5-21-1000')
