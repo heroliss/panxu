@@ -106,6 +106,16 @@ a { color: var(--cobalt); }
   content: ""; position: absolute; left: 0; top: 9px; bottom: 9px; width: 3px;
   border-radius: 2px; background: var(--cobalt);
 }
+/* opened from a button on another page: the entry lights up, so the user sees where they are now */
+.nav-item.arrived { animation: nav-arrive 1.8s ease-out var(--arrive-delay, 0ms); }
+.nav-item.arrived svg { animation: nav-arrive-icon 1.8s ease-out var(--arrive-delay, 0ms); }
+@keyframes nav-arrive {
+  0%, 15% { background: var(--cobalt-tint); box-shadow: inset 0 0 0 1.5px var(--cobalt); color: var(--cobalt); }
+  30% { background: var(--sheet); box-shadow: inset 0 0 0 1.5px transparent; }
+  45% { background: var(--cobalt-tint); box-shadow: inset 0 0 0 1.5px var(--cobalt); color: var(--cobalt); }
+  100% { background: var(--sheet); box-shadow: inset 0 0 0 1.5px transparent; }
+}
+@keyframes nav-arrive-icon { 0%, 45% { color: var(--cobalt); transform: scale(1.12); } 100% { transform: none; } }
 .nav-badge { margin-left: auto; font-size: 12px; color: var(--verdigris); font-weight: 600; }
 .rail-foot { margin-top: auto; padding: 12px; font-size: 12.5px; color: var(--ink-2); }
 .rail-foot .btn { width: 100%; justify-content: center; margin-top: 8px; }

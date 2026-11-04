@@ -10,6 +10,8 @@
     ['记录与设置', [['history', '操作记录', 'history'], ['settings', '设置', 'gear']]],
   ];
   let current = null;
+  let arrived = null;  // { id, at }: a page opened from a button elsewhere, lit up in the rail for a moment
+  const ARRIVE_MS = 1800;
 
   PX.applyTheme = function (theme) {
     const dark = theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
@@ -26,8 +28,12 @@
       if (section) rail.appendChild(h('div.nav-section', section));
       for (const [id, label, icon] of entries) {
         const badge = id === 'junk' && PX.state.junkTotal ? PX.fmt.bytes(PX.state.junkTotal) : null;
-        rail.appendChild(h('button.nav-item' + (id === current ? '.active' : ''), {
-          type: 'button', 'aria-current': id === current ? 'page' : null, onclick: () => PX.go(id),
+        const since = arrived && arrived.id === id ? Date.now() - arrived.at : null;
+        const lit = since !== null && since < ARRIVE_MS;
+        // a re-render of the rail (a badge changed) continues the animation instead of restarting it
+        rail.appendChild(h('button.nav-item' + (id === current ? '.active' : '') + (lit ? '.arrived' : ''), {
+          type: 'button', 'aria-current': id === current ? 'page' : null, onclick: () => PX.go(id, { fromRail: true }),
+          style: lit ? { '--arrive-delay': -since + 'ms' } : null,
         }, PX.icon(icon), h('span', label), badge ? h('em.nav-badge', badge) : null));
       }
     }
@@ -58,6 +64,8 @@
   PX.go = function (id, opts) {
     const page = PX.pages[id];
     if (!page) return;
+    // light the entry up only when the page changes from somewhere other than the rail itself
+    arrived = current && current !== id && !(opts && opts.fromRail) ? { id, at: Date.now() } : null;
     current = id;
     PX.renderRail();
     const main = document.getElementById('main');

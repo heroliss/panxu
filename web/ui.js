@@ -18,7 +18,11 @@
       for (const [k, v] of Object.entries(attrs)) {
         if (v === undefined || v === null || v === false) continue;
         if (k === 'class') el.className += (el.className ? ' ' : '') + v;
-        else if (k === 'style' && typeof v === 'object') Object.assign(el.style, v);
+        else if (k === 'style' && typeof v === 'object') {
+          for (const [prop, value] of Object.entries(v)) {
+            if (prop.startsWith('--')) el.style.setProperty(prop, value); else el.style[prop] = value;
+          }
+        }
         else if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
         else if (k === 'dataset') Object.assign(el.dataset, v);
         else if (k in el && typeof v !== 'string') el[k] = v;
