@@ -121,7 +121,7 @@
             aiNote(state.ai.startup[it.id]))),
         h('div.sub', { title: PX.displayText(it.command) }, (it.exists ? '' : '文件不存在：') + PX.displayText(it.command)),
         h('div.row-actions', it.exists ? h('button.btn.quiet.small', { type: 'button', title: '打开位置',
-          onclick: () => PX.reveal(it.location) }, PX.icon('open')) : PX.tag('文件不存在', 'warn'),
+          onclick: () => PX.reveal(it.location) }, PX.icon('folder')) : PX.tag('文件不存在', 'warn'),
         h('button.btn.quiet.small', { type: 'button', onclick: () => PX.ask({ type: 'startup', id: it.id }, it.display_name) }, PX.icon('spark'), '问 AI'))));
     }
   }

@@ -73,7 +73,7 @@
       list.appendChild(h('div.row.file-row' + (f.blocked ? '.disabled' : ''), box,
         h('div.cell-main.ic-cell', PX.fileIcon(f.path), h('div', h('div.name', f.name), h('div.sub', (f.blocked ? f.blocked + '：' : '') + PX.displayPath(f.path)))),
         h('div.sub', f.category_label), h('div.size.muted.small', fmt.date(f.mtime)), h('div.size', fmt.bytes(f.size), PX.meter(f.size / largest)),
-        PX.revealButton(f.path)));
+        PX.pathButtons(f.path)));
     }
     const barEl = c.appendChild(h('div.actionbar'));
     function bar() {
@@ -81,7 +81,7 @@
       const sel = rows.filter((f) => large.selected.has(f.path));
       const size = sel.reduce((s, f) => s + f.size, 0);
       barEl.appendChild(h('div.grow', sel.length ? h('span', `已选 ${sel.length} 个，共 `, h('span.fig', fmt.bytes(size))) : h('span.muted', '勾选不再需要的文件')));
-      barEl.appendChild(h('button.btn', { type: 'button', disabled: sel.length !== 1, onclick: () => PX.reveal(sel[0].path) }, PX.icon('open'), '打开位置'));
+      barEl.appendChild(h('button.btn', { type: 'button', disabled: sel.length !== 1, onclick: () => PX.reveal(sel[0].path) }, PX.icon('folder'), '打开位置'));
       barEl.appendChild(h('button.btn.primary', { type: 'button', disabled: !sel.length, onclick: async () => {
         const r = await PX.deleteFlow({ paths: sel.map((f) => f.path), title: `删除 ${sel.length} 个文件`, source: 'large_files' });
         if (r) { r.done.forEach((p) => large.selected.delete(p)); loadLarge(); }
@@ -191,7 +191,7 @@
           } });
         grp.appendChild(h('div.row.dup-file' + (checked ? '' : '.keep'), box,
           h('div.cell-main.ic-cell', PX.fileIcon(f.path), h('div.name.mono-path', PX.displayPath(f.path))),
-          h('div.size.muted.small', '修改于 ' + fmt.date(f.mtime)), PX.revealButton(f.path)));
+          h('div.size.muted.small', '修改于 ' + fmt.date(f.mtime)), PX.pathButtons(f.path)));
       }
     }
     if (dup.result.groups.length > dup.shown) {

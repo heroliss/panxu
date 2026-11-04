@@ -247,7 +247,22 @@
     } catch (e) { PX.fail(e); }
   };
   PX.revealButton = (path, label) => h('button.btn.quiet.small.reveal', { type: 'button', title: '在资源管理器中显示',
-    'aria-label': '在资源管理器中显示', onclick: (e) => { e.stopPropagation(); PX.reveal(path); } }, PX.icon('open'), label || null);
+    'aria-label': '在资源管理器中显示', onclick: (e) => { e.stopPropagation(); PX.reveal(path); } }, PX.icon('folder'), label || null);
+
+  // 「打开」: like a double-click in Explorer -- for documents, pictures, video, archives. Opening a program, an
+  // installer, a script or a shortcut would run it, so those have no 「打开」 (the same list as api.RUNS_CODE)
+  const RUNS_CODE = new Set(['.exe', '.com', '.scr', '.pif', '.cpl', '.msi', '.msix', '.msixbundle', '.msp', '.appx',
+    '.appxbundle', '.application', '.appref-ms', '.bat', '.cmd', '.ps1', '.psm1', '.vbs', '.vbe', '.js', '.jse', '.wsf',
+    '.wsh', '.hta', '.jar', '.lnk', '.url', '.reg', '.inf', '.msc', '.sys', '.dll', '.ocx']);
+  PX.canOpen = (path) => !RUNS_CODE.has(((path || '').match(/\.[^.\\/]+$/) || [''])[0].toLowerCase());
+  PX.openPath = async function (path) {
+    try { await PX.api.call('open_path', { path }); } catch (e) { PX.fail(e); }
+  };
+  PX.openButton = (path, label) => (PX.canOpen(path) ? h('button.btn.quiet.small.open-btn', { type: 'button',
+    title: '打开（和在资源管理器里双击一样）', 'aria-label': '打开', onclick: (e) => { e.stopPropagation(); PX.openPath(path); } },
+  PX.icon('open'), label || null) : null);
+  // the two buttons a file gets (a folder: just showing it, which opens it)
+  PX.pathButtons = (path, isDir) => h('div.row-actions', isDir ? null : PX.openButton(path), PX.revealButton(path));
 
   // the icon Explorer shows for a file or folder: a placeholder now, the real icon once loaded (type icons by
   // extension; programs and shortcuts their own icon)

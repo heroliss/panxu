@@ -203,7 +203,7 @@
         ? h('div.row-actions', h('button.btn.small.primary', { type: 'button', title: '卸载程序结束后会自动发现；也可以点这里马上检查',
           onclick: () => check(true, a.id) }, PX.icon('refresh'), '检查是否卸载完成'))
         : h('div.row-actions',
-          a.location_exists ? h('button.btn.quiet.small.reveal', { type: 'button', title: '打开安装位置', onclick: () => PX.reveal(a.location) }, PX.icon('open')) : null,
+          a.location_exists ? h('button.btn.quiet.small.reveal', { type: 'button', title: '打开安装位置', onclick: () => PX.reveal(a.location) }, PX.icon('folder')) : null,
           h('button.btn.quiet.small', { type: 'button', onclick: () => PX.ask({ type: 'app', id: a.id }, a.name) }, PX.icon('spark'), '问 AI'),
           h('button.btn.small', { type: 'button', disabled: !a.can_uninstall, title: a.can_uninstall ? '' : '这个程序没有提供卸载程序',
             onclick: () => uninstall(a) }, '卸载…'))));

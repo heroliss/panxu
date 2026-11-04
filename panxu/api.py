@@ -44,6 +44,11 @@ SETTINGS_PROGRAMS = {
     'virtual_memory': 'SystemPropertiesPerformance.exe',   # 性能选项 > 高级 > 虚拟内存
     'system_protection': 'SystemPropertiesProtection.exe',  # 系统保护（还原点）
 }
+# opening these runs something (programs, installers, scripts, shortcuts to them): 「打开」 refuses them
+# (the same list is in web/ui.js, PX.canOpen)
+RUNS_CODE = {'.exe', '.com', '.scr', '.pif', '.cpl', '.msi', '.msix', '.msixbundle', '.msp', '.appx', '.appxbundle',
+             '.application', '.appref-ms', '.bat', '.cmd', '.ps1', '.psm1', '.vbs', '.vbe', '.js', '.jse', '.wsf', '.wsh',
+             '.hta', '.jar', '.lnk', '.url', '.reg', '.inf', '.msc', '.sys', '.dll', '.ocx'}
 
 
 class Backend:
@@ -278,6 +283,23 @@ class Backend:
             raise UserError('路径不存在')
         winapi.reveal_in_explorer(target)
         return {'shown': target, 'missing': target != path}
+
+    def m_open_path(self, path: str):
+        """Open a file with its default program, or a folder, like a double-click in Explorer. Programs,
+        scripts and shortcuts are refused: for them "open" means run, and an old installer or an unknown
+        script lying in Downloads must never start by a click in a disk cleaner."""
+        if not isinstance(path, str) or not os.path.isabs(path) or not os.path.exists(path):
+            raise UserError('文件不存在：可能已经被删除或移走')
+        if os.path.isdir(path):
+            winapi.reveal_in_explorer(path)
+            return {'opened': path}
+        if os.path.splitext(path)[1].lower() in RUNS_CODE:
+            raise UserError('这是程序或脚本，打开就会运行它。盘序不直接运行程序；可以在资源管理器中查看后自己决定。')
+        try:
+            winapi.open_file(path)
+        except OSError as exc:
+            raise UserError('没有能打开它的程序' if getattr(exc, 'winerror', None) == 1155 else f'打不开：{exc}') from None
+        return {'opened': path}
 
     def m_open_system_page(self, page: str):
         uri = SETTINGS_URIS.get(page)

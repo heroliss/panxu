@@ -431,6 +431,12 @@ def open_uri(uri: str) -> None:
         os.startfile(uri)
 
 
+def open_file(path: str) -> None:
+    """Open a document with its default program, like a double-click in Explorer."""
+    if IS_WINDOWS:
+        os.startfile(path)  # noqa: S606 - callers refuse programs and scripts first
+
+
 def shell_execute(executable: str, params: str = '', verb: str = 'open') -> bool:
     """Start a program the way Explorer does (lets it ask for elevation itself)."""
     if not IS_WINDOWS:

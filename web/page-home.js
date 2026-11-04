@@ -352,7 +352,7 @@
           type: 'button', onclick: (e) => { e.stopPropagation(); infoAction(it, a); } }, a.label))) : null),
     PX.score(it.score, (it.basis || []).join('\n')),
     h('div.size', it.size ? fmt.bytes(it.size) : ''),
-    h('div.row-actions', one ? PX.revealButton(one) : null,
+    h('div.row-actions', one && !isFolder(it) ? PX.openButton(one) : null, one ? PX.revealButton(one) : null,
       h('button.btn.quiet.small', { type: 'button', title: '问 AI', onclick: (e) => { e.stopPropagation(); PX.ask({ type: 'plan_item', id: it.id }, it.title); } },
         PX.icon('spark'), '问 AI')));
     list.appendChild(row);
@@ -366,11 +366,12 @@
           h('ul', (it.basis || []).map((line) => h('li', line)))));
       }
       if (it.caution) d.appendChild(h('div', PX.tag('注意', 'warn'), ' ', it.caution));
-      if (it.keep) d.appendChild(h('div.path-line', h('b', '保留：'), h('span.mono-path', PX.displayPath(it.keep)), PX.revealButton(it.keep, '打开位置')));
+      if (it.keep) d.appendChild(h('div.path-line', h('b', '保留：'), h('span.mono-path', PX.displayPath(it.keep)), PX.openButton(it.keep, '打开'), PX.revealButton(it.keep, '打开位置')));
       const all = it.paths && it.paths.length ? it.paths : it.location ? [it.location] : it.locations || [];
       const showAll = state.open.has('paths:' + it.id);
       for (const p of showAll ? all : all.slice(0, 6)) {
-        d.appendChild(h('div.path-line', h('span.mono-path', PX.displayPath(p)), PX.revealButton(p, '打开位置')));
+        d.appendChild(h('div.path-line', h('span.mono-path', PX.displayPath(p)), isFolder(it) ? null : PX.openButton(p, '打开'),
+          PX.revealButton(p, '打开位置')));
       }
       if (all.length > 6) {
         d.appendChild(h('button.fold', { type: 'button', onclick: (e) => {

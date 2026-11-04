@@ -100,6 +100,22 @@ class BridgeTest(TempDirTest):
             self.assertFalse(self.bridge.call('reveal', {'path': 'relative\\x'})['ok'])
             self.assertFalse(self.bridge.call('reveal', {'path': 7})['ok'])
 
+    def test_open_documents_but_never_run_programs(self):
+        from unittest import mock
+        from panxu import winapi
+        doc = self.make('area/report.pdf', 10)
+        folder = os.path.dirname(doc)
+        with mock.patch.object(winapi, 'open_file') as opened, mock.patch.object(winapi, 'reveal_in_explorer') as shown:
+            self.assertEqual(self.bridge.call('open_path', {'path': doc})['data'], {'opened': doc})
+            self.bridge.call('open_path', {'path': folder})
+            for name in ('setup.exe', 'run.BAT', 'x.ps1', 'link.lnk', 'pkg.msi', 'a.vbs'):
+                r = self.bridge.call('open_path', {'path': self.make('area/' + name, 10)})
+                self.assertFalse(r['ok'], name)
+                self.assertIn('运行', r['error'])
+            self.assertFalse(self.bridge.call('open_path', {'path': os.path.join(folder, 'gone.pdf')})['ok'])
+        opened.assert_called_once_with(doc)
+        shown.assert_called_once_with(folder)
+
     def test_type_icons_only_for_types(self):
         r = self.bridge.call('type_icons', {'kinds': ['..\\x', 'C:\\a.pdf', '.pdf' + 'x' * 30]})
         self.assertTrue(r['ok'])

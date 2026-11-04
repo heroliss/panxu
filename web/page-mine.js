@@ -124,6 +124,7 @@
       h('div.size', x.size ? fmt.bytes(x.size) : ''),
       h('div.small.muted', x.mtime ? fmt.date(x.mtime) : ''),
       h('div.row-actions',
+        x.category === 'folder' ? null : PX.openButton(x.path),
         PX.revealButton(x.path),
         h('button.btn.quiet.small', { type: 'button', onclick: () => PX.ask({ type: 'file', path: x.path }, x.name) }, PX.icon('spark'), '问 AI'))));
   }

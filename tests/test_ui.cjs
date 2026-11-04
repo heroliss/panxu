@@ -49,4 +49,14 @@ assert.strictEqual(PX.scoreLevel(74), 'mid');
 assert.strictEqual(PX.scoreLevel(45), 'mid');
 assert.strictEqual(PX.scoreLevel(44), 'lo');
 PX.state.init = null;
+
+// 「打开」 is for documents; programs, installers, scripts and shortcuts would run
+for (const p of [R`C:\a\report.PDF`, R`C:\a\movie.mkv`, R`C:\a\photos.zip`, R`C:\a\notes`, R`C:\a.b\readme.txt`]) assert.ok(PX.canOpen(p), p);
+for (const p of [R`C:\a\setup.EXE`, R`C:\a\run.bat`, R`C:\a\x.ps1`, R`C:\a\app.lnk`, R`C:\a\pkg.msi`, R`C:\a\w.vbs`, R`C:\a\k.reg`]) {
+  assert.ok(!PX.canOpen(p), p);
+}
+// the same list as the backend's api.RUNS_CODE
+const api = require('fs').readFileSync(require('path').join(__dirname, '..', 'panxu', 'api.py'), 'utf8');
+const pyList = api.slice(api.indexOf('RUNS_CODE = {'), api.indexOf('}', api.indexOf('RUNS_CODE = {'))).match(/'(\.[^']+)'/g).map((s) => s.slice(1, -1));
+for (const ext of pyList) assert.ok(!PX.canOpen('x' + ext), 'web and api agree on ' + ext);
 console.log('ui tests passed');
