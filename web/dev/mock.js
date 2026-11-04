@@ -464,6 +464,8 @@
     ai_clear_cache: () => true,
     pick_folder: () => 'D:\\Projects',
     reveal: ({ path }) => ({ shown: path, missing: false }),
+    open_path: ({ path }) => ({ opened: path }),
+    flash_window: () => false,
     open_system_page: () => true,
     open_key_page: () => true,
     restart_as_admin: () => { throw new Error('预览模式不能重启'); },

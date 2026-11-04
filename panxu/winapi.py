@@ -387,6 +387,26 @@ def focus_window(title: str) -> bool:
     return bool(_user32.SetForegroundWindow(hwnd))
 
 
+def flash_window(titles: tuple[str, ...]) -> bool:
+    """Flash the taskbar button of our window until it comes to the front (FLASHW_TRAY | FLASHW_TIMERNOFG):
+    the usual Windows way to say "done" without stealing focus."""
+    if not IS_WINDOWS:
+        return False
+    from ctypes import wintypes
+
+    class FLASHWINFO(ctypes.Structure):
+        _fields_ = [('cbSize', wintypes.UINT), ('hwnd', wintypes.HWND), ('dwFlags', wintypes.DWORD),
+                    ('uCount', wintypes.UINT), ('dwTimeout', wintypes.DWORD)]
+
+    for title in titles:
+        hwnd = find_window(title)
+        if hwnd:
+            info = FLASHWINFO(ctypes.sizeof(FLASHWINFO), hwnd, 0x2 | 0xC, 0, 0)
+            _user32.FlashWindowEx(ctypes.byref(info))
+            return True
+    return False
+
+
 def message_box(text: str, title: str) -> None:
     if IS_WINDOWS:
         _user32.MessageBoxW(None, text, title, 0x40)

@@ -116,6 +116,13 @@ class BridgeTest(TempDirTest):
         opened.assert_called_once_with(doc)
         shown.assert_called_once_with(folder)
 
+    def test_flash_window_asks_for_both_titles(self):
+        from unittest import mock
+        from panxu import winapi
+        with mock.patch.object(winapi, 'flash_window', return_value=True) as flash:
+            self.assertTrue(self.bridge.call('flash_window')['data'])
+        self.assertEqual(flash.call_args[0][0], ('盘序', '盘序（演练环境）'))
+
     def test_type_icons_only_for_types(self):
         r = self.bridge.call('type_icons', {'kinds': ['..\\x', 'C:\\a.pdf', '.pdf' + 'x' * 30]})
         self.assertTrue(r['ok'])

@@ -81,6 +81,34 @@
     }
   };
   PX.isCurrent = (id) => current === id;
+  PX.currentPage = () => current;
+
+  // ---- a job that took a while has finished: a short message with what came out, 「查看」 when the user has
+  // moved to another page meanwhile, and the taskbar button flashes when PanXu is not the active window.
+  // [what to say, the page that shows it (null: where it was started)]
+  const bytes = (n) => PX.fmt.bytes(n || 0);
+  const DONE = {
+    checkup: [(r) => '一键体检完成' + (r.summary && r.summary.safe.selected_size ? `：已勾选的可以释放 ${bytes(r.summary.safe.selected_size)}` : ''), 'home'],
+    plan_execute: [(r) => `清理完成：释放了 ${bytes(((r.deleted || {}).bytes || 0) + ((r.recycled || {}).bytes || 0))}`, 'home'],
+    junk_scan: [() => '垃圾扫描完成', 'junk'],
+    junk_clean: [(r) => `垃圾清理完成：释放了 ${bytes(r.freed)}`, 'junk'],
+    space_scan: [(r) => `空间分析完成：${PX.displayPath(r.root.path)} 共 ${bytes(r.root.size)}`, 'space'],
+    ai_analyze: [(r) => `AI 分析完成：${r.suggestions.filter((s) => !s.expanded).length} 个文件夹有了建议`, 'space'],
+    insights_scan: [(r) => (r.findings.length ? `我的文件整理完成：${r.findings.length} 类文件值得看看` : '我的文件整理完成：没有发现需要注意的文件'), 'mine'],
+    ai_review_files: [(r) => `AI 看完了 ${Object.keys(r.files || {}).length} 个文件，结论写在每个文件下面`, 'mine'],
+    dup_scan: [(r) => (r.groups.length ? `找到 ${r.groups.length} 组重复文件，可节省 ${bytes(r.stats.wasted)}` : '重复文件查找完成：没有找到'), 'dups'],
+    ai_explain: [() => 'AI 解释完成，结论写在每一项下面', null],
+    apps_measure_all: [(r) => `${Object.keys(r || {}).length} 个程序的大小算好了`, 'apps'],
+  };
+  PX.jobDone = function (method, result, ms, startedOn) {
+    const done = DONE[method];
+    if (!done || ms < 4000) return;  // quick ones are visibly done where the user is
+    let text;
+    try { text = done[0](result || {}); } catch (e) { text = '已完成'; }
+    const page = done[1] || startedOn;
+    PX.toast(text, false, page && !PX.isCurrent(page) ? { label: '查看', onClick: () => PX.go(page) } : null);
+    if (!document.hasFocus()) PX.api.call('flash_window').catch(() => {});
+  };
 
   // ---- 「请先关闭 …」: the block is decided at scan time, so check the running programs again (cheap,
   // no rescan) when the user comes back to the window, every few seconds while something waits, or on

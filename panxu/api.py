@@ -284,6 +284,10 @@ class Backend:
         winapi.reveal_in_explorer(target)
         return {'shown': target, 'missing': target != path}
 
+    def m_flash_window(self):
+        """Flash PanXu's taskbar button (a slow job finished while another window was in front)."""
+        return winapi.flash_window((APP_NAME, APP_NAME + '（演练环境）'))
+
     def m_open_path(self, path: str):
         """Open a file with its default program, or a folder, like a double-click in Explorer. Programs,
         scripts and shortcuts are refused: for them "open" means run, and an old installer or an unknown
