@@ -61,24 +61,58 @@
     try { await PX.api.call('restart_as_admin'); } catch (e) { PX.fail(e); }
   };
 
+  // ---- where each page was scrolled to when the user left it: coming back lands there again, like a browser
+  // tab. A page starts at the top when its content was replaced meanwhile (a new scan or check-up finished),
+  // for 「查看」 on a finished job, and when its own entry in the rail is clicked while on it.
+  const scrolled = {};
+  let restoring = null;  // { top, stop } while a restored position waits for the page's data to load
+  const USER_SCROLL = ['wheel', 'touchstart', 'keydown', 'mousedown'];
+
+  function restoreScroll(main, root, top) {
+    main.scrollTop = top;
+    if (!top || main.scrollTop >= top - 1) return;
+    // most pages draw first and fill in once their data has loaded: keep the place until it fits, the user
+    // scrolls or clicks, or 3 seconds pass
+    const observer = new ResizeObserver(() => {
+      main.scrollTop = top;
+      if (main.scrollTop >= top - 1) stop();
+    });
+    const timer = setTimeout(() => stop(), 3000);
+    function stop() {
+      observer.disconnect();
+      clearTimeout(timer);
+      for (const e of USER_SCROLL) main.removeEventListener(e, stop);
+      if (restoring && restoring.stop === stop) restoring = null;
+    }
+    for (const e of USER_SCROLL) main.addEventListener(e, stop, { passive: true });
+    observer.observe(root);
+    restoring = { top, stop };
+  }
+  PX.forgetScroll = (id) => { delete scrolled[id]; };
+
   PX.go = function (id, opts) {
     const page = PX.pages[id];
     if (!page) return;
+    opts = opts || {};
+    const main = document.getElementById('main');
+    if (current) scrolled[current] = restoring ? restoring.top : main.scrollTop;
+    if (restoring) restoring.stop();
+    const top = opts.top || (opts.fromRail && id === current) ? 0 : scrolled[id] || 0;
     // light the entry up only when the page changes from somewhere other than the rail itself
-    arrived = current && current !== id && !(opts && opts.fromRail) ? { id, at: Date.now() } : null;
+    arrived = current && current !== id && !opts.fromRail ? { id, at: Date.now() } : null;
     current = id;
     PX.renderRail();
-    const main = document.getElementById('main');
     PX.clear(main);
     if (PX.state.init && PX.state.init.sandbox) main.appendChild(PX.sandbox.banner());
     const root = main.appendChild(h('div.page'));
     main.scrollTop = 0;
     try {
-      page.render(root, opts || {});
+      page.render(root, opts);
     } catch (e) {
       console.error(e);
       root.appendChild(PX.notice('页面出错：' + e.message));
     }
+    restoreScroll(main, root, top);
   };
   PX.isCurrent = (id) => current === id;
   PX.currentPage = () => current;
@@ -100,13 +134,18 @@
     ai_explain: [() => 'AI 解释完成，结论写在每一项下面', null],
     apps_measure_all: [(r) => `${Object.keys(r || {}).length} 个程序的大小算好了`, 'apps'],
   };
+  // jobs whose result replaces what these pages show: an old scroll position means nothing there any more
+  const REPLACES = { checkup: ['home', 'junk', 'mine', 'dups'], junk_scan: ['junk'], space_scan: ['space', 'large'],
+    insights_scan: ['mine'], dup_scan: ['dups'] };
   PX.jobDone = function (method, result, ms, startedOn) {
+    for (const id of REPLACES[method] || []) if (!PX.isCurrent(id)) PX.forgetScroll(id);
     const done = DONE[method];
-    if (!done || ms < 4000) return;  // quick ones are visibly done where the user is
+    if (!done) return;
+    const page = done[1] || startedOn;
+    if (ms < 4000) return;  // quick ones are visibly done where the user is
     let text;
     try { text = done[0](result || {}); } catch (e) { text = '已完成'; }
-    const page = done[1] || startedOn;
-    PX.toast(text, false, page && !PX.isCurrent(page) ? { label: '查看', onClick: () => PX.go(page) } : null);
+    PX.toast(text, false, page && !PX.isCurrent(page) ? { label: '查看', onClick: () => PX.go(page, { top: true }) } : null);
     if (!document.hasFocus()) PX.api.call('flash_window').catch(() => {});
   };
 

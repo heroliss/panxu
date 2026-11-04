@@ -84,7 +84,7 @@
     state.selected.clear();
     state.ai = { status: 'idle', result: null, progress: {}, selected: new Set(), jobId: null, showKeep: false };
     state.types = null;
-    PX.go('space');
+    PX.go('space', { top: true });
     try {
       state.result = await PX.api.run('space_scan', { root: target }, (p) => { state.progress = p; rerender(true); },
         (id) => { state.jobId = id; });
