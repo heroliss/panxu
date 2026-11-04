@@ -255,6 +255,8 @@ def _layout() -> tuple[list[_Spec], list[tuple[str, float]]]:
     add(F(f'{L}/Programs/Microsoft VS Code/Code.exe', 155 * MB, age=25))
     add(F(f'{L}/Packages/Microsoft.WindowsStore_8wekyb3d8bbwe/LocalCache/store.db', 205 * MB, age=3))
     add(F(f'{L}/QuickView/Cache/ad_0001.jpg', 183 * MB, age=2))
+    add(F(f'{u}/AppData/Roaming/QuickView/config.ini', data=b'[ui]\nskin=dark\n', age=30))
+    add(F(f'{u}/AppData/LocalLow/Team Cherry/Hollow Knight/user1.dat', 1 * MB, age=420))  # the saves
     add(F(f'{R}/Tencent/WeChat/All Users/config/global_config', data=b'demo', age=10))
     add(F(f'{u}/.cache/huggingface/hub/models--bert-base-chinese/blobs/9b1a2c', 412 * MB, age=300))
 

@@ -502,6 +502,10 @@ svg.file-ic { color: var(--ink-3); padding: 1px; }
 .ic-cell { display: flex; gap: 10px; align-items: flex-start; }
 .ic-cell > .file-ic { margin-top: 1px; }
 .ic-cell > div { min-width: 0; flex: 1; }
+.confirm-list .row.leftover-row { grid-template-columns: 22px minmax(0, 1fr) 72px 32px; align-items: start; }
+.confirm-list:has(.leftover-row) { max-height: 340px; }
+.leftover-row .tag { margin-top: 4px; }
+.notice .actions { display: flex; gap: 6px; flex-wrap: wrap; }
 .btn.reveal { color: var(--ink-3); }
 .btn.reveal:hover { color: var(--cobalt); }
 .crumbs-line { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 12px; }

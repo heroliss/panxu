@@ -69,6 +69,23 @@ def _resembles(stem: str, name: str, publisher: str = '') -> bool:
     return any(len(t) >= 4 and t not in vendor and s.startswith(t) for t in tokens(name))
 
 
+def _named_inside(folder: str, names: set[str], depth: int = 3) -> str | None:
+    """The first sub-folder (a few levels down) whose name is one of ``names``, e.g. 'Saves'."""
+    stack = [(folder, 0)]
+    while stack:
+        current, d = stack.pop()
+        try:
+            entries = [e for e in os.scandir(current) if e.is_dir(follow_symlinks=False)]
+        except OSError:
+            continue
+        for e in entries:
+            if e.name.lower() in names:
+                return e.name
+            if d + 1 < depth:
+                stack.append((e.path, d + 1))
+    return None
+
+
 def _words(text: str) -> set[str]:
     return {re.sub(r'\d+$', '', t) for t in tokens(text)} - {''}
 
@@ -102,6 +119,7 @@ class AppManager:
         self.oplog = oplog
         self._cache: tuple[float, list] | None = None
         self._measured: dict[str, int] = {}
+        self._removed: dict[str, dict] = {}  # what a program looked like when its uninstaller was started
 
     def _reg(self):
         if self.registry is None:
@@ -378,6 +396,9 @@ class AppManager:
         if app is None:
             raise ValueError('程序已不存在，请刷新列表')
         hive, base, sub = app_id.split('|', 2)
+        # kept to look for leftovers once it is gone (by then the registry no longer knows it)
+        self._removed[app_id] = {'name': app['name'], 'publisher': app['publisher'], 'registry_key': sub,
+                                 'location': app['location'] if app['location_exists'] else '', 'time': time.time()}
         sim = winapi.simulation()
         if sim is not None:
             result = sim.uninstall(hive, base + '\\' + sub, app['location'] if app['location_exists'] else '')
@@ -397,10 +418,91 @@ class AppManager:
                 args = re.sub(r'/I(\{[0-9A-Fa-f-]+\})', r'/X\1', args)  # /I opens "modify", /X uninstalls
             started = winapi.shell_execute(exe, args)
         if not started:
+            self._removed.pop(app_id, None)
             raise ValueError('没能启动卸载程序（可能在系统提示中选择了「否」）')
         self._cache = None
         self._log(app, '已启动卸载程序')
         return {'started': True, 'simulated': False}
+
+    def installed(self, app_id: str) -> bool:
+        """Is the program still registered? Its Uninstall entry goes when the uninstaller has finished --
+        the same signal 「设置 > 应用」 uses (the uninstaller's own process often exits early)."""
+        try:
+            hive, base, sub = str(app_id).split('|', 2)
+        except ValueError:
+            return False
+        return bool(self._reg().values(hive, base + '\\' + sub))
+
+    # folders uninstallers usually leave behind, and what is typically in them
+    _LEFTOVER_BASES = (('', '安装文件夹', ''), ('LOCALAPPDATA', '本地应用数据', ''),
+                       ('APPDATA', '漫游应用数据', '通常是设置和账号数据：确认以后不会再装它'),
+                       ('LOCALLOW', 'LocalLow', '游戏常把存档放在这里'), ('ProgramData', '所有用户的应用数据', ''))
+
+    def leftovers(self, app_id: str) -> list[dict]:
+        """Folders an uninstalled program left behind: its install folder if still there, and folders named
+        like it in AppData, LocalLow and ProgramData -- directly, or inside its publisher's folder
+        (AppData\\Roaming\\Tencent\\WeChat, never all of Tencent). Folders another installed program still
+        claims are left out. Nothing is deleted here."""
+        from .checkup import VALUABLE_DIRS
+        from .fsops import path_size
+        gone = self._removed.get(app_id)
+        if gone is None:
+            raise ValueError('没有这个程序的卸载记录，请先在这里卸载它')
+        vendor_words = set(tokens(gone['publisher']))
+        keys = {compact(gone['name'])}
+        if not re.match(r'^(\{|steam app)', gone['registry_key'], re.I):
+            keys.add(compact(gone['registry_key']))
+        if gone['location']:
+            keys.add(compact(ntpath.basename(gone['location'].rstrip('\\/'))))
+        words = [t for t in tokens(gone['name']) if t not in vendor_words]
+        if words and len(words[0]) >= 4:
+            keys.add(words[0])
+        keys = {k for k in keys if len(k) >= 3 and k not in _GENERIC}
+        vendors = {compact(gone['publisher'])} | {t for t in vendor_words if len(t) >= 4}
+        if gone['location']:
+            vendors.add(compact(ntpath.basename(ntpath.dirname(gone['location'].rstrip('\\/')))))
+        vendors = {v for v in vendors if len(v) >= 3 and v not in _GENERIC}
+        still = [row for row in self.match_index() if row['name'] != gone['name']]
+
+        def subdirs(folder):
+            try:
+                return [e.name for e in os.scandir(folder) if e.is_dir(follow_symlinks=False)]
+            except OSError:
+                return []
+
+        found: list[tuple[str, str, str]] = []
+        for var, where, note in self._LEFTOVER_BASES:
+            if not var:
+                if gone['location'] and os.path.isdir(gone['location']):
+                    found.append((gone['location'], where, note))
+                continue
+            base = paths.expand(f'%{var}%', self.env)
+            if not base:
+                continue
+            for child in subdirs(base):
+                c = compact(child)
+                if c in keys:
+                    found.append((os.path.join(base, child), where, note))
+                elif c in vendors:
+                    for grand in subdirs(os.path.join(base, child)):
+                        if compact(grand) in keys:
+                            found.append((os.path.join(base, child, grand), where, note))
+        out = []
+        for path, where, note in found:
+            name = ntpath.basename(path)
+            if where != '安装文件夹' and self.match_folder(name, still):
+                continue  # another installed program goes by that name
+            if any(paths.is_within(path, o['path']) for o in out):
+                continue
+            size, count = path_size(path)
+            valuable = _named_inside(path, VALUABLE_DIRS)
+            try:
+                mtime = os.stat(path).st_mtime
+            except OSError:
+                mtime = None
+            out.append({'path': path, 'where': where, 'size': size, 'files': count, 'mtime': mtime,
+                        'caution': f'里面有「{valuable}」文件夹，可能是存档、个人资料或备份' if valuable else note or None})
+        return out
 
     def _log(self, app: dict, note: str):
         if self.oplog is not None:

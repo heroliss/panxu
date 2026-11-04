@@ -142,6 +142,29 @@ class SystemStateTest(SandboxTestCase):
         self.assertNotIn('QuickViewHelper', run)
         self.assertNotIn('QVUpdateSvc', [s['name'] for s in self.sb.services()])
 
+    def test_leftovers_after_uninstalling(self):
+        apps = AppManager(registry=self.sb.registry, admin=True)
+        rows = {a['name']: a for a in apps.list()}
+        qv, game, wechat = rows['快看图大师'], rows['Hollow Knight'], rows['微信']
+        with self.assertRaises(ValueError):
+            apps.leftovers(qv['id'])  # not uninstalled here
+        for app in (qv, game, wechat):
+            self.assertTrue(apps.installed(app['id']))
+            apps.uninstall(app['id'])
+            self.assertFalse(apps.installed(app['id']), 'the entry is gone: done')
+        found = {os.path.relpath(r['path'], self.sb.root): r for r in apps.leftovers(qv['id'])}
+        self.assertEqual(sorted(found), sorted(os.path.normpath(p) for p in (
+            'C/Users/demo/AppData/Local/QuickView', 'C/Users/demo/AppData/Roaming/QuickView', 'C/ProgramData/QuickView')))
+        self.assertGreater(found[os.path.normpath('C/ProgramData/QuickView')]['size'], 600 * 1024 * 1024)
+        self.assertIn('设置', found[os.path.normpath('C/Users/demo/AppData/Roaming/QuickView')]['caution'])
+        saves = apps.leftovers(game['id'])
+        self.assertEqual([os.path.relpath(r['path'], self.sb.root) for r in saves],
+                         [os.path.normpath('C/Users/demo/AppData/LocalLow/Team Cherry/Hollow Knight')])
+        self.assertIn('存档', saves[0]['caution'])
+        tencent = [os.path.relpath(r['path'], self.sb.root) for r in apps.leftovers(wechat['id'])]
+        self.assertIn(os.path.normpath('C/Users/demo/AppData/Roaming/Tencent/WeChat'), tencent)
+        self.assertNotIn(os.path.normpath('C/Users/demo/AppData/Roaming/Tencent'), tencent, 'never the publisher folder')
+
     def test_programs_in_a_shared_folder(self):
         apps = AppManager(registry=self.sb.registry, admin=True)
         rows = {a['name']: a for a in apps.list()}

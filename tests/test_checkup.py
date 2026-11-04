@@ -185,6 +185,22 @@ class CheckupTest(TempDirTest):
         self.assertFalse([f['path'] for x in found['findings'] for f in x['files'] if paths.is_within(f['path'], prog)])
         self.assertTrue(any(f['kind'] == 'installer_installed' for f in found['findings']), 'real installers still are')
 
+    def test_uninstall_then_leftovers_through_the_bridge(self):
+        qv = next(a for a in self.call('apps_list')['apps'] if a['name'] == '快看图大师')
+        self.assertEqual(self.call('app_installed', app_ids=[qv['id']]), {qv['id']: True})
+        job = self.call('app_leftovers', app_id=qv['id'])
+        while (s := self.call('job', job_id=job))['status'] == 'running':
+            time.sleep(0.02)
+        self.assertEqual(s['status'], 'error', 'nothing to look for before it was uninstalled here')
+        self.assertTrue(self.call('app_uninstall', app_id=qv['id'])['simulated'])
+        self.assertEqual(self.call('app_installed', app_ids=[qv['id']]), {qv['id']: False})
+        rows = self.wait(self.call('app_leftovers', app_id=qv['id']))
+        self.assertEqual(len(rows), 3)
+        self.assertTrue(all(r['blocked'] is None for r in rows))
+        r = self.wait(self.call('delete_paths', items=[r['path'] for r in rows if not r['caution']], mode='recycle', source='leftovers'))
+        self.assertEqual(len(r['done']), 2)
+        self.assertEqual(self.call('history', limit=1)[0]['details']['source'], 'leftovers')
+
     def test_closing_a_program_unlocks_its_rule_without_rescanning(self):
         plan = self.checkup(use_ai=False)
         edge = next(i for i in plan['items'] if i['id'] == 'rule:edge')

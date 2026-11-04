@@ -4,10 +4,10 @@
   const { h, fmt } = PX;
   const SUGGEST = { keep: ['建议保留', ''], optional: ['看你是否需要', 'info'], uninstall: ['建议卸载', 'warn'] };
   const state = { apps: null, admin: false, usageKnown: false, ai: {}, aiBusy: false, query: '', showSystem: false, sort: 'name',
-    icons: {}, refreshing: false };
+    icons: {}, refreshing: false, uninstalling: new Map(), removed: null };
   let root = null;
 
-  async function load(fresh) {
+  async function load(fresh, quiet) {
     const before = state.apps ? new Set(state.apps.map((a) => a.id)) : null;
     if (fresh) { state.refreshing = true; draw(); }
     try {
@@ -15,7 +15,7 @@
       state.apps = r.apps;
       state.admin = r.admin;
       state.usageKnown = r.usage_known;
-      if (fresh && before) {
+      if (fresh && before && !quiet) {
         const now = new Set(state.apps.map((a) => a.id));
         const added = state.apps.filter((a) => !before.has(a.id)).length;
         const removed = [...before].filter((id) => !now.has(id)).length;
@@ -94,9 +94,79 @@
     if (!ok) return;
     try {
       const r = await PX.api.call('app_uninstall', { app_id: app.id });
-      PX.toast(r.simulated ? `已模拟卸载「${app.name}」` : '已打开卸载程序，完成后点「刷新」');
-      if (r.simulated) load(true);
+      if (r.simulated) { finished(app.id, app.name); return; }
+      state.uninstalling.set(app.id, { name: app.name, since: Date.now() });
+      PX.toast('已打开卸载程序。按它的提示完成卸载，这里会自动发现');
+      watch();
+      draw();
     } catch (e) { PX.fail(e); }
+  }
+
+  // ---- after 「卸载…」: the uninstaller runs in its own window (its process often exits early), so watch for
+  // the program's entry to disappear -- every few seconds for half an hour, and when the user comes back
+  let watching = null;
+  function watch() {
+    if (!watching) watching = setInterval(() => check(false), 3000);
+  }
+  async function check(byUser, id) {
+    for (const [k, u] of state.uninstalling) {
+      if (!byUser && Date.now() - u.since > 30 * 60 * 1000) state.uninstalling.delete(k);  // left to 「检查」
+    }
+    const ids = id ? [id] : [...state.uninstalling.keys()];
+    if (!ids.length) { clearInterval(watching); watching = null; return; }
+    let r;
+    try { r = await PX.api.call('app_installed', { app_ids: ids }); } catch (e) { if (byUser) PX.fail(e); return; }
+    for (const k of ids) {
+      const u = state.uninstalling.get(k);
+      if (!u) continue;
+      if (!r[k]) finished(k, u.name);
+      else if (byUser) PX.toast(`「${u.name}」还在：卸载程序可能还没结束，或者被取消了。完成后再点一次`);
+    }
+  }
+  window.addEventListener('focus', () => { if (state.uninstalling.size) check(false); });
+
+  function finished(id, name) {
+    state.uninstalling.delete(id);
+    state.removed = { id, name };
+    PX.toast(`「${name}」已经卸载`);
+    load(true, true);
+  }
+
+  // folders the uninstaller left behind: shown with what is in them; nothing is ticked that may hold settings or saves
+  async function leftovers(removed) {
+    let rows;
+    try { rows = await PX.api.run('app_leftovers', { app_id: removed.id }); } catch (e) { if (!e.cancelled) PX.fail(e); return; }
+    if (!rows.length) {
+      PX.modal({ title: '没有找到残留', body: h('div', `应用数据和安装位置里没有「${removed.name}」留下的文件夹。`), actions: [{ label: '好的', kind: 'primary' }] });
+      state.removed = null;
+      draw();
+      return;
+    }
+    const chosen = new Set(rows.filter((r) => !r.caution && !r.blocked).map((r) => r.path));
+    const total = h('b');
+    const sum = () => { total.textContent = fmt.bytes(rows.filter((r) => chosen.has(r.path)).reduce((s, r) => s + (r.size || 0), 0)); };
+    const list = h('div.confirm-list', rows.map((r) => h('div.row.leftover-row',
+      h('input', { type: 'checkbox', checked: chosen.has(r.path), disabled: !!r.blocked, 'aria-label': '选择 ' + r.path,
+        onchange: (e) => { e.target.checked ? chosen.add(r.path) : chosen.delete(r.path); sum(); } }),
+      h('div.ic-cell', PX.fileIcon(r.path, true), h('div',
+        h('div.mono-path', PX.displayPath(r.path)),
+        h('div.small.muted', [r.where, `${fmt.count(r.files)} 个文件`, r.mtime ? '修改于 ' + fmt.date(r.mtime) : ''].filter(Boolean).join(' · ')),
+        r.blocked ? PX.tag(r.blocked, 'bad', 'lock') : r.caution ? PX.tag(r.caution, 'warn') : null)),
+      h('div.size', fmt.bytes(r.size)),
+      PX.revealButton(r.path))));
+    sum();
+    PX.modal({ title: `「${removed.name}」留下的文件夹`, wide: true, body: h('div',
+      h('div', '卸载程序通常会留下设置、缓存和日志。确认以后不会再装它，就可以移到回收站；可能有设置或存档的没有勾选，先打开看看。'),
+      list, h('div', { style: { marginTop: '8px' } }, '已选 ', total)),
+    actions: [{ label: '先不处理' }, { label: '移到回收站…', kind: 'primary', onClick: () => {
+      const paths = [...chosen];
+      if (!paths.length) { PX.toast('还没有勾选'); return false; }
+      setTimeout(async () => {
+        const r = await PX.deleteFlow({ paths, title: `把「${removed.name}」的残留移到回收站`, allowPermanent: false, source: 'leftovers' });
+        if (r && r.done.length) { state.removed = null; draw(); }
+      });
+      return undefined;
+    } }] });
   }
 
   let largest = 1;
@@ -128,11 +198,15 @@
         : a.location_exists ? h('button.btn.quiet.small', { type: 'button', onclick: () => measure(a) }, '计算') : '—'),
       h('div.small.muted', a.installed ? fmt.date(a.installed) : '—'),
       h('div.small' + (idle ? '.idle' : a.last_used ? '.muted' : '.faint'), { title: a.last_used ? fmt.datetime(a.last_used) : '' }, used || '—'),
-      h('div.row-actions',
-        a.location_exists ? h('button.btn.quiet.small.reveal', { type: 'button', title: '打开安装位置', onclick: () => PX.reveal(a.location) }, PX.icon('open')) : null,
-        h('button.btn.quiet.small', { type: 'button', onclick: () => PX.ask({ type: 'app', id: a.id }, a.name) }, PX.icon('spark'), '问 AI'),
-        h('button.btn.small', { type: 'button', disabled: !a.can_uninstall, title: a.can_uninstall ? '' : '这个程序没有提供卸载程序',
-          onclick: () => uninstall(a) }, '卸载…'))));
+      // while its uninstaller runs, the row offers only the check (盘序 also checks by itself)
+      state.uninstalling.has(a.id)
+        ? h('div.row-actions', h('button.btn.small.primary', { type: 'button', title: '卸载程序结束后会自动发现；也可以点这里马上检查',
+          onclick: () => check(true, a.id) }, PX.icon('refresh'), '检查是否卸载完成'))
+        : h('div.row-actions',
+          a.location_exists ? h('button.btn.quiet.small.reveal', { type: 'button', title: '打开安装位置', onclick: () => PX.reveal(a.location) }, PX.icon('open')) : null,
+          h('button.btn.quiet.small', { type: 'button', onclick: () => PX.ask({ type: 'app', id: a.id }, a.name) }, PX.icon('spark'), '问 AI'),
+          h('button.btn.small', { type: 'button', disabled: !a.can_uninstall, title: a.can_uninstall ? '' : '这个程序没有提供卸载程序',
+            onclick: () => uninstall(a) }, '卸载…'))));
     rowEls.set(a.id, el);
   }
 
@@ -162,6 +236,15 @@
         h('button.btn', { type: 'button', disabled: state.refreshing, onclick: () => load(true) }, PX.icon('refresh'),
           state.refreshing ? '正在刷新…' : '刷新'))));
     if (!state.apps) { c.appendChild(PX.progressBar(null)); return; }
+    if (state.removed) {
+      const removed = state.removed;
+      c.appendChild(PX.notice(`「${removed.name}」已经卸载。卸载程序通常会留下设置、缓存这类文件夹，可以查一下有没有残留。`, 'info',
+        h('div.actions', h('button.btn.small.primary', { type: 'button', onclick: () => leftovers(removed) }, PX.icon('search'), '查找残留'),
+          h('button.btn.small', { type: 'button', onclick: () => { state.removed = null; draw(); } }, '不用了'))));
+    }
+    if (state.uninstalling.size) {
+      c.appendChild(PX.notice(`正在等待卸载程序：${[...state.uninstalling.values()].map((u) => u.name).join('、')}。按它的提示完成卸载，完成后这里会自动更新。`, 'info'));
+    }
     if (!state.usageKnown) {
       c.appendChild(PX.notice('「最近运行」需要管理员权限才能读取（来自 Windows 的预读取记录）。', 'info',
         PX.state.init.admin ? null : h('button.btn.small', { type: 'button', onclick: PX.restartAsAdmin }, '以管理员身份重启')));

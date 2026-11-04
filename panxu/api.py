@@ -517,7 +517,7 @@ class Backend:
         return out
 
     def m_delete_paths(self, items: list, mode: str = 'recycle', source: str = 'space'):
-        return self._delete(items, mode, 'space' if source not in ('space', 'large_files', 'ai', 'plan') else source)
+        return self._delete(items, mode, 'space' if source not in ('space', 'large_files', 'ai', 'plan', 'leftovers') else source)
 
     def _delete(self, items: list, mode: str, source: str, after=None):
         if mode not in ('recycle', 'permanent'):
@@ -773,6 +773,23 @@ class Backend:
             raise UserError(str(exc)) from None
         self._app_index = None
         return result
+
+    def m_app_installed(self, app_ids: list):
+        """{app id: still registered?} -- polled while an uninstaller runs."""
+        return {str(i): self.apps.installed(str(i)) for i in (app_ids or [])[:20]}
+
+    def m_app_leftovers(self, app_id: str):
+        """Folders an uninstalled program left behind (a background job: sizes take a moment)."""
+        def run(job):
+            try:
+                rows = self.apps.leftovers(str(app_id))
+            except ValueError as exc:
+                raise UserError(str(exc)) from None
+            policy = self.policy()
+            for r in rows:
+                r['blocked'] = policy.reason(r['path'])
+            return rows
+        return self.jobs.start('app_leftovers', run, group='apps')
 
     def _app_for_ai(self, a: dict) -> dict:
         extra = {'version': a['version'], 'category': APP_KINDS.get(a['kind'], '应用')}

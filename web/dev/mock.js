@@ -278,6 +278,9 @@
     A('a6', 'Microsoft Visual C++ 2015-2022 Redistributable (x64)', 'Microsoft Corporation', '14.40.33810.0', 'runtime', 25 * MB, 300, null, { location_exists: false, location: '' }),
     A('a7', 'NVIDIA 图形驱动程序 566.36', 'NVIDIA Corporation', '566.36', 'driver', 1.2 * GB, 50, null),
   ];
+  const A0 = apps.slice();
+  const uninstalledAt = {};
+  const KB = 1024;
   const sandbox = location.hash.includes('sandbox')
     ? { root: 'C:\\Users\\herol\\AppData\\Local\\PanXu\\sandbox', recycle_count: 2, recycle_size: 1.4 * GB } : null;
   const recycled = [
@@ -346,7 +349,23 @@
     app_icons: ({ ids }) => Object.fromEntries(ids.filter((id) => id === 'a1' || id === 'a2').map((id) => [id,
       'data:image/svg+xml;base64,' + btoa('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><rect width="24" height="24" rx="5" fill="' + (id === 'a1' ? '#4285f4' : '#07c160') + '"/></svg>')])),
     app_measure: ({ app_id }) => ({ id: app_id, size: 2.3 * GB, files: 812 }),
-    app_uninstall: ({ app_id }) => { apps = apps.filter((a) => a.id !== app_id); return { started: true, simulated: !!sandbox }; },
+    // the "uninstaller" finishes 6 seconds after it was opened
+    app_uninstall: ({ app_id }) => {
+      uninstalledAt[app_id] = Date.now();
+      if (sandbox) apps = apps.filter((a) => a.id !== app_id); else setTimeout(() => { apps = apps.filter((a) => a.id !== app_id); }, 6000);
+      return { started: true, simulated: !!sandbox };
+    },
+    app_installed: ({ app_ids }) => Object.fromEntries(app_ids.map((id) => [id, apps.some((a) => a.id === id)])),
+    app_leftovers: ({ app_id }) => job(4, () => {
+      const name = (A0.find((a) => a.id === app_id) || {}).name || 'QuickView';
+      const folder = { a4: 'QuickView', a3: 'FooSoft' }[app_id] || name;
+      return [
+        { path: `${U}\\AppData\\Local\\${folder}`, where: '本地应用数据', size: 183 * MB, files: 412, mtime: now - 2 * day, caution: null, blocked: null },
+        { path: `${U}\\AppData\\Roaming\\${folder}`, where: '漫游应用数据', size: 64 * KB, files: 3, mtime: now - 30 * day,
+          caution: '通常是设置和账号数据：确认以后不会再装它', blocked: null },
+        { path: `C:\\ProgramData\\${folder}`, where: '所有用户的应用数据', size: 662 * MB, files: 2, mtime: now - day, caution: null, blocked: null },
+      ];
+    }),
     ai_ask: ({ messages }) => job(4, { answer: messages.length > 1 ? '可以。删除后下次打开相关程序时会慢一些，因为缓存要重新生成。'
       : '可以删除。\n\n• 这是什么：Unity 编辑器为导入的资源生成的缓存。\n• 能不能删：可以，Unity 会在打开项目时重新生成。\n• 删了会怎样：第一次打开项目会比较慢。\n• 在哪里操作：首页的清理方案里勾选这一项，或在「空间分析」中选中它。',
     cached: false, usage: { requests: 1 }, model: settings.ai.model }),
