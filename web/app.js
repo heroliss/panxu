@@ -78,6 +78,27 @@
   // no rescan) when the user comes back to the window, every few seconds while something waits, or on
   // 「我已关闭」 -- and unlock what was closed
   let checking = false;
+  // browsers that keep running with every window closed, and how to make them really quit
+  const BACKGROUND = {
+    'chrome.exe': ['Chrome', '扩展会让 Chrome 在关掉所有窗口后继续在后台运行。在屏幕右下角的托盘里右键 Chrome 图标，选「退出」。',
+      '以后不想让它常驻：Chrome 设置 > 系统，关掉「关闭 Google Chrome 后继续运行后台应用」。'],
+    'msedge.exe': ['Edge', '「启动增强」和后台扩展会让 Edge 在关掉所有窗口后继续运行。在托盘里右键 Edge 图标选「退出」（如果有），或者在任务管理器里结束 Microsoft Edge。',
+      '以后不想让它常驻：Edge 设置 > 系统和性能，关掉「启动增强」和「关闭 Microsoft Edge 后继续运行后台扩展和应用」。'],
+  };
+  function stillRunning(names) {
+    const known = names.filter((n) => BACKGROUND[n.toLowerCase()]);
+    if (!known.length) {
+      PX.toast(`还在运行：${names.join('、')}。有些程序关掉窗口后仍在后台或托盘里，请从托盘图标退出，或在任务管理器中结束。`, true);
+      return;
+    }
+    const others = names.filter((n) => !BACKGROUND[n.toLowerCase()]);
+    PX.modal({ title: '程序还在后台运行', body: h('div',
+      known.map((n) => { const [name, now, later] = BACKGROUND[n.toLowerCase()];
+        return h('div', { style: { marginBottom: '12px' } }, h('b', name), h('div', now), h('div.small.muted', later)); }),
+      others.length ? h('div.small.muted', `还在运行的其他程序：${others.join('、')}。可以从托盘图标退出，或在任务管理器中结束。`) : null,
+      h('div.small.muted', '退出后回到盘序，会自动重新检查。')),
+    actions: [{ label: '知道了', kind: 'primary' }] });
+  }
   const waiting = () => (PX.isCurrent('junk') && PX.junk.waitingForPrograms()) || (PX.isCurrent('home') && PX.home.waitingForPrograms());
   PX.recheckRunning = async function (byUser) {
     if (checking) return;
@@ -88,7 +109,7 @@
       await PX.home.applyRunning(r.plan_changed);
       if (byUser) {
         const still = [...new Set(Object.values(r.running).flat())];
-        if (still.length) PX.toast(`还在运行：${still.join('、')}。有些程序关掉窗口后仍在后台或托盘里，请从托盘图标退出，或在任务管理器中结束。`, true);
+        if (still.length) stillRunning(still);
         else PX.toast('已重新检查，可以勾选了');
       }
     } catch (e) { if (byUser) PX.fail(e); }
