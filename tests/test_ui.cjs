@@ -79,6 +79,14 @@ assert.strictEqual(PX.placeText({ path: 'x' }), '');
 const dupPy = require('fs').readFileSync(require('path').join(__dirname, '..', 'panxu', 'duplicates.py'), 'utf8');
 for (const words of ['的构建输出', '里的代码工程旁边', "'程序文件夹'", "'代码工程'"]) assert.ok(dupPy.includes(words), 'python says it the same way: ' + words);
 
+// reasons in an expanded row: evidence for cleaning, a caution, or the model's
+for (const line of ['内置规则：公认可以重建的缓存和临时文件', '可能是旧版本留下的：3 年没有修改过', '旁边有更新的版本「IntelliJIdea2025.2」',
+  '「已安装的应用」里找不到对应的程序', '内容逐字节相同', '保留一份，内容不会丢失', '随时可以重新启用']) assert.strictEqual(PX.basisKind(line), 'plus', line);
+for (const line of ['最近 7 天内还有改动：可能还有程序在用', '里面有「Saved」文件夹：可能是存档、个人资料或备份', '属于仍在使用的程序「Adobe」：里面可能还有设置或许可证',
+  '不在应用数据目录：只能由你决定', '没有经过 AI 复核', '里面有程序文件（.exe / .dll）：可能是程序本身，删掉后它就不能运行了',
+  '「a.woff」被「src\\style.css」提到：删掉这份，用到它的地方很可能出问题', '内置规则，但删除后无法恢复：无法从回收站恢复']) assert.strictEqual(PX.basisKind(line), 'warn', line);
+assert.strictEqual(PX.basisKind('AI：可清理（把握 86%）'), 'ai');
+
 // 「打开」 is for documents; programs, installers, scripts and shortcuts would run
 for (const p of [R`C:\a\report.PDF`, R`C:\a\movie.mkv`, R`C:\a\photos.zip`, R`C:\a\notes`, R`C:\a.b\readme.txt`]) assert.ok(PX.canOpen(p), p);
 for (const p of [R`C:\a\setup.EXE`, R`C:\a\run.bat`, R`C:\a\x.ps1`, R`C:\a\app.lnk`, R`C:\a\pkg.msi`, R`C:\a\w.vbs`, R`C:\a\k.reg`]) {

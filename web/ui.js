@@ -439,6 +439,56 @@
     }
     return out.filter(Boolean);
   };
+  // ---- an expanded row, laid out the same everywhere: a warning band; short facts on the left (是什么, what
+  // happens after, ...); the 建议清理度 card on the right (its reasons, then the decision); the places at the bottom.
+  // facts: [[label, text, kind]]; score: {score, basis}; places: {title, note, rows, more}
+  const DECISION = /^(自动勾选|没有自动勾选|没有勾选)/;
+  // reasons that hold an item back or ask for care (checkup.py's guards and duplicates.removal_score), as opposed to
+  // evidence for cleaning it (「可能是旧版本留下的」 is evidence)
+  const CAUTION = /还有改动|可能是存档|可能是程序本身|仍在使用|只能由你|由你决定|无法恢复|默认不勾|各自引用|出问题|有文件提到|可能引用|素材来源|请你|不能运行|没有经过|拿不准|不到 ?\d/;
+  PX.basisKind = (line) => (/^AI/.test(line) ? 'ai' : CAUTION.test(line) ? 'warn' : 'plus');
+  PX.detailPanel = function ({ warn, facts, score, places }) {
+    const panel = h('div.dp');
+    if (warn) panel.appendChild(h('div.dp-warn', PX.icon('warn'), h('span', warn)));
+    const left = (facts || []).filter((f) => f && f[1]).map(([label, text, kind]) =>
+      h('div.dp-fact' + (kind ? '.' + kind : ''), h('div.dp-label', kind === 'ai' ? PX.icon('spark') : null, label), h('div.dp-body', text)));
+    let card = null;
+    if (score && score.score !== null && score.score !== undefined) {
+      const lines = (score.basis || []).slice();
+      const decision = lines.length && DECISION.test(lines[lines.length - 1]) ? lines.pop() : null;
+      const level = PX.scoreLevel(score.score);
+      card = h('div.dp-score.lv-' + level,
+        h('div.dp-score-head', h('span.dp-label', '建议清理度'), PX.score(score.score),
+          h('span.dp-points', String(PX.points(score.score))), h('span.dp-unit', '分'), h('span.dp-level', PX.scoreLabel(score.score))),
+        lines.length ? h('ul.dp-basis', lines.map((line) => h('li.b-' + PX.basisKind(line), line))) : null,
+        decision ? h('div.dp-decision' + (decision.startsWith('自动勾选') ? '.on' : ''),
+          PX.icon(decision.startsWith('自动勾选') ? 'check' : 'info'), h('span', decision)) : null);
+    }
+    if (left.length || card) panel.appendChild(h('div.dp-top' + (left.length && card ? '' : '.single'), left.length ? h('div.dp-facts', left) : null, card));
+    if (places && places.rows.length) {
+      panel.appendChild(h('div.dp-places', h('div.dp-label', places.title, places.note ? h('span.dp-note', places.note) : null),
+        places.rows, places.more || null));
+    }
+    return panel;
+  };
+  // one place in a detail panel: [保留] icon path (facts below it) 打开 / 打开位置
+  PX.placeRow = (path, o) => h('div.dp-place',
+    o && o.badge ? PX.tag(o.badge[0], o.badge[1]) : h('span'),
+    PX.fileIcon(path, !!(o && o.folder)),
+    h('div.dp-path', PX.pathText(path)),
+    h('div.row-actions', o && o.folder ? null : PX.openButton(path, '打开'), PX.revealButton(path, '打开位置')),
+    o && o.facts && o.facts.length ? h('div.dp-place-facts', o.facts) : null);
+
+  // the checkbox in front of a group's title: ticked when every row is, a dash when some are, empty when none; a
+  // click ticks them all, or unticks them all when all were ticked (``onset(on)``)
+  PX.groupBox = function (total, ticked, onset, label) {
+    const all = total > 0 && ticked >= total;
+    const box = h('input.group-box', { type: 'checkbox', checked: all, disabled: !total, 'aria-label': label,
+      title: all ? '取消这一组' : ticked ? `已选 ${ticked} / ${total} 项，点一下全选` : '全选这一组',
+      onclick: (e) => e.stopPropagation(), onchange: (e) => onset(e.target.checked) });
+    box.indeterminate = ticked > 0 && !all;
+    return box;
+  };
   PX.switchEl = function (checked, onchange, disabled) {
     const input = h('input', { type: 'checkbox', checked: !!checked, disabled: !!disabled, onchange });
     return h('label.switch', input, h('span'));

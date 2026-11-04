@@ -372,33 +372,35 @@
       h('button.btn.quiet.small', { type: 'button', title: '问 AI', onclick: (e) => { e.stopPropagation(); PX.ask({ type: 'plan_item', id: it.id }, it.title); } },
         PX.icon('spark'), '问 AI')));
     list.appendChild(row);
-    if (state.open.has(it.id)) {
-      const d = list.appendChild(h('div.plan-detail'));
-      if (it.what && it.what !== it.why) d.appendChild(h('div', h('b', '是什么：'), it.what));
-      if (it.effect) d.appendChild(h('div', h('b', (ACTION[it.action] ? ACTION[it.action] + '后：' : '影响：')), it.effect));
-      if (it.ai && it.ai.reason) d.appendChild(h('div', h('b', 'AI：'), (it.ai.what ? it.ai.what + '。' : '') + it.ai.reason));
-      if (it.score !== null && it.score !== undefined) {
-        d.appendChild(h('div.basis', h('b', `建议清理度 ${PX.points(it.score)} 分（${PX.scoreLabel(it.score)}）：`),
-          h('ul', (it.basis || []).map((line) => h('li', line)))));
-      }
-      if (it.caution) d.appendChild(h('div', PX.tag('注意', 'warn'), ' ', it.caution));
-      const copies = new Map((it.dup_files || []).map((f) => [f.path, f]));  // where each duplicate copy lives
-      if (it.keep) d.appendChild(h('div.path-line', h('b', '保留：'), h('span.mono-path', PX.displayPath(it.keep)), PX.copyFacts(copies.get(it.keep), true),
-        PX.openButton(it.keep, '打开'), PX.revealButton(it.keep, '打开位置')));
-      const all = it.paths && it.paths.length ? it.paths : it.location ? [it.location] : it.locations || [];
-      const showAll = state.open.has('paths:' + it.id);
-      for (const p of showAll ? all : all.slice(0, 6)) {
-        d.appendChild(h('div.path-line', h('span.mono-path', PX.displayPath(p)), PX.copyFacts(copies.get(p), true),
-          isFolder(it) ? null : PX.openButton(p, '打开'), PX.revealButton(p, '打开位置')));
-      }
-      if (all.length > 6) {
-        d.appendChild(h('button.fold', { type: 'button', onclick: (e) => {
-          e.stopPropagation();
-          showAll ? state.open.delete('paths:' + it.id) : state.open.add('paths:' + it.id);
-          draw(true);
-        } }, showAll ? '收起' : `显示全部 ${all.length} 项`));
-      }
+    if (state.open.has(it.id)) list.appendChild(detail(it));
+  }
+
+  // what is behind a row: what it is and what happens, why it scored what it did, and where it is
+  function detail(it) {
+    const copies = new Map((it.dup_files || []).map((f) => [f.path, f]));  // a duplicate's copies: where each lives
+    const all = it.paths && it.paths.length ? it.paths : it.location ? [it.location] : it.locations || [];
+    const showAll = state.open.has('paths:' + it.id);
+    const dup = it.kind === 'dup';
+    const rows = [];
+    if (it.keep) rows.push(PX.placeRow(it.keep, { badge: ['保留', 'good'], facts: PX.copyFacts(copies.get(it.keep), true) }));
+    for (const p of showAll ? all : all.slice(0, 6)) {
+      rows.push(PX.placeRow(p, { badge: dup ? ['移到回收站', ''] : null, folder: isFolder(it) || it.kind === 'rule',
+        facts: PX.copyFacts(copies.get(p), true) }));
     }
+    const more = all.length > 6 ? h('button.fold', { type: 'button', onclick: (e) => {
+      e.stopPropagation();
+      showAll ? state.open.delete('paths:' + it.id) : state.open.add('paths:' + it.id);
+      draw(true);
+    } }, showAll ? '收起' : `显示全部 ${all.length} 项`) : null;
+    const title = dup ? '这几份副本' : it.kind === 'rule' ? '清理这些位置' : it.action === 'recycle' ? '会移到回收站' : '位置';
+    return PX.detailPanel({
+      warn: it.caution,
+      facts: [['是什么', it.what && it.what !== it.why ? it.what : ''],
+        [ACTION[it.action] ? ACTION[it.action] + '后' : '影响', it.effect],
+        ['AI 认为它是', it.ai && it.ai.what, 'ai']],
+      score: { score: it.score, basis: it.basis },
+      places: { title, note: all.length > 1 ? `${all.length} 项` : '', rows, more },
+    });
   }
 
   function group(c, id, name) {
@@ -413,17 +415,15 @@
     for (const it of rows) { let cat = cats.find((x) => x.name === it.category); if (!cat) cats.push(cat = { name: it.category, rows: [] }); cat.rows.push(it); }
     for (const cat of cats) {
       const can = cat.rows.filter(selectable);
-      const all = can.length && can.every(isSel);
       const personal = cat.rows.some((it) => it.personal) && !CAT_PAGE[cat.name];
       const page = CAT_PAGE[cat.name] || (personal ? ['mine', '我的文件'] : null);
       list.appendChild(h('div.cat-head', { id: catAnchor(id, cat.name) },
+        id !== 'info' ? PX.groupBox(can.length, can.filter(isSel).length, (on) => { for (const it of can) setSel(it, on); draw(true); },
+          '选择「' + cat.name + '」这一组') : null,
         h('b', cat.name), h('span.muted.small', `${cat.rows.length} 项 · ${fmt.bytes(cat.rows.reduce((s, it) => s + (it.size || 0), 0))}`),
         h('span.grow'),
         page && id !== 'info' ? h('button.btn.quiet.small.go', { type: 'button', title: `在「${page[1]}」里看全部细节`, onclick: () => PX.go(page[0]) },
-          `去「${page[1]}」`, PX.icon('chev')) : null,
-        can.length && id !== 'info' ? h('button.btn.quiet.small', { type: 'button', onclick: () => {
-          for (const it of can) setSel(it, !all); draw(true);
-        } }, all ? '取消这一组' : '全选这一组') : null));
+          `去「${page[1]}」`, PX.icon('chev')) : null));
       const limit = cat.rows.length > 12 && !state.open.has('cat:' + id + cat.name) ? 8 : cat.rows.length;
       cat.rows.slice(0, limit).forEach((it) => itemRow(list, it));
       if (limit < cat.rows.length) {

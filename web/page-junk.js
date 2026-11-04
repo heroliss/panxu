@@ -152,14 +152,13 @@
       PX.icon('spark'), '问 AI'));
     const out = [el];
     if (state.expanded.has(rule.id)) {
-      const detail = h('div.junk-detail');
-      if (res.count) detail.appendChild(h('div', `${fmt.count(res.count)} 个文件`));
-      if (rule.note) detail.appendChild(h('div', '注意：' + rule.note));
-      for (const loc of res.locations || []) {
-        detail.appendChild(h('div.path-line', PX.fileIcon(loc, true), h('span.mono-path', PX.displayPath(loc)), PX.revealButton(loc, '打开位置')));
-      }
-      if (!res.locations || !res.locations.length) detail.appendChild(h('div', rule.mode === 'command' ? '通过系统命令清理' : '未找到对应的位置'));
-      out.push(detail);
+      const locs = res.locations || [];
+      out.push(PX.detailPanel({
+        warn: rule.note,
+        facts: [['有多少', res.count ? `${fmt.count(res.count)} 个文件，共 ${fmt.bytes(res.size || 0)}` : ''],
+          ['怎么清理', rule.mode === 'command' ? '通过系统命令清理' : locs.length ? '' : '没有找到对应的位置']],
+        places: { title: '清理这些位置', note: locs.length > 1 ? `${locs.length} 个` : '', rows: locs.map((loc) => PX.placeRow(loc, { folder: true })) },
+      }));
     }
     return out;
   }
@@ -227,7 +226,13 @@
       const shown = inGroup.filter(visible);
       const hidden = inGroup.length - shown.length;
       const gsize = shown.reduce((s, r) => s + (state.results[r.id].size || 0), 0);
-      const sec = h('section.group', { id: 'junk-' + g.id }, h('div.group-head', h('h2', g.name), h('span.size', gsize ? fmt.bytes(gsize) : '')));
+      const can = shown.filter((r) => !blockedReason(r, state.results[r.id]));
+      const box = PX.groupBox(can.length, can.filter((r) => state.selected.has(r.id)).length, (on) => {
+        state.touched = true;
+        for (const r of can) on ? state.selected.add(r.id) : state.selected.delete(r.id);
+        rerender(true);
+      }, '选择「' + g.name + '」这一组');
+      const sec = h('section.group', { id: 'junk-' + g.id }, h('div.group-head.with-box', box, h('h2', g.name), h('span.size', gsize ? fmt.bytes(gsize) : '')));
       const list = sec.appendChild(h('div.list'));
       for (const r of shown) for (const el of row(r)) list.appendChild(el);
       if (hidden) {

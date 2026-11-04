@@ -151,15 +151,15 @@
     const sec = c.appendChild(h('section.group.finding', { id: 'finding-' + f.id }));
     const can = f.files.filter((x) => !x.blocked);
     const removable = can.filter((x) => x.remove);
-    const allSel = can.length && can.every((x) => state.selected.has(x.path));
-    const pickAll = () => { for (const x of can) allSel ? state.selected.delete(x.path) : state.selected.add(x.path); draw(true); };
-    sec.appendChild(h('div.group-head', h('h2', f.title), PX.tag(f.kind_label), h('span.size', fmt.bytes(f.size))));
+    // versions: ticking every one would leave none, so that group has no box (only 「只选可以删除的」)
+    const box = f.kind === 'name_versions' ? null : PX.groupBox(can.length, can.filter((x) => state.selected.has(x.path)).length,
+      (on) => { for (const x of can) on ? state.selected.add(x.path) : state.selected.delete(x.path); draw(true); }, '选择这一组：' + f.title);
+    sec.appendChild(h('div.group-head' + (box ? '.with-box' : ''), box, h('h2', f.title), PX.tag(f.kind_label), h('span.size', fmt.bytes(f.size))));
+    const onlyRemovable = removable.length && removable.length !== can.length;
     sec.appendChild(h('div.finding-why', h('div', f.advice), h('div.small.muted', f.reason),
-      h('div.actions',
-        f.kind !== 'name_versions' ? h('button.btn.small', { type: 'button', onclick: pickAll }, allSel ? '取消这一组' : '全选这一组') : null,
-        removable.length && removable.length !== can.length ? h('button.btn.small', { type: 'button', onclick: () => {
-          for (const x of removable) state.selected.add(x.path); draw(true);
-        } }, `只选可以删除的 ${removable.length} 项`) : null)));
+      onlyRemovable ? h('div.actions', h('button.btn.small', { type: 'button', onclick: () => {
+        for (const x of removable) state.selected.add(x.path); draw(true);
+      } }, `只选可以删除的 ${removable.length} 项`)) : null));
     const list = sec.appendChild(h('div.list'));
     const key = 'f:' + f.id;
     const limit = f.files.length > 10 && !state.open.has(key) ? 6 : f.files.length;
