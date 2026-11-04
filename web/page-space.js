@@ -71,7 +71,7 @@
 
   // ------------------------------------------------------------------ state
   const state = { status: 'idle', target: null, progress: {}, jobId: null, result: null, nodeId: 0,
-    node: null, treemap: null, view: 'dirs', selected: new Set(),
+    node: null, treemap: null, view: 'dirs', selected: new Set(), focus: null,
     ai: { status: 'idle', result: null, progress: {}, selected: new Set(), jobId: null, showKeep: false },
     types: null };
 
@@ -102,6 +102,7 @@
     try {
       const [node, tm] = await Promise.all([PX.api.call('space_node', { node_id: nodeId }),
         PX.api.call('space_treemap', { node_id: nodeId })]);
+      if (nodeId !== state.nodeId) state.focus = null;
       state.nodeId = nodeId;
       state.node = node;
       state.treemap = tm;
@@ -200,6 +201,9 @@
 
     const parentSize = data.node.size || 1;
     const items = [...data.children, ...data.files].sort((a, b) => b.size - a.size);
+    view.rows.clear();
+    view.items = new Map(data.children.map((c) => [c.id, c]));
+    const focused = items.find((it) => it.path === state.focus) || null;
     const listWrap = h('div');
     listWrap.appendChild(h('div.thead.space-head', h('span'), h('span', '名称'), h('span.r', '大小'), h('span.r', '文件数'), h('span.r', '修改时间'), h('span')));
     const list = listWrap.appendChild(h('div.list'));
@@ -212,9 +216,11 @@
       const tags = isDir ? noteTags(it) : [];
       const share = h('div.share', h('i', { style: { width: Math.max(0.5, (it.size / parentSize) * 100) + '%',
         background: isDir ? PX.kindColor(it.note ? it.note.kind : 'unknown') : 'var(--ink-3)' } }));
-      list.appendChild(h('div.row.space-row' + (isDir ? '.dir' : ''), {
-        onclick: isDir && it.has_children !== undefined ? () => open(it.id) : null,
-        title: it.path,
+      const row = list.appendChild(h('div.row.space-row' + (it === focused ? '.focus' : ''), {
+        tabindex: '0', title: it.path,
+        onclick: () => focusItem(it),
+        ondblclick: (e) => { if (!e.target.closest('button, input')) enter(it); },
+        onkeydown: (e) => { if (e.key === 'Enter') enter(it); },
       }, box,
       h('div.cell-main',
         h('div.nm', PX.fileIcon(it.path, isDir), h('span.name', it.name)),
@@ -222,17 +228,72 @@
       h('div.size', fmt.bytes(it.size)),
       h('div.size.muted', isDir ? fmt.count(it.files) : ''),
       h('div.size.muted.small', fmt.date(it.mtime)),
-      PX.revealButton(it.path)));
+      PX.pathButtons(it.path, isDir)));
+      view.rows.set(it.path, row);
     }
     if (data.more_files) list.appendChild(h('div.row.muted.small', { style: { gridTemplateColumns: '1fr' } },
       `另有 ${fmt.count(data.more_files)} 个较小的文件，共 ${fmt.bytes(data.more_bytes)}`));
     if (!items.length) list.appendChild(h('div.empty', '这个文件夹是空的'));
 
-    const side = h('div.treemap-wrap', h('div.treemap', { id: 'treemap', role: 'img', 'aria-label': '空间占用图' }),
+    view.detail = detailCard(focused);
+    const side = h('div.treemap-wrap', view.detail, h('div.treemap', { id: 'treemap', role: 'img', 'aria-label': '空间占用图' }),
       h('div.legend', PX.KIND_LEGEND.map(([k, label]) => h('span', h('span.dot', { style: { background: PX.kindColor(k) } }), label))));
     container.appendChild(h('div.space-grid', listWrap, side));
     container.appendChild(actionBar());
     requestAnimationFrame(drawTreemap);
+  }
+
+  // One click selects an item -- its details on the right, its block lit in the map; a double-click (or Enter)
+  // goes into a folder or opens a file, as in Explorer. A click must not redraw the page: the second click of
+  // a double-click would land on a new element.
+  const view = { rows: new Map(), cells: new Map(), items: new Map(), detail: null };
+  function focusItem(it, scroll) {
+    state.focus = it ? it.path : null;
+    for (const [p, el] of view.rows) el.classList.toggle('focus', p === state.focus);
+    for (const [id, el] of view.cells) el.classList.toggle('focus', !!it && it.type === 'dir' && it.id === id);
+    if (scroll && it && view.rows.get(it.path)) view.rows.get(it.path).scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    if (view.detail) {
+      const card = detailCard(it);
+      view.detail.replaceWith(card);
+      view.detail = card;
+    }
+  }
+  function enter(it) {
+    if (it.type === 'dir') { open(it.id); return; }
+    if (PX.canOpen(it.path)) { PX.openPath(it.path); return; }
+    PX.reveal(it.path);
+    PX.toast('程序和脚本不会直接运行，已在资源管理器中显示');
+  }
+
+  // what is selected (or, with nothing selected, the folder being viewed)
+  function detailCard(it) {
+    const current = !it;
+    const x = it || state.node.node;
+    const isDir = x.type !== 'file';
+    const facts = [fmt.bytes(x.size)];
+    if (isDir) {
+      facts.push(`${fmt.count(x.files)} 个文件`);
+      if (x.dirs) facts.push(`${fmt.count(x.dirs)} 个文件夹`);
+    }
+    if (x.mtime) facts.push('修改于 ' + fmt.date(x.mtime));
+    const tags = isDir ? noteTags(x) : [];
+    if (x.blocked) tags.push(PX.tag(x.blocked, 'bad', 'lock'));
+    const about = x.ai && x.ai.reason ? h('div.sd-text', h('b', 'AI：'), x.ai.reason) : x.note && x.note.advice ? h('div.sd-text', x.note.advice) : null;
+    return h('div.space-detail',
+      h('div.sd-kicker', current ? '当前文件夹' : isDir ? '选中的文件夹' : '选中的文件'),
+      h('div.sd-name', PX.fileIcon(x.path, isDir), h('b', current ? PX.displayPath(x.path) : x.name)),
+      current ? null : h('div.sd-path.mono-path', PX.displayPath(x.path)),
+      h('div.sd-facts', facts.join(' · ')),
+      tags.length ? h('div.label', tags) : null,
+      about,
+      h('div.sd-actions',
+        current ? null : isDir ? h('button.btn.small.primary', { type: 'button', onclick: () => open(x.id) }, PX.icon('chev'), '进入')
+          : PX.canOpen(x.path) ? h('button.btn.small.primary', { type: 'button', onclick: () => PX.openPath(x.path) }, PX.icon('open'), '打开') : null,
+        h('button.btn.small', { type: 'button', onclick: () => PX.reveal(x.path) }, PX.icon('folder'), '在资源管理器中显示'),
+        h('button.btn.small', { type: 'button', onclick: () => PX.ask({ type: 'path', path: x.path }, current ? PX.displayPath(x.path) : x.name) },
+          PX.icon('spark'), '问 AI')),
+      current ? h('div.sd-hint', '单击左边的列表或下面的图查看某一项，双击进入文件夹或打开文件。')
+        : !isDir && !PX.canOpen(x.path) ? h('div.sd-hint', '这是程序或脚本，盘序不会直接运行它。') : null);
   }
 
   let barEl = null;
@@ -248,9 +309,9 @@
     const lookup = new Map([...state.node.children, ...state.node.files].map((x) => [x.path, x]));
     const size = sel.reduce((s, p) => s + ((lookup.get(p) || {}).size || 0), 0);
     barEl.appendChild(h('div.grow', sel.length ? h('span', `已选 ${sel.length} 项，约 `, h('span.fig', fmt.bytes(size)))
-      : h('span.muted', '点击文件夹查看内容；勾选后可以删除')));
+      : h('span.muted', '单击查看详情，双击进入文件夹；勾选后可以删除')));
     barEl.appendChild(h('button.btn', { type: 'button', disabled: sel.length !== 1, onclick: () => PX.reveal(sel[0]) },
-      PX.icon('open'), '在资源管理器中显示'));
+      PX.icon('folder'), '在资源管理器中显示'));
     barEl.appendChild(h('button.btn.primary', { type: 'button', disabled: !sel.length, onclick: deleteSelected }, PX.icon('trash'), '删除…'));
   }
   const updateBar = () => fillBar();
@@ -270,14 +331,19 @@
         h('b', state.treemap.name), h('span', fmt.bytes(state.treemap.size))));
       return;
     }
+    view.cells.clear();
+    const focused = view.items && [...view.items.values()].find((c) => c.path === state.focus);
     for (const r of PX.treemap(top, 0, 0, W, H)) {
       const it = r.item;
+      const row = it.id !== null ? view.items.get(it.id) : null;  // the same folder in the list
       const color = it.other ? 'var(--c-unknown)' : PX.kindColor(it.kind);
-      const cell = h('div.tm' + (it.other ? '.other' : ''), {
+      const cell = h('div.tm' + (it.other ? '.other' : '') + (row && row === focused ? '.focus' : ''), {
         style: { left: r.x + 'px', top: r.y + 'px', width: r.w + 'px', height: r.h + 'px', background: color },
-        title: `${it.name}  ${fmt.bytes(it.size)}`,
-        onclick: it.id !== null && it.has_children ? () => open(it.id) : null,
+        title: `${it.name}  ${fmt.bytes(it.size)}` + (row ? '\n单击查看详情，双击进入' : ''),
+        onclick: row ? () => focusItem(row, true) : null,
+        ondblclick: row ? () => open(row.id) : null,
       });
+      if (row) view.cells.set(row.id, cell);
       const roomy = r.w > 54 && r.h > 30;
       if (roomy) cell.appendChild(h('b', it.name));
       if (roomy && r.h > 44) cell.appendChild(h('span', fmt.bytes(it.size)));
@@ -289,8 +355,10 @@
             style: { left: s.x + 'px', top: s.y + 'px', width: s.w + 'px', height: s.h + 'px',
               background: 'color-mix(in srgb, ' + (s.item.other ? 'var(--c-unknown)' : PX.kindColor(s.item.kind)) + ' 78%, #000 0%)',
               borderColor: 'rgba(255,255,255,.35)' },
-            title: `${s.item.name}  ${fmt.bytes(s.item.size)}`,
-            onclick: (e) => { e.stopPropagation(); if (s.item.id !== null && s.item.has_children) open(s.item.id); },
+            title: `${s.item.name}  ${fmt.bytes(s.item.size)}` + (s.item.id !== null ? '\n双击直接进入' : ''),
+            // a block inside a block: one click selects the folder around it, a double-click goes straight in
+            onclick: (e) => { e.stopPropagation(); if (row) focusItem(row, true); },
+            ondblclick: (e) => { e.stopPropagation(); if (s.item.id !== null) open(s.item.id); else if (row) open(row.id); },
           }, s.w > 50 && s.h > 22 ? h('b', s.item.name) : null));
         }
       }
@@ -417,7 +485,7 @@
             h('div.conf', `AI 的把握 ${Math.round((s.confidence || 0) * 100)}%`, decision ? h('span.decision', decision) : null),
             h('div.ai-actions',
               h('button.btn.quiet.small', { type: 'button', title: '在资源管理器中打开这个文件夹，看看里面是什么',
-                onclick: () => PX.reveal(s.path) }, PX.icon('open'), '打开文件夹'),
+                onclick: () => PX.reveal(s.path) }, PX.icon('folder'), '打开文件夹'),
               h('button.btn.quiet.small', { type: 'button', title: '在左边的文件夹视图里找到它', onclick: () => locate(s) }, PX.icon('map'), '在空间图中定位'),
               h('button.btn.quiet.small', { type: 'button', onclick: () => PX.ask({ type: 'path', path: s.path }, s.app && s.app !== '未知' ? s.app : PX.displayPath(s.path)) },
                 PX.icon('spark'), '问 AI'))),
