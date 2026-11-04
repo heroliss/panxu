@@ -672,6 +672,16 @@ class CheckupTest(TempDirTest):
         self.assertTrue(all(f['ai'] for f in same['files']), 'a new search shows the advice already given')
         self.assertTrue(any(h['title'].startswith('AI 查看') for h in self.call('history')))
 
+    def test_asking_about_a_service_brings_its_facts(self):
+        answer = self.wait(self.call('ai_ask', messages=[{'role': 'user', 'content': '能禁用吗？'}],
+                                     target={'type': 'service', 'id': 'CoworkVMService'}))
+        self.assertTrue(answer['answer'])
+        system = self.model.requests[-1]['system']
+        self.assertIn('自己的应用包里', system)
+        self.assertIn('现在正开着', system)
+        self.assertIn('Anthropic, PBC', system)
+        self.assertNotIn(self.backend.env['USERPROFILE'], system)
+
     def test_insights_delete_only_recycles_known_files(self):
         self.checkup(use_ai=False)
         finding = next(f for f in self.call('insights_result')['findings'] if f['kind'] == 'incomplete_download')

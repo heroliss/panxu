@@ -1123,7 +1123,8 @@ class Backend:
             if item is None:
                 raise UserError('启动项已不存在，请刷新列表')
             ctx['about'] = {'type': '开机启动项', 'name': item['display_name'], 'command': self._anon_text(item['command']),
-                            'publisher': item['publisher'], 'enabled': item['enabled']}
+                            'publisher': item['publisher'], 'enabled': item['enabled'],
+                            'facts': [self._anon_text(f) for f in itemfacts.startup_facts(item, itemfacts.running_programs())]}
         elif kind == 'service':
             svc = next((s for s in self.services.list() if s['name'] == target.get('id')), None)
             if svc is None:
@@ -1131,13 +1132,14 @@ class Backend:
             ctx['about'] = {'type': '系统服务', 'name': svc['display_name'], 'service_name': svc['name'],
                             'description': svc['description'][:300], 'start_type': svc['start_label'],
                             'status': svc['status_label'], 'publisher': svc['publisher'],
-                            'program': self._anon_text(svc['binpath']), 'microsoft': svc['kind'] != 'third_party'}
+                            'program': self._anon_text(svc['binpath']), 'microsoft': svc['kind'] != 'third_party',
+                            'facts': [self._anon_text(f) for f in itemfacts.service_facts(svc, itemfacts.running_programs())[0]]}
         elif kind == 'app':
             app = self.apps.get(str(target.get('id')))
             if app is None:
                 raise UserError('程序已不存在，请刷新列表')
             ctx['about'] = {'type': '已安装的程序', 'name': app['name'], 'publisher': app['publisher'],
-                            **self._app_for_ai(app)['extra']}
+                            **self._app_for_ai(app, itemfacts.running_programs())['extra']}
         elif kind == 'file' and isinstance(target.get('path'), str):
             ctx['about'] = self._file_context(target['path'], include_content)
         elif kind == 'plan_item':
