@@ -5,7 +5,7 @@ from helpers import WIN_ENV, TempDirTest
 
 from panxu.duplicates import find_duplicates, verify_unchanged
 from panxu.knowledge import Knowledge
-from panxu.scanner import FLAG_LINKS, SpaceScan
+from panxu.scanner import FLAG_LINKS, FLAG_PROGRAM, SpaceScan
 
 
 class ScannerTest(TempDirTest):
@@ -45,6 +45,15 @@ class ScannerTest(TempDirTest):
         self.assertEqual(scan.root.size, 2300)
         self.assertEqual([c.name for c in scan.root.children], ['b'])
         self.assertFalse(any('big.bin' in f['path'] for f in scan.top_files))
+
+    def test_program_files_are_marked_up_the_tree(self):
+        self.make('p/Tool/bin/tool.exe', 10)
+        self.make('p/Tool/data/x.bin', 10)
+        self.make('p/Cache/y.bin', 10)
+        scan = SpaceScan(os.path.join(self.tmp, 'p')).run()
+        by_name = {c.name: c for c in scan.root.children}
+        self.assertTrue(by_name['Tool'].flags & FLAG_PROGRAM, 'a folder with an .exe somewhere inside')
+        self.assertFalse(by_name['Cache'].flags & FLAG_PROGRAM)
 
     def test_cancel(self):
         import threading
@@ -93,6 +102,20 @@ class DuplicatesTest(TempDirTest):
                                  skip=lambda p: os.path.basename(p) == 'sys')
         self.assertEqual(len(result['groups']), 1)
         self.assertEqual(len(result['groups'][0]['files']), 2)
+
+    def test_program_and_project_folders_are_not_searched(self):
+        # the same Qt DLL in two portable programs: recycling one copy breaks a program
+        for app in ('appA', 'appB'):
+            self.make(f'y/{app}/tool.exe', 100)
+            self.make(f'y/{app}/Qt5Core.dll', 5000)
+        self.make('y/proj/package.json', 10)
+        self.make('y/proj/assets/logo.png', 4000)
+        self.make('y/proj/build/logo.png', 4000)
+        self.make('y/photos/a.jpg', 3000)
+        self.make('y/photos/a (1).jpg', 3000)
+        result = find_duplicates([os.path.join(self.tmp, 'y')], min_size=1)
+        groups = [sorted(os.path.basename(f['path']) for f in g['files']) for g in result['groups']]
+        self.assertEqual(groups, [['a (1).jpg', 'a.jpg']])
 
     def test_verify_unchanged(self):
         p = self.make('f', 10)

@@ -20,6 +20,9 @@ TOP_FILES = 5000
 FLAG_DENIED = 1     # could not list this directory
 FLAG_LINKS = 2      # contains junctions/symlinks that were not followed
 FLAG_CLOUD = 4      # contains cloud-only (online) files
+FLAG_PROGRAM = 8    # contains program files (.exe / .dll) somewhere below
+PROGRAM_EXTS = ('.exe', '.dll')
+ROLLUP = FLAG_DENIED | FLAG_CLOUD | FLAG_PROGRAM  # flags a folder takes over from its sub-folders
 
 
 class Node:
@@ -134,6 +137,8 @@ class SpaceScan:
                 if st.st_mtime > newest:
                     newest = st.st_mtime
                 ext = os.path.splitext(entry.name)[1].lower()
+                if ext in PROGRAM_EXTS:
+                    node.flags |= FLAG_PROGRAM
                 slot = state.exts.get(ext)
                 if slot is None:
                     state.exts[ext] = [1, fsize]
@@ -163,8 +168,7 @@ class SpaceScan:
                 parent.dirs += 1 + node.dirs
                 if node.mtime > parent.mtime:
                     parent.mtime = node.mtime
-                if node.flags & (FLAG_DENIED | FLAG_CLOUD):
-                    parent.flags |= node.flags & (FLAG_DENIED | FLAG_CLOUD)
+                parent.flags |= node.flags & ROLLUP
         for node in nodes:
             if node.children:
                 node.children.sort(key=lambda n: n.size, reverse=True)

@@ -249,6 +249,9 @@ def _layout() -> tuple[list[_Spec], list[tuple[str, float]]]:
     add(F(f'{L}/OldGameStudio/StarVoyage/Saved/SaveGames/slot1.sav', 2 * MB, age=700))
     add(F(f'{L}/OldGameStudio/StarVoyage/Saved/Logs/StarVoyage.log', 21 * MB, age=700))
     add(F(f'{L}/OldGameStudio/StarVoyage/Cache/shaders.bin', 1120 * MB, age=700))
+    # two versions of a per-user program side by side: the old one is a program, not data it left behind
+    add(F(f'{L}/SimTool/SimTool-1.0/SimTool.exe', 310 * MB, age=800))
+    add(F(f'{L}/SimTool/SimTool-2.0/SimTool.exe', 330 * MB, age=10))
     add(F(f'{L}/Docker/wsl/disk/docker_data.vhdx', 8200 * MB, age=20))
     add(F(f'{L}/Unity/cache/packages/packages.unity.com/com.unity.render-pipelines/pkg.tgz', 760 * MB, age=120))
     add(F(f'{L}/ms-playwright/chromium-1140/chrome-win/chrome.exe', 520 * MB, age=200))

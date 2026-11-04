@@ -70,18 +70,27 @@ def file_score(kind: str, f: dict) -> int:
     if kind == 'name_versions':
         if f['note'].startswith('最新') or f['note'].startswith('与其他副本内容相同'):
             return 5   # the copy to keep
-        return 85 if f.get('remove') else 35
+        if f.get('remove'):
+            return 85
+        return 20 if f.get('dated') else 35  # names that differ only by a date are often separate files
     if kind == 'archive_extracted' and f.get('remove'):
         return 85   # every file verified in the extracted folder
     return KIND_SCORE[kind]
 
 
+def content_question(kind: str, f: dict) -> str | None:
+    """What only a file's content can tell, when an offer rests on it. The model sees names (and 盘序's own
+    note), so without the content its 「可以删除」 would only repeat 盘序's guess (see with_ai)."""
+    if kind == 'name_versions' and not f.get('remove'):
+        return '旧版本里有没有新版本缺少的东西，要看内容才知道'
+    return None
+
+
 def with_ai(score: int, ai: dict | None, needs_content: bool = False) -> int:
     """The model's verdict on a file moves the score; it can lower it freely but raise it only so far.
 
-    ``needs_content``: only the file's content tells whether it may go (an older version that differs from the
-    newer one). A model that saw nothing but names would only repeat 盘序's own 「较旧的版本」, so its
-    「可以删除」 raises nothing then."""
+    ``needs_content``: only the file's content tells whether it may go (content_question). A model that saw
+    nothing but names would only repeat 盘序's own 「较旧的版本」, so its 「可以删除」 raises nothing then."""
     if not ai:
         return score
     verdict = ai.get('verdict')
@@ -177,6 +186,12 @@ def is_copy_name(stem: str) -> bool:
 
 
 _ORDER_MARK = re.compile(r'(?:v|ver|版本)\s*(\d+(?:\.\d+)*)$|((?:19|20)\d{2})$|(\d{6,8})$|第(\d+)版$', re.I)
+_DATE_MARK = re.compile(r'((?:19|20)\d{2}|\d{6,8})$')
+
+
+def dated_name(stem: str) -> bool:
+    """'账单_202401', '年报_2023': the name ends in a year or a date (copy marks aside)."""
+    return bool(_DATE_MARK.search(_COPY_MARK.sub('', stem).strip(' _-.')))
 
 
 def name_version(stem: str) -> tuple[int, ...] | None:
@@ -312,14 +327,14 @@ PROJECT_FILES = {'package.json', 'pyproject.toml', 'setup.py', 'requirements.txt
 PROJECT_EXTS = ('.sln', '.csproj', '.vcxproj', '.uproject', '.xcodeproj')
 
 
-def _is_project_dir(files, dirs) -> bool:
+def is_project_dir(files, dirs) -> bool:
     """A code project's root: version control or a build file. Its documents are named on purpose
     (treatment.md and cinematic_treatment_v9.md), and its empty folders are often there on purpose too."""
     return (any(d.name.lower() in ('.git', '.svn', '.hg') or d.name.lower().endswith(PROJECT_EXTS) for d in dirs)
             or any(e.name.lower() in PROJECT_FILES or e.name.lower().endswith(PROJECT_EXTS) for e in files))
 
 
-def _is_program_dir(files, dirs) -> bool:
+def is_program_dir(files, dirs) -> bool:
     """A program's own folder: DLLs, or an .exe together with the sub-folders programs bring along."""
     names = [e.name.lower() for e in files]
     if any(n.endswith('.dll') for n in names):
@@ -342,7 +357,7 @@ class Insights:
         # folders that are a program (a portable app unpacked in Downloads: its .exe, DLLs, plugins, its own
         # config and history): nothing inside is the user's loose file, and its .exe is no installer
         self.program_dirs: list[str] = []
-        # code projects (see _is_project_dir): no versions are guessed and no empty folders offered inside
+        # code projects (see is_project_dir): no versions are guessed and no empty folders offered inside
         self.project_dirs: list[str] = []
         self.stats: dict = {}
 
@@ -365,14 +380,14 @@ class Insights:
                 if skip and dirpath != root and skip(dirpath):
                     dirs.clear()
                     continue
-                if dirpath != root and _is_program_dir(files, dirs):
+                if dirpath != root and is_program_dir(files, dirs):
                     self.program_dirs.append(dirpath)
                     dir_has_files[dirpath] = True  # not walked further: not empty, nothing inside is offered
                     dirs.clear()
                     continue
                 kept = [d for d in dirs if not managed_dir(d.name)]
                 has = len(kept) != len(dirs)  # holds a program-managed folder (node_modules, .git...): not empty
-                if dirpath != root and _is_project_dir(files, dirs):  # a stray package.json on the Desktop is no project
+                if dirpath != root and is_project_dir(files, dirs):  # a stray package.json on the Desktop is no project
                     projects.append(dirpath)
                 dirs[:] = kept
                 dir_children[dirpath] = [os.path.join(dirpath, d.name) for d in dirs]
@@ -575,11 +590,16 @@ class Insights:
                 plain = [t for t in twins if not is_copy_name(os.path.splitext(t.name)[0])]
                 if plain:
                     newest = max(plain, key=lambda t: t.mtime)
+            # 账单_202401 / 账单_202402: names that differ only by a date are as often separate files of their own
+            # period (statements, yearly reports) as versions of one file
+            dated = all(dated_name(os.path.splitext(m.name)[0]) for m in members)
             files = []
             for m in members:
                 same = [o for o in by_digest.get(f'{m.size}:{digests.get(m.path)}', []) if o is not m]
                 if m is newest:
-                    note, remove = ('最新的一份（版本号最大）' if by_version else '最新的一份（修改时间最晚）'), False
+                    note = ('最新的一份（名字里的日期最晚）' if dated else '最新的一份（版本号最大）' if by_version
+                            else '最新的一份（修改时间最晚）')
+                    remove = False
                 elif same:
                     # keep exactly one of each identical set: the one without a copy marker, else the oldest
                     keeper = min([m] + same, key=lambda x: (is_copy_name(os.path.splitext(x.name)[0]), x.mtime))
@@ -588,14 +608,20 @@ class Insights:
                     remove = m is not keeper
                     note = (f'和「{keeper.name}」内容完全相同' if remove else '与其他副本内容相同，保留这一份')
                 else:
-                    note, remove = '较旧的版本', False
+                    note, remove = ('日期较早的一份' if dated else '较旧的版本'), False
                 files.append(self._file(m, note, remove))
+                if dated and not remove and m is not newest:
+                    files[-1]['dated'] = True
             files.reverse()  # newest first
             files.sort(key=lambda f: f['path'] != newest.path)  # the one to keep always heads the group
             ident = 'ver-' + hashlib.md5((members[0].folder + '|' + base).encode('utf-8')).hexdigest()[:10]
             identical = sum(1 for f in files if f['remove'])
-            reason = (f'{len(members)} 个文件名字相近，像是「{base}」的不同版本' +
-                      (f'，其中 {identical} 个与另一份内容完全相同' if identical else '') + '。')
+            if dated:
+                reason = (f'{len(members)} 个文件名字只差日期：可能是「{base}」的不同版本，也可能是不同时期各自的文件'
+                          '（例如每月的账单），看过内容再决定')
+            else:
+                reason = f'{len(members)} 个文件名字相近，像是「{base}」的不同版本'
+            reason += (f'，其中 {identical} 个与另一份内容完全相同' if identical else '') + '。'
             title = f'「{os.path.splitext(newest.name)[0]}」等 {len(members)} 个版本'
             out.append(Finding(ident, 'name_versions', title, files, sum(m.size for m in members), reason,
                                0.85 if identical else 0.45,

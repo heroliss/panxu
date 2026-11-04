@@ -150,7 +150,7 @@
     { node_id: 14, path: 'C:\\Users\\herol\\AppData\\Local\\ms-playwright', size: 2.6 * GB, files: 3100, verdict: 'clean', verdict_label: '可清理', app: 'Playwright', reason: '自动化测试下载的浏览器内核，需要时可重新安装', effect: '运行测试前需执行 playwright install', confidence: 0.8, source: 'ai', expanded: false,
       score: 80, selected: true, basis: ['AI：可清理（把握 80%）', '自动勾选：AI 判断可清理（把握 80%），不属于仍在使用的程序，最近也没有改动，8 分达到勾选门槛（5 分）'] },
     { node_id: 10, path: 'C:\\Users\\herol\\AppData\\Local\\JetBrains\\IntelliJIdea2025.3', size: 7.1 * GB, files: 51000, verdict: 'review', verdict_label: '需要你确认', app: 'IntelliJ IDEA', reason: '含索引缓存和本地历史；若已不用这个版本可整体删除', effect: '重新打开会重建索引', confidence: 0.62, source: 'ai', expanded: false, caution: null,
-      score: 55, selected: false, basis: ['AI：需要你确认（把握 62%）', '没有自动勾选：AI 也拿不准'] },
+      score: 50, selected: false, basis: ['AI：需要你确认（把握 62%）', '没有自动勾选：AI 也拿不准'] },
     { node_id: 17, path: 'C:\\Users\\herol\\AppData\\Roaming\\Tencent', size: 6.3 * GB, files: 9200, verdict: 'keep', verdict_label: '建议保留', app: 'QQ / 微信', reason: '聊天记录数据库与账号配置', effect: '', confidence: 0.9, source: 'cache', expanded: false, caution: '位于应用配置目录，可能包含应用设置或账号数据',
       score: null, selected: false, basis: ['AI：建议保留（把握 90%）'] },
     { node_id: 998, path: 'D:\\Temp', size: 2.4 * GB, files: 46073, verdict: 'clean', verdict_label: '可以清理', app: '临时文件夹',
@@ -267,7 +267,9 @@
   for (const f of findings) {
     for (const x of f.files) {
       x.score = f.kind === 'name_versions' ? (x.note.startsWith('最新') || x.note.startsWith('与其他') ? 5 : x.remove ? 85 : 35) : KIND_SCORE[f.kind];
-      if (x.ai && x.ai.verdict === 'delete') x.score = Math.max(x.score, Math.min(85, x.score + 30));
+      // like insights.with_ai: an older version that differs is raised only by a model that saw its content
+      const nameOnly = f.kind === 'name_versions' && !x.remove && !(x.ai && x.ai.with_content);
+      if (x.ai && x.ai.verdict === 'delete' && !nameOnly) x.score = Math.max(x.score, Math.min(85, x.score + 30));
       if (x.ai && x.ai.verdict === 'keep') x.score = Math.min(x.score, 15);
     }
   }

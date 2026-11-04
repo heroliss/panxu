@@ -294,6 +294,9 @@ class CheckupTest(TempDirTest):
         game = guessed['OldGameStudio']
         self.assertFalse(game['selected'], 'it holds SaveGames')
         self.assertIn('存档', game['basis'][-1])
+        tool = guessed['SimTool-1.0']
+        self.assertFalse(tool['selected'], 'an old version that is a program itself, not its data')
+        self.assertIn('程序文件', tool['basis'][-1])
         for item in plan['items']:
             if item['selected']:
                 self.assertFalse(item.get('personal'), item['title'])
@@ -339,6 +342,12 @@ class CheckupTest(TempDirTest):
         bold.add_ai_dirs(rows, self.backend.env)
         self.assertEqual([i['selected'] for i in bold.items], [True, False])
         self.assertIn('70%', bold.items[1]['basis'][-1])
+        # 「需要你确认」 is the model saying it cannot tell: its confidence in that is no reason to clean
+        unsure = [{**rows[0], 'path': os.path.join(local, name), 'verdict': 'review', 'verdict_label': '需要你确认',
+                   'confidence': conf} for name, conf in (('Sure', 0.95), ('Vague', 0.35))]
+        both = checkup.PlanBuilder(policy, threshold=5)
+        both.add_ai_dirs(unsure, self.backend.env)
+        self.assertEqual([i['score'] for i in both.items], [50, 50])
 
     def test_the_model_cannot_raise_an_older_version_it_only_knew_by_name(self):
         # found on a real PC: delivery_notes.md (an older version, not identical) got 7 points because the model,
@@ -346,23 +355,31 @@ class CheckupTest(TempDirTest):
         from panxu import checkup
         policy = paths.ProtectionPolicy(self.backend.env, allowed_roots=[self.sb.root], drive_roots=self.sb.drive_roots)
         docs = os.path.join(self.backend.env['USERPROFILE'], 'Documents')
-        older = {'path': os.path.join(docs, 'delivery_notes.md'), 'name': 'delivery_notes.md', 'size': 2039,
-                 'note': '较旧的版本', 'remove': False, 'score': 35, 'category': 'document'}
-        copy = {'path': os.path.join(docs, 'notes - 副本.md'), 'name': 'notes - 副本.md', 'size': 900,
-                'note': '和「notes.md」内容完全相同', 'remove': True, 'score': 85, 'category': 'document'}
-        finding = {'id': 'ver-1', 'kind': 'name_versions', 'kind_label': '同一文件的多个版本', 'files': [older, copy],
-                   'reason': '名字相近', 'advice': '保留最新的一份', 'confidence': 0.45}
+        mb = 1024 * 1024
+
+        def rec(name, **extra):
+            return {'path': os.path.join(docs, name), 'name': name, 'size': 5 * mb, 'category': 'document', **extra}
+        older = rec('delivery_notes.md', note='较旧的版本', remove=False, score=35)
+        copy = rec('notes - 副本.md', note='和「notes.md」内容完全相同', remove=True, score=85)
+        tiny = rec('plan.md', size=2039, note='较旧的版本', remove=False, score=35)
+        archive = rec('pack.rar', note='旁边有同名文件夹「pack」，可能已经解压过', remove=False, score=50, category='archive')
+        versions = {'id': 'ver-1', 'kind': 'name_versions', 'kind_label': '同一文件的多个版本',
+                    'files': [older, copy, tiny], 'reason': '名字相近', 'advice': '保留最新的一份', 'confidence': 0.45}
+        archives = {'id': 'archives', 'kind': 'archive_extracted', 'kind_label': '已经解压过的压缩包', 'files': [archive],
+                    'reason': '旁边已有同名的解压文件夹', 'advice': '', 'confidence': 0.6}
         said = {'verdict': 'delete', 'verdict_label': '可以删除', 'reason': '已有 v9 版本', 'with_content': False}
 
         def scores(ai):
             builder = checkup.PlanBuilder(policy)
-            builder.add_insights([finding], {older['path']: ai, copy['path']: ai})
+            builder.add_insights([versions, archives], {x['path']: ai for x in (older, copy, tiny, archive)})
             return {i['title']: i for i in builder.items}
         by_name = scores(said)
         self.assertEqual(by_name['delivery_notes.md']['score'], 35)
         self.assertTrue(any('只看了文件名' in line for line in by_name['delivery_notes.md']['basis']))
         self.assertEqual(by_name['notes - 副本.md']['score'], 85, 'an identical copy needs no content to be judged')
         self.assertEqual(scores({**said, 'with_content': True})['delivery_notes.md']['score'], 65)
+        self.assertNotIn('pack.rar', by_name, 'an archive 盘序 could not check against its folder is not offered')
+        self.assertNotIn('plan.md', by_name, 'a 2 KB file frees nothing worth a place in the plan')
 
     def test_without_ai_heuristics_fill_in(self):
         plan = self.checkup(use_ai=False, auto_select='careful')
@@ -452,6 +469,16 @@ class CheckupTest(TempDirTest):
         self.assertTrue(any('毕业论文' in r.get('excerpt', '') or '基于深度学习' in r.get('excerpt', '') for r in sent))
         log = next(h for h in self.call('history') if h['kind'] == 'ai')
         self.assertTrue(log['details']['content_files'], 'the log records which documents were read')
+
+    def test_my_files_page_scores_follow_the_same_rule(self):
+        self.checkup(use_ai=False)
+        versions = next(f for f in self.call('insights_result')['findings'] if f['kind'] == 'name_versions'
+                        and any(x['note'] == '较旧的版本' for x in f['files']))
+        older = next(x for x in versions['files'] if x['note'] == '较旧的版本')
+        self.backend.file_ai[older['path']] = {'verdict': 'delete', 'verdict_label': '可以删除', 'with_content': False}
+        shown = next(f for f in self.call('insights_result')['findings'] if f['id'] == versions['id'])
+        self.assertEqual(next(x for x in shown['files'] if x['path'] == older['path'])['score'], 35,
+                         'a name-only 「可以删除」 does not raise an older version on 我的文件 either')
 
     def test_insights_delete_only_recycles_known_files(self):
         self.checkup(use_ai=False)

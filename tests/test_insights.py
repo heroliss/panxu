@@ -53,6 +53,11 @@ class ScoreTest(unittest.TestCase):
         self.assertEqual(insights.with_ai(35, older, needs_content=True), 35, 'a name alone raises nothing')
         self.assertEqual(insights.with_ai(35, {**older, 'with_content': True}, needs_content=True), 65)
         self.assertEqual(insights.with_ai(35, {'verdict': 'keep'}, needs_content=True), 15, 'lowering needs no content')
+        # what only the content (or a file-by-file check) answers; the model, seeing names, cannot answer it either
+        self.assertTrue(insights.content_question('name_versions', {'remove': False}))
+        self.assertIsNone(insights.content_question('name_versions', {'remove': True}), 'an identical copy')
+        self.assertIsNone(insights.content_question('installer_old', {'remove': False}), 'a name says what an installer is')
+        self.assertEqual(insights.file_score('name_versions', {'note': '日期较早的一份', 'remove': False, 'dated': True}), 20)
 
 
 class FakeApps:
@@ -121,6 +126,24 @@ class FindingsTest(TempDirTest):
         self.assertTrue(files['notes_v0.4.0.md']['note'].startswith('最新'))
         self.assertIn('版本号', files['notes_v0.4.0.md']['note'])
         self.assertEqual(files['notes_v0.3.1.md']['note'], '较旧的版本')
+
+    def test_names_that_differ_only_by_a_date_may_be_separate_files(self):
+        # monthly statements or yearly reports are separate documents, not drafts of one
+        for i, month in enumerate(('202401', '202402', '202403')):
+            self.write(f'Docs/账单_{month}.pdf', month.encode() * 100, days=90 - 30 * i)
+        found = self.run_insights()['name_versions']
+        files = {os.path.basename(f['path']): f for f in found['files']}
+        self.assertTrue(files['账单_202403.pdf']['note'].startswith('最新'))
+        self.assertTrue(files['账单_202401.pdf']['note'].startswith('日期较早'))
+        self.assertEqual(files['账单_202401.pdf']['score'], 20)
+        self.assertIn('不同时期', found['reason'])
+        # a draft named by date next to the plain name is a version as before
+        self.write('Notes/方案.docx', sandbox.docx(['方案']), days=20)
+        self.write('Notes/方案_20240301.docx', sandbox.docx(['方案 修改']), days=10)
+        notes = next(f for f in Insights(self.env, {}).collect([os.path.join(self.home, 'Notes')]).findings()
+                     if f['kind'] == 'name_versions')
+        older = next(f for f in notes['files'] if f['name'] == '方案.docx')
+        self.assertEqual((older['note'], older['score']), ('较旧的版本', 35))
 
     def test_documents_that_came_with_a_program_are_not_versions(self):
         self.write('Downloads/tool-x64/tool-x64/tool.exe', b'MZ' * 100)

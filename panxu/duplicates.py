@@ -1,7 +1,9 @@
 """Duplicate-file finder: size → partial hash → full hash.
 
 Cloud-only placeholders are skipped (hashing them would download them), and
-hard links to the same physical file are not reported as duplicates.
+hard links to the same physical file are not reported as duplicates. Programs'
+folders and code projects are not searched: the same DLL in two portable
+programs, or an asset copied into a build folder, is needed in both places.
 """
 from __future__ import annotations
 
@@ -11,6 +13,7 @@ import stat
 import time
 
 from . import fsops, winapi
+from .insights import is_program_dir, is_project_dir
 
 CHUNK = 1024 * 1024
 EDGE = 64 * 1024
@@ -71,6 +74,9 @@ def find_duplicates(roots: list[str], *, min_size: int = 1024 * 1024, skip=None,
             seen_dirs.add(dkey)
             if skip and skip(dirpath):
                 dirs.clear()  # walk_files extends the stack after yield, so this prunes
+                continue
+            if dirpath != root and (is_program_dir(files, dirs) or is_project_dir(files, dirs)):
+                dirs.clear()
                 continue
             for entry in files:
                 try:

@@ -26,9 +26,9 @@ import uuid
 from . import APP_NAME, fsops, paths, winapi
 from .analyst import newer_sibling
 from .duplicates import find_duplicates, verify_unchanged
-from .insights import KIND_SCORE, Insights, file_score, is_copy_name, managed_dir, with_ai
+from .insights import KIND_SCORE, Insights, content_question, file_score, is_copy_name, managed_dir, with_ai
 from .junk import RULES_BY_ID
-from .scanner import SpaceScan
+from .scanner import FLAG_PROGRAM, SpaceScan
 
 GROUPS = {'safe': '放心清理', 'review': '建议你看看', 'info': '仅供了解'}
 ACTIONS = {'delete': '永久删除', 'recycle': '移到回收站', 'disable': '禁用开机启动', 'none': '不需要操作'}
@@ -56,7 +56,11 @@ OLD_VERSION_MIN = 200 * 1024 * 1024
 YEAR = 365 * 86400
 INFO_MIN = 1024 ** 3
 PERSONAL_PER_KIND = 80
+# your files smaller than this stay on 我的文件: in a cleanup plan they free nothing and only add a risk
+PLAN_MIN_FILE = 1024 * 1024
 FILES_FOR_AI = 120
+# 「需要你确认」: the model cannot tell, so its confidence in saying so is no reason to clean (5 points, held)
+AI_REVIEW_SCORE = 50
 
 # big things worth explaining, in the order they are shown
 INFO_TARGETS = [
@@ -262,6 +266,9 @@ class PlanBuilder:
         if inside:
             basis.append(f'里面有「{inside}」文件夹：可能是存档、个人资料或备份')
             return f'里面可能有存档或个人资料（「{inside}」）'
+        if getattr(node, 'flags', 0) & FLAG_PROGRAM:
+            basis.append('里面有程序文件（.exe / .dll）：可能是程序本身，删掉后它就不能运行了')
+            return '里面有程序文件'
         if owner and not cache_like(os.path.basename(path.rstrip('\\/'))):
             # the whole folder of an installed program also holds its settings, licence or templates;
             # only its cache-named sub-folders may be ticked
@@ -275,7 +282,7 @@ class PlanBuilder:
                 continue
             in_app_data = any(paths.is_within(s['path'], b) for b in app_bases)
             confidence = float(s.get('confidence') or 0)
-            score = round(confidence * 100) if s['verdict'] == 'clean' else min(55, round(confidence * 100))
+            score = round(confidence * 100) if s['verdict'] == 'clean' else AI_REVIEW_SCORE
             basis = [f'AI：{s.get("verdict_label", "")}（把握 {round(confidence * 100)}%）' + ('，来自缓存' if s.get('source') == 'cache' else '')]
             owner = analyst.installed_app(s['path']) if analyst is not None else None
             if owner:
@@ -361,25 +368,24 @@ class PlanBuilder:
                                                                              'installer_old')]
             if f['kind'] == 'name_versions':
                 files = [x for x in f['files'] if (x.get('score') or 0) > 10]  # never the copy to keep
+            files = [x for x in files if x['size'] >= PLAN_MIN_FILE]
             for x in sorted(files, key=lambda x: (not x.get('remove'), -x['size']))[:PERSONAL_PER_KIND]:
                 ai = file_ai.get(x['path'])
                 why = x.get('note') or f['reason']
                 base_score = x.get('score', file_score(f['kind'], x))
                 basis = [f'{f["kind_label"]}：{why}']
-                # an older version that differs from the newer one: only its content tells
-                needs_content = f['kind'] == 'name_versions' and not x.get('remove')
+                question = content_question(f['kind'], x)
                 if ai:
                     basis.append(f'AI：{ai.get("verdict_label", "")}' + (f'——{ai["reason"]}' if ai.get('reason') else ''))
-                    if needs_content and ai.get('verdict') == 'delete' and not ai.get('with_content'):
-                        basis.append('AI 只看了文件名，没有看内容：旧版本里有没有新版本缺少的东西要看内容才知道，'
-                                     '所以分数不因此提高')
+                    if question and ai.get('verdict') == 'delete' and not ai.get('with_content'):
+                        basis.append(f'AI 只看了文件名，没有看内容：{question}，所以分数不因此提高')
                 self.add({
                     'id': _ident('file', x['path']), 'kind': 'paths', 'group': 'review', 'category': f['kind_label'],
                     'finding': f['id'], 'finding_kind': f['kind'], 'title': x['name'], 'size': x['size'],
                     'count': 1 if x.get('category') != 'folder' else 0, 'what': f['advice'], 'why': why,
                     'effect': '移到回收站，需要时可以从回收站还原。', 'action': 'recycle', 'source': 'insight',
                     'confidence': f['confidence'] if x.get('remove') else min(f['confidence'], 0.4),
-                    'paths': [x['path']], 'ai': ai, 'personal': True, 'score': with_ai(base_score, ai, needs_content),
+                    'paths': [x['path']], 'ai': ai, 'personal': True, 'score': with_ai(base_score, ai, bool(question)),
                     'basis': basis})
 
     def add_duplicates(self, dups: dict | None):
