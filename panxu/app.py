@@ -10,6 +10,7 @@ import os
 import subprocess
 import sys
 import time
+import traceback
 
 from . import APP_NAME, __version__, paths, ui_bundle, winapi
 from .api import Backend, Bridge
@@ -65,6 +66,22 @@ def setup_logging(data_dir: str, debug: bool):
     root = logging.getLogger()
     root.addHandler(handler)
     root.setLevel(logging.DEBUG if debug else logging.INFO)
+
+
+def report_crash(data_dir: str | None = None) -> None:
+    """Call from an except block. Without a console (pythonw, the packaged exe) an error would vanish:
+    write it to panxu.log and tell the user in a message box where to find it."""
+    data_dir = data_dir or default_data_dir()
+    if not any(isinstance(h, logging.FileHandler) for h in logging.getLogger().handlers):
+        try:
+            setup_logging(data_dir, False)
+        except OSError:
+            pass
+    log.exception('PanXu stopped with an error')
+    if sys.stderr is not None:
+        traceback.print_exc()
+    error = sys.exc_info()[1]
+    winapi.message_box(f'盘序遇到问题，没能继续运行：\n{error}\n\n详细信息记在 {os.path.join(data_dir, "panxu.log")}', APP_NAME)
 
 
 def _self_command() -> tuple[str, list[str]]:

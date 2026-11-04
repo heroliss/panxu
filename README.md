@@ -64,7 +64,7 @@ python -m pip install -r requirements.txt
 python run.py            # 加 --debug 可以打开 WebView 开发者工具
 ```
 
-设置、操作记录、AI 缓存和日志保存在 `%LOCALAPPDATA%\PanXu`。
+没有打包版时，`启动盘序.cmd` 用 `pythonw` 从源码启动，不留控制台窗口；启动出错会弹窗说明，详细信息写在日志里。设置、操作记录、AI 缓存和日志（`panxu.log`）保存在 `%LOCALAPPDATA%\PanXu`。
 
 **演练环境：** `python run.py --sandbox`（或 `PanXu.exe --sandbox`）会在 `%LOCALAPPDATA%\PanXu\sandbox` 生成一台「用了几年的电脑」——C 盘和 D 盘、各种缓存、下载的安装包、论文的好几个版本、假的注册表和服务——所有删除、禁用、卸载都只发生在这个文件夹里，窗口顶部有提示条，可以查看演练回收站（能还原）或重建演练环境。大文件是稀疏文件，几十 GB 的逻辑大小只占几 MB 磁盘（需要 NTFS）。第一次进入时会复制你已配置的模型和 Key，所以 AI 功能可以直接试。也可以指定文件夹：`--sandbox D:\panxu-demo`。
 

@@ -194,5 +194,34 @@ class SettingsTest(TempDirTest):
         self.assertFalse(s.has_secret('ai_key:deepseek'))
 
 
+class CrashReportTest(TempDirTest):
+    def test_an_error_is_logged_and_shown_without_a_console(self):
+        import io
+        import logging
+        from contextlib import redirect_stderr
+        from unittest import mock
+        from panxu import app
+        root = logging.getLogger()
+        before = list(root.handlers)
+        shown = []
+        try:
+            with mock.patch.object(app.winapi, 'message_box', lambda text, title: shown.append(text)), \
+                    redirect_stderr(io.StringIO()):
+                try:
+                    raise RuntimeError('WebView2 不可用')
+                except RuntimeError:
+                    app.report_crash(self.tmp)
+        finally:
+            for handler in [h for h in root.handlers if h not in before]:
+                root.removeHandler(handler)
+                handler.close()
+        self.assertEqual(len(shown), 1)
+        self.assertIn('WebView2 不可用', shown[0])
+        log_path = os.path.join(self.tmp, 'panxu.log')
+        self.assertIn(log_path, shown[0], 'says where the details are')
+        with open(log_path, encoding='utf-8') as fh:
+            self.assertIn('RuntimeError: WebView2 不可用', fh.read())
+
+
 if __name__ == '__main__':
     unittest.main()
