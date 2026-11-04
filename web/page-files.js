@@ -71,7 +71,8 @@
         'aria-label': '选择 ' + f.name,
         onchange: (e) => { e.target.checked ? large.selected.add(f.path) : large.selected.delete(f.path); bar(); } });
       list.appendChild(h('div.row.file-row' + (f.blocked ? '.disabled' : ''), box,
-        h('div.cell-main.ic-cell', PX.fileIcon(f.path), h('div', h('div.name', f.name), h('div.sub', (f.blocked ? f.blocked + '：' : '') + PX.displayPath(f.path)))),
+        h('div.cell-main.ic-cell', PX.fileIcon(f.path), h('div', h('div.name', f.name),
+          f.blocked ? h('div.sub', f.blocked + '：' + PX.displayPath(f.path)) : h('div.sub', PX.pathText(f.path)))),
         h('div.sub', f.category_label), h('div.size.muted.small', fmt.date(f.mtime)), h('div.size', fmt.bytes(f.size), PX.meter(f.size / largest)),
         PX.pathButtons(f.path)));
     }
@@ -147,7 +148,7 @@
     // folders
     const folders = h('div.folder-list');
     for (const r of dup.roots || []) {
-      folders.appendChild(h('div.row', PX.fileIcon(r, true), h('div.name.mono-path', PX.displayPath(r)),
+      folders.appendChild(h('div.row', PX.fileIcon(r, true), h('div.name', PX.pathText(r)),
         h('div.row-actions', PX.revealButton(r),
           h('button.btn.quiet.small', { type: 'button', disabled: busy, onclick: () => { dup.roots = dup.roots.filter((x) => x !== r); drawDups(); } }, '移除'))));
     }
@@ -190,7 +191,7 @@
             drawDups(true);
           } });
         grp.appendChild(h('div.row.dup-file' + (checked ? '' : '.keep'), box,
-          h('div.cell-main.ic-cell', PX.fileIcon(f.path), h('div.name.mono-path', PX.displayPath(f.path))),
+          h('div.cell-main.ic-cell', PX.fileIcon(f.path), h('div.name', PX.pathText(f.path))),
           h('div.size.muted.small', '修改于 ' + fmt.date(f.mtime)), PX.pathButtons(f.path)));
       }
     }

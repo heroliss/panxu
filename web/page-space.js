@@ -282,7 +282,7 @@
     return h('div.space-detail',
       h('div.sd-kicker', current ? '当前文件夹' : isDir ? '选中的文件夹' : '选中的文件'),
       h('div.sd-name', PX.fileIcon(x.path, isDir), h('b', current ? PX.displayPath(x.path) : x.name)),
-      current ? null : h('div.sd-path.mono-path', PX.displayPath(x.path)),
+      current ? null : h('div.sd-path', PX.pathText(x.path)),
       h('div.sd-facts', facts.join(' · ')),
       tags.length ? h('div.label', tags) : null,
       about,
@@ -478,7 +478,7 @@
         const decision = basis.length && /^(自动勾选|没有)/.test(basis[basis.length - 1]) ? basis[basis.length - 1] : '';
         list.appendChild(h('div.row.ai-row', box,
           h('div.cell-main',
-            h('div.name.mono-path', PX.displayPath(s.path)),
+            h('div.name', PX.pathText(s.path)),
             h('div.label', s.app && s.app !== '未知' ? PX.tag(s.app, 'info') : null, s.source === 'cache' ? PX.tag('缓存结果') : null,
               s.blocked ? PX.tag(s.blocked, 'bad') : s.caution ? PX.tag(s.caution, 'warn') : null),
             h('div.why', s.reason), s.effect ? h('div.eff', '删除后：' + s.effect) : null,

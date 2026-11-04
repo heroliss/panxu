@@ -160,7 +160,7 @@
       list.appendChild(h('div.row.svc-row',
         h('div.app-main', PX.avatar(s.display_name, state.icons[s.exe]),
           h('div.cell-main', h('div.name', s.display_name), h('div.sub', { title: s.description }, s.description || s.name), aiNote(state.ai.services[s.name]))),
-        h('div.cell-main', h('div.sub', s.publisher || '未知发布者'), h('div.sub', { title: PX.displayText(s.binpath) }, PX.displayText(s.exe || s.binpath))),
+        h('div.cell-main', h('div.sub', s.publisher || '未知发布者'), s.exe ? h('div.sub', PX.pathText(s.exe)) : h('div.sub', { title: PX.displayText(s.binpath) }, PX.displayText(s.binpath))),
         h('div.small', s.status === 'running' ? PX.tag(s.status_label, 'good') : h('span.muted', s.status_label)),
         control,
         h('div.row-actions', s.exe ? PX.revealButton(s.exe) : null,

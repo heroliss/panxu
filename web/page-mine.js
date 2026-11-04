@@ -117,7 +117,7 @@
     const folder = x.path.slice(0, x.path.length - x.name.length).replace(/[\\/]$/, '');
     list.appendChild(h('div.row.mine-row', box,
       h('div.cell-main', h('div.name-line', PX.fileIcon(x.path, x.category === 'folder'), h('span.name-text', { title: x.path }, x.name), tags),
-        h('div.sub', { title: folder }, fmt.place(folder, PX.state.init.home)),
+        h('div.sub', PX.pathText(folder, fmt.place(folder, PX.state.init.home))),
         x.note ? h('div.why', x.note) : null,
         x.ai ? h('div.ai-note', h('span', x.ai.what), h('span.muted', x.ai.reason)) : null),
       PX.score(x.score, x.note),

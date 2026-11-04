@@ -115,7 +115,7 @@
     const extra = s.extra_personal_paths || [];
     const exList = secMine.appendChild(h('div.folder-list'));
     for (const p of extra) {
-      exList.appendChild(h('div.row', PX.fileIcon(p, true), h('div.name.mono-path', p), h('div.row-actions', PX.revealButton(p),
+      exList.appendChild(h('div.row', PX.fileIcon(p, true), h('div.name', PX.pathText(p)), h('div.row-actions', PX.revealButton(p),
         h('button.btn.quiet.small', { type: 'button',
           onclick: async () => { await save({ extra_personal_paths: extra.filter((x) => x !== p) }); draw(); } }, '移除'))));
     }
@@ -136,7 +136,7 @@
     sec3.appendChild(h('div.small.muted', { style: { marginBottom: '10px' } }, '这些文件夹里的内容不会被删除，也不会出现在重复文件结果中（垃圾清理的固定项目不受影响）。'));
     const ex = sec3.appendChild(h('div.folder-list'));
     for (const p of s.excluded_paths) {
-      ex.appendChild(h('div.row', PX.fileIcon(p, true), h('div.name.mono-path', p), h('div.row-actions', PX.revealButton(p),
+      ex.appendChild(h('div.row', PX.fileIcon(p, true), h('div.name', PX.pathText(p)), h('div.row-actions', PX.revealButton(p),
         h('button.btn.quiet.small', { type: 'button',
           onclick: async () => { await save({ excluded_paths: s.excluded_paths.filter((x) => x !== p) }); draw(); } }, '移除'))));
     }

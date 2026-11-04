@@ -126,8 +126,8 @@ a { color: var(--cobalt); }
   background: var(--sheet); border-left: 1px solid var(--rule); border-top: 1px solid var(--rule);
   border-top-left-radius: var(--r-l); margin-top: 8px; overflow: auto; min-width: 0; outline: none;
 }
-/* wide windows: the content grows a little more, then stays centred instead of leaving the right side empty */
-.page { padding: 26px 36px 96px; max-width: 1560px; margin: 0 auto; }
+/* the page uses the whole window: lists and tables only gain from the room (names and paths fit) */
+.page { padding: 26px 36px 96px; }
 
 /* ---------- page header ---------- */
 .page-head { display: flex; align-items: flex-end; gap: 16px; margin-bottom: 22px; flex-wrap: wrap; }
@@ -356,7 +356,7 @@ input[type=checkbox]:disabled { cursor: not-allowed; }
 .dup-head { display: flex; gap: 12px; align-items: baseline; padding: 0 6px 4px; }
 .dup-head .size { margin-left: auto; font-family: var(--font-num); }
 .dup-file { grid-template-columns: 22px minmax(0, 1fr) 140px 64px; padding: 6px; border-bottom: 0; align-items: center; }
-.dup-file.keep .name::after { content: "保留"; margin-left: 8px; font-size: 11.5px; color: var(--verdigris); font-weight: 600; }
+.dup-file.keep .name::after { content: "保留"; flex: none; margin-left: 8px; font-size: 11.5px; color: var(--verdigris); font-weight: 600; }
 
 /* ---------- startup & services ---------- */
 .su-row { grid-template-columns: 40px minmax(0, 1fr) minmax(0, 0.9fr) auto; align-items: start; }
@@ -396,7 +396,15 @@ input[type=checkbox]:disabled { cursor: not-allowed; }
 .choice.on { border-color: var(--cobalt); background: var(--cobalt-tint); }
 .choice input { margin-top: 3px; accent-color: var(--cobalt); }
 .toast-wrap { position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; gap: 8px; z-index: 60; align-items: center; }
-.toast { background: var(--ink); color: var(--sheet); padding: 9px 16px; border-radius: var(--r-m); box-shadow: var(--shadow); font-size: 13.5px; max-width: 70vw; }
+.toast { background: var(--ink); color: var(--sheet); padding: 9px 16px; border-radius: var(--r-m); box-shadow: var(--shadow); font-size: 13.5px; max-width: 70vw;
+  display: flex; align-items: center; gap: 14px; }
+.toast-btn { border: 0; background: none; color: inherit; font: inherit; font-weight: 600; text-decoration: underline; text-underline-offset: 3px;
+  cursor: pointer; padding: 2px 0; white-space: nowrap; }
+/* one-line paths: the middle gives way, the start and the name stay (PX.pathText) */
+.path-text { display: inline-flex; max-width: 100%; min-width: 0; white-space: nowrap; vertical-align: bottom; }
+.pt-head { overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; min-width: 3em; }
+.pt-tail { flex: 0 0 auto; max-width: 80%; overflow: hidden; text-overflow: ellipsis; }
+.row .name:has(> .path-text), .row .sub:has(> .path-text) { display: flex; align-items: center; min-width: 0; }
 .toast.err { background: var(--danger); color: #fff; }
 
 /* ---------- 首页: check-up steps and the plan ---------- */

@@ -238,6 +238,16 @@
     void el.offsetWidth;
     el.classList.add('flash');
   };
+  // A path on one line. When it does not fit, its middle gives way: the start (drive, top folders) and the
+  // file or folder name stay, as in Explorer's address tooltips -- cutting the end would hide the name. The whole
+  // path is in the tooltip, and copying the text copies all of it.
+  PX.pathText = function (path, shown) {
+    const text = shown || PX.displayPath(path || '');
+    const cut = text.lastIndexOf('\\', text.length - 2);
+    return h('span.path-text', { title: PX.displayPath(path || '') },
+      cut > 0 ? h('span.pt-head', text.slice(0, cut)) : null, h('span.pt-tail', cut > 0 ? text.slice(cut) : text));
+  };
+
   // 「在资源管理器中显示」: a file is selected in its folder, a folder opened; a path that is gone (cleaned,
   // in the Recycle Bin) opens the nearest folder that is still there
   PX.reveal = async function (path) {
@@ -332,10 +342,12 @@
 
   // --- toast ---
   let toastWrap;
-  PX.toast = function (msg, isError) {
+  // action: {label, onClick} -- a button in the message (it then stays a little longer)
+  PX.toast = function (msg, isError, action) {
     if (!toastWrap) toastWrap = document.body.appendChild(h('div.toast-wrap', { role: 'status', 'aria-live': 'polite' }));
-    const t = toastWrap.appendChild(h('div.toast' + (isError ? '.err' : ''), msg));
-    setTimeout(() => t.remove(), isError ? 6000 : 3200);
+    const t = toastWrap.appendChild(h('div.toast' + (isError ? '.err' : ''), h('span', msg),
+      action ? h('button.toast-btn', { type: 'button', onclick: () => { t.remove(); action.onClick(); } }, action.label) : null));
+    setTimeout(() => t.remove(), action ? 9000 : isError ? 6000 : 3200);
   };
   PX.fail = (err) => PX.toast(err && err.message ? err.message : String(err), true);
 
