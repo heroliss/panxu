@@ -25,7 +25,8 @@ import uuid
 
 from . import APP_NAME, fsops, paths, winapi
 from .analyst import newer_sibling
-from .duplicates import IN_USE, PLACE_RANK, find_duplicates, place_label, verify_unchanged
+from .duplicates import (AI_RANK, IN_USE, PLACE_RANK, find_duplicates, must_stay, place_label, removal_score,
+                         verify_unchanged)
 from .insights import KIND_SCORE, Insights, content_question, file_score, is_copy_name, managed_dir, with_ai
 from .junk import RULES_BY_ID
 from .scanner import FLAG_PROGRAM, SpaceScan
@@ -59,6 +60,7 @@ PERSONAL_PER_KIND = 80
 # your files smaller than this stay on 我的文件: in a cleanup plan they free nothing and only add a risk
 PLAN_MIN_FILE = 1024 * 1024
 FILES_FOR_AI = 120
+DUPS_FOR_AI = 36   # groups of duplicates the check-up asks about (three requests)
 # 「需要你确认」: the model cannot tell, so its confidence in saying so is no reason to clean (5 points, held)
 AI_REVIEW_SCORE = 50
 
@@ -388,43 +390,45 @@ class PlanBuilder:
                     'paths': [x['path']], 'ai': ai, 'personal': True, 'score': with_ai(base_score, ai, bool(question)),
                     'basis': basis})
 
-    def add_duplicates(self, dups: dict | None):
+    def add_duplicates(self, dups: dict | None, dup_ai: dict | None = None):
+        """One item per group of identical files: keep what is (or may be) in use, offer the rest. Each copy's
+        risk comes from where it is, whether its project mentions it and the model's advice
+        (duplicates.removal_score); the item scores as its riskiest copy to remove."""
         def plain_first(f):
             return is_copy_name(os.path.splitext(os.path.basename(f['path']))[0]), f['mtime']
+
+        def ai(f):
+            return (dup_ai or {}).get(f['path'])
         for g in (dups or {}).get('groups', []):
             files = g['files']
             if any(self._taken(f['path']) for f in files):
                 continue  # already offered elsewhere (e.g. as a version); two "keep one" rules could remove both
-            placed = [f for f in files if f.get('place') in IN_USE]
-            loose = [f for f in files if f.get('place') not in IN_USE]
+            stay = [f for f in files if must_stay(f, ai(f))]
+            if stay and len(stay) < len(files):
+                keepers = stay
+            else:  # keep the copy most likely needed: a program's, a project's source, ..., then the plain name
+                keepers = [min(files, key=lambda f: (PLACE_RANK[f.get('place')], not (f.get('refs') or {}).get('count'),
+                                                     AI_RANK.get((ai(f) or {}).get('verdict'), 1), *plain_first(f)))]
+            remove = [f for f in files if f not in keepers]
+            rated = [(f, *removal_score(f, ai(f))) for f in remove]
+            score = min(s for _, s, _ in rated)
             basis, effect = ['内容逐字节相同'], '每组保留一份，内容不会丢失。'
-            if placed and loose:
-                # the copies in a program's folder or a project may be in use there: they stay, loose ones go
-                keepers, remove, score = placed, loose, 85
-                where = place_label(placed[0]) if len(placed) == 1 else '程序文件夹和代码工程'
-                basis.append(f'保留{where}里的那份，只删零散的副本，内容不会丢失')
-            elif placed:
-                keepers = [min(placed, key=lambda f: (PLACE_RANK[f['place']], *plain_first(f)))]
-                remove = [f for f in files if f is not keepers[0]]
-                if all(f['place'] == 'build' for f in remove):
-                    score = 50
-                    basis.append('要删的都在工程的构建输出里：重新构建时会再生成')
-                else:
-                    # e.g. the same font in two projects' lib folders: each project loads its own copy
-                    score = 30
-                    basis.append('每一份都在程序文件夹或代码工程里：它们可能各自引用自己的那一份，'
-                                 '删掉一份可能让那个程序或工程出问题，请你看过再决定')
-                    effect = '内容还在保留的那份里，但用到被删那份的程序或工程可能会找不到它。'
-            else:
-                keepers = [min(files, key=lambda f: (PLACE_RANK[f.get('place')], *plain_first(f)))]
-                remove, score = [f for f in files if f is not keepers[0]], 85
-                basis.append('保留一份，内容不会丢失')
-            near = [f for f in remove if f.get('place') == 'near']
-            if near and score > 50:
-                # 萍萍瑜伽故事\audio next to 萍萍瑜伽故事\代码工程: a script may read it from there
-                score = 50
-                basis.append(f'有 {len(near)} 份在代码工程旁边（{place_label(near[0])}），可能是工程的素材来源，'
-                             '例如脚本从那里读取：内容不会丢，但请你确认工程不用它')
+            if all(f.get('place') in IN_USE for f in files) and any(f.get('place') != 'build' for f in files):
+                # e.g. the same font in two projects' lib folders: each project may load its own copy
+                basis.append('每一份都在程序文件夹或代码工程里：它们可能各自引用自己的那一份，删掉一份可能让那个程序或工程出问题')
+            elif all(why is None for _, _, why in rated):
+                where = place_label(keepers[0]) if keepers[0].get('place') else ''
+                basis.append(f'保留{where}里的那份，只删零散的副本，内容不会丢失' if where else '保留一份，内容不会丢失')
+            mentioned = [f for f in keepers if (f.get('refs') or {}).get('count')]
+            if mentioned:
+                more = f'等 {len(mentioned)} 份' if len(mentioned) > 1 else ''
+                basis.append(f'保留的「{os.path.basename(mentioned[0]["path"])}」{more}有文件提到：「{mentioned[0]["refs"]["found"][0]}」')
+            basis += list(dict.fromkeys(why for _, _, why in rated if why))[:3]
+            advice = [f'AI：「{os.path.basename(f["path"])}」{ai(f).get("verdict_label", "")}'
+                      + (f'——{ai(f)["reason"]}' if ai(f).get('reason') else '') for f in files if ai(f)]
+            basis += list(dict.fromkeys(advice))[:3]
+            if score < 85:
+                effect = '内容还在保留的那份里，但用到被删那份的程序或工程可能会找不到它。'
             keep = keepers[0]['path']
             self._claimed.extend(f['path'] for f in keepers)  # what stays must not be offered by anything else
             self.add({
@@ -436,7 +440,8 @@ class PlanBuilder:
                        f'，其余 {len(remove)} 份移到回收站。',
                 'effect': effect, 'action': 'recycle', 'source': 'dup', 'confidence': 0.9 if score >= 85 else 0.4,
                 'paths': [f['path'] for f in remove], 'keep': keep, 'dup_size': g['size'],
-                'dup_files': [{k: f[k] for k in ('path', 'mtime', 'place', 'place_root') if k in f} for f in files],
+                'dup_files': [{**{k: f[k] for k in ('path', 'mtime', 'place', 'place_root', 'refs') if k in f},
+                               'ai': ai(f)} for f in files],
                 'personal': True, 'score': score, 'basis': basis})
 
     def add_startup(self, items: list[dict], explained: dict, env: dict):
@@ -635,6 +640,15 @@ def run(backend, job, options: dict | None = None) -> dict:
             file_ai = result['files']
             backend.file_ai.update(file_ai)
             ai_info['errors'] += result['errors']
+        # duplicates that need judging: a copy in a program, a project or next to one (loose copies are clear)
+        unclear = [g for g in (backend.dups or {}).get('groups', []) if any(f.get('place') for f in g['files'])] \
+            if opts.get('duplicates', True) else []
+        if unclear:
+            job.update(detail='重复文件（只发送路径）')
+            result = backend.analyst.review_duplicates(unclear[:DUPS_FOR_AI], client, anonymize,
+                                                       max_requests=DUPS_FOR_AI // 12, cancel=job.cancel)
+            backend.dup_ai.update(result['copies'])
+            ai_info['errors'] += result['errors']
         enabled = [i for i in startup_items if i['enabled']]
         if enabled:
             job.update(detail='开机启动项')
@@ -656,7 +670,7 @@ def run(backend, job, options: dict | None = None) -> dict:
         analysed = {nid for nid, s in backend.ai_results.items() if s.get('source') != 'none'}
         builder.add_heuristics(backend.scan, backend.analyst, env, analysed)
     builder.add_insights(findings, file_ai)
-    builder.add_duplicates(backend.dups if opts.get('duplicates', True) else None)
+    builder.add_duplicates(backend.dups if opts.get('duplicates', True) else None, backend.dup_ai)
     builder.add_startup(startup_items, startup_ai, env)
     builder.add_info(backend.scan, env)
     plan = builder.plan({'ai': ai_info, 'options': opts,

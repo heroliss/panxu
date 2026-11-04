@@ -418,6 +418,27 @@
     program: '这个程序可能用到自己的这一份，删掉可能让它不能运行', project: '这个工程可能引用自己的这一份，删掉可能让它出问题' };
   PX.placeTag = (f) => (f && f.place ? h('span.tag' + (f.place === 'build' ? '' : '.warn'), { title: PLACE_HINT[f.place] || '' },
     '在' + PX.placeText(f) + (f.place === 'near' ? '' : '里')) : null);
+  // what is known about one duplicate copy: where it is, whether its project mentions it (duplicates.check_references)
+  // and the model's advice; ``brief`` leaves out the model's reason (shown in the 评分依据 instead)
+  const AI_KIND = { delete: 'good', careful: '', keep: 'warn' };
+  PX.copyFacts = function (f, brief) {
+    if (!f) return [];
+    const out = [PX.placeTag(f)];
+    const refs = f.refs;
+    if (refs && refs.count) {
+      out.push(h('span.tag.warn', { title: '提到它的文件：\n' + refs.found.join('\n') },
+        `被「${refs.found[0]}」${refs.count > 1 ? ` 等 ${refs.count} 个文件` : ''}提到`));
+    } else if (refs && refs.complete) {
+      out.push(h('span.small.muted', { title: `按文件名搜索了 ${refs.searched} 个代码和设置文件；运行时拼出来的文件名搜不到` }, '工程里没有文件提到它'));
+    } else if (refs) {
+      out.push(h('span.small.muted', '工程文件太多，只搜索了一部分'));
+    }
+    if (f.ai) {
+      out.push(PX.tag('AI：' + f.ai.verdict_label, AI_KIND[f.ai.verdict] || '', 'spark'));
+      if (!brief && f.ai.reason) out.push(h('span.small.muted', f.ai.reason));
+    }
+    return out.filter(Boolean);
+  };
   PX.switchEl = function (checked, onchange, disabled) {
     const input = h('input', { type: 'checkbox', checked: !!checked, disabled: !!disabled, onchange });
     return h('label.switch', input, h('span'));

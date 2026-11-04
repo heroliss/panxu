@@ -142,6 +142,32 @@ class DuplicatesTest(TempDirTest):
         self.assertIsNone(places['z/downloads/mix.wav'])
         self.assertIsNone(places['z/elsewhere/song.mp3'])
 
+    def test_projects_are_searched_for_the_file_name(self):
+        # two projects carry the same font: one loads it from its CSS, the other never mentions it
+        def write(rel, text):
+            p = os.path.join(self.tmp, *rel.split('/'))
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            with open(p, 'w', encoding='utf-8') as fh:
+                fh.write(text)
+        for proj in ('yoga', 'film'):
+            write(f'w/{proj}/code/package.json', '{"name": "%s"}' % proj)
+            self.make(f'w/{proj}/code/lib/fonts/NotoSerifJP-600.woff', 6000)
+        write('w/yoga/code/src/style.css', "@font-face { src: url('../lib/fonts/NotoSerifJP-600.WOFF'); }")
+        write('w/film/code/node_modules/x/index.js', "'NotoSerifJP-600.woff'")   # dependencies are not searched
+        write('w/film/code/dist/app.js', "'NotoSerifJP-600.woff'")               # nor build output
+        self.make('w/yoga/audio/mix.wav', 7000)                                  # next to the project:
+        self.make('w/yoga/code/public/mix.wav', 7000)                            # searched with the folder
+        write('w/yoga/render.py', "AUDIO = 'audio/mix.wav'")
+        result = find_duplicates([os.path.join(self.tmp, 'w')], min_size=1000)
+        refs = {os.path.relpath(f['path'], self.tmp).replace('\\', '/'): f.get('refs')
+                for g in result['groups'] for f in g['files']}
+        yoga = refs['w/yoga/code/lib/fonts/NotoSerifJP-600.woff']
+        self.assertEqual((yoga['count'], yoga['found']), (1, [os.path.join('src', 'style.css')]))
+        film = refs['w/film/code/lib/fonts/NotoSerifJP-600.woff']
+        self.assertEqual(film['count'], 0)
+        self.assertTrue(film['complete'] and film['searched'] >= 1)
+        self.assertIn('render.py', refs['w/yoga/audio/mix.wav']['found'], 'the folder holding the project is searched')
+
     def test_verify_unchanged(self):
         p = self.make('f', 10)
         st = os.stat(p)

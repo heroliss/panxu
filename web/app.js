@@ -144,6 +144,7 @@
     ai_analyze: [(r) => `AI 分析完成：${r.suggestions.filter((s) => !s.expanded).length} 个文件夹有了建议`, 'space'],
     insights_scan: [(r) => (r.findings.length ? `我的文件整理完成：${r.findings.length} 类文件值得看看` : '我的文件整理完成：没有发现需要注意的文件'), 'mine'],
     ai_review_files: [(r) => `AI 看完了 ${Object.keys(r.files || {}).length} 个文件，结论写在每个文件下面`, 'mine'],
+    dup_ai_review: [(r) => `AI 看完了 ${Object.keys(r.copies || {}).length} 个副本，建议写在每个副本下面`, 'dups'],
     dup_scan: [(r) => (r.groups.length ? `找到 ${r.groups.length} 组重复文件，可节省 ${bytes(r.stats.wasted)}` : '重复文件查找完成：没有找到'), 'dups'],
     ai_explain: [() => 'AI 解释完成，结论写在每一项下面', null],
     apps_measure_all: [(r) => `${Object.keys(r || {}).length} 个程序的大小算好了`, 'apps'],

@@ -31,6 +31,9 @@ class ScriptedModel:
                             'reason': '缓存' if cache else '不确定', 'effect': '', 'confidence': 0.95 if cache else 0.5})
             elif 'group' in row:      # 我的文件
                 out.append({'id': row['id'], 'verdict': 'delete', 'what': '文件', 'reason': '测试'})
+            elif 'copies' in row:     # 重复文件: and, wrongly, 「delete」 for every copy
+                out.append({'id': row['id'], 'copies': [{'n': c['n'], 'verdict': 'delete', 'reason': '测试'}
+                                                        for c in row['copies']]})
             else:                     # startup items: the model suggests disabling everything
                 out.append({'id': row['id'], 'what': '程序', 'suggestion': 'disable', 'reason': '测试'})
         return {'results': out}
@@ -424,6 +427,43 @@ class CheckupTest(TempDirTest):
         self.assertEqual((take['score'], take['keep']), (85, os.path.join(docs, '故事', 'audio', 'take.wav')),
                          'the copy next to the project stays, the one in 下载 goes')
 
+    def test_duplicates_follow_what_the_project_mentions_and_the_ai(self):
+        from panxu import checkup
+        policy = paths.ProtectionPolicy(self.backend.env, allowed_roots=[self.sb.root], drive_roots=self.sb.drive_roots)
+        docs = os.path.join(self.backend.env['USERPROFILE'], 'Documents')
+
+        def copy(rel, place=None, root=None, mentioned=None):
+            f = {'path': os.path.join(docs, *rel.split('/')), 'mtime': 100.0}
+            if place:
+                f.update(place=place, place_root=os.path.join(docs, root))
+            if mentioned is not None:
+                f['refs'] = {'found': mentioned, 'count': len(mentioned), 'searched': 40, 'complete': True}
+            return f
+        yoga = copy('瑜伽/代码工程/lib/fonts/Noto.woff', 'project', '瑜伽/代码工程', ['src\\style.css'])
+        film = copy('短片/代码工程/lib/fonts/Noto.woff', 'project', '短片/代码工程', [])
+        dl = copy('下载/song.mp3')
+        archive = copy('归档/song.mp3')
+        groups = {'groups': [{'size': 5 << 20, 'files': [film, yoga]}, {'size': 6 << 20, 'files': [dl, archive]}]}
+
+        def plan(dup_ai=None):
+            builder = checkup.PlanBuilder(policy)
+            builder.add_duplicates(groups, dup_ai)
+            return {i['title'].split(' 等')[0]: i for i in builder.items}
+        fonts = plan()['Noto.woff']
+        self.assertEqual((fonts['keep'], fonts['paths'], fonts['score']), (yoga['path'], [film['path']], 60),
+                         'the project whose CSS loads the font keeps it; the other never mentions it')
+        self.assertTrue(any('style.css' in line for line in fonts['basis']))
+        self.assertTrue(any('没有提到' in line for line in fonts['basis']))
+        said = lambda verdict: {'verdict': verdict, 'verdict_label': verdict, 'reason': '测试'}  # noqa: E731
+        # the model may hold a copy back...
+        held = plan({film['path']: said('keep')})['Noto.woff']
+        self.assertEqual((held['keep'], held['score']), (yoga['path'], 20), 'both stay: offered, but at 2 points')
+        self.assertEqual(plan({archive['path']: said('careful')})['song.mp3']['score'], 40)
+        # ...and choose which loose copy goes, but never remove what the project mentions
+        self.assertEqual(plan({archive['path']: said('delete'), dl['path']: said('keep')})['song.mp3']['keep'], dl['path'])
+        self.assertEqual(plan({yoga['path']: said('delete')})['Noto.woff']['keep'], yoga['path'])
+        self.assertEqual(plan({film['path']: said('delete')})['Noto.woff']['score'], 70, 'a little higher, at most 7')
+
     def test_without_ai_heuristics_fill_in(self):
         plan = self.checkup(use_ai=False, auto_select='careful')
         self.assertEqual(self.model.requests, [])
@@ -522,6 +562,19 @@ class CheckupTest(TempDirTest):
         shown = next(f for f in self.call('insights_result')['findings'] if f['id'] == versions['id'])
         self.assertEqual(next(x for x in shown['files'] if x['path'] == older['path'])['score'], 35,
                          'a name-only 「可以删除」 does not raise an older version on 我的文件 either')
+
+    def test_duplicates_page_asks_the_ai_about_copies(self):
+        docs = os.path.join(self.backend.env['USERPROFILE'], 'Documents')
+        result = self.wait(self.call('dup_scan', roots=[docs], min_size_mb=1))
+        fonts = next(g for g in result['groups'] if g['files'][0]['path'].endswith('NotoSerifJP-600.woff'))
+        mentioned = [f for f in fonts['files'] if (f.get('refs') or {}).get('count')]
+        self.assertEqual(len(mentioned), 1, 'one project loads the font from its CSS')
+        copies = self.wait(self.call('dup_ai_review', group_ids=[fonts['id']]))['copies']
+        self.assertEqual(copies[mentioned[0]['path']]['verdict'], 'careful', 'the scripted model said delete: overruled')
+        again = self.wait(self.call('dup_scan', roots=[docs], min_size_mb=1))
+        same = next(g for g in again['groups'] if g['id'] == fonts['id'])
+        self.assertTrue(all(f['ai'] for f in same['files']), 'a new search shows the advice already given')
+        self.assertTrue(any(h['title'].startswith('AI 查看') for h in self.call('history')))
 
     def test_insights_delete_only_recycles_known_files(self):
         self.checkup(use_ai=False)

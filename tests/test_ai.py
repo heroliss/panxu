@@ -274,6 +274,33 @@ class AnalystTest(TempDirTest):
         again = self.analyst().explain_items(items, ScriptedClient(lambda i: {}))
         self.assertEqual(again['items']['k1']['source'], 'cache')
 
+    def test_review_duplicates(self):
+        docs = os.path.join(self.env['USERPROFILE'], 'Documents')
+        yoga = {'path': os.path.join(docs, 'yoga', 'code', 'lib', 'Noto.woff'), 'mtime': 1.0, 'place': 'project',
+                'place_root': os.path.join(docs, 'yoga', 'code'),
+                'refs': {'found': ['src/style.css'], 'count': 1, 'searched': 30, 'complete': True}}
+        film = {'path': os.path.join(docs, 'film_v6', 'code', 'lib', 'Noto.woff'), 'mtime': 1.0, 'place': 'project',
+                'place_root': os.path.join(docs, 'film_v6', 'code'),
+                'refs': {'found': [], 'count': 0, 'searched': 12, 'complete': True}}
+        group = {'id': 0, 'size': 5 << 20, 'files': [yoga, film]}
+        # the model says 「delete」 for both: only the copy 盘序 found unmentioned may be called so
+        client = ScriptedClient(lambda g: {'id': g['id'], 'copies': [{'n': c['n'], 'verdict': 'delete', 'reason': '旧工程'}
+                                                                     for c in g['copies']]})
+        out = self.analyst().review_duplicates([group], client)
+        self.assertEqual(out['copies'][film['path']]['verdict'], 'delete')
+        self.assertEqual(out['copies'][yoga['path']]['verdict'], 'careful', 'its CSS loads it: never 「更推荐删除」')
+        sent = json.dumps(client.calls, ensure_ascii=False)
+        self.assertNotIn(self.env['USERPROFILE'], sent)
+        self.assertIn('src/style.css', sent, 'the model sees what 盘序 found')
+        self.assertEqual(client.calls[0][0]['copies'][1]['place'], 'project')
+        # asked again: from the cache; once the project mentions the font, the group is asked anew
+        again = ScriptedClient(lambda g: {})
+        self.assertEqual(self.analyst().review_duplicates([group], again)['copies'][film['path']]['source'], 'cache')
+        self.assertEqual(again.calls, [])
+        film['refs'] = {**film['refs'], 'found': ['index.html'], 'count': 1}
+        self.analyst().review_duplicates([group], again)
+        self.assertEqual(len(again.calls), 1)
+
 
 if __name__ == '__main__':
     unittest.main()

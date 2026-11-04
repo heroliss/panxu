@@ -445,12 +445,20 @@
       { id: 2, size: 46 * MB, wasted: 46 * MB, files: [{ path: 'C:\\Users\\herol\\Downloads\\WeChatSetup.exe', mtime: now - 90 * day }, { path: 'C:\\Users\\herol\\Downloads\\WeChatSetup (2).exe', mtime: now - 30 * day }] },
       // the same font in two projects (each loads its own) and a sound kept in a project plus a loose copy
       { id: 3, size: 9 * MB, wasted: 9 * MB, files: [
-        { path: 'E:\\工程\\萍萍瑜伽故事\\代码工程\\lib\\fonts\\NotoSerifJP-600.woff', mtime: now - 60 * day, place: 'project', place_root: 'E:\\工程\\萍萍瑜伽故事\\代码工程' },
-        { path: 'E:\\工程\\动画短片\\代码工程\\lib\\fonts\\NotoSerifJP-600.woff', mtime: now - 40 * day, place: 'project', place_root: 'E:\\工程\\动画短片\\代码工程' }] },
+        { path: 'E:\\工程\\萍萍瑜伽故事\\代码工程\\lib\\fonts\\NotoSerifJP-600.woff', mtime: now - 60 * day, place: 'project', place_root: 'E:\\工程\\萍萍瑜伽故事\\代码工程',
+          refs: { found: ['src\\styles\\fonts.css'], count: 1, searched: 214, complete: true } },
+        { path: 'E:\\工程\\动画短片\\代码工程\\lib\\fonts\\NotoSerifJP-600.woff', mtime: now - 40 * day, place: 'project', place_root: 'E:\\工程\\动画短片\\代码工程',
+          refs: { found: [], count: 0, searched: 96, complete: true } }] },
       { id: 4, size: 8 * MB, wasted: 8 * MB, files: [
         { path: 'E:\\工程\\动画短片\\代码工程\\public\\long_score.wav', mtime: now - 50 * day, place: 'project', place_root: 'E:\\工程\\动画短片\\代码工程' },
         { path: 'C:\\Users\\herol\\Downloads\\long_score.wav', mtime: now - 70 * day }] },
     ], stats: { files: 18233, groups: 5, wasted: 2.1 * GB, seconds: 18 } }, (f) => ({ phase: f < 0.3 ? 'listing' : f < 0.6 ? 'quick' : 'full', files: Math.round(f * 18233), done: Math.round(f * 300), total: 300, bytes_done: f * 4 * GB, bytes_total: 4 * GB })),
+    dup_ai_review: () => job(4, { copies: {
+      'E:\\工程\\萍萍瑜伽故事\\代码工程\\lib\\fonts\\NotoSerifJP-600.woff': { verdict: 'keep', verdict_label: '建议保留', reason: '工程的样式表引用了它' },
+      'E:\\工程\\动画短片\\代码工程\\lib\\fonts\\NotoSerifJP-600.woff': { verdict: 'delete', verdict_label: '更推荐删除', reason: '工程里没有用到，像是复制模板时带过来的' },
+      'E:\\工程\\动画短片\\代码工程\\public\\long_score.wav': { verdict: 'keep', verdict_label: '建议保留', reason: '放在 public 里，页面可能直接加载' },
+      'C:\\Users\\herol\\Downloads\\long_score.wav': { verdict: 'delete', verdict_label: '更推荐删除', reason: '下载文件夹里的零散副本' },
+    }, usage: { requests: 1 }, errors: [] }),
     dup_delete: ({ paths_to_delete }) => job(3, { done: paths_to_delete, freed: 1.4 * GB, failed: 0, failures: [], mode: 'recycle' }),
     startup_list: () => startup,
     startup_set: ({ item_id, enabled }) => { const it = startup.find((x) => x.id === item_id); it.enabled = enabled; return it; },

@@ -383,12 +383,12 @@
       }
       if (it.caution) d.appendChild(h('div', PX.tag('注意', 'warn'), ' ', it.caution));
       const copies = new Map((it.dup_files || []).map((f) => [f.path, f]));  // where each duplicate copy lives
-      if (it.keep) d.appendChild(h('div.path-line', h('b', '保留：'), h('span.mono-path', PX.displayPath(it.keep)), PX.placeTag(copies.get(it.keep)),
+      if (it.keep) d.appendChild(h('div.path-line', h('b', '保留：'), h('span.mono-path', PX.displayPath(it.keep)), PX.copyFacts(copies.get(it.keep), true),
         PX.openButton(it.keep, '打开'), PX.revealButton(it.keep, '打开位置')));
       const all = it.paths && it.paths.length ? it.paths : it.location ? [it.location] : it.locations || [];
       const showAll = state.open.has('paths:' + it.id);
       for (const p of showAll ? all : all.slice(0, 6)) {
-        d.appendChild(h('div.path-line', h('span.mono-path', PX.displayPath(p)), PX.placeTag(copies.get(p)),
+        d.appendChild(h('div.path-line', h('span.mono-path', PX.displayPath(p)), PX.copyFacts(copies.get(p), true),
           isFolder(it) ? null : PX.openButton(p, '打开'), PX.revealButton(p, '打开位置')));
       }
       if (all.length > 6) {

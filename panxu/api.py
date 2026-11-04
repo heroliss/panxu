@@ -92,6 +92,7 @@ class Backend:
         self.junk_rows: list[dict] | None = None
         self.insights: dict | None = None
         self.file_ai: dict[str, dict] = {}
+        self.dup_ai: dict[str, dict] = {}   # duplicate copy -> the model's advice (Analyst.review_duplicates)
         self.plan: dict | None = None
         self._app_index: tuple[float, list] | None = None
         self._icons: dict[tuple, str | None] = {}
@@ -682,9 +683,35 @@ class Backend:
             for g in result['groups']:
                 for f in g['files']:
                     f['blocked'] = policy.reason(f['path'])
+                    f['ai'] = self.dup_ai.get(f['path'])
             self.dups = result
             return result
         return self.jobs.start('dup_scan', run, group='dups')
+
+    def m_dup_ai_review(self, group_ids: list):
+        """Ask the model which copy of these groups is safer to delete (paths and 盘序's findings only)."""
+        if not self.dups:
+            raise UserError('请先查找重复文件')
+        wanted = {int(i) for i in group_ids or [] if isinstance(i, (int, str)) and str(i).isdigit()}
+        groups = [g for g in self.dups['groups'] if g['id'] in wanted]
+        if not groups:
+            raise UserError('没有可以发送的重复文件')
+        s = self.settings.get()['ai']
+        client = self._client()
+
+        def run(job):
+            result = self.analyst.review_duplicates(groups, client, s.get('anonymize_paths', True),
+                                                    max_requests=int(s.get('max_requests', 8)), cancel=job.cancel,
+                                                    progress=lambda p: job.update(**p))
+            self.dup_ai.update(result['copies'])
+            for g in groups:
+                for f in g['files']:
+                    f['ai'] = self.dup_ai.get(f['path'])
+            if result['requests']:
+                self.oplog.add('ai', f'AI 查看 {len(groups)} 组重复文件', details={
+                    'usage': result['usage'], 'model': client.model, 'errors': result['errors'][:5]})
+            return {'copies': result['copies'], 'usage': result['usage'], 'errors': result['errors']}
+        return self.jobs.start('dup_ai_review', run, group='ai')
 
     def m_dup_delete(self, paths_to_delete: list):
         if not self.dups:

@@ -118,6 +118,48 @@
     }
   }
 
+  // groups worth the model's view: a copy sits in a program's folder, a code project or next to one
+  const unclear = () => (dup.result ? dup.result.groups.filter((g) => g.files.some((f) => f.place)) : []);
+
+  async function askAI() {
+    const groups = unclear();
+    const init = PX.state.init;
+    const preset = init.presets.find((p) => p.id === init.settings.ai.preset) || {};
+    if (!init.has_key && preset.needs_key !== false) {
+      if (await PX.confirm({ title: '先配置模型', body: h('div', '需要先在设置中填写模型服务的 API Key。'), ok: '去设置' })) PX.go('settings');
+      return;
+    }
+    const copies = groups.reduce((s, g) => s + g.files.length, 0);
+    const ok = await PX.confirm({ title: '让 AI 看看这些副本', ok: '发送', wide: true, body: h('div',
+      h('div', `会把 ${groups.length} 组、共 ${copies} 个副本的路径${init.settings.ai.anonymize_paths !== false ? '（用户名已隐藏）' : ''}和修改日期，`
+        + '以及盘序查到的情况（在程序、工程里还是工程旁边，工程里有没有文件提到它）发给模型，请它说说每组里哪一份更推荐删除、哪一份要谨慎。不会发送文件本身。'),
+      h('div.confirm-list', groups.slice(0, 60).flatMap((g) => g.files).map((f) => h('div.row', h('div.sub', PX.displayPath(f.path)))))) });
+    if (!ok) return;
+    dup.aiBusy = true;
+    drawDups(true);
+    try {
+      const r = await PX.api.run('dup_ai_review', { group_ids: groups.map((g) => g.id) });
+      for (const g of dup.result.groups) for (const f of g.files) if (r.copies[f.path]) f.ai = r.copies[f.path];
+      if (r.errors && r.errors.length) PX.toast(r.errors[0], true);
+    } catch (e) { if (!e.cancelled) PX.fail(e); }
+    dup.aiBusy = false;
+    drawDups(true);
+  }
+
+  // tick what the model says is safer to delete; a group always keeps at least one copy unticked
+  function followAI() {
+    let n = 0;
+    for (const g of dup.result.groups) {
+      if (!g.files.some((f) => f.ai)) continue;
+      const go = g.files.filter((f) => !f.blocked && f.ai && f.ai.verdict === 'delete');
+      if (go.length >= g.files.length) go.pop();
+      for (const f of g.files) dup.selected.delete(f.path);
+      for (const f of go) { dup.selected.add(f.path); n += 1; }
+    }
+    drawDups(true);
+    PX.toast(n ? `按 AI 建议勾选了 ${n} 个副本` : 'AI 没有更推荐删除的副本');
+  }
+
   async function scanDups() {
     dup.status = 'scanning';
     dup.progress = {};
@@ -168,9 +210,11 @@
 
     if (busy) {
       const p = dup.progress;
-      const phase = p.phase === 'full' ? `正在比对内容 ${fmt.bytes(p.bytes_done || 0)} / ${fmt.bytes(p.bytes_total || 0)}`
+      const phase = p.phase === 'refs' ? `正在查看工程里有没有用到这些文件 ${p.done + 1} / ${p.total}`
+        : p.phase === 'full' ? `正在比对内容 ${fmt.bytes(p.bytes_done || 0)} / ${fmt.bytes(p.bytes_total || 0)}`
         : p.phase === 'quick' ? `正在快速比对 ${fmt.count(p.done || 0)} / ${fmt.count(p.total || 0)}` : `已找到 ${fmt.count(p.files || 0)} 个文件`;
-      const frac = p.phase === 'full' && p.bytes_total ? p.bytes_done / p.bytes_total : p.phase === 'quick' && p.total ? p.done / p.total : null;
+      const frac = p.phase === 'full' && p.bytes_total ? p.bytes_done / p.bytes_total
+        : (p.phase === 'quick' || p.phase === 'refs') && p.total ? p.done / p.total : null;
       c.appendChild(h('div.working', h('div.line', h('span.muted', phase),
         dup.jobId ? h('button.btn.small', { type: 'button', onclick: () => PX.api.cancel(dup.jobId) }, '停止') : null), PX.progressBar(frac)));
       return;
@@ -181,7 +225,12 @@
     c.appendChild(h('div.filters', { style: { marginTop: '18px' } },
       h('label', '自动勾选：每组保留', PX.seg([['oldest', '最早的'], ['newest', '最新的'], ['shortest', '路径最短的']], dup.keep,
         (v) => { dup.keep = v; autoSelect(); drawDups(true); }), '一份'),
-      h('span.small.muted', '程序文件夹、代码工程里和工程旁边的副本不会自动勾选')));
+      h('span.small.muted', '程序文件夹、代码工程里和工程旁边的副本不会自动勾选'),
+      h('div', { style: { flex: 1 } }),
+      unclear().length ? h('button.btn', { type: 'button', disabled: dup.aiBusy, onclick: askAI,
+        title: '程序、工程里或工程旁边的副本不好判断：请模型结合路径和盘序查到的情况，说说每一份能不能删' },
+      PX.icon('spark'), dup.aiBusy ? 'AI 正在看…' : `让 AI 看看这 ${unclear().length} 组`) : null,
+      dup.result.groups.some((g) => g.files.some((f) => f.ai)) ? h('button.btn', { type: 'button', onclick: followAI }, '按 AI 建议勾选') : null));
     const list = c.appendChild(h('div', { style: { borderTop: '1px solid var(--rule)' } }));
     for (const g of dup.result.groups.slice(0, dup.shown)) {
       const grp = list.appendChild(h('div.dup-group', h('div.dup-head', h('b', `${g.files.length} 个相同文件`),
@@ -203,7 +252,7 @@
           } });
         grp.appendChild(h('div.row.dup-file' + (checked ? '' : '.keep'), box,
           h('div.cell-main.ic-cell', PX.fileIcon(f.path), h('div', h('div.name', PX.pathText(f.path)),
-            f.place ? h('div.dup-place', PX.placeTag(f)) : null)),
+            f.place || f.ai ? h('div.dup-facts', PX.copyFacts(f)) : null)),
           h('div.size.muted.small', '修改于 ' + fmt.date(f.mtime)), PX.pathButtons(f.path)));
       }
     }

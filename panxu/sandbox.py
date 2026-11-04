@@ -285,6 +285,14 @@ def _layout() -> tuple[list[_Spec], list[tuple[str, float]]]:
     add(F(f'{u}/Documents/engine_film/package.json', data=b'{"name": "engine-film"}', age=20))
     add(F(f'{u}/Documents/engine_film/docs/delivery_notes.md', data='# 交付说明\n\n第一版的交付清单。\n'.encode('utf-8'), age=21))
     add(F(f'{u}/Documents/engine_film/docs/delivery_notes_v9.md', data='# 交付说明 v9\n\n成片与字幕。\n'.encode('utf-8'), age=20))
+    # the same font in two projects: one loads it from its CSS, the other never mentions it (duplicates)
+    font = bytes(range(256)) * 6000
+    add(F(f'{u}/Documents/动画/瑜伽故事/代码工程/package.json', data=b'{"name": "yoga"}', age=30))
+    add(F(f'{u}/Documents/动画/瑜伽故事/代码工程/src/style.css',
+          data=b"@font-face { src: url('../lib/fonts/NotoSerifJP-600.woff'); }", age=30))
+    add(F(f'{u}/Documents/动画/瑜伽故事/代码工程/lib/fonts/NotoSerifJP-600.woff', data=font, age=30))
+    add(F(f'{u}/Documents/动画/旧短片/代码工程/package.json', data=b'{"name": "film"}', age=200))
+    add(F(f'{u}/Documents/动画/旧短片/代码工程/lib/fonts/NotoSerifJP-600.woff', data=font, age=200))
     add(F(f'{u}/Documents/WeChat Files/wxid_demo/FileStorage/File/2025-05/合同扫描件.pdf', 15 * MB, age=180))
     add(F(f'{u}/Desktop/项目汇报.pptx', data=pptx(['2026 年第三季度项目汇报', '进度：已完成 80%', '下一步计划'],
                                                    pad=900 * KB, seed=21), age=40))

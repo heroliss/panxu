@@ -48,6 +48,10 @@ class ScriptedModel:
                             'effect': '', 'confidence': 0.85 if cache else 0.5})
             elif 'group' in row:
                 out.append({'id': row['id'], 'verdict': 'review', 'what': '', 'reason': 'scripted'})
+            elif 'copies' in row:  # duplicates: keep the first copy, the loose ones may go
+                out.append({'id': row['id'], 'copies': [
+                    {'n': c['n'], 'verdict': 'keep' if c['n'] == 1 else 'careful' if c.get('place') else 'delete',
+                     'reason': 'scripted'} for c in row['copies']]})
             else:
                 out.append({'id': row['id'], 'what': '', 'suggestion': 'optional', 'reason': 'scripted'})
         return {'results': out}
@@ -160,6 +164,18 @@ def main():
                      + (f'  [{item["blocked"]}]' if item['blocked'] else ''))
         selected = [i for i in plan['items'] if i['selected']]
         run.check(all(i['group'] == 'safe' and not i.get('personal') for i in selected), '默认只勾选「放心清理」，不勾个人文件')
+        # the same font in two projects: the one whose CSS loads it stays, whatever the model says
+        fonts = next((i for i in plan['items'] if i['source'] == 'dup' and 'NotoSerifJP' in i['title']), None)
+        run.check(fonts is not None, '两个工程里的同一个字体列在重复文件里')
+        if fonts:
+            run.note(f'  重复字体：{int(fonts["score"] / 10 + 0.5)} 分；' + '；'.join(fonts['basis'][1:4]))
+            for f in fonts['dup_files']:
+                ai = f.get('ai') or {}
+                run.note(f'    {"保留" if f["path"] == fonts["keep"] else "删除"}  …{f["path"][-46:]}  提到它的文件 '
+                         f'{(f.get("refs") or {}).get("count")}  AI：{ai.get("verdict_label", "-")} {ai.get("reason", "")}')
+            mentioned = [f for f in fonts['dup_files'] if (f.get('refs') or {}).get('count')]
+            run.check([f['path'] for f in mentioned] == [fonts['keep']], '样式表引用的那份字体被保留')
+            run.check(all((f.get('ai') or {}).get('verdict') != 'delete' for f in mentioned), '被引用的副本不会是「更推荐删除」')
         offered = [paths.key(p) for i in plan['items'] for p in i['paths']]
         run.check(len(offered) == len(set(offered)), '每个路径只出现在一项里')
 
