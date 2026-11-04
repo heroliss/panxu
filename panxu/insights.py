@@ -44,6 +44,8 @@ MEDIA = {'image', 'video', 'audio'}
 # kinds of files people keep several versions of; numbered app data (data_0, data_1...) is never one
 VERSION_CATEGORIES = {'document', 'image', 'video', 'audio', 'archive'}
 MAX_FILES = 400_000
+# sub-folders programs bring along (Qt, Chromium / Electron, Java): next to an .exe they mark a program's folder
+RUNTIME_DIRS = {'platforms', 'plugins', 'imageformats', 'locales', 'swiftshader', 'jre', 'runtime'}
 
 KIND_INFO = {
     # kind: (label, what to do, removable by default rule)
@@ -299,6 +301,14 @@ def _hash(path: str, limit: int = 64 * 1024 * 1024) -> str | None:
     return h.hexdigest()
 
 
+def _is_program_dir(files, dirs) -> bool:
+    """A program's own folder: DLLs, or an .exe together with the sub-folders programs bring along."""
+    names = [e.name.lower() for e in files]
+    if any(n.endswith('.dll') for n in names):
+        return True
+    return any(n.endswith('.exe') for n in names) and any(d.name.lower() in RUNTIME_DIRS for d in dirs)
+
+
 class Insights:
     def __init__(self, env: dict | None = None, settings: dict | None = None, apps=None, now: float | None = None):
         self.env = env or paths.environment()
@@ -311,6 +321,9 @@ class Insights:
         # folders whose files came together as one package (a program's folder, an extracted archive):
         # 「release-v0.3.1.md」 and 「release-v0.4.0.md」 there are two documents, not two versions of one
         self.bundle_dirs: list[str] = []
+        # folders that are a program (a portable app unpacked in Downloads: its .exe, DLLs, plugins, its own
+        # config and history): nothing inside is the user's loose file, and its .exe is no installer
+        self.program_dirs: list[str] = []
         self.stats: dict = {}
 
     # -- collection ------------------------------------------------------------------
@@ -330,6 +343,11 @@ class Insights:
             self.roots.append(root)
             for dirpath, files, dirs in fsops.walk_files(root, cancel):
                 if skip and dirpath != root and skip(dirpath):
+                    dirs.clear()
+                    continue
+                if dirpath != root and _is_program_dir(files, dirs):
+                    self.program_dirs.append(dirpath)
+                    dir_has_files[dirpath] = True  # not walked further: not empty, nothing inside is offered
                     dirs.clear()
                     continue
                 kept = [d for d in dirs if not managed_dir(d.name)]
@@ -383,7 +401,8 @@ class Insights:
         self.empty_dirs = sorted(d for d, e in empty.items() if e and paths.key(d) not in root_keys and topmost(d)
                                  and not any(paths.is_within(d, p) for p in projects))
         self.stats = {'files': len(self.files), 'cloud_skipped': cloud, 'bytes': sum(f.size for f in self.files),
-                      'seconds': round(time.time() - started, 1), 'roots': self.roots}
+                      'seconds': round(time.time() - started, 1), 'roots': self.roots,
+                      'program_dirs': len(self.program_dirs)}
         return self
 
     # -- analysis --------------------------------------------------------------------

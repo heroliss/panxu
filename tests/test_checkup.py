@@ -175,6 +175,16 @@ class CheckupTest(TempDirTest):
         self.assertTrue(any('仍在使用的程序' in line for line in foo['basis']), foo['basis'])
         self.assertTrue(next(s for s in rows if s['path'].endswith('Unity'))['selected'])
 
+    def test_a_portable_program_in_downloads_is_left_alone(self):
+        prog = os.path.join(self.backend.env['USERPROFILE'], 'Downloads', 'Snipaste-2.11.3-x64')
+        self.assertTrue(os.path.isfile(os.path.join(prog, 'Snipaste.exe')))
+        plan = self.checkup(use_ai=False)
+        offered = [p for i in plan['items'] for p in i['paths'] if paths.is_within(p, prog)]
+        self.assertEqual(offered, [])
+        found = self.call('insights_result')
+        self.assertFalse([f['path'] for x in found['findings'] for f in x['files'] if paths.is_within(f['path'], prog)])
+        self.assertTrue(any(f['kind'] == 'installer_installed' for f in found['findings']), 'real installers still are')
+
     def test_closing_a_program_unlocks_its_rule_without_rescanning(self):
         plan = self.checkup(use_ai=False)
         edge = next(i for i in plan['items'] if i['id'] == 'rule:edge')

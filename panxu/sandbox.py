@@ -291,6 +291,12 @@ def _layout() -> tuple[list[_Spec], list[tuple[str, float]]]:
     add(F(f'{u}/Downloads/电影.mkv.crdownload', 702 * MB, age=30))
     add(F(f'{u}/Downloads/年度报告.pdf.part', 12 * MB, age=45))
     add(F(f'{u}/Downloads/Ubuntu-24.04.1-desktop-amd64.iso', 5900 * MB, age=700))
+    # a portable program unpacked in Downloads and used from there: its .exe is no installer, its
+    # DLLs are no old downloads (我的文件 must leave the whole folder alone)
+    add(F(f'{u}/Downloads/Snipaste-2.11.3-x64/Snipaste.exe', 7 * MB, age=200))
+    add(F(f'{u}/Downloads/Snipaste-2.11.3-x64/Qt6Core.dll', 5 * MB, age=200))
+    add(F(f'{u}/Downloads/Snipaste-2.11.3-x64/platforms/qwindows.dll', 1 * MB, age=200))
+    add(F(f'{u}/Downloads/Snipaste-2.11.3-x64/config.ini', data=b'[General]\nlanguage=zh\n', age=5))
     invoice = _blob(41, 2 * MB + 555, b'%PDF-1.7\n')
     add(F(f'{u}/Downloads/发票.pdf', data=invoice, age=100))
     add(F(f'{u}/Downloads/发票(1).pdf', data=invoice, age=99))

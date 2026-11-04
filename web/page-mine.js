@@ -195,7 +195,8 @@
     }
     c.appendChild(h('div.small.muted', { style: { marginBottom: '16px' } },
       `查看了 ${fmt.count(r.stats.files)} 个文件（${fmt.bytes(r.stats.bytes)}），位置：` + r.roots.map((p) => fmt.place(p, PX.state.init.home)).join('、') +
-      (r.stats.cloud_skipped ? `。${r.stats.cloud_skipped} 个只在云端的文件没有读取。` : '')));
+      (r.stats.cloud_skipped ? `。${r.stats.cloud_skipped} 个只在云端的文件没有读取。` : '') +
+      (r.stats.program_dirs ? `。${r.stats.program_dirs} 个程序自己的文件夹（例如解压出来的免安装程序）整个跳过，没有列出里面的文件。` : '')));
     if (!r.findings.length) c.appendChild(PX.empty('没有发现需要注意的文件', '你的个人文件夹很整洁。'));
     else overview(c, r);
     for (const f of r.findings) finding(c, f);

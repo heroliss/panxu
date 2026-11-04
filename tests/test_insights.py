@@ -148,6 +148,26 @@ class FindingsTest(TempDirTest):
         paths_ = [os.path.relpath(f['path'], self.home) for finding in found for f in finding['files']]
         self.assertEqual(paths_, [os.path.join('Documents', 'mine')], 'only the empty folder of the user')
 
+    def test_a_program_folder_is_not_the_users_loose_files(self):
+        # found on a real PC: Snipaste unpacked in Downloads (and running from there); its .exe was
+        # offered as an old installer
+        prog = 'Downloads/Snipaste-2.11.3-x64'
+        self.write(f'{prog}/Snipaste.exe', b'MZ' + b'0' * 500 * 1024, days=200)
+        self.write(f'{prog}/Qt6Core.dll', b'MZ' + b'0' * 2000, days=200)
+        self.write(f'{prog}/platforms/qwindows.dll', b'MZ' + b'0' * 2000, days=200)
+        os.makedirs(os.path.join(self.home, *prog.split('/'), 'crashes'))
+        # a game unpacked on the desktop: no DLLs, but an .exe with its plugins and a big old data file
+        self.write('Desktop/OldGame/game.exe', b'MZ' * 1000, days=800)
+        self.write('Desktop/OldGame/plugins/audio.bin', b'0' * 1000, days=800)
+        self.write('Desktop/OldGame/data.pak', b'0' * (2 * 1024 * 1024), days=800)
+        # still found: an old installer kept in a folder of installers
+        self.write('Downloads/软件/OldTool_Setup.exe', b'MZ' + b'0' * 500 * 1024, days=200)
+        roots = [os.path.join(self.home, 'Downloads'), os.path.join(self.home, 'Desktop')]
+        ins = Insights(self.env, {'insights': {'large_mb': 1}}).collect(roots)
+        listed = [os.path.relpath(f['path'], self.home) for finding in ins.findings() for f in finding['files']]
+        self.assertEqual(listed, [os.path.join('Downloads', '软件', 'OldTool_Setup.exe')])
+        self.assertEqual(ins.stats['program_dirs'], 2)
+
     def test_photos_are_not_versions_without_copy_marks(self):
         for i in range(1, 4):
             self.write(f'Pictures/IMG_000{i}.jpg', sandbox.JPEG + bytes([i]) * 2000)
