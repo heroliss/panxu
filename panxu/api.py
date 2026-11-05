@@ -16,7 +16,7 @@ import sys
 import time
 
 from . import APP_NAME, __version__, ai_client, checkup, fsops, insights, itemfacts, paths, winapi
-from .analyst import Analyst, VerdictCache
+from .analyst import FILE_BATCH, Analyst, VerdictCache
 from .analyst import _fmt_date as fmt_date
 from .analyst import _fmt_size as fmt_size
 from .apps import KIND_LABELS as APP_KINDS
@@ -540,10 +540,51 @@ class Backend:
                 continue
             rows.append({**f, 'name': os.path.basename(f['path']), 'category': cat,
                          'category_label': paths.category_label(cat), 'blocked': policy.reason(f['path']),
-                         'note': self.knowledge.annotate(f['path'])})
+                         'note': self.knowledge.annotate(f['path']), 'ai': self.file_ai.get(f['path'])})
             if len(rows) >= limit:
                 break
         return {'files': rows, 'scanned_root': scan.root_path, 'scanned_at': scan.finished_at}
+
+    def large_files_for_ai(self, files: list) -> list[dict]:
+        """Files of the 大文件 list in what analyst.review_files sends. Only files the scan listed, and none
+        that may not be deleted here: the page cannot have any other path described to the model."""
+        scan = self._require_scan()
+        listed = {paths.key(f['path']): f for f in scan.top_files}
+        policy = self.policy()
+        out, seen = [], set()
+        for p in files or []:
+            f = listed.get(paths.key(p)) if isinstance(p, str) else None
+            if f is None or f['path'] in seen or policy.reason(f['path']):
+                continue
+            seen.add(f['path'])
+            note = self.knowledge.annotate(f['path']) or {}
+            out.append({'path': f['path'], 'name': os.path.basename(f['path']), 'size': f['size'], 'mtime': f['mtime'],
+                        'category': paths.category_of(f['path']), 'group': '大文件', 'group_id': '',
+                        'note': note.get('advice') or ''})
+        return out
+
+    def m_large_ai_review(self, files: list):
+        """「让 AI 看看这些大文件」: names, folders, sizes and dates, as many as the request budget holds."""
+        s = self.settings.get()
+        budget = max(1, int(s['ai'].get('max_requests', 8)))
+        rows = self.large_files_for_ai(files)
+        # answered files cost nothing; the budget bounds the ones the model has not seen yet
+        known = [r for r in rows if self.analyst.cache.get(self.analyst._file_key(r))]
+        seen = {r['path'] for r in known}
+        rows = known + [r for r in rows if r['path'] not in seen][:budget * FILE_BATCH]
+        if not rows:
+            raise UserError('没有可以发送的文件')
+        client = self._client()
+
+        def run(job):
+            result = self.analyst.review_files(rows, client, s['ai'].get('anonymize_paths', True), max_requests=budget,
+                                               cancel=job.cancel, progress=lambda p: job.update(**p))
+            self.file_ai.update(result['files'])
+            if result['requests']:
+                self.oplog.add('ai', f'AI 查看 {len(rows)} 个大文件', details={
+                    'usage': result['usage'], 'model': client.model, 'errors': result['errors'][:5]})
+            return {'files': result['files'], 'usage': result['usage'], 'errors': result['errors'], 'sent': len(rows)}
+        return self.jobs.start('ai_review', run, group='ai')
 
     # ------------------------------------------------------------------ deletion of selected paths
     def m_check_paths(self, items: list):
@@ -638,14 +679,16 @@ class Backend:
         return self.jobs.start('delete', run, group='modify')
 
     # ------------------------------------------------------------------ AI on space
-    def m_ai_preview(self):
-        return self.analyst.preview(self._require_scan(), self.settings.get())
+    def m_ai_preview(self, use_cache: bool = True):
+        return self.analyst.preview(self._require_scan(), self.settings.get(), use_cache=bool(use_cache))
 
     def m_ai_analyze(self, use_cache: bool = True):
         scan = self._require_scan()
         settings = self.settings.get()
-        # check cheaply that there is something to do and a configured client
-        client = self._client() if self.analyst.preview(scan, settings)['fresh'] or not use_cache else None
+        # something to ask (frontier folders, or sub-folders an earlier run's budget cut): the configured client is
+        # required; otherwise every answer is cached, and a configured client is still used should one be needed
+        needs = self.analyst.preview(scan, settings)['fresh'] or not use_cache
+        client = self._client() if needs else self.client_or_none()
 
         def run(job):
             nonlocal client

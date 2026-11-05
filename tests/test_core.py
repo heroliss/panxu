@@ -277,16 +277,18 @@ class SettingsTest(TempDirTest):
         s.update({'ai': {'thinking': 'off'}})  # now a real choice: kept
         self.assertEqual(Settings(self.tmp).get()['ai']['thinking'], 'off')
 
-    def test_old_default_min_folder_size_is_lowered_once(self):
+    def test_old_default_min_folder_size_is_lifted_once(self):
+        # the default of the build that wrote the file is lifted; a value the user picked there is kept
+        for version, old, now in ((2, 500, 0), (3, 200, 0), (3, 500, 500), (2, 200, 200), (3, 2048, 2048)):
+            with open(os.path.join(self.tmp, 'settings.json'), 'w', encoding='utf-8') as fh:
+                json.dump({'version': version, 'ai': {'min_dir_mb': old, 'thinking': 'off'}}, fh)
+            s = Settings(self.tmp)
+            self.assertEqual(s.get()['ai']['min_dir_mb'], now, (version, old))
+            self.assertEqual(s.get()['ai']['thinking'], 'off', 'chosen after version 2: kept')
+        s.update({'ai': {'min_dir_mb': 200}})
+        self.assertEqual(Settings(self.tmp).get()['ai']['min_dir_mb'], 200, 'a later choice is kept')
         with open(os.path.join(self.tmp, 'settings.json'), 'w', encoding='utf-8') as fh:
-            json.dump({'version': 2, 'ai': {'min_dir_mb': 500, 'thinking': 'off'}}, fh)
-        s = Settings(self.tmp)
-        self.assertEqual(s.get()['ai']['min_dir_mb'], 200)
-        self.assertEqual(s.get()['ai']['thinking'], 'off', 'chosen after version 2: kept')
-        s.update({'ai': {'min_dir_mb': 500}})
-        self.assertEqual(Settings(self.tmp).get()['ai']['min_dir_mb'], 500, 'a later choice is kept')
-        with open(os.path.join(self.tmp, 'settings.json'), 'w', encoding='utf-8') as fh:
-            json.dump({'version': 2, 'ai': {'min_dir_mb': 1024}}, fh)
+            json.dump({'version': 3, 'ai': {'min_dir_mb': 1024}}, fh)
         self.assertEqual(Settings(self.tmp).get()['ai']['min_dir_mb'], 1024)
 
     def test_old_auto_select_becomes_a_threshold(self):

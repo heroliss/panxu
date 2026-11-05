@@ -82,8 +82,11 @@
 
     // ---- analysis
     const sec2 = form.appendChild(h('section', h('h2', 'AI 分析')));
-    sec2.appendChild(field('最小文件夹', PX.seg([[200, '200 MB'], [500, '500 MB'], [1024, '1 GB'], [2048, '2 GB']], ai.min_dir_mb,
-      async (v) => { await save({ ai: { min_dir_mb: v } }); draw(); }), '比这个小的文件夹不发给 AI。调大可以节省额度。'));
+    const floors = [[0, '不限'], [50, '50 MB'], [200, '200 MB'], [1024, '1 GB']];
+    // an earlier choice that is no longer offered (500 MB, 2 GB) stays visible and selected
+    if (!floors.some(([v]) => v === ai.min_dir_mb)) floors.push([ai.min_dir_mb, ai.min_dir_mb >= 1024 ? ai.min_dir_mb / 1024 + ' GB' : ai.min_dir_mb + ' MB']);
+    sec2.appendChild(field('最小文件夹', PX.seg(floors, ai.min_dir_mb,
+      async (v) => { await save({ ai: { min_dir_mb: v } }); draw(); }), '空间分析发给 AI 的文件夹，从大到小一批批看。「不限」时小文件夹也看；设一个大小可以只看大的。'));
     sec2.appendChild(field('请求上限', PX.seg([[4, '4 次'], [8, '8 次'], [16, '16 次']], ai.max_requests,
       async (v) => { await save({ ai: { max_requests: v } }); draw(); }), '每次分析最多向模型发送的请求数，每次请求最多包含 12 个文件夹。'));
     sec2.appendChild(field('隐藏用户名', h('label.inline', PX.switchEl(ai.anonymize_paths, (e) => save({ ai: { anonymize_paths: e.target.checked } })),

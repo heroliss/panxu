@@ -407,9 +407,14 @@ input[type=checkbox]:disabled { cursor: not-allowed; }
   cursor: pointer; padding: 2px 0; white-space: nowrap; }
 /* one-line paths: the middle gives way, the start and the name stay (PX.pathText) */
 .path-text { display: inline-flex; max-width: 100%; min-width: 0; white-space: nowrap; vertical-align: bottom; }
-.pt-head { overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; min-width: 3em; }
-.pt-tail { flex: 0 0 auto; max-width: 80%; overflow: hidden; text-overflow: ellipsis; }
-.pt-tail:only-child { max-width: 100%; }  /* 「下载」: a name with no folder before it may use all the room */
+/* The head gives way first (its shrink weight dwarfs the tail's) but keeps 3em, or all of
+   itself when shorter: a plain min-width: 3em padded 「E:」 and 「文档」 into a gap before the
+   name, and a percentage cap on the tail is relative to this shrink-to-fit box, so it cut
+   short names. Only then does the name give way. The weight is this large because Blink keeps
+   sizes in 1/64 px: with 1000 the name's sub-pixel share of the shrink cut its last letter. */
+.pt-head { overflow: hidden; text-overflow: ellipsis; flex: 0 1000000 auto; min-width: 0;
+  min-width: calc-size(max-content, min(size, 3em)); }
+.pt-tail { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .row .name:has(> .path-text), .row .sub:has(> .path-text) { display: flex; align-items: center; min-width: 0; }
 .toast.err { background: var(--danger); color: #fff; }
 

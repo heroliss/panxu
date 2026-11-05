@@ -4,7 +4,8 @@
   const { h, fmt } = PX;
 
   // ------------------------------------------------------------------ large files
-  const large = { min: 100, category: '', older: 0, rows: null, loadedFor: null, selected: new Set(), sort: 'size' };
+  const large = { min: 100, category: '', older: 0, rows: null, loadedFor: null, selected: new Set(), sort: 'size', aiBusy: false };
+  const FILE_VERDICT = { keep: 'warn', delete: 'good', archive: 'info', review: '' };
   const CATS = [['', '全部'], ['video', '视频'], ['archive', '压缩包'], ['installer', '安装包'], ['disk', '磁盘镜像'],
     ['image', '图片'], ['audio', '音频'], ['document', '文档'], ['data', '数据库/日志'], ['other', '其他']];
   let largeRoot = null;
@@ -19,14 +20,48 @@
     drawLarge();
   }
 
+  // 「让 AI 看看这些文件」: the listed files (not the system ones) as far as the request budget goes
+  async function askLarge() {
+    const init = PX.state.init;
+    const preset = init.presets.find((p) => p.id === init.settings.ai.preset) || {};
+    if (!init.has_key && preset.needs_key !== false) {
+      if (await PX.confirm({ title: '先配置模型', body: h('div', '需要先在设置中填写模型服务的 API Key。'), ok: '去设置' })) PX.go('settings');
+      return;
+    }
+    // the ones AI has not seen yet, biggest first, as many as the request budget holds
+    const todo = (large.rows || []).filter((f) => !f.blocked && !f.ai);
+    const files = todo.slice(0, Math.max(1, init.settings.ai.max_requests) * 30);
+    if (!files.length) { PX.toast('列表里的文件 AI 都看过了'); return; }
+    const ok = await PX.confirm({ title: '让 AI 看看这些大文件', ok: '发送', wide: true, body: h('div',
+      h('div', `会把下面 ${files.length} 个文件的名字、所在文件夹${init.settings.ai.anonymize_paths ? '（用户名已隐藏）' : ''}、大小、类型和日期发给模型，` +
+        '请它说说每个文件可能是什么、能删、该留，还是适合移到移动硬盘或网盘。不会发送文件本身。'),
+      files.length < todo.length ? h('div.small.muted', `还有 ${todo.length - files.length} 个更小的文件超出了这次的「请求上限」，看完这些后再点一次就会发送。`) : null,
+      h('div.confirm-list', files.map((f) => h('div.row', h('div.sub', f.name), h('span.num.small', fmt.bytes(f.size)))))) });
+    if (!ok) return;
+    large.aiBusy = true;
+    drawLarge();
+    try {
+      const r = await PX.api.run('large_ai_review', { files: files.map((f) => f.path) });
+      if (r.errors && r.errors.length) PX.toast(r.errors[0], true);
+      large.aiBusy = false;
+      await loadLarge();
+      return;
+    } catch (e) { if (!e.cancelled) PX.fail(e); }
+    large.aiBusy = false;
+    drawLarge();
+  }
+
   function drawLarge() {
     if (!largeRoot || !PX.isCurrent('large')) return;
     const main = document.getElementById('main');
     const top = main.scrollTop;
     const c = PX.clear(largeRoot);
     const space = PX.space.state;
+    const askable = (large.rows || []).some((f) => !f.blocked && !f.ai);
     c.appendChild(h('div.page-head', h('div.grow', h('h1', '大文件'),
-      h('div.sub', space.result ? `来自对 ${PX.displayPath(space.result.root.path)} 的扫描，最多列出 5000 个最大的文件` : '列出磁盘上最大的文件'))));
+      h('div.sub', space.result ? `来自对 ${PX.displayPath(space.result.root.path)} 的扫描，最多列出 5000 个最大的文件` : '列出磁盘上最大的文件')),
+      space.result && large.rows ? h('div.actions', h('button.btn', { type: 'button', disabled: large.aiBusy || !askable, onclick: askLarge },
+        PX.icon('spark'), large.aiBusy ? 'AI 正在看…' : '让 AI 看看这些文件')) : null));
     if (space.status === 'scanning') {
       c.appendChild(PX.notice('正在扫描，完成后这里会列出最大的文件。', 'info', h('button.btn.small', { type: 'button', onclick: () => PX.go('space') }, '查看进度')));
       return;
@@ -71,8 +106,11 @@
         'aria-label': '选择 ' + f.name,
         onchange: (e) => { e.target.checked ? large.selected.add(f.path) : large.selected.delete(f.path); bar(); } });
       list.appendChild(h('div.row.file-row' + (f.blocked ? '.disabled' : ''), box,
-        h('div.cell-main.ic-cell', PX.fileIcon(f.path), h('div', h('div.name', f.name),
-          f.blocked ? h('div.sub', f.blocked + '：' + PX.displayPath(f.path)) : h('div.sub', PX.pathText(f.path)))),
+        h('div.cell-main.ic-cell', PX.fileIcon(f.path), h('div',
+          h('div.name-line', h('span.name-text', f.name),
+            f.ai ? h('span.inline-tags', PX.tag('AI：' + f.ai.verdict_label, FILE_VERDICT[f.ai.verdict] || '', 'spark')) : null),
+          f.blocked ? h('div.sub', f.blocked + '：' + PX.displayPath(f.path)) : h('div.sub', PX.pathText(f.path)),
+          f.ai ? h('div.ai-note', h('span', f.ai.what), h('span.muted', f.ai.reason)) : null)),
         h('div.sub', f.category_label), h('div.size.muted.small', fmt.date(f.mtime)), h('div.size', fmt.bytes(f.size), PX.meter(f.size / largest)),
         PX.pathButtons(f.path)));
     }
