@@ -1,69 +1,29 @@
-"""Launch a local window; --headless is for isolated acceptance testing."""
-import argparse
-import os
-from pathlib import Path
+"""Start 盘序 from source: python run.py [--debug] (pythonw run.py: the same without a console window)"""
 import sys
-import threading
-import webbrowser
-from html import escape
-
-from diskpilot.server import create_server
-from diskpilot.simulation import AppError
 
 
-def main():
-    parser = argparse.ArgumentParser(description='盘序：Win11 空间与后台管理')
-    parser.add_argument('--port', type=int, default=0)
-    parser.add_argument('--data-dir', type=Path)
-    parser.add_argument('--headless', action='store_true')
-    parser.add_argument('--browser', action='store_true')
-    args = parser.parse_args()
-    data_dir = args.data_dir or (Path(sys.executable).parent / 'userdata' if getattr(sys, 'frozen', False) else Path(__file__).resolve().parent / 'userdata')
+def _say(text: str) -> None:
+    """A message the user sees even without a console."""
     try:
-        server = create_server(data_dir, args.port)
-    except AppError as exc:
-        print(str(exc), file=sys.stderr, flush=True)
-        if not args.headless:
-            try:
-                import webview
-                webview.create_window('盘序', html='<div style="font:16px Segoe UI,Microsoft YaHei;padding:36px;line-height:2">'
-                                      '<h2>盘序已经打开</h2>' + escape(str(exc)) + '</div>', width=520, height=230, text_select=True)
-                webview.start(gui='edgechromium' if os.name == 'nt' else None)
-            except ImportError:
-                pass
-        return
-    url = f'http://127.0.0.1:{server.server_port}'
-    print(url, flush=True)
-    if args.headless:
-        try:
-            server.serve_forever()
-        except KeyboardInterrupt:
-            pass
-        finally:
-            server.server_close()
-            server.app.close()
-        return
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(None, text, '盘序', 0x10)
+    except (AttributeError, OSError):
+        if sys.stderr is not None:
+            print(text, file=sys.stderr)
+
+
+def start() -> int:
     try:
-        if args.browser:
-            webbrowser.open(url)
-            threading.Event().wait()
-        else:
-            try:
-                import webview
-                webview.create_window('盘序', url, width=1420, height=920, min_size=(960, 680), text_select=True)
-                webview.start(gui='edgechromium' if os.name == 'nt' else None)
-            except ImportError:
-                webbrowser.open(url)
-                threading.Event().wait()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        server.shutdown()
-        server.server_close()
-        server.app.close()
+        from panxu.app import main, report_crash
+    except ImportError as exc:  # a package is missing
+        _say(f'盘序缺少运行所需的组件（{exc.name or exc}）。请在项目文件夹里运行：\npip install -r requirements.txt')
+        return 1
+    try:
+        return main()
+    except Exception:  # noqa: BLE001 -- shown and logged instead of vanishing with the console
+        report_crash()
+        return 1
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(start())

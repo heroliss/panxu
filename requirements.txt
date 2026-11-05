@@ -1,3 +1,4 @@
-# Core HTTP server, scan and simulation journal use the Python standard library.
-pywebview>=6.0,<7
-psutil>=7.0,<8
+# Runtime (Windows 10/11 x64, Python 3.10+). Everything else is the standard library.
+pywebview>=5.0,<7
+psutil>=6.0,<8
+# Build only: pyinstaller

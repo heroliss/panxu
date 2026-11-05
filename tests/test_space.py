@@ -1,0 +1,210 @@
+import os
+import unittest
+
+from helpers import WIN_ENV, TempDirTest
+
+from panxu.duplicates import find_duplicates, place_label, verify_unchanged
+from panxu.knowledge import Knowledge
+from panxu.scanner import FLAG_LINKS, FLAG_PROGRAM, SpaceScan
+
+
+class ScannerTest(TempDirTest):
+    def build(self):
+        self.make('root/a/big.bin', 5000)
+        self.make('root/a/sub/x.txt', 100)
+        self.make('root/b/y.mp4', 2000)
+        self.make('root/top.iso', 300)
+        os.symlink(os.path.join(self.tmp, 'root', 'a'), os.path.join(self.tmp, 'root', 'link'))
+        return SpaceScan(os.path.join(self.tmp, 'root'), threads=3).run()
+
+    def test_rollup_sizes_and_links(self):
+        scan = self.build()
+        root = scan.root
+        self.assertEqual(root.size, 7400)
+        self.assertEqual(root.files, 4)
+        self.assertTrue(root.flags & FLAG_LINKS)
+        self.assertEqual([c.name for c in root.children], ['a', 'b'])  # sorted by size, link skipped
+        self.assertEqual(root.children[0].size, 5100)
+        self.assertEqual(scan.stats['dirs'], 4)
+
+    def test_queries(self):
+        scan = self.build()
+        node = scan.find(os.path.join(self.tmp, 'root', 'A', 'sub'))
+        self.assertIsNotNone(node)
+        self.assertEqual(scan.path_of(node), os.path.join(self.tmp, 'root', 'a', 'sub'))
+        files, total, rest = scan.own_files(scan.root)
+        self.assertEqual((total, files[0]['name']), (1, 'top.iso'))
+        self.assertEqual(scan.top_files[0]['size'], 5000)
+        cats = {c['category']: c for c in scan.ext_summary()}
+        self.assertEqual(cats['video']['bytes'], 2000)
+        self.assertIsNone(scan.find('/definitely/elsewhere'))
+
+    def test_remove_path_updates_ancestors(self):
+        scan = self.build()
+        scan.remove_path(os.path.join(self.tmp, 'root', 'a'), 0, 0)
+        self.assertEqual(scan.root.size, 2300)
+        self.assertEqual([c.name for c in scan.root.children], ['b'])
+        self.assertFalse(any('big.bin' in f['path'] for f in scan.top_files))
+
+    def test_program_files_are_marked_up_the_tree(self):
+        self.make('p/Tool/bin/tool.exe', 10)
+        self.make('p/Tool/data/x.bin', 10)
+        self.make('p/Cache/y.bin', 10)
+        scan = SpaceScan(os.path.join(self.tmp, 'p')).run()
+        by_name = {c.name: c for c in scan.root.children}
+        self.assertTrue(by_name['Tool'].flags & FLAG_PROGRAM, 'a folder with an .exe somewhere inside')
+        self.assertFalse(by_name['Cache'].flags & FLAG_PROGRAM)
+
+    def test_cancel(self):
+        import threading
+        from panxu.fsops import Cancelled
+        ev = threading.Event()
+        ev.set()
+        self.make('r/a/b', 1)
+        with self.assertRaises(Cancelled):
+            SpaceScan(os.path.join(self.tmp, 'r')).run(cancel=ev)
+
+
+class DuplicatesTest(TempDirTest):
+    def test_groups_identical_content_only(self):
+        same = b'A' * 300000
+        for rel in ('d/one.bin', 'd/sub/two.bin', 'e/three.bin'):
+            p = os.path.join(self.tmp, *rel.split('/'))
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            with open(p, 'wb') as fh:
+                fh.write(same)
+        diff = os.path.join(self.tmp, 'd', 'diff.bin')
+        with open(diff, 'wb') as fh:
+            fh.write(b'A' * 150000 + b'B' + b'A' * 149999)  # same size, same head and tail
+        os.link(os.path.join(self.tmp, 'd', 'one.bin'), os.path.join(self.tmp, 'd', 'hard.bin'))
+        result = find_duplicates([os.path.join(self.tmp, 'd'), os.path.join(self.tmp, 'e')], min_size=1000)
+        self.assertEqual(len(result['groups']), 1)
+        names = sorted(os.path.basename(f['path']) for f in result['groups'][0]['files'])
+        self.assertEqual(len(names), 3)
+        self.assertNotIn('diff.bin', names)
+        self.assertEqual(result['groups'][0]['wasted'], 600000)
+
+    def test_small_files_fully_compared(self):
+        for name, data in (('a', b'x' * 100000), ('b', b'x' * 100000), ('c', b'x' * 99999 + b'y')):
+            with open(os.path.join(self.tmp, name), 'wb') as fh:
+                fh.write(data)
+        result = find_duplicates([self.tmp], min_size=1)
+        self.assertEqual(len(result['groups']), 1)
+        self.assertEqual(len(result['groups'][0]['files']), 2)
+
+    def test_skip_and_overlapping_roots(self):
+        self.make('x/sys/a', 2000)
+        self.make('x/sys/b', 2000)
+        self.make('x/u/c', 3000)
+        self.make('x/u/d', 3000)
+        root = os.path.join(self.tmp, 'x')
+        result = find_duplicates([root, os.path.join(root, 'u')], min_size=1,
+                                 skip=lambda p: os.path.basename(p) == 'sys')
+        self.assertEqual(len(result['groups']), 1)
+        self.assertEqual(len(result['groups'][0]['files']), 2)
+
+    def test_copies_in_programs_and_projects_say_where_they_are(self):
+        # the same Qt DLL in two portable programs: recycling one copy breaks a program
+        for app in ('appA', 'appB'):
+            self.make(f'y/{app}/tool.exe', 100)
+            self.make(f'y/{app}/Qt5Core.dll', 5000)
+        self.make('y/proj/package.json', 10)
+        self.make('y/proj/assets/logo.png', 4000)
+        self.make('y/proj/build/logo.png', 4000)
+        self.make('y/photos/a.jpg', 3000)
+        self.make('y/photos/a (1).jpg', 3000)
+        result = find_duplicates([os.path.join(self.tmp, 'y')], min_size=1)
+        places = {g['size']: {os.path.relpath(f['path'], self.tmp).replace('\\', '/'): f.get('place') for f in g['files']}
+                  for g in result['groups']}
+        self.assertEqual(places[5000], {'y/appA/Qt5Core.dll': 'program', 'y/appB/Qt5Core.dll': 'program'})
+        self.assertEqual(places[4000], {'y/proj/assets/logo.png': 'project', 'y/proj/build/logo.png': 'build'})
+        self.assertEqual(places[3000], {'y/photos/a.jpg': None, 'y/photos/a (1).jpg': None})
+        dll_group = next(g for g in result['groups'] if g['size'] == 5000)
+        self.assertEqual({os.path.basename(f['place_root']) for f in dll_group['files']}, {'appA', 'appB'})
+        self.assertEqual(place_label({'place': 'project', 'place_root': 'E:\\工程\\萍萍瑜伽故事\\代码工程'}),
+                         '代码工程「萍萍瑜伽故事\\代码工程」', 'two levels tell two 代码工程 folders apart')
+        self.assertEqual(place_label({'place': 'build', 'place_root': 'E:\\游戏'}), '工程「游戏」的构建输出')
+
+    def test_copies_next_to_a_project_are_its_material(self):
+        # found on a real PC: 萍萍瑜伽故事\audio\mix.wav next to 萍萍瑜伽故事\代码工程 (and its public\mix.wav)
+        self.make('z/story/code/package.json', 10)
+        self.make('z/story/code/public/mix.wav', 4000)
+        self.make('z/story/audio/mix.wav', 4000)
+        self.make('z/downloads/mix.wav', 4000)
+        self.make('z/top/package.json', 10)       # a project directly in the searched folder:
+        self.make('z/elsewhere/song.mp3', 3000)   # the searched folder itself is not 「next to」 it
+        self.make('z/other/song.mp3', 3000)
+        result = find_duplicates([os.path.join(self.tmp, 'z')], min_size=1)
+        places = {os.path.relpath(f['path'], self.tmp).replace('\\', '/'): f.get('place')
+                  for g in result['groups'] for f in g['files']}
+        self.assertEqual(places['z/story/code/public/mix.wav'], 'project')
+        self.assertEqual(places['z/story/audio/mix.wav'], 'near')
+        self.assertIsNone(places['z/downloads/mix.wav'])
+        self.assertIsNone(places['z/elsewhere/song.mp3'])
+
+    def test_projects_are_searched_for_the_file_name(self):
+        # two projects carry the same font: one loads it from its CSS, the other never mentions it
+        def write(rel, text):
+            p = os.path.join(self.tmp, *rel.split('/'))
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            with open(p, 'w', encoding='utf-8') as fh:
+                fh.write(text)
+        for proj in ('yoga', 'film'):
+            write(f'w/{proj}/code/package.json', '{"name": "%s"}' % proj)
+            self.make(f'w/{proj}/code/lib/fonts/NotoSerifJP-600.woff', 6000)
+        write('w/yoga/code/src/style.css', "@font-face { src: url('../lib/fonts/NotoSerifJP-600.WOFF'); }")
+        write('w/film/code/node_modules/x/index.js', "'NotoSerifJP-600.woff'")   # dependencies are not searched
+        write('w/film/code/dist/app.js', "'NotoSerifJP-600.woff'")               # nor build output
+        self.make('w/yoga/audio/mix.wav', 7000)                                  # next to the project:
+        self.make('w/yoga/code/public/mix.wav', 7000)                            # searched with the folder
+        write('w/yoga/render.py', "AUDIO = 'audio/mix.wav'")
+        result = find_duplicates([os.path.join(self.tmp, 'w')], min_size=1000)
+        refs = {os.path.relpath(f['path'], self.tmp).replace('\\', '/'): f.get('refs')
+                for g in result['groups'] for f in g['files']}
+        yoga = refs['w/yoga/code/lib/fonts/NotoSerifJP-600.woff']
+        self.assertEqual((yoga['count'], yoga['found']), (1, [os.path.join('src', 'style.css')]))
+        film = refs['w/film/code/lib/fonts/NotoSerifJP-600.woff']
+        self.assertEqual(film['count'], 0)
+        self.assertTrue(film['complete'] and film['searched'] >= 1)
+        self.assertIn('render.py', refs['w/yoga/audio/mix.wav']['found'], 'the folder holding the project is searched')
+
+    def test_verify_unchanged(self):
+        p = self.make('f', 10)
+        st = os.stat(p)
+        self.assertTrue(verify_unchanged(p, 10, st.st_mtime))
+        self.assertFalse(verify_unchanged(p, 11, st.st_mtime))
+
+
+class KnowledgeTest(unittest.TestCase):
+    def setUp(self):
+        self.k = Knowledge(WIN_ENV)
+
+    def test_roles(self):
+        self.assertEqual(self.k.ai_role('C:\\'), 'descend')
+        self.assertEqual(self.k.ai_role('C:\\Users\\alice\\AppData\\Local'), 'descend')
+        self.assertEqual(self.k.ai_role('C:\\Windows\\WinSxS'), 'skip')
+        self.assertEqual(self.k.ai_role('C:\\Program Files\\Foo'), 'skip')
+        self.assertEqual(self.k.ai_role('C:\\Users\\alice\\Documents\\Stuff'), 'skip')
+        self.assertEqual(self.k.ai_role('C:\\Users\\alice\\AppData\\Local\\Temp'), 'skip')
+        self.assertEqual(self.k.ai_role('C:\\Users\\alice\\AppData\\Local\\Unity'), 'ask')
+        self.assertEqual(self.k.ai_role('D:\\Games'), 'ask')
+        self.assertEqual(self.k.ai_role('C:\\Users\\alice\\AppData\\Local\\Packages\\CanonicalGroupLimited.Ubuntu'), 'skip')
+
+    def test_annotations(self):
+        note = self.k.annotate('C:\\hiberfil.sys')
+        self.assertEqual(note['kind'], 'system')
+        self.assertIn('powercfg', note['advice'])
+        chrome = self.k.annotate('C:\\Users\\alice\\AppData\\Local\\Google\\Chrome\\User Data\\Default\\Cache')
+        self.assertEqual((chrome['kind'], chrome['rule']), ('cache', 'chrome'))
+        self.assertIsNone(self.k.annotate('C:\\Users\\alice\\AppData\\Local'))
+        self.assertTrue(self.k.annotate('C:\\Windows\\System32\\drivers')['inherited'])
+        self.assertEqual(self.k.annotate('E:\\SteamLibrary')['kind'], 'game')
+
+    def test_literal_brackets_in_names(self):
+        env = dict(WIN_ENV, USERPROFILE='C:\\Users\\a[1]', LOCALAPPDATA='C:\\Users\\a[1]\\AppData\\Local')
+        k = Knowledge(env)
+        self.assertEqual(k.ai_role('C:\\Users\\a[1]\\AppData\\Local'), 'descend')
+
+
+if __name__ == '__main__':
+    unittest.main()

@@ -1,0 +1,585 @@
+/* Shared UI helpers: element builder, icons, formatting, modal, toast, treemap layout. */
+(function () {
+  'use strict';
+  const PX = (window.PX = window.PX || {});
+  PX.pages = {};
+  PX.state = {};
+
+  // h('div.row.junk', {onclick}, child, 'text', [more]) — text is always set as text, never HTML.
+  function h(spec, attrs, ...children) {
+    const [tag, ...classes] = spec.split('.');
+    const el = document.createElement(tag || 'div');
+    if (classes.length) el.className = classes.join(' ');
+    if (attrs && (typeof attrs !== 'object' || attrs instanceof Node || Array.isArray(attrs))) {
+      children.unshift(attrs);
+      attrs = null;
+    }
+    if (attrs) {
+      for (const [k, v] of Object.entries(attrs)) {
+        if (v === undefined || v === null || v === false) continue;
+        if (k === 'class') el.className += (el.className ? ' ' : '') + v;
+        else if (k === 'style' && typeof v === 'object') {
+          for (const [prop, value] of Object.entries(v)) {
+            if (prop.startsWith('--')) el.style.setProperty(prop, value); else el.style[prop] = value;
+          }
+        }
+        else if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
+        else if (k === 'dataset') Object.assign(el.dataset, v);
+        else if (k in el && typeof v !== 'string') el[k] = v;
+        else el.setAttribute(k, v === true ? '' : v);
+      }
+    }
+    append(el, children);
+    return el;
+  }
+  function append(el, children) {
+    for (const c of children) {
+      if (c === null || c === undefined || c === false) continue;
+      if (Array.isArray(c)) append(el, c);
+      else el.appendChild(c instanceof Node ? c : document.createTextNode(String(c)));
+    }
+    return el;
+  }
+  PX.h = h;
+  PX.clear = (el) => { while (el.firstChild) el.removeChild(el.firstChild); return el; };
+
+  // --- icons (static, trusted markup) ---
+  const P = {
+    home: '<path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z"/>',
+    broom: '<path d="M14 4l6 6M12.5 5.5l6 6-4 4-6-6zM8.5 9.5 4 14c-1 1-1 3 0 4l2 2c1 1 3 1 4 0l4.5-4.5"/><path d="M6 15l3 3"/>',
+    map: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M12 3v18M12 12h9M3 9h9M16 12v9"/>',
+    big: '<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6M9 15l3-3 3 3M12 12v6"/>',
+    copy: '<rect x="8" y="8" width="13" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/>',
+    power: '<path d="M12 3v9M6.3 6.3a8 8 0 1 0 11.4 0"/>',
+    history: '<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5M12 7v5l3 3"/>',
+    gear: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H9a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z"/>',
+    shield: '<path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/><path d="M9 12l2 2 4-4"/>',
+    folder: '<path d="M3 6a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
+    file: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>',
+    spark: '<path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8zM19 16l.8 2.2L22 19l-2.2.8L19 22l-.8-2.2L16 19l2.2-.8z"/>',
+    refresh: '<path d="M21 12a9 9 0 1 1-2.6-6.4L21 8"/><path d="M21 3v5h-5"/>',
+    trash: '<path d="M4 7h16M9 7V4h6v3M6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13"/>',
+    open: '<path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/>',
+    check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
+    x: '<path d="M6 6l12 12M18 6 6 18"/>',
+    chev: '<path d="M9 5l7 7-7 7"/>',
+    up: '<path d="M12 19V5M6 11l6-6 6 6"/>',
+    warn: '<path d="M12 3 2 20h20zM12 10v4M12 17h.01"/>',
+    info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/>',
+    lock: '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>',
+    plus: '<path d="M12 5v14M5 12h14"/>',
+    search: '<circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/>',
+    apps: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
+    drive: '<rect x="3" y="13" width="18" height="7" rx="2"/><path d="M5 13l2.5-8h9L19 13M16.5 16.5h.01"/>',
+  };
+  PX.icon = function (name, cls) {
+    const span = document.createElement('span');
+    span.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + (P[name] || '') + '</svg>';
+    const svg = span.firstChild;
+    if (cls) svg.setAttribute('class', cls);
+    return svg;
+  };
+
+  // --- formatting ---
+  PX.fmt = {
+    bytes(n, digits) {
+      if (n === null || n === undefined || isNaN(n)) return '—';
+      const u = ['B', 'KB', 'MB', 'GB', 'TB'];
+      let i = 0, v = Math.max(0, n);
+      while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+      const d = digits !== undefined ? digits : (i <= 1 ? 0 : v >= 100 ? 0 : 1);
+      return v.toFixed(d) + ' ' + u[i];
+    },
+    split(n) { // ['12.4', 'GB'] for big figures
+      const s = PX.fmt.bytes(n).split(' ');
+      return [s[0], s[1] || ''];
+    },
+    count(n) { return (n || 0).toLocaleString('zh-CN'); },
+    date(ts) {
+      if (!ts) return '—';
+      const d = new Date(ts * 1000);
+      return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+    },
+    datetime(ts) {
+      if (!ts) return '—';
+      const d = new Date(ts * 1000);
+      return PX.fmt.date(ts) + ' ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+    },
+    ago(ts) {
+      if (!ts) return '—';
+      const days = (Date.now() / 1000 - ts) / 86400;
+      if (days < 1) return '今天';
+      if (days < 30) return Math.floor(days) + ' 天前';
+      if (days < 365) return Math.floor(days / 30) + ' 个月前';
+      const years = days / 365;
+      return (years < 10 ? years.toFixed(1).replace(/\.0$/, '') : Math.floor(years)) + ' 年前';
+    },
+    seconds(s) {
+      s = Math.round(s || 0);
+      return s < 60 ? s + ' 秒' : Math.floor(s / 60) + ' 分 ' + (s % 60) + ' 秒';
+    },
+    pct(a, b) { return b ? Math.round((a / b) * 100) : 0; },
+    // 'C:\Users\me\Documents\项目A' -> '文档\项目A' (names as Explorer shows them); other paths unchanged
+    place(path, home) {
+      if (!path || !home) return PX.displayPath(path || '');
+      const h = home.replace(/[\\/]+$/, '');
+      if (path.toLowerCase() !== h.toLowerCase() && !path.toLowerCase().startsWith(h.toLowerCase() + '\\')) return PX.displayPath(path);
+      const parts = path.slice(h.length + 1).split('\\').filter(Boolean);
+      if (!parts.length) return '用户文件夹';
+      const names = { desktop: '桌面', documents: '文档', downloads: '下载', pictures: '图片', videos: '视频', music: '音乐' };
+      parts[0] = names[parts[0].toLowerCase()] || parts[0];
+      return parts.join('\\');
+    },
+  };
+  // a program's icon, or its initial on a colour derived from the name
+  PX.avatar = function (name, icon) {
+    if (icon) return h('img.app-icon', { src: icon, alt: '' });
+    let hash = 0;
+    for (const ch of name || '?') hash = (hash * 31 + ch.codePointAt(0)) % 360;
+    const letter = [...(name || '?').replace(/^(microsoft|the)\s+/i, '')][0] || '?';
+    return h('span.app-icon.letter', { style: { background: `hsl(${hash} 45% 52%)` }, 'aria-hidden': 'true' }, letter.toUpperCase());
+  };
+
+  // In the 演练环境 the drives are folders; show 'C:\Users\demo' rather than the folder's real location.
+  // Drives carry a 'letter' only there, so real paths pass through unchanged.
+  PX.displayPath = function (path) {
+    const drives = (PX.state.init && PX.state.init.drives) || [];
+    if (!path) return path || '';
+    const low = path.toLowerCase();
+    for (const d of drives) {
+      if (!d.letter) continue;
+      const root = d.root.replace(/[\\/]+$/, '');
+      if (low === root.toLowerCase()) return d.letter + '\\';
+      if (low.startsWith(root.toLowerCase() + '\\')) return d.letter + path.slice(root.length);
+    }
+    return path;
+  };
+
+  // the same inside free text such as a command line ("C:\...\sb\C\Program Files\x.exe" /tray)
+  PX.displayText = function (text) {
+    let out = text || '';
+    for (const d of (PX.state.init && PX.state.init.drives) || []) {
+      if (!d.letter) continue;
+      const root = d.root.replace(/[\\/]+$/, '');
+      let i = out.toLowerCase().indexOf(root.toLowerCase());
+      while (i >= 0) {
+        out = out.slice(0, i) + d.letter + out.slice(i + root.length);
+        i = out.toLowerCase().indexOf(root.toLowerCase(), i + d.letter.length);
+      }
+    }
+    return out;
+  };
+
+  // 建议清理度: kept 0-100 for sorting, shown as 0-10 points in three bands
+  PX.points = (s) => (s === null || s === undefined ? null : Math.floor(s / 10 + 0.5));
+  PX.scoreLevel = (s) => { const p = PX.points(s); return p >= 8 ? 'hi' : p >= 5 ? 'mid' : 'lo'; };
+  PX.scoreLabel = (s) => { const p = PX.points(s); return p >= 8 ? '建议清理' : p >= 5 ? '可以考虑' : '看你需要'; };
+  // 按分数勾选 (首页): what a threshold, or 'none' (全不选), does to one plan item. true/false: tick/untick;
+  // null: a guard holds it back (saves, programs in use, no undo; your files unless included), the user decides
+  PX.scoreTick = (it, t, withMine) => {
+    if (t === 'none') return false;
+    if (!(it.eligible || (withMine && it.personal))) return null;
+    return PX.points(it.score) >= t;
+  };
+  // which of `order` the current ticks follow (the first that agrees with every item), or null: ticked by hand
+  PX.scoreMatch = (items, ticked, withMine, order) => order.find((t) => t !== null && t !== undefined
+    && items.every((it) => { const want = PX.scoreTick(it, t, withMine); return want === null || ticked(it) === want; })) || null;
+  PX.score = function (score, title) {
+    if (score === null || score === undefined) return h('span.score.none');
+    const p = PX.points(score);
+    const label = `建议清理度 ${p} 分（${PX.scoreLabel(score)}）`;
+    const bar = h('i');
+    for (let k = 1; k <= 5; k++) bar.appendChild(h('b' + (p >= k * 2 ? '.on' : p >= k * 2 - 1 ? '.half' : '')));
+    return h('span.score.' + PX.scoreLevel(score), { title: title ? label + '\n' + title : label, role: 'img', 'aria-label': label },
+      bar, h('span.v', String(p)));
+  };
+
+  // One selection for the whole app: ticking a junk rule or a file is the same tick on 首页 and on its
+  // own page. Junk rules by id, files and folders by path, anything else (duplicate groups, startup
+  // items) by plan item id.
+  PX.sel = {
+    rules: new Set(), paths: new Set(), items: new Set(),
+    keyOf(it) {
+      if (it.kind === 'rule') return ['rules', it.rule];
+      if (it.kind === 'paths' && it.paths && it.paths.length === 1) return ['paths', it.paths[0]];
+      return ['items', it.id];
+    },
+    has(it) { const [s, k] = this.keyOf(it); return this[s].has(k); },
+    set(it, on) { const [s, k] = this.keyOf(it); if (on) this[s].add(k); else this[s].delete(k); },
+    replace(set, values) { set.clear(); for (const v of values) set.add(v); },
+  };
+
+  // horizontal bars, one row per category, each split into stacked parts (magnitude + part-to-whole);
+  // rows: [{label, parts: [{value, cls, title}], onclick}], legend: [[cls, label]]
+  PX.barList = function (rows, legend) {
+    const max = Math.max(1, ...rows.map((r) => r.parts.reduce((s, p) => s + p.value, 0)));
+    const wrap = h('div.barlist');
+    if (legend && legend.length > 1) {
+      wrap.appendChild(h('div.barlist-legend', legend.map(([cls, label]) => h('span', h('i.sw.' + cls), label))));
+    }
+    for (const r of rows) {
+      const total = r.parts.reduce((s, p) => s + p.value, 0);
+      const track = h('div.bl-track');
+      for (const p of r.parts) {
+        if (p.value > 0) track.appendChild(h('i.' + p.cls, { style: { width: (p.value / max) * 100 + '%' }, title: p.title || '' }));
+      }
+      wrap.appendChild(h(r.onclick ? 'button.bl-row' : 'div.bl-row.static', { type: r.onclick ? 'button' : null, onclick: r.onclick,
+        title: [r.label, ...r.parts.map((p) => p.title)].filter(Boolean).join('\n') },
+        h('span.bl-label', r.icon || null, h('span.bl-text', r.label)), track, h('span.bl-value', r.valueText || PX.fmt.bytes(total))));
+    }
+    return wrap;
+  };
+
+  // a headline number with a caption and a thin part-of bar
+  PX.statTile = function ({ cls, label, value, sub, part, onclick }) {
+    return h((onclick ? 'button.stat-tile' : 'div.stat-tile.static') + (cls ? '.' + cls : ''), { type: onclick ? 'button' : null, onclick },
+      h('div.st-label', cls ? h('i.sw.' + cls) : null, label), h('div.st-value', value), h('div.st-sub', sub),
+      part !== undefined ? h('div.st-bar', h('i', { style: { width: Math.round(Math.max(0, Math.min(1, part)) * 100) + '%' } })) : null);
+  };
+  // a chart card: title, an optional note after it, then the chart
+  PX.chartCard = (title, note, chart) => h('div.ov-chart', h('div.ov-chart-title', title, note ? h('span.ov-note', note) : null), chart);
+  // a thin bar under a size, relative to the largest one in the list
+  PX.meter = (frac, cls) => h('i.meter', h('i' + (cls ? '.' + cls : ''), { style: { width: Math.max(2, Math.round(Math.min(1, frac || 0) * 100)) + '%' } }));
+  // bring a row or section into view and mark it for a moment (chart rows jump to what they stand for)
+  PX.flash = function (el) {
+    if (!el) return;
+    el.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    el.classList.remove('flash');
+    void el.offsetWidth;
+    el.classList.add('flash');
+  };
+  // A path on one line. When it does not fit, its middle gives way: the start (drive, top folders) and the
+  // file or folder name stay, as in Explorer's address tooltips -- cutting the end would hide the name. The whole
+  // path is in the tooltip, and copying the text copies all of it.
+  PX.pathText = function (path, shown) {
+    const text = shown || PX.displayPath(path || '');
+    const cut = text.lastIndexOf('\\', text.length - 2);
+    return h('span.path-text', { title: PX.displayPath(path || '') },
+      cut > 0 ? h('span.pt-head', text.slice(0, cut)) : null, h('span.pt-tail', cut > 0 ? text.slice(cut) : text));
+  };
+
+  // 「在资源管理器中显示」: a file is selected in its folder, a folder opened; a path that is gone (cleaned,
+  // in the Recycle Bin) opens the nearest folder that is still there
+  PX.reveal = async function (path) {
+    try {
+      const r = await PX.api.call('reveal', { path });
+      if (r && r.missing) PX.toast('它已经不在原来的位置了，打开了它所在的文件夹');
+    } catch (e) { PX.fail(e); }
+  };
+  PX.revealButton = (path, label) => h('button.btn.quiet.small.reveal', { type: 'button', title: '在资源管理器中显示',
+    'aria-label': '在资源管理器中显示', onclick: (e) => { e.stopPropagation(); PX.reveal(path); } }, PX.icon('folder'), label || null);
+
+  // 「打开」: like a double-click in Explorer -- for documents, pictures, video, archives. Opening a program, an
+  // installer, a script or a shortcut would run it, so those have no 「打开」 (the same list as api.RUNS_CODE)
+  const RUNS_CODE = new Set(['.exe', '.com', '.scr', '.pif', '.cpl', '.msi', '.msix', '.msixbundle', '.msp', '.appx',
+    '.appxbundle', '.application', '.appref-ms', '.bat', '.cmd', '.ps1', '.psm1', '.vbs', '.vbe', '.js', '.jse', '.wsf',
+    '.wsh', '.hta', '.jar', '.lnk', '.url', '.reg', '.inf', '.msc', '.sys', '.dll', '.ocx']);
+  PX.canOpen = (path) => !RUNS_CODE.has(((path || '').match(/\.[^.\\/]+$/) || [''])[0].toLowerCase());
+  PX.openPath = async function (path) {
+    try { await PX.api.call('open_path', { path }); } catch (e) { PX.fail(e); }
+  };
+  PX.openButton = (path, label) => (PX.canOpen(path) ? h('button.btn.quiet.small.open-btn', { type: 'button',
+    title: '打开（和在资源管理器里双击一样）', 'aria-label': '打开', onclick: (e) => { e.stopPropagation(); PX.openPath(path); } },
+  PX.icon('open'), label || null) : null);
+  // the two buttons a file gets (a folder: just showing it, which opens it)
+  PX.pathButtons = (path, isDir) => h('div.row-actions', isDir ? null : PX.openButton(path), PX.revealButton(path));
+
+  // the icon Explorer shows for a file or folder: a placeholder now, the real icon once loaded (type icons by
+  // extension; programs and shortcuts their own icon)
+  const iconCache = new Map();
+  const iconWanted = new Set();
+  let iconTimer = null;
+  const iconKey = (path, isDir) => {
+    if (isDir) return 'folder';
+    const ext = ((path || '').match(/\.[^.\\/]{1,16}$/) || [''])[0].toLowerCase();
+    return ext === '.exe' || ext === '.lnk' ? 'file:' + path : ext || '.';
+  };
+  function iconImg(url) { return h('img.file-ic', { src: url, alt: '', 'aria-hidden': 'true', draggable: false }); }
+  async function loadIcons() {
+    iconTimer = null;
+    const keys = [...iconWanted];
+    iconWanted.clear();
+    const types = keys.filter((k) => !k.startsWith('file:'));
+    const files = keys.filter((k) => k.startsWith('file:')).map((k) => k.slice(5));
+    let got = {};
+    try {
+      const [t, f] = await Promise.all([types.length ? PX.api.call('type_icons', { kinds: types }) : {},
+        files.length ? PX.api.call('file_icons', { files }) : {}]);
+      got = Object.assign({}, t, Object.fromEntries(Object.entries(f).map(([p, u]) => ['file:' + p, u])));
+      // a program without an icon of its own: the one Explorer shows for any program (or shortcut)
+      const bare = files.filter((p) => !got['file:' + p]);
+      const exts = [...new Set(bare.map((p) => p.slice(p.lastIndexOf('.')).toLowerCase()))];
+      if (exts.length) {
+        const generic = await PX.api.call('type_icons', { kinds: exts });
+        for (const p of bare) got['file:' + p] = generic[p.slice(p.lastIndexOf('.')).toLowerCase()];
+      }
+    } catch (e) { /* placeholders stay */ }
+    for (const k of keys) {
+      iconCache.set(k, got[k] || null);
+      if (!got[k]) continue;
+      for (const el of document.querySelectorAll('[data-icon-key]')) {
+        if (el.dataset.iconKey === k) el.replaceWith(iconImg(got[k]));
+      }
+    }
+  }
+  PX.fileIcon = function (path, isDir) {
+    const key = iconKey(path, isDir);
+    const url = iconCache.get(key);
+    if (url) return iconImg(url);
+    const ph = PX.icon(isDir ? 'folder' : 'file', 'file-ic');
+    if (url === undefined) {
+      ph.dataset.iconKey = key;
+      iconWanted.add(key);
+      if (!iconTimer) iconTimer = setTimeout(loadIcons, 30);
+    }
+    return ph;
+  };
+
+  // the score bands as chart parts (colours match the score pips)
+  PX.SCORE_LEGEND = [['s-hi', '8–10 建议清理'], ['s-mid', '5–7 可以考虑'], ['s-lo', '0–4 看你需要']];
+  PX.big = function (n, cls) {
+    const [v, u] = PX.fmt.split(n);
+    return h('span.num' + (cls ? '.' + cls : ''), v, h('small', u));
+  };
+
+  PX.kindColor = function (kind) {
+    const map = { system: '--c-system', program: '--c-program', personal: '--c-personal', appdata: '--c-appdata',
+      cache: '--c-cache', cloud: '--c-cloud', vdisk: '--c-other', game: '--c-other', dev: '--c-other' };
+    return 'var(' + (map[kind] || '--c-unknown') + ')';
+  };
+  PX.KIND_LEGEND = [['system', '系统'], ['program', '程序'], ['personal', '个人文件'], ['appdata', '应用数据'],
+    ['cache', '可清理'], ['cloud', '云同步'], ['dev', '开发 / 游戏 / 虚拟磁盘'], ['unknown', '未识别']];
+
+  // --- toast ---
+  let toastWrap;
+  // action: {label, onClick} -- a button in the message (it then stays a little longer)
+  PX.toast = function (msg, isError, action) {
+    if (!toastWrap) toastWrap = document.body.appendChild(h('div.toast-wrap', { role: 'status', 'aria-live': 'polite' }));
+    // slides in; fades out before it is removed
+    const leave = () => { if (!t.classList.contains('out')) { t.classList.add('out'); setTimeout(() => t.remove(), 200); } };
+    const t = toastWrap.appendChild(h('div.toast' + (isError ? '.err' : ''), h('span', msg),
+      action ? h('button.toast-btn', { type: 'button', onclick: () => { leave(); action.onClick(); } }, action.label) : null));
+    setTimeout(leave, action ? 9000 : isError ? 6000 : 3200);
+  };
+  PX.fail = (err) => PX.toast(err && err.message ? err.message : String(err), true);
+
+  // --- modal ---
+  // locked: a dialog about work in progress -- a click beside it or Esc must not hide it (the work goes on unseen)
+  PX.modal = function ({ title, body, actions, wide, onClose, locked }) {
+    const layer = document.getElementById('layer');
+    const prevFocus = document.activeElement;
+    const foot = h('div.foot');
+    const box = h('div.modal' + (wide ? '.wide' : ''), { role: 'dialog', 'aria-modal': 'true', 'aria-label': title },
+      h('h3', title), h('div.body', body), foot);
+    const back = h('div.backdrop', box);
+    function close(value) {
+      back.remove();
+      document.removeEventListener('keydown', onKey);
+      if (prevFocus && prevFocus.focus) prevFocus.focus();
+      if (onClose) onClose(value);
+    }
+    function onKey(e) { if (e.key === 'Escape' && !locked) close(false); }
+    document.addEventListener('keydown', onKey);
+    back.addEventListener('mousedown', (e) => { if (e.target === back && !locked) close(false); });
+    for (const a of actions || []) {
+      if (a.spacer) { foot.appendChild(h('div.grow', a.node || null)); continue; }
+      const btn = h('button.btn' + (a.kind ? '.' + a.kind : ''), { type: 'button' }, a.label);
+      btn.addEventListener('click', async () => {
+        if (a.onClick) {
+          const keep = await a.onClick(btn);
+          if (keep === false) return;
+        }
+        close(a.value !== undefined ? a.value : true);
+      });
+      foot.appendChild(btn);
+    }
+    layer.appendChild(back);
+    const first = foot.querySelector('.btn.primary, .btn.good') || foot.querySelector('.btn');
+    if (first) first.focus();
+    return { close, box };
+  };
+  PX.confirm = function ({ title, body, ok = '确定', okKind = 'primary', cancel = '取消', wide }) {
+    return new Promise((resolve) => {
+      PX.modal({ title, body, wide, onClose: resolve,
+        actions: [{ label: cancel, value: false }, { label: ok, kind: okKind, value: true }] });
+    });
+  };
+
+  // --- generic pieces ---
+  PX.tag = (text, kind, icon) => h('span.tag' + (kind ? '.' + kind : ''), icon ? PX.icon(icon) : null, text);
+  // where a duplicate copy lives (duplicates.place_of, the same words as duplicates.place_label): a program or a
+  // code project may load its own copy, so deleting it there can break it; a build output is written again
+  PX.placeText = function (f) {
+    if (!f || !f.place) return '';
+    // two levels: 「萍萍瑜伽故事\代码工程」 tells two projects apart whose own folder has the same name
+    const name = (f.place_root || '').replace(/[\\/]+$/, '').split(/[\\/]/).filter((p) => p && !p.endsWith(':')).slice(-2).join('\\');
+    if (f.place === 'build') return `工程「${name}」的构建输出`;
+    if (f.place === 'near') return `「${name}」里的代码工程旁边`;
+    return (f.place === 'program' ? '程序文件夹' : '代码工程') + `「${name}」`;
+  };
+  const PLACE_HINT = { build: '重新构建时会再生成', near: '可能是旁边那个工程的素材来源，例如脚本从这里读取',
+    program: '这个程序可能用到自己的这一份，删掉可能让它不能运行', project: '这个工程可能引用自己的这一份，删掉可能让它出问题' };
+  PX.placeTag = (f) => (f && f.place ? h('span.tag' + (f.place === 'build' ? '' : '.warn'), { title: PLACE_HINT[f.place] || '' },
+    '在' + PX.placeText(f) + (f.place === 'near' ? '' : '里')) : null);
+  // what is known about one duplicate copy: where it is, whether its project mentions it (duplicates.check_references)
+  // and the model's advice; ``brief`` leaves out the model's reason (shown in the 评分依据 instead)
+  const AI_KIND = { delete: 'good', careful: '', keep: 'warn' };
+  PX.copyFacts = function (f, brief) {
+    if (!f) return [];
+    const out = [PX.placeTag(f)];
+    const refs = f.refs;
+    if (refs && refs.count) {
+      out.push(h('span.tag.warn', { title: '提到它的文件：\n' + refs.found.join('\n') },
+        `被「${refs.found[0]}」${refs.count > 1 ? ` 等 ${refs.count} 个文件` : ''}提到`));
+    } else if (refs && refs.complete) {
+      out.push(h('span.small.muted', { title: `按文件名搜索了 ${refs.searched} 个代码和设置文件；运行时拼出来的文件名搜不到` }, '工程里没有文件提到它'));
+    } else if (refs) {
+      out.push(h('span.small.muted', '工程文件太多，只搜索了一部分'));
+    }
+    if (f.ai) {
+      out.push(PX.tag('AI：' + f.ai.verdict_label, AI_KIND[f.ai.verdict] || '', 'spark'));
+      if (!brief && f.ai.reason) out.push(h('span.small.muted', f.ai.reason));
+    }
+    return out.filter(Boolean);
+  };
+  // ---- an expanded row, laid out the same everywhere: a warning band; short facts on the left (是什么, what
+  // happens after, ...); the 建议清理度 card on the right (its reasons, then the decision); the places at the bottom.
+  // facts: [[label, text, kind]]; score: {score, basis}; places: {title, note, rows, more}
+  const DECISION = /^(自动勾选|没有自动勾选|没有勾选)/;
+  // reasons that hold an item back or ask for care (checkup.py's guards and duplicates.removal_score), as opposed to
+  // evidence for cleaning it (「可能是旧版本留下的」 is evidence)
+  const CAUTION = /还有改动|可能是存档|可能是程序本身|仍在使用|只能由你|由你决定|无法恢复|默认不勾|各自引用|出问题|有文件提到|可能引用|素材来源|请你|不能运行|没有经过|拿不准|不到 ?\d/;
+  PX.basisKind = (line) => (/^AI/.test(line) ? 'ai' : CAUTION.test(line) ? 'warn' : 'plus');
+  // what a cleanup does, in one line: [icon, what, the one thing to know about it]
+  PX.ACTIONS = { delete: ['trash', '永久删除', '不经过回收站'], recycle: ['trash', '移到回收站', '需要时可以还原'],
+    disable: ['power', '禁用开机启动', '随时可以重新启用'] };
+  PX.detailPanel = function ({ warn, action, facts, score, places, enter }) {
+    const panel = h('div.dp' + (enter ? '.enter' : ''));
+    const act = PX.ACTIONS[action];
+    if (act) panel.appendChild(h('div.dp-action.' + action, PX.icon(act[0]), h('b', act[1]), h('span', act[2])));
+    if (warn) panel.appendChild(h('div.dp-warn', PX.icon('warn'), h('span', warn)));
+    const left = (facts || []).filter((f) => f && f[1]).map(([label, text, kind]) =>
+      h('div.dp-fact' + (kind ? '.' + kind : ''), h('div.dp-label', kind === 'ai' ? PX.icon('spark') : null, label), h('div.dp-body', text)));
+    let card = null;
+    if (score && score.score !== null && score.score !== undefined) {
+      const lines = (score.basis || []).slice();
+      const decision = lines.length && DECISION.test(lines[lines.length - 1]) ? lines.pop() : null;
+      const level = PX.scoreLevel(score.score);
+      card = h('div.dp-score.lv-' + level,
+        h('div.dp-score-head', h('span.dp-label', '建议清理度'), PX.score(score.score),
+          h('span.dp-points', String(PX.points(score.score))), h('span.dp-unit', '分'), h('span.dp-level', PX.scoreLabel(score.score))),
+        lines.length ? h('ul.dp-basis', lines.map((line) => h('li.b-' + PX.basisKind(line), line))) : null,
+        decision ? h('div.dp-decision' + (decision.startsWith('自动勾选') ? '.on' : ''),
+          PX.icon(decision.startsWith('自动勾选') ? 'check' : 'info'), h('span', decision)) : null);
+    }
+    if (left.length || card) panel.appendChild(h('div.dp-top' + (left.length && card ? '' : '.single'), left.length ? h('div.dp-facts', left) : null, card));
+    if (places && places.rows.length) {
+      panel.appendChild(h('div.dp-places', h('div.dp-label', places.title, places.note ? h('span.dp-note', places.note) : null),
+        places.rows, places.more || null));
+    }
+    return panel;
+  };
+  // one place in a detail panel: [☐ 保留] icon path (facts below it) 打开 / 打开位置; ``pick`` {checked, onchange}
+  // lets the user choose (a duplicate's copies: ticked goes to the Recycle Bin)
+  PX.placeRow = (path, o) => h('div.dp-place' + (o && o.pick ? '.pickable' : ''),
+    o && o.pick ? h('label.dp-pick', h('input', { type: 'checkbox', checked: !!o.pick.checked, disabled: !!o.pick.disabled,
+      'aria-label': '移到回收站：' + path, onchange: (e) => o.pick.onchange(e.target.checked, e.target) }), o.badge ? PX.tag(o.badge[0], o.badge[1]) : null)
+      : o && o.badge ? PX.tag(o.badge[0], o.badge[1]) : h('span'),
+    PX.fileIcon(path, !!(o && o.folder)),
+    h('div.dp-path', PX.pathText(path)),
+    h('div.row-actions', o && o.folder ? null : PX.openButton(path, '打开'), PX.revealButton(path, '打开位置')),
+    o && o.facts && o.facts.length ? h('div.dp-place-facts', o.facts) : null);
+
+  // the checkbox in front of a group's title: ticked when every row is, a dash when some are, empty when none; a
+  // click ticks them all, or unticks them all when all were ticked (``onset(on)``)
+  PX.groupBox = function (total, ticked, onset, label) {
+    const all = total > 0 && ticked >= total;
+    const box = h('input.group-box', { type: 'checkbox', checked: all, disabled: !total, 'aria-label': label,
+      title: all ? '取消这一组' : ticked ? `已选 ${ticked} / ${total} 项，点一下全选` : '全选这一组',
+      onclick: (e) => e.stopPropagation(), onchange: (e) => onset(e.target.checked) });
+    box.indeterminate = ticked > 0 && !all;
+    return box;
+  };
+  PX.switchEl = function (checked, onchange, disabled) {
+    const input = h('input', { type: 'checkbox', checked: !!checked, disabled: !!disabled, onchange });
+    return h('label.switch', input, h('span'));
+  };
+  // Pages redraw every few hundred milliseconds while a job runs, so a bar is a new element each time. With a
+  // ``key`` it starts where the last one of that key stopped and glides to the new value (never backwards: a new
+  // run snaps to its start); an unknown amount sweeps in step with a clock instead of restarting every redraw.
+  const lastBar = {};
+  const SWEEP_MS = 1400;
+  PX.progressBar = function (fraction, key) {
+    const known = fraction !== null && fraction !== undefined;
+    const bar = h('div.progress' + (known ? '' : '.indeterminate'), h('i'));
+    const fill = bar.firstChild;
+    if (!known) {
+      fill.style.animationDelay = -(performance.now() % SWEEP_MS) + 'ms';
+      return bar;
+    }
+    const to = Math.round(Math.max(0, Math.min(1, fraction)) * 1000) / 10;
+    const from = key && lastBar[key] !== undefined && lastBar[key] <= to ? lastBar[key] : to;
+    fill.style.width = from + '%';
+    if (key) {
+      lastBar[key] = to;
+      if (from !== to) requestAnimationFrame(() => requestAnimationFrame(() => { fill.style.width = to + '%'; }));
+    }
+    return bar;
+  };
+  // 1:05 for an elapsed time; how long is left in words, rounded so it does not twitch
+  PX.fmt.clock = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+  PX.fmt.left = (s) => (s < 15 ? '马上就好' : s < 50 ? '还要不到 1 分钟' : s < 100 ? '还要约 1 分钟' : `还要约 ${Math.round(s / 60)} 分钟`);
+  PX.seg = function (options, value, onpick) {
+    const wrap = h('div.seg', { role: 'group' });
+    for (const [v, label] of options) {
+      wrap.appendChild(h('button' + (v === value ? '.on' : ''), { type: 'button', 'aria-pressed': v === value ? 'true' : 'false',
+        onclick: () => onpick(v) }, label));
+    }
+    return wrap;
+  };
+  PX.empty = (title, text, actions) => h('div.empty', h('h2', title), text ? h('div', text) : null,
+    actions ? h('div.actions', actions) : null);
+  PX.notice = (text, kind, extra) => h('div.notice' + (kind ? '.' + kind : ''), PX.icon(kind === 'info' ? 'info' : 'warn'),
+    h('div.grow', text), extra || null);
+
+  // --- squarified treemap layout (Bruls, Huizing, van Wijk) ---
+  PX.treemap = function (items, x, y, w, hgt) {
+    const total = items.reduce((s, it) => s + it.size, 0);
+    const out = [];
+    if (!total || w <= 0 || hgt <= 0) return out;
+    const scale = (w * hgt) / total;
+    const list = items.filter((it) => it.size > 0).map((it) => ({ item: it, area: it.size * scale }));
+    let rect = { x, y, w, h: hgt };
+    let row = [];
+    const worst = (r, side) => {
+      if (!r.length) return Infinity;
+      const s = r.reduce((a, b) => a + b.area, 0);
+      let max = -Infinity, min = Infinity;
+      for (const c of r) { max = Math.max(max, c.area); min = Math.min(min, c.area); }
+      return Math.max((side * side * max) / (s * s), (s * s) / (side * side * min));
+    };
+    const layout = (r) => {
+      const s = r.reduce((a, b) => a + b.area, 0);
+      if (rect.w >= rect.h) {
+        const cw = s / rect.h;
+        let cy = rect.y;
+        for (const c of r) { const ch = c.area / cw; out.push({ item: c.item, x: rect.x, y: cy, w: cw, h: ch }); cy += ch; }
+        rect = { x: rect.x + cw, y: rect.y, w: rect.w - cw, h: rect.h };
+      } else {
+        const rh = s / rect.w;
+        let cx = rect.x;
+        for (const c of r) { const cw = c.area / rh; out.push({ item: c.item, x: cx, y: rect.y, w: cw, h: rh }); cx += cw; }
+        rect = { x: rect.x, y: rect.y + rh, w: rect.w, h: rect.h - rh };
+      }
+    };
+    for (const c of list) {
+      const side = Math.min(rect.w, rect.h);
+      if (!row.length || worst(row.concat([c]), side) <= worst(row, side)) row.push(c);
+      else { layout(row); row = [c]; }
+    }
+    if (row.length) layout(row);
+    return out;
+  };
+
+  if (typeof module !== 'undefined') module.exports = PX; // node tests
+})();
