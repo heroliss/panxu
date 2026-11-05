@@ -125,6 +125,83 @@ class BridgeTest(TempDirTest):
         self.assertFalse(r['ok'])
         self.assertIn('API Key', r['error'])
 
+    def test_large_files_ai_review_sends_only_listed_files(self):
+        import json
+        from panxu import ai_client
+        big = self.make('x/videos/old-recording.mkv', 3 * 1024 * 1024)
+        self.make('x/videos/small.txt', 10)
+        wait(self.bridge, self.bridge.call('space_scan', {'root': os.path.join(self.tmp, 'x')})['data'])
+        sent = []
+
+        class Model:
+            model = 'fake'
+            usage = ai_client.Usage()
+
+            def complete_json(self, system, user):
+                payload = json.loads(user.split('\n', 1)[1])
+                sent.extend(payload)
+                return {'results': [{'id': r['id'], 'verdict': 'archive', 'what': '录像', 'reason': '很久没看'} for r in payload]}
+        self.backend._client = lambda purpose='classify': Model()
+        outside = self.make('elsewhere/secret.docx', 10)
+        job = self.bridge.call('large_ai_review', {'files': [big, big, outside, 'C:\\nope']})
+        self.assertTrue(job['ok'], job)
+        self.assertEqual(wait(self.bridge, job['data'])['status'], 'done')
+        self.assertEqual([r['name'] for r in sent], ['old-recording.mkv'], 'only files the scan listed, once each')
+        self.assertEqual(sent[0]['group'], '大文件')
+        rows = self.bridge.call('large_files', {'min_mb': 1})['data']['files']
+        self.assertEqual(rows[0]['ai']['verdict'], 'archive', 'the 大文件 list shows the answer')
+        self.assertFalse(self.bridge.call('large_ai_review', {'files': [outside]})['ok'])
+
+    def scripted_model(self, answer):
+        import json
+        from panxu import ai_client
+
+        class Model:
+            model = 'fake'
+            usage = ai_client.Usage()
+            calls = []
+
+            def complete_json(self, system, user):
+                payload = json.loads(user.split('\n', 1)[1])
+                Model.calls.append(payload)
+                return {'results': [answer(r) for r in payload]}
+        return Model()
+
+    def test_continue_asks_the_sub_folders_an_earlier_budget_cut(self):
+        for name in ('cache/c.bin', 'data/d.db', 'more/m.bin'):
+            self.make('Users/alice/AppData/Local/Mixed/' + name, 2000)
+        wait(self.bridge, self.bridge.call('space_scan', {'root': self.tmp})['data'])
+        self.backend.settings.update({'ai': {'max_requests': 1, 'min_dir_mb': 0}})
+        model = self.scripted_model(lambda r: {'id': r['id'], 'verdict': 'descend', 'look_into': ['cache', 'data']}
+                                    if r['path'].endswith('Mixed') else {'id': r['id'], 'verdict': 'keep', 'confidence': 0.9})
+        self.backend._client = lambda purpose='classify': model
+        first = wait(self.bridge, self.bridge.call('ai_analyze')['data'])['result']
+        self.assertEqual(first['remaining']['count'], 2)
+        preview = self.bridge.call('ai_preview')['data']
+        self.assertEqual(preview['fresh'], 2, 'the confirmation counts them, and asks for a model when none is set')
+        second = wait(self.bridge, self.bridge.call('ai_analyze')['data'])['result']
+        self.assertEqual(second['errors'], [], 'the configured model is used, not the cache-only stand-in')
+        self.assertEqual(second['remaining']['count'], 0)
+        self.assertEqual(len(model.calls), 2)
+
+    def test_large_files_ai_review_moves_on_to_the_next_batch(self):
+        for i in range(32):
+            self.make(f'x/big/file{i:02}.bin', 1024 * 1024 + i)
+        wait(self.bridge, self.bridge.call('space_scan', {'root': os.path.join(self.tmp, 'x')})['data'])
+        self.backend.settings.update({'ai': {'max_requests': 1}})
+        model = self.scripted_model(lambda r: {'id': r['id'], 'verdict': 'review', 'what': 'x', 'reason': 'y'})
+        self.backend._client = lambda purpose='classify': model
+        rows = self.bridge.call('large_files', {'min_mb': 1})['data']['files']
+        paths_all = [r['path'] for r in rows]
+        wait(self.bridge, self.bridge.call('large_ai_review', {'files': paths_all})['data'])
+        self.assertEqual(len(model.calls[0]), 30, 'one request holds 30 files')
+        # everything again: the 30 answered ones come from the cache and do not use up the budget
+        wait(self.bridge, self.bridge.call('large_ai_review', {'files': paths_all})['data'])
+        self.assertEqual(len(model.calls), 2)
+        self.assertEqual(len(model.calls[1]), 2, 'the next request carries the 2 files left')
+        rows = self.bridge.call('large_files', {'min_mb': 1})['data']['files']
+        self.assertTrue(all(r['ai'] for r in rows))
+
     def test_exclusions_block_deletion(self):
         p = self.make('mine/file.bin', 10)
         self.bridge.call('settings_save', {'changes': {'excluded_paths': [os.path.join(self.tmp, 'mine')]}})

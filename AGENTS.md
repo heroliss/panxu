@@ -1,6 +1,6 @@
 # 盘序工程约定
 
-远程仓库：`https://github.com/heroliss/panxu`（私有），维护者 Liss。
+远程仓库：`https://github.com/heroliss/panxu`（公开），维护者 Liss。
 
 ## 继续开发前
 

@@ -96,4 +96,14 @@ for (const p of [R`C:\a\setup.EXE`, R`C:\a\run.bat`, R`C:\a\x.ps1`, R`C:\a\app.l
 const api = require('fs').readFileSync(require('path').join(__dirname, '..', 'panxu', 'api.py'), 'utf8');
 const pyList = api.slice(api.indexOf('RUNS_CODE = {'), api.indexOf('}', api.indexOf('RUNS_CODE = {'))).match(/'(\.[^']+)'/g).map((s) => s.slice(1, -1));
 for (const ext of pyList) assert.ok(!PX.canOpen('x' + ext), 'web and api agree on ' + ext);
+
+// one-line paths (PX.pathText): a fixed min-width on the head padded 「E:」 into a gap before the
+// name, and a percentage cap on the tail cut short names inside the shrink-to-fit box
+const css = require('fs').readFileSync(require('path').join(__dirname, '..', 'web', 'app.css'), 'utf8');
+const rule = (sel) => (css.match(new RegExp('^\\' + sel + ' \\{([^}]*)\\}', 'm')) || [])[1] || '';
+assert.ok(/min-width: calc-size\(max-content, min\(size, 3em\)\)/.test(rule('.pt-head')), 'the head keeps min(3em, itself)');
+assert.ok(!/min-width: [\d.]+em/.test(rule('.pt-head')), 'no fixed min-width on the head');
+assert.ok(rule('.pt-tail') && !/max-width: [^;]*%/.test(rule('.pt-tail')), 'no percentage cap on the name');
+// the name's share of the shrink must round to zero in Blink's 1/64 px layout units, or its last letter is cut
+assert.ok(Number((rule('.pt-head').match(/flex: 0 (\d+) auto/) || [])[1]) >= 1e6, 'the head gives way first, by a wide margin');
 console.log('ui tests passed');

@@ -34,7 +34,7 @@
   const T = (name, size, kind, label, children, extra) => ({ name, size, kind, label, children: children || [], ...extra });
   const tree = T('C:\\', 389 * GB, null, null, [
     T('Users', 214 * GB, null, null, [
-      T('herol', 211 * GB, null, null, [
+      T('demo', 211 * GB, null, null, [
         T('AppData', 96 * GB, 'container', null, [
           T('Local', 81 * GB, null, null, [
             T('Docker', 28.4 * GB, 'vdisk', 'Docker Desktop 数据'),
@@ -121,37 +121,37 @@
     binpath: 'C:\\Program Files\\' + name + '\\service.exe', exe: 'C:\\Program Files\\' + name + '\\service.exe', publisher, kind, editable: kind === 'third_party', needs_admin: true }));
   const history = [
     // PanXu was closed (or killed) half way through this one
-    { id: 'h0', time: now - 600, kind: 'delete', title: '永久删除 2400 项', freed: 1.6 * GB, items: ['C:\\Users\\herol\\Downloads\\旧素材\\clip_0001.mp4',
-      'C:\\Users\\herol\\Downloads\\旧素材\\clip_0002.mp4'], item_count: 2400, failures: [], failure_count: 0, details: { pending: true },
+    { id: 'h0', time: now - 600, kind: 'delete', title: '永久删除 2400 项', freed: 1.6 * GB, items: ['C:\\Users\\demo\\Downloads\\旧素材\\clip_0001.mp4',
+      'C:\\Users\\demo\\Downloads\\旧素材\\clip_0002.mp4'], item_count: 2400, failures: [], failure_count: 0, details: { pending: true },
     state: 'interrupted', done_count: 1370 },
     { id: 'h1', time: now - 3600, kind: 'junk', title: '垃圾清理', freed: 3.2 * GB, items: [{ name: '用户临时文件', freed: 2.1 * GB, files: 4211, failed: 37, skipped: '' }, { name: 'Google Chrome', freed: 1.1 * GB, files: 9120, failed: 0, skipped: '' }], item_count: 2, failures: [], failure_count: 37 },
     { id: 'h2', time: now - 7200, kind: 'startup', title: '禁用开机启动：Adobe Updater Startup Utility', freed: 0, items: [{ name: 'Adobe Updater', command: 'UpdaterStartupUtility.exe' }], item_count: 1, failures: [], failure_count: 0, revert: { action: 'startup' } },
-    { id: 'h3', time: now - 86400, kind: 'recycle', title: '移到回收站 3 项', freed: 9.4 * GB, items: ['C:\\Users\\herol\\Downloads\\ubuntu-24.04-desktop-amd64.iso', 'C:\\Users\\herol\\Downloads\\VSCodeUserSetup-x64.exe'], item_count: 3, failures: [], failure_count: 0 },
+    { id: 'h3', time: now - 86400, kind: 'recycle', title: '移到回收站 3 项', freed: 9.4 * GB, items: ['C:\\Users\\demo\\Downloads\\ubuntu-24.04-desktop-amd64.iso', 'C:\\Users\\demo\\Downloads\\VSCodeUserSetup-x64.exe'], item_count: 3, failures: [], failure_count: 0 },
     { id: 'h4', time: now - 90000, kind: 'ai', title: 'AI 分析 14 个目录', freed: 0, items: [], item_count: 0, failures: [], failure_count: 0, details: { usage: { requests: 2, input_tokens: 5120, output_tokens: 1430 } } },
   ];
   const largeFiles = [
-    ['C:\\Users\\herol\\Downloads\\ubuntu-24.04-desktop-amd64.iso', 5.9 * GB, 400, 'disk', '磁盘镜像'],
-    ['C:\\Users\\herol\\Videos\\2025 年会录像.mp4', 4.2 * GB, 300, 'video', '视频'],
+    ['C:\\Users\\demo\\Downloads\\ubuntu-24.04-desktop-amd64.iso', 5.9 * GB, 400, 'disk', '磁盘镜像'],
+    ['C:\\Users\\demo\\Videos\\2025 年会录像.mp4', 4.2 * GB, 300, 'video', '视频'],
     ['C:\\pagefile.sys', 16 * GB, 1, 'other', '其他', '这是 Windows 系统文件或目录'],
     ['C:\\hiberfil.sys', 12.7 * GB, 1, 'other', '其他', '这是 Windows 系统文件或目录'],
-    ['C:\\Users\\herol\\AppData\\Local\\Docker\\wsl\\disk\\docker_data.vhdx', 27.9 * GB, 2, 'disk', '磁盘镜像'],
-    ['C:\\Users\\herol\\Downloads\\Win11_24H2_Chinese_Simplified_x64.iso', 5.4 * GB, 620, 'disk', '磁盘镜像'],
-    ['C:\\Users\\herol\\Documents\\backup-2023.zip', 3.1 * GB, 800, 'archive', '压缩包'],
-    ['C:\\Users\\herol\\Downloads\\VisualStudioSetup.exe', 1.2 * GB, 260, 'installer', '安装包'],
-    ['C:\\Users\\herol\\Downloads\\PS2024.rar', 2.6 * GB, 500, 'archive', '压缩包'],
+    ['C:\\Users\\demo\\AppData\\Local\\Docker\\wsl\\disk\\docker_data.vhdx', 27.9 * GB, 2, 'disk', '磁盘镜像'],
+    ['C:\\Users\\demo\\Downloads\\Win11_24H2_Chinese_Simplified_x64.iso', 5.4 * GB, 620, 'disk', '磁盘镜像'],
+    ['C:\\Users\\demo\\Documents\\backup-2023.zip', 3.1 * GB, 800, 'archive', '压缩包'],
+    ['C:\\Users\\demo\\Downloads\\VisualStudioSetup.exe', 1.2 * GB, 260, 'installer', '安装包'],
+    ['C:\\Users\\demo\\Downloads\\PS2024.rar', 2.6 * GB, 500, 'archive', '压缩包'],
   ].map(([path, size, age, category, category_label, blocked]) => ({ path, name: path.split('\\').pop(), size, mtime: now - age * day, category, category_label, blocked: blocked || null, note: null }))
     .sort((a, b) => b.size - a.size);
 
   const suggestions = () => [
-    { node_id: 12, path: 'C:\\Users\\herol\\AppData\\Local\\Unity', size: 6.2 * GB, files: 18000, verdict: 'clean', verdict_label: '可清理', app: 'Unity 编辑器', reason: 'Unity 的资源导入与着色器缓存，打开项目时会自动重建', effect: '下次打开项目时重新导入，耗时较长', confidence: 0.86, source: 'ai', expanded: false,
+    { node_id: 12, path: 'C:\\Users\\demo\\AppData\\Local\\Unity', size: 6.2 * GB, files: 18000, verdict: 'clean', verdict_label: '可清理', app: 'Unity 编辑器', reason: 'Unity 的资源导入与着色器缓存，打开项目时会自动重建', effect: '下次打开项目时重新导入，耗时较长', confidence: 0.86, source: 'ai', expanded: false,
       score: 86, selected: true, basis: ['AI：可清理（把握 86%）', '自动勾选：AI 判断可清理（把握 86%），不属于仍在使用的程序，最近也没有改动，9 分达到勾选门槛（5 分）'] },
-    { node_id: 999, path: 'C:\\Users\\herol\\AppData\\Local\\Adobe', size: 3.4 * GB, files: 7400, verdict: 'clean', verdict_label: '可清理', app: 'Adobe Photoshop', reason: '大部分是媒体缓存和字体缓存', effect: '下次打开时重新生成缓存', confidence: 0.9, source: 'ai', expanded: false,
+    { node_id: 999, path: 'C:\\Users\\demo\\AppData\\Local\\Adobe', size: 3.4 * GB, files: 7400, verdict: 'clean', verdict_label: '可清理', app: 'Adobe Photoshop', reason: '大部分是媒体缓存和字体缓存', effect: '下次打开时重新生成缓存', confidence: 0.9, source: 'ai', expanded: false,
       score: 70, selected: false, basis: ['AI：可清理（把握 90%）', '属于仍在使用的程序「Adobe Photoshop 2025」：里面可能还有设置或许可证', '没有自动勾选：属于仍在使用的程序「Adobe Photoshop 2025」'] },
-    { node_id: 14, path: 'C:\\Users\\herol\\AppData\\Local\\ms-playwright', size: 2.6 * GB, files: 3100, verdict: 'clean', verdict_label: '可清理', app: 'Playwright', reason: '自动化测试下载的浏览器内核，需要时可重新安装', effect: '运行测试前需执行 playwright install', confidence: 0.8, source: 'ai', expanded: false,
+    { node_id: 14, path: 'C:\\Users\\demo\\AppData\\Local\\ms-playwright', size: 2.6 * GB, files: 3100, verdict: 'clean', verdict_label: '可清理', app: 'Playwright', reason: '自动化测试下载的浏览器内核，需要时可重新安装', effect: '运行测试前需执行 playwright install', confidence: 0.8, source: 'ai', expanded: false,
       score: 80, selected: true, basis: ['AI：可清理（把握 80%）', '自动勾选：AI 判断可清理（把握 80%），不属于仍在使用的程序，最近也没有改动，8 分达到勾选门槛（5 分）'] },
-    { node_id: 10, path: 'C:\\Users\\herol\\AppData\\Local\\JetBrains\\IntelliJIdea2025.3', size: 7.1 * GB, files: 51000, verdict: 'review', verdict_label: '需要你确认', app: 'IntelliJ IDEA', reason: '含索引缓存和本地历史；若已不用这个版本可整体删除', effect: '重新打开会重建索引', confidence: 0.62, source: 'ai', expanded: false, caution: null,
+    { node_id: 10, path: 'C:\\Users\\demo\\AppData\\Local\\JetBrains\\IntelliJIdea2025.3', size: 7.1 * GB, files: 51000, verdict: 'review', verdict_label: '需要你确认', app: 'IntelliJ IDEA', reason: '含索引缓存和本地历史；若已不用这个版本可整体删除', effect: '重新打开会重建索引', confidence: 0.62, source: 'ai', expanded: false, caution: null,
       score: 50, selected: false, basis: ['AI：需要你确认（把握 62%）', '没有自动勾选：AI 也拿不准'] },
-    { node_id: 17, path: 'C:\\Users\\herol\\AppData\\Roaming\\Tencent', size: 6.3 * GB, files: 9200, verdict: 'keep', verdict_label: '建议保留', app: 'QQ / 微信', reason: '聊天记录数据库与账号配置', effect: '', confidence: 0.9, source: 'cache', expanded: false, caution: '位于应用配置目录，可能包含应用设置或账号数据',
+    { node_id: 17, path: 'C:\\Users\\demo\\AppData\\Roaming\\Tencent', size: 6.3 * GB, files: 9200, verdict: 'keep', verdict_label: '建议保留', app: 'QQ / 微信', reason: '聊天记录数据库与账号配置', effect: '', confidence: 0.9, source: 'cache', expanded: false, caution: '位于应用配置目录，可能包含应用设置或账号数据',
       score: null, selected: false, basis: ['AI：建议保留（把握 90%）'] },
     { node_id: 998, path: 'D:\\Temp', size: 2.4 * GB, files: 46073, verdict: 'clean', verdict_label: '可以清理', app: '临时文件夹',
       reason: '名字叫 Temp 的文件夹按惯例只放临时文件，程序或你自己用完就不再需要。看一眼里面没有要留的，就可以删除；正在被程序使用的文件会删不掉，跳过即可。',
@@ -160,7 +160,7 @@
   ];
 
   // ---- 1.1: check-up plan, 我的文件, installed programs, sandbox
-  const U = 'C:\\Users\\herol';
+  const U = 'C:\\Users\\demo';
   const P = (o) => Object.assign({ group: 'review', count: 0, what: '', why: '', effect: '', action: 'recycle', source: 'heuristic',
     confidence: null, selected: false, paths: [], blocked: null, caution: null, status: 'pending', ai: null }, o);
   const planItems = [
@@ -295,7 +295,7 @@
   const uninstalledAt = {};
   const KB = 1024;
   const sandbox = location.hash.includes('sandbox')
-    ? { root: 'C:\\Users\\herol\\AppData\\Local\\PanXu\\sandbox', recycle_count: 2, recycle_size: 1.4 * GB } : null;
+    ? { root: 'C:\\Users\\demo\\AppData\\Local\\PanXu\\sandbox', recycle_count: 2, recycle_size: 1.4 * GB } : null;
   const recycled = [
     { id: 'A1B2', original: U + '\\Downloads\\WeChatSetup.exe', name: 'WeChatSetup.exe', size: 182 * MB, time: now - 600 },
     { id: 'C3D4', original: U + '\\AppData\\Local\\OldGameStudio', name: 'OldGameStudio', size: 1.1 * GB, time: now - 300 },
@@ -376,6 +376,8 @@
       content_files: [{ path: U + '\\Documents\\毕业论文.docx', name: '毕业论文.docx' }, { path: U + '\\Documents\\毕业论文(1).docx', name: '毕业论文(1).docx' }],
       content_allowed: !!settings.ai.send_file_content, anonymize: true }),
     ai_review_files: () => job(5, { files: {}, usage: { requests: 1 }, errors: [] }),
+    large_ai_review: ({ files }) => job(5, () => { for (const f of largeFiles) if (files.includes(f.path)) f.ai = { verdict: 'archive', verdict_label: '建议归档', what: '很久以前的录像或备份', reason: '一年多没改过，体积大，适合移到移动硬盘' };
+      return { files: {}, usage: { requests: 1 }, errors: [], sent: files.length }; }),
     apps_list: () => ({ apps, admin: true, usage_known: true }),
     file_icons: () => ({}),
     // stand-ins for the shell's type icons: a yellow folder, a page with the extension on it
@@ -418,11 +420,11 @@
         { root: 'D:\\', label: '数据', fstype: 'NTFS', total: 931 * GB, used: 512 * GB, free: 419 * GB, system: false, removable: false },
         { root: 'E:\\', label: '工作', fstype: 'NTFS', total: 954 * GB, used: 702 * GB, free: 252 * GB, system: false, removable: false }],
       rules: catalogue, groups: [{ id: 'system', name: '系统垃圾' }, { id: 'browser', name: '浏览器缓存' }, { id: 'app', name: '应用缓存' }, { id: 'dev', name: '开发工具缓存' }, { id: 'advanced', name: '系统深度清理' }],
-      start_types: { auto: '自动', delayed: '自动（延迟启动）', manual: '手动', disabled: '禁用' }, home: 'C:\\Users\\herol', system_drive: 'C:\\', data_dir: 'C:\\Users\\herol\\AppData\\Local\\PanXu' }),
+      start_types: { auto: '自动', delayed: '自动（延迟启动）', manual: '手动', disabled: '禁用' }, home: 'C:\\Users\\demo', system_drive: 'C:\\', data_dir: 'C:\\Users\\demo\\AppData\\Local\\PanXu' }),
     job: ({ job_id }) => status(job_id),
     cancel_job: ({ job_id }) => { if (jobs[job_id]) jobs[job_id].cancel = true; return true; },
     junk_scan: () => job(4, rules.map(([id, , , , , admin, size]) => ({ id, size: admin ? 0 : size, count: size ? Math.round(size / (200 * 1024)) : 0,
-      locations: ['C:\\Users\\herol\\AppData\\Local\\Temp'], needs_admin: admin, running: id === 'edge' ? ['msedge.exe'] : [], error: '', available: size === null || size > 0 })),
+      locations: ['C:\\Users\\demo\\AppData\\Local\\Temp'], needs_admin: admin, running: id === 'edge' ? ['msedge.exe'] : [], error: '', available: size === null || size > 0 })),
       (f) => ({ index: Math.round(f * rules.length), total: rules.length, current: rules[Math.min(rules.length - 1, Math.round(f * rules.length))][1] })),
     junk_clean: ({ rule_ids }) => job(6, { freed: 3.9 * GB, rules: rule_ids.map((id) => ({ id, name: id, freed: 1 * GB, files: 1200, failed: 12, in_use: 12, skipped: '', failures: [] })) },
       (f) => ({ index: Math.round(f * rule_ids.length), total: rule_ids.length, current: '用户临时文件', freed: f * 3.9 * GB })),
@@ -465,14 +467,14 @@
       const permanent = mode === 'recycle' ? items.filter((p) => /\\Temp$/i.test(p)) : [];
       return { done: items, freed: items.length * 1.5 * GB, failed: 0, failures: [], mode, permanent, permanent_bytes: permanent.length * 1.5 * GB };
     }, (f) => ({ total: items.length, done: Math.floor(f * items.length), current: items[Math.min(items.length - 1, Math.floor(f * items.length))], freed: f * items.length * GB })),
-    ai_preview: () => ({ candidates: suggestions().map((s) => ({ id: s.node_id, path: s.path, size: s.size, shown_as: s.path.replace('C:\\Users\\herol\\AppData\\Local', '%LOCALAPPDATA%').replace('C:\\Users\\herol\\AppData\\Roaming', '%APPDATA%'), cached: s.source === 'cache' })), fresh: 4, requests_estimate: 1 }),
-    ai_analyze: () => job(8, () => { const s = suggestions(); aiResults = {}; s.forEach((x) => { aiResults[x.node_id] = x; }); return { suggestions: s, usage: { requests: 2, input_tokens: 6230, output_tokens: 1520 }, errors: [], requests: 2, budget: 8 }; },
-      (f) => ({ stage: f < 0.4 ? 'summarize' : 'ask', requests: f < 0.6 ? 1 : 2, budget: 8, done: Math.round(f * 5), current: 'C:\\Users\\herol\\AppData\\Local\\Unity' })),
-    dup_default_roots: () => ['C:\\Users\\herol\\Desktop', 'C:\\Users\\herol\\Documents', 'C:\\Users\\herol\\Downloads', 'C:\\Users\\herol\\Pictures'],
+    ai_preview: () => ({ candidates: suggestions().map((s) => ({ id: s.node_id, path: s.path, size: s.size, shown_as: s.path.replace('C:\\Users\\demo\\AppData\\Local', '%LOCALAPPDATA%').replace('C:\\Users\\demo\\AppData\\Roaming', '%APPDATA%'), cached: s.source === 'cache' })), fresh: 4, requests_estimate: 1, remaining: { count: 23, size: 1.6 * GB } }),
+    ai_analyze: () => job(8, () => { const s = suggestions(); aiResults = {}; s.forEach((x) => { aiResults[x.node_id] = x; }); return { suggestions: s, usage: { requests: 2, input_tokens: 6230, output_tokens: 1520 }, errors: [], requests: 2, budget: 8, remaining: { count: 23, size: 1.6 * GB } }; },
+      (f) => ({ stage: f < 0.4 ? 'summarize' : 'ask', requests: f < 0.6 ? 1 : 2, budget: 8, done: Math.round(f * 5), current: 'C:\\Users\\demo\\AppData\\Local\\Unity' })),
+    dup_default_roots: () => ['C:\\Users\\demo\\Desktop', 'C:\\Users\\demo\\Documents', 'C:\\Users\\demo\\Downloads', 'C:\\Users\\demo\\Pictures'],
     dup_scan: () => job(6, { groups: [
-      { id: 0, size: 1.4 * GB, wasted: 1.4 * GB, files: [{ path: 'C:\\Users\\herol\\Downloads\\项目资料-final.zip', mtime: now - 200 * day }, { path: 'C:\\Users\\herol\\Documents\\归档\\项目资料-final (1).zip', mtime: now - 20 * day }] },
-      { id: 1, size: 320 * MB, wasted: 640 * MB, files: [{ path: 'C:\\Users\\herol\\Videos\\旅行\\IMG_2041.MOV', mtime: now - 400 * day }, { path: 'C:\\Users\\herol\\Pictures\\手机备份\\IMG_2041.MOV', mtime: now - 300 * day }, { path: 'C:\\Users\\herol\\Desktop\\IMG_2041.MOV', mtime: now - 3 * day }] },
-      { id: 2, size: 46 * MB, wasted: 46 * MB, files: [{ path: 'C:\\Users\\herol\\Downloads\\WeChatSetup.exe', mtime: now - 90 * day }, { path: 'C:\\Users\\herol\\Downloads\\WeChatSetup (2).exe', mtime: now - 30 * day }] },
+      { id: 0, size: 1.4 * GB, wasted: 1.4 * GB, files: [{ path: 'C:\\Users\\demo\\Downloads\\项目资料-final.zip', mtime: now - 200 * day }, { path: 'C:\\Users\\demo\\Documents\\归档\\项目资料-final (1).zip', mtime: now - 20 * day }] },
+      { id: 1, size: 320 * MB, wasted: 640 * MB, files: [{ path: 'C:\\Users\\demo\\Videos\\旅行\\IMG_2041.MOV', mtime: now - 400 * day }, { path: 'C:\\Users\\demo\\Pictures\\手机备份\\IMG_2041.MOV', mtime: now - 300 * day }, { path: 'C:\\Users\\demo\\Desktop\\IMG_2041.MOV', mtime: now - 3 * day }] },
+      { id: 2, size: 46 * MB, wasted: 46 * MB, files: [{ path: 'C:\\Users\\demo\\Downloads\\WeChatSetup.exe', mtime: now - 90 * day }, { path: 'C:\\Users\\demo\\Downloads\\WeChatSetup (2).exe', mtime: now - 30 * day }] },
       // the same font in two projects (each loads its own) and a sound kept in a project plus a loose copy
       { id: 3, size: 9 * MB, wasted: 9 * MB, files: [
         { path: 'E:\\工程\\萍萍瑜伽故事\\代码工程\\lib\\fonts\\NotoSerifJP-600.woff', mtime: now - 60 * day, place: 'project', place_root: 'E:\\工程\\萍萍瑜伽故事\\代码工程',
@@ -481,13 +483,13 @@
           refs: { found: [], count: 0, searched: 96, complete: true } }] },
       { id: 4, size: 8 * MB, wasted: 8 * MB, files: [
         { path: 'E:\\工程\\动画短片\\代码工程\\public\\long_score.wav', mtime: now - 50 * day, place: 'project', place_root: 'E:\\工程\\动画短片\\代码工程' },
-        { path: 'C:\\Users\\herol\\Downloads\\long_score.wav', mtime: now - 70 * day }] },
+        { path: 'C:\\Users\\demo\\Downloads\\long_score.wav', mtime: now - 70 * day }] },
     ], stats: { files: 18233, groups: 5, wasted: 2.1 * GB, seconds: 18 } }, (f) => ({ phase: f < 0.3 ? 'listing' : f < 0.6 ? 'quick' : 'full', files: Math.round(f * 18233), done: Math.round(f * 300), total: 300, bytes_done: f * 4 * GB, bytes_total: 4 * GB })),
     dup_ai_review: () => job(4, { copies: {
       'E:\\工程\\萍萍瑜伽故事\\代码工程\\lib\\fonts\\NotoSerifJP-600.woff': { verdict: 'keep', verdict_label: '建议保留', reason: '工程的样式表引用了它' },
       'E:\\工程\\动画短片\\代码工程\\lib\\fonts\\NotoSerifJP-600.woff': { verdict: 'delete', verdict_label: '更推荐删除', reason: '工程里没有用到，像是复制模板时带过来的' },
       'E:\\工程\\动画短片\\代码工程\\public\\long_score.wav': { verdict: 'keep', verdict_label: '建议保留', reason: '放在 public 里，页面可能直接加载' },
-      'C:\\Users\\herol\\Downloads\\long_score.wav': { verdict: 'delete', verdict_label: '更推荐删除', reason: '下载文件夹里的零散副本' },
+      'C:\\Users\\demo\\Downloads\\long_score.wav': { verdict: 'delete', verdict_label: '更推荐删除', reason: '下载文件夹里的零散副本' },
     }, usage: { requests: 1 }, errors: [] }),
     dup_delete: ({ paths_to_delete }) => job(3, { done: paths_to_delete, freed: 1.4 * GB, failed: 0, failures: [], mode: 'recycle' }),
     startup_list: () => startup,

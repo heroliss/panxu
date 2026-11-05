@@ -429,9 +429,10 @@
   async function startAI(useCache = true) {
     const init = PX.state.init;
     let preview;
-    try { preview = await PX.api.call('ai_preview'); } catch (e) { PX.fail(e); return; }
+    try { preview = await PX.api.call('ai_preview', { use_cache: useCache }); } catch (e) { PX.fail(e); return; }
     if (!preview.candidates.length) {
-      PX.modal({ title: 'AI 分析', body: h('div', '没有需要分析的大文件夹：较大的文件夹都已经被盘序内置的规则识别了（系统、程序、个人文件夹或可清理的缓存）。可以在设置中调低「发送给 AI 的最小文件夹」。'),
+      PX.modal({ title: 'AI 分析', body: h('div', '没有需要分析的文件夹：有内容的文件夹都已经被盘序内置的规则识别了（系统、程序、个人文件夹或可清理的缓存）。' +
+        (init.settings.ai.min_dir_mb ? '可以在「设置 > AI 分析 > 最小文件夹」里选「不限」，让 AI 也看小文件夹。' : '')),
         actions: [{ label: '好的', kind: 'primary' }] });
       return;
     }
@@ -443,14 +444,17 @@
     }
     const list = h('div.confirm-list');
     for (const c of preview.candidates) list.appendChild(h('div.row', h('div.name.mono-path', c.shown_as), h('div.size', c.cached ? '有缓存' : fmt.bytes(c.size))));
+    const reused = preview.candidates.length - preview.fresh;
+    const left = preview.remaining || { count: 0, size: 0 };
     const body = h('div',
-      h('div', `会把 ${preview.candidates.length} 个文件夹的摘要发给 ${init.settings.ai.model}。` +
-        (preview.fresh < preview.candidates.length ? `其中 ${preview.candidates.length - preview.fresh} 个已有结果，直接复用。` : '') +
-        `预计最多 ${preview.requests_estimate} 次请求；如果 AI 需要细看子文件夹，会多用几次，总数不超过 ${init.settings.ai.max_requests} 次。`),
+      h('div', `这次看 ${preview.candidates.length} 个文件夹，从大到小：把 ${preview.fresh} 个的摘要发给 ${init.settings.ai.model}` +
+        (reused ? `，另外 ${reused} 个已有结果，直接复用` : '') +
+        `。预计最多 ${preview.requests_estimate} 次请求；如果 AI 需要细看子文件夹，会多用几次，总数不超过 ${init.settings.ai.max_requests} 次。`),
+      left.count ? h('div.small', `还有 ${left.count} 个更小的文件夹（共 ${fmt.bytes(left.size)}）这次不看，分析完可以「继续分析下一批」。`) : null,
       list,
       h('div.small.muted', '摘要包括：文件夹路径' + (init.settings.ai.anonymize_paths ? '（用户名已替换为 %USERPROFILE%）' : '') +
         '、大小、文件数、修改时间、子文件夹名、文件类型分布和最大的几个文件名。不会上传文件内容。'));
-    const ok = await PX.confirm({ title: 'AI 分析大文件夹', body, ok: '开始分析', wide: true });
+    const ok = await PX.confirm({ title: 'AI 分析文件夹', body, ok: '开始分析', wide: true });
     if (!ok) return;
     state.view = 'ai';
     state.ai.status = 'running';
@@ -484,15 +488,19 @@
       return;
     }
     // which folders go to the model, and which do not (and why)
-    const minMb = PX.state.init.settings.ai.min_dir_mb || 200;
+    const aiSet = PX.state.init.settings.ai;
+    const minMb = aiSet.min_dir_mb || 0;
+    const perRun = Math.max(1, aiSet.max_requests - Math.floor(aiSet.max_requests / 4)) * 12;
     const which = h('details.ai-which', h('summary', '哪些文件夹会发给 AI？'),
       h('ul',
-        h('li', `从磁盘最上层往下看，每条分支上第一个盘序不认识、而且大于 ${minMb >= 1024 ? minMb / 1024 + ' GB' : minMb + ' MB'} 的文件夹（最多 60 个，从大到小）。AI 说「里面混着不同的东西」时，再看它的子文件夹。`),
-        h('li', '小于这个大小的文件夹不发，省额度——在「设置 > AI 模型 > 最小文件夹」里可以调小。'),
+        h('li', `从磁盘最上层往下看，每条分支上第一个盘序不认识的文件夹，从大到小。每次分析看一批（最多 ${perRun} 个，跟着「请求上限」变），还有剩下的可以「继续分析下一批」；看过的直接复用结果，不再消耗额度。AI 说「里面混着不同的东西」时，再看它点名的子文件夹。`),
+        h('li', minMb ? `比 ${minMb >= 1024 ? minMb / 1024 + ' GB' : minMb + ' MB'} 小的文件夹不发——这是你在「设置 > AI 分析 > 最小文件夹」里选的，选「不限」就都看。`
+          : '不限大小：内容很少的文件夹也会看，只是排在大的后面。空文件夹不发，它不占空间，也没有内容可判断。'),
         h('li', '盘序自己认得的位置不发：系统、已安装的程序、你的个人文件夹、其他账户的文件夹，以及各种缓存和临时文件夹（例如每个磁盘最上层的 Temp，会直接列在下面，标着「盘序认得」）。')));
     if (!ai.result) {
-      container.appendChild(h('div.empty', h('h2', '让 AI 判断陌生的大文件夹'),
-        h('div', '系统、程序、个人文件夹和已知缓存由内置规则判断，不消耗额度。只有规则不认识的大文件夹才会把摘要发给模型。'),
+      container.appendChild(h('div.empty', h('h2', '让 AI 判断陌生的文件夹'),
+        h('div', '系统、程序、个人文件夹和已知缓存由内置规则判断，不消耗额度。规则不认识的文件夹' +
+          (minMb ? `（大于 ${minMb >= 1024 ? minMb / 1024 + ' GB' : minMb + ' MB'}）` : '，不论大小，') + '从大到小一批批把摘要发给模型。'),
         h('div.actions', h('button.btn.primary', { type: 'button', onclick: () => startAI(true) }, PX.icon('spark'), '开始 AI 分析')), which));
       return;
     }
@@ -502,6 +510,11 @@
     container.appendChild(h('div.page-head', { style: { marginBottom: '8px' } },
       h('div.grow', h('div.muted.small', `使用 ${res.requests} 次请求，约 ${fmt.count((usage.input_tokens || 0) + (usage.output_tokens || 0))} tokens。AI 的判断仅供参考，删除前请确认。`), which),
       h('div.actions', h('button.btn.small', { type: 'button', onclick: () => startAI(false) }, PX.icon('refresh'), '重新分析（不用缓存）'))));
+    const left = res.remaining || { count: 0, size: 0 };
+    if (left.count) {
+      container.appendChild(PX.notice(`还有 ${left.count} 个文件夹（共 ${fmt.bytes(left.size)}）这次没有看。看过的会直接复用，继续只问新的。`, 'info',
+        h('button.btn.small.primary', { type: 'button', onclick: () => startAI(true) }, PX.icon('spark'), '继续分析下一批')));
+    }
     for (const [verdict, label] of groups) {
       const rows = res.suggestions.filter((s) => s.verdict === verdict && !s.expanded);
       if (!rows.length) continue;

@@ -197,6 +197,74 @@ class AnalystTest(TempDirTest):
         self.assertNotIn('Documents', names)
         self.assertNotIn('Tiny', names)
 
+    def test_no_floor_by_default_and_each_run_takes_the_next_batch(self):
+        os.makedirs(os.path.join(self.tmp, 'Users/alice/AppData/Local/Empty'))
+        self.scan = SpaceScan(self.tmp).run()
+        a = self.analyst()
+        names = [n.name for n in a.frontier(self.scan)]
+        self.assertEqual(names, ['Mixed', 'BigCache', 'Tiny'], 'a 10-byte folder is asked about too, last')
+        self.assertNotIn('Empty', names, 'nothing to judge and nothing to free')
+        self.assertEqual(Analyst.capacity(8), 72, 'a quarter of the budget is kept for 「look into」')
+        self.assertEqual(Analyst.capacity(1), 12)
+        a.capacity = lambda budget: 1  # one frontier folder per run
+        preview = a.preview(self.scan, self.settings)
+        self.assertEqual([r['path'] for r in preview['candidates']], [self.scan.path_of(self.scan.find(
+            os.path.join(self.tmp, 'Users/alice/AppData/Local/Mixed')))])
+        self.assertEqual(preview['remaining']['count'], 2)
+        seen = []
+        for left in (2, 1, 0):
+            client = ScriptedClient(self.answer)
+            result = a.analyze_space(self.scan, client, self.settings)
+            seen.append(sorted(os.path.basename(s['path']) for s in result['suggestions']))
+            self.assertEqual(result['remaining']['count'], left)
+            self.assertLessEqual(len(client.calls), 2, 'earlier answers come from the cache')
+        self.assertEqual(seen[0], ['Mixed', 'cache', 'data'], 'the folders the model looks into: any size')
+        self.assertEqual(seen[-1], ['BigCache', 'Mixed', 'Tiny', 'cache', 'data'])
+
+    def test_sub_folders_cut_by_the_budget_are_asked_next_time(self):
+        a = self.analyst()
+        self.settings['ai']['max_requests'] = 1  # one request: the frontier, then nothing left for 「look into」
+        first = a.analyze_space(self.scan, ScriptedClient(self.answer), self.settings)
+        cut = sorted(os.path.basename(s['path']) for s in first['suggestions'] if s['source'] == 'none')
+        self.assertEqual(cut, ['cache', 'data'])
+        self.assertEqual(first['remaining']['count'], 2, '继续分析下一批 is offered for them')
+        preview = a.preview(self.scan, self.settings)
+        self.assertEqual(preview['fresh'], 2, 'the frontier is cached, but these still need the model')
+        self.assertEqual(preview['requests_estimate'], 1)
+        client = ScriptedClient(self.answer)
+        second = a.analyze_space(self.scan, client, self.settings)
+        self.assertEqual([sorted(os.path.basename(r['path'].replace('\\', '/')) for r in call) for call in client.calls],
+                         [['cache', 'data']], 'only the cut sub-folders are sent')
+        self.assertEqual(second['remaining']['count'], 0)
+        self.assertFalse([s for s in second['suggestions'] if s['source'] == 'none'])
+
+    def test_failed_requests_count_as_remaining(self):
+        a = self.analyst()
+
+        class Flaky(ScriptedClient):
+            def complete_json(self, system, user):
+                if not self.calls:
+                    self.calls.append('timeout')
+                    raise AIError('请求超时')
+                return super().complete_json(system, user)
+        client = Flaky(self.answer)
+        result = a.analyze_space(self.scan, client, self.settings, use_cache=False)
+        self.assertEqual(result['remaining']['count'], 3, 'the folders of the failed batch can be asked again')
+        self.assertTrue(result['errors'])
+        again = a.analyze_space(self.scan, ScriptedClient(self.answer), self.settings)
+        self.assertEqual(again['remaining']['count'], 0)
+
+    def test_clearing_the_cache_does_not_lock_it(self):
+        # clear() saves while holding the lock: with a plain Lock the 「清除 AI 分析缓存」 button hung, and every
+        # later analysis waited on it forever
+        self.cache.put('k', {'verdict': 'keep'})
+        done = threading.Event()
+        worker = threading.Thread(target=lambda: (self.cache.clear(), self.cache.put('k2', {'verdict': 'clean'}),
+                                                  self.cache.save(), done.set()), daemon=True)
+        worker.start()
+        self.assertTrue(done.wait(5), 'clear, put and save finished')
+        self.assertEqual(set(VerdictCache(os.path.join(self.tmp, 'cache.json')).data), {'k2'})
+
     def test_rounds_descend_and_cache(self):
         a = self.analyst()
         a.frontier = lambda scan, min_size, limit=60: Analyst.frontier(a, scan, 1000, limit)

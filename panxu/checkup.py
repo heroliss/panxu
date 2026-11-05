@@ -25,7 +25,7 @@ import time
 import uuid
 
 from . import APP_NAME, fsops, paths, winapi
-from .analyst import newer_sibling
+from .analyst import FILE_BATCH, newer_sibling
 from .duplicates import (AI_RANK, IN_USE, PLACE_RANK, find_duplicates, must_stay, place_label, removal_score,
                          verify_unchanged)
 from .insights import KIND_SCORE, Insights, content_question, file_score, is_copy_name, managed_dir, with_ai
@@ -60,7 +60,6 @@ INFO_MIN = 1024 ** 3
 PERSONAL_PER_KIND = 80
 # your files smaller than this stay on 我的文件: in a cleanup plan they free nothing and only add a risk
 PLAN_MIN_FILE = 1024 * 1024
-FILES_FOR_AI = 120
 DUPS_FOR_AI = 36   # groups of duplicates the check-up asks about (three requests)
 # 「需要你确认」: the model cannot tell, so its confidence in saying so is no reason to clean (5 points, held)
 AI_REVIEW_SCORE = 50
@@ -658,7 +657,9 @@ def run(backend, job, options: dict | None = None) -> dict:
         stage('ai')
         ai_info['used'] = True
         anonymize = settings['ai'].get('anonymize_paths', True)
-        files = backend.files_for_ai([f['id'] for f in findings], include_content=False)[:FILES_FOR_AI]
+        # as many file names as the request budget holds (it was a fixed 120: half of the default budget)
+        budget = max(1, int(settings['ai'].get('max_requests', 8)))
+        files = backend.files_for_ai([f['id'] for f in findings], include_content=False)[:budget * FILE_BATCH]
         # duplicates that need judging: a copy in a program, a project or next to one (loose copies are clear)
         unclear = [g for g in (backend.dups or {}).get('groups', []) if any(f.get('place') for f in g['files'])] \
             if opts.get('duplicates', True) else []

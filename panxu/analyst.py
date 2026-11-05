@@ -5,8 +5,10 @@ Space analysis works top-down over the scanned tree:
 1. Built-in knowledge decides the obvious cases (Windows, Program Files,
    personal folders, rule-covered caches) — no tokens spent.
 2. Structural folders (C:\\, AppData\\Local, ...) are opened automatically.
-3. The first *unknown* folder on each branch that is large enough goes to the
-   model in a batch, as a compact summary.
+3. The first *unknown* folder on each branch goes to the model in a batch, as a
+   compact summary, biggest first. There is no size floor by default: one run
+   sends as many as its request budget holds and the next run continues with
+   the rest (answers already given come from the cache).
 4. The model answers per folder: clean / keep / review / descend. Only
    ``descend`` costs more: the program then sends the named sub-folders in a
    later round, within a fixed request budget.
@@ -220,7 +222,7 @@ def anonymize_text(text: str, env: dict) -> str:
 class VerdictCache:
     def __init__(self, path: str):
         self.path = path
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()  # clear() saves while holding it
         try:
             with open(path, encoding='utf-8') as fh:
                 self.data = json.load(fh)
@@ -255,7 +257,7 @@ class VerdictCache:
 
 
 class Analyst:
-    child_floor = 50 * 1024 * 1024  # sub-folders smaller than this are not worth a request
+    child_floor = 0  # sub-folders the model asks to look into are sent whatever their size (but not empty ones)
 
     def __init__(self, cache: VerdictCache, env: dict | None = None, knowledge: Knowledge | None = None,
                  app_matcher=None):
@@ -297,13 +299,14 @@ class Analyst:
         return out
 
     # -- space analysis ----------------------------------------------------------
-    def frontier(self, scan, min_size: int, limit: int = 60) -> list:
-        """Unknown folders worth asking about, biggest first (no model calls)."""
+    def frontier(self, scan, min_size: int = 0, limit: int | None = None) -> list:
+        """Unknown folders to ask about, biggest first (no model calls). Small ones are included (sorted last)
+        unless the user set a floor; empty ones are not: nothing to judge and nothing to free."""
         out = []
         stack = [scan.root]
         while stack:
             node = stack.pop()
-            if node.size < min_size:
+            if node.size <= 0 or node.size < min_size:
                 continue
             path = scan.path_of(node)
             role = 'descend' if node is scan.root else self.knowledge.ai_role(path)
@@ -314,7 +317,53 @@ class Analyst:
                 continue
             out.append(node)
         out.sort(key=lambda n: n.size, reverse=True)
-        return out[:limit]
+        return out[:limit] if limit else out
+
+    @staticmethod
+    def capacity(budget: int) -> int:
+        """Folders from the frontier one run sends: the budget less a quarter, kept for the sub-folders the
+        model asks to look into."""
+        return max(1, budget - budget // 4) * BATCH_SIZE
+
+    def plan_run(self, scan, settings: dict, use_cache: bool = True) -> tuple[list, list]:
+        """(this run's frontier folders, the ones left for the next run). Folders with a cached answer are
+        always in this run (they cost nothing); the rest fill the run's capacity biggest first."""
+        ai = settings['ai']
+        min_size = int(ai.get('min_dir_mb', 0)) * 1024 * 1024
+        cap = self.capacity(max(1, int(ai.get('max_requests', 8))))
+        now, later, fresh = [], [], 0
+        for node in self.frontier(scan, min_size):
+            if use_cache and self.cache.get(paths.anonymize(scan.path_of(node), self.env), node.size):
+                now.append((node, True))
+            elif fresh < cap:
+                fresh += 1
+                now.append((node, False))
+            else:
+                later.append(node)
+        return now, later
+
+    def followups(self, scan, nodes, min_size: int) -> list:
+        """Uncached sub-folders the cached 「内容混合」 answers among ``nodes`` point to (as ``_record`` would queue
+        them): a run made of cached folders still asks about these, and 继续分析下一批 must count them."""
+        out, stack = [], [(n, 1) for n in nodes]
+        while stack:
+            node, depth = stack.pop()
+            verdict = self.cache.get(paths.anonymize(scan.path_of(node), self.env), node.size)
+            if verdict is None:
+                if depth > 1:
+                    out.append(node)
+                continue
+            stack.extend((c, depth + 1) for c in self._look_into(scan, node, verdict, depth, min_size))
+        return out
+
+    def _look_into(self, scan, node, verdict: dict, depth: int, min_size: int) -> list:
+        """The sub-folders a 「内容混合」 answer sends to the next round ([] for any other verdict)."""
+        if verdict.get('verdict') != 'descend' or depth >= MAX_ROUNDS:
+            return []
+        child_min = max(min_size // 5, self.child_floor, 1)
+        wanted = {n.lower() for n in verdict.get('look_into', [])}
+        children = [c for c in node.children or () if c.name.lower() in wanted and c.size >= child_min]
+        return [c for c in children if self.knowledge.ai_role(scan.path_of(c)) != 'skip']
 
     def known_cleanable(self, scan, min_size: int = 10 * 1024 * 1024) -> list[dict]:
         """Folders the built-in knowledge recognises as cleanable but no cleanup rule covers (a drive's Temp
@@ -379,30 +428,33 @@ class Analyst:
             summary['hints'] = hints
         return summary
 
-    def preview(self, scan, settings: dict) -> dict:
+    def preview(self, scan, settings: dict, use_cache: bool = True) -> dict:
         ai = settings['ai']
-        min_size = int(ai.get('min_dir_mb', 200)) * 1024 * 1024
-        nodes = self.frontier(scan, min_size)
+        now, later = self.plan_run(scan, settings, use_cache)
+        # sub-folders of cached 「内容混合」 answers that were cut by an earlier run's budget are asked this time
+        extra = self.followups(scan, [n for n, cached in now if cached], int(ai.get('min_dir_mb', 0)) * 1024 * 1024)             if use_cache else []
         rows = []
-        for node in nodes:
+        for node, cached in now + [(n, False) for n in extra]:
             path = scan.path_of(node)
-            cached = self.cache.get(paths.anonymize(path, self.env), node.size)
             rows.append({'id': node.id, 'path': path, 'size': node.size,
                          'shown_as': paths.anonymize(path, self.env) if ai.get('anonymize_paths', True) else path,
-                         'cached': bool(cached)})
+                         'cached': cached})
         fresh = sum(1 for r in rows if not r['cached'])
         return {'candidates': rows, 'fresh': fresh, 'requests_estimate': min(int(ai.get('max_requests', 8)),
-                                                                            -(-fresh // BATCH_SIZE) if fresh else 0)}
+                                                                            -(-fresh // BATCH_SIZE) if fresh else 0),
+                'remaining': {'count': len(later), 'size': sum(n.size for n in later)}}
 
     def analyze_space(self, scan, client, settings: dict, cancel=None, progress=None, use_cache=True) -> dict:
         ai = settings['ai']
         anonymize = bool(ai.get('anonymize_paths', True))
-        min_size = int(ai.get('min_dir_mb', 200)) * 1024 * 1024
+        min_size = int(ai.get('min_dir_mb', 0)) * 1024 * 1024
         budget = max(1, int(ai.get('max_requests', 8)))
-        queue = [(n, 1) for n in self.frontier(scan, min_size)]
+        now, later = self.plan_run(scan, settings, use_cache)
+        queue = [(n, 1) for n, _ in now]
         results: dict[int, dict] = {}
         requests = 0
         errors = []
+        cut = []  # not analysed this time (over the budget, or the request failed): the next run asks again
 
         def note(stage, **extra):
             if progress:
@@ -425,7 +477,8 @@ class Analyst:
                 continue
             if requests >= budget:
                 for node, depth in fresh:
-                    results[node.id] = self._unanalysed(scan, node, '已达到本次分析的请求上限，未继续分析')
+                    results[node.id] = self._unanalysed(scan, node, '这次分析的请求用完了，「继续分析」时再看')
+                    cut.append(node)
                 continue
             batch, rest = fresh[:BATCH_SIZE], fresh[BATCH_SIZE:]
             queue = rest + queue
@@ -440,8 +493,14 @@ class Analyst:
                 errors.append(str(exc))
                 for node, _ in batch:
                     results[node.id] = self._unanalysed(scan, node, f'模型请求失败：{exc}')
+                    cut.append(node)
                 if isinstance(exc, AIError) and getattr(exc, 'status', None) in (401, 402, 403, 404):
-                    break  # configuration problem: don't burn the remaining budget
+                    # configuration problem: don't burn the remaining budget; what was still queued is listed too
+                    for node, _ in queue:
+                        if node.id not in results:
+                            results[node.id] = self._unanalysed(scan, node, f'模型请求失败：{exc}')
+                            cut.append(node)
+                    break
                 continue
             answers = {}
             for row in reply.get('results') or []:
@@ -455,8 +514,10 @@ class Analyst:
             self.cache.save()  # after every answer: closing PanXu mid-way must not waste what was paid for
         self.cache.save()
         suggestions = sorted(results.values(), key=lambda r: r['size'], reverse=True)
+        left = later + cut
         return {'suggestions': suggestions, 'usage': client.usage.as_dict(), 'errors': errors,
-                'requests': requests, 'budget': budget}
+                'requests': requests, 'budget': budget,
+                'remaining': {'count': len(left), 'size': sum(n.size for n in left)}}
 
     def _clean_answer(self, row: dict | None, node) -> dict:
         if not row:
@@ -474,11 +535,8 @@ class Analyst:
 
     def _record(self, scan, node, verdict: dict, results: dict, queue: list, depth: int, min_size: int, source: str):
         if verdict['verdict'] == 'descend':
-            child_min = max(min_size // 5, self.child_floor)
-            wanted = {n.lower() for n in verdict.get('look_into', [])}
-            children = [c for c in node.children or () if c.name.lower() in wanted and c.size >= child_min]
-            children = [c for c in children if self.knowledge.ai_role(scan.path_of(c)) != 'skip']
-            if children and depth < MAX_ROUNDS:
+            children = self._look_into(scan, node, verdict, depth, min_size)
+            if children:
                 queue.extend((c, depth + 1) for c in children)
                 results[node.id] = self._row(scan, node, verdict, source, expanded=True)
                 return

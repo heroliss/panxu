@@ -12,7 +12,7 @@ from . import winapi
 
 log = logging.getLogger(__name__)
 
-SETTINGS_VERSION = 3
+SETTINGS_VERSION = 4
 DEFAULTS = {
     'version': SETTINGS_VERSION,
     'theme': 'system',  # system | light | dark
@@ -26,7 +26,7 @@ DEFAULTS = {
         'anonymize_paths': True,
         'send_file_content': False,  # allow sending the first lines of documents (asked again each time)
         'max_requests': 8,       # per analysis run
-        'min_dir_mb': 200,       # directories smaller than this are not sent (at most the 60 biggest are)
+        'min_dir_mb': 0,         # an optional floor; 0: any non-empty folder, biggest first, one budget per run
         'timeout': 120,
     },
     'checkup': {
@@ -90,8 +90,12 @@ class Settings:
             old_checkup = raw.get('checkup') if isinstance(raw.get('checkup'), dict) else {}
             if old_checkup.get('auto_select') == 'careful' and 'auto_threshold' not in old_checkup:
                 self._data['checkup']['auto_threshold'] = 8   # 自动勾选 稳妥/积极 -> 勾选门槛 8/5
-        if version < 3 and old_ai.get('min_dir_mb') in (None, 500):
-            self._data['ai']['min_dir_mb'] = 200   # 500 MB was the default: a 300 MB Temp folder was never looked at
+        old_floor = old_ai.get('min_dir_mb')
+        if old_floor is None or (version < 3 and old_floor == 500) or (version == 3 and old_floor == 200):
+            # the default of the build that wrote the file (500 MB before version 3, then 200 MB), not a choice: a
+            # 300 MB Temp folder was never looked at, and small folders are worth a look too now that each run takes
+            # the next batch, biggest first. Any other value was picked by the user and is kept.
+            self._data['ai']['min_dir_mb'] = 0
         self._data['version'] = SETTINGS_VERSION
         try:
             self._write(self.path, self._data)

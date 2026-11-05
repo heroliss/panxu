@@ -1,2 +1,8 @@
+# Text is LF in the repository and on disk, whatever core.autocrlf says;
+# cmd.exe scripts keep CRLF. Third-party license texts keep their exact bytes.
+* text=auto eol=lf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.ico binary
 LICENSE -text
 licenses/third-party/** -text
