@@ -261,6 +261,16 @@ class OpLogTest(TempDirTest):
 
 
 class SettingsTest(TempDirTest):
+    def test_home_checkup_choices_default_to_full_scope_and_persist(self):
+        s = Settings(self.tmp)
+        self.assertTrue(s.get()['checkup']['other_drives'])
+        choices = {'other_drives': False, 'duplicates': False, 'use_ai': False}
+        s.update({'checkup': choices})
+        saved = Settings(self.tmp).get()['checkup']
+        self.assertTrue(saved['space_scan'])
+        for key, value in choices.items():
+            self.assertEqual(saved[key], value)
+
     def test_merge_ignores_unknown_keys_and_persists(self):
         s = Settings(self.tmp)
         s.update({'ai': {'model': 'm1'}, 'bogus': 1})

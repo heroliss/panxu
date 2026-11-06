@@ -57,6 +57,21 @@ class PersonalScopeTest(TempDirTest):
         self.assertEqual(checkup.personal_roots(self.env, {'extra_personal_paths': [extra]}),
                          list(self.shell.values()) + [extra])
 
+    def test_checkup_can_skip_whole_data_disks_without_losing_personal_locations(self):
+        self.shell['documents'] = self.directory('D/Documents')
+        extra = self.directory('USB/Chosen')
+        settings = {'extra_personal_paths': [extra]}
+        roots = checkup.insights_roots(self.env, settings, self.drives, other_drives=False)
+        keys = {paths.key(p) for p in roots}
+        self.assertIn(paths.key(self.c), keys)
+        self.assertIn(paths.key(self.shell['documents']), keys)
+        self.assertIn(paths.key(extra), keys)
+        self.assertNotIn(paths.key(self.d), keys)
+        self.assertNotIn(paths.key(self.usb), keys)
+        space = checkup.space_roots(self.env, settings, self.drives, other_drives=False)
+        self.assertEqual({paths.key(p) for p in space},
+                         {paths.key(p) for p in (self.c, self.shell['documents'], extra)})
+
     def test_known_and_explicit_folders_work_on_nonfixed_storage(self):
         redirected = self.directory('USB/Documents')
         extra = self.directory('Unknown/Chosen')

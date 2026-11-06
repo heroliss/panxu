@@ -18,7 +18,7 @@
   const THRESHOLDS = [9, 8, 7, 6, 5].map((t) => [t, `≥ ${t} 分`]);
   const state = { status: 'idle', plan: null, planId: null, open: new Set(), progress: {}, report: null, jobId: null,
     withMine: false, picked: null, run: { started: Date.now(), stage: null, stageAt: Date.now(), shown: 0, left: null },
-    executing: 0, entering: null, freeBefore: null };
+    executing: 0, entering: null, freeBefore: null, savingOption: null, activeOptions: null };
   let root = null;
 
   function strata(drive, reclaim, cls) {
@@ -66,14 +66,19 @@
   }
 
   async function checkup() {
-    if (state.status === 'running' || state.status === 'executing') return;
+    if (state.status === 'running' || state.status === 'executing' || state.savingOption) return;
     state.status = 'running';
-    state.progress = {};
+    state.activeOptions = { ...(PX.state.init.settings.checkup || {}) };
+    const opts = state.activeOptions;
+    const aiReady = PX.state.init.has_key || PX.state.init.settings.ai.preset === 'ollama';
+    state.progress = { stages: (PX.state.init.checkup_stages || []).filter((s) =>
+      (s.id !== 'space' || opts.space_scan !== false) && (s.id !== 'dups' || opts.duplicates !== false)
+      && (s.id !== 'ai' || (opts.use_ai !== false && aiReady))) };
     state.report = null;
     state.run = { started: Date.now(), stage: null, stageAt: Date.now(), shown: 0, left: null };
     draw();
     try {
-      const plan = await PX.api.run('checkup', {}, (p) => { state.progress = p; draw(true); }, (id) => { state.jobId = id; });
+      const plan = await PX.api.run('checkup', { options: state.activeOptions }, (p) => { state.progress = p; draw(true); }, (id) => { state.jobId = id; });
       state.planId = null;
       adopt(plan);
       PX.state.init.drives = await PX.api.call('drives');
@@ -83,6 +88,7 @@
       if (!e.cancelled) PX.fail(e);
     }
     state.jobId = null;
+    state.activeOptions = null;
     draw();
   }
 
@@ -168,6 +174,47 @@
   }
 
   // ------------------------------------------------------------------ drawing
+  async function saveOption(key, checked) {
+    if (state.savingOption || state.status === 'running' || state.status === 'executing') return;
+    state.savingOption = { key, checked };
+    draw(true);
+    try {
+      const r = await PX.api.call('settings_save', { changes: { checkup: { [key]: checked } } });
+      PX.state.init.settings = r.settings;
+      PX.state.init.has_key = r.has_key;
+    } catch (e) { PX.fail(e); }
+    state.savingOption = null;
+    draw(true);
+    if (PX.isCurrent('home')) document.getElementById('checkup-' + key)?.focus({ preventScroll: true });
+  }
+
+  function checkupChoices(box, sys, drives) {
+    const init = PX.state.init;
+    const ck = { ...(state.status === 'running' ? state.activeOptions : init.settings.checkup),
+      ...(state.savingOption ? { [state.savingOption.key]: state.savingOption.checked } : {}) };
+    const busy = state.status === 'running' || state.status === 'executing' || !!state.savingOption;
+    const others = drives.filter((d) => d !== sys && d.fixed === true);
+    const driveName = (d) => d.letter || PX.displayPath(d.root);
+    const aiReady = init.has_key || init.settings.ai.preset === 'ollama';
+    const choices = box.appendChild(h('div.checkup-options', { role: 'group', 'aria-label': '体检选项' }));
+    const rows = [
+      ['other_drives', '包含其他磁盘', others.length ? '整盘检查 ' + others.map(driveName).join('、') : '未发现其他本地磁盘', !others.length],
+      ['duplicates', '查找重复文件', '比较文件内容，耗时较长', false],
+      ['use_ai', 'AI 复核', aiReady ? (init.settings.ai.preset === 'ollama' ? '判断陌生文件，使用本地模型' : '判断陌生文件，使用模型额度') : '配置模型后可用', !aiReady],
+    ];
+    for (const [key, label, help, unavailable] of rows) {
+      const helpId = 'checkup-' + key + '-help';
+      choices.appendChild(h('div.checkup-option',
+        h('label', h('input', { type: 'checkbox', id: 'checkup-' + key, checked: !unavailable && ck[key] !== false,
+          disabled: busy || unavailable, 'aria-describedby': helpId, onchange: (e) => saveOption(key, e.target.checked) }), label),
+        h('div.small.muted', { id: helpId }, help,
+          key === 'use_ai' && !aiReady ? h('button.btn.quiet.small', { type: 'button', disabled: busy, onclick: () => PX.go('settings') }, '配置模型') : null)));
+    }
+    const whole = [sys, ...(ck.other_drives !== false ? others : [])].map(driveName).join('、');
+    box.appendChild(h('div.small.muted.checkup-scope', { role: 'status' },
+      `${state.status === 'running' ? '本次范围' : state.plan ? '下次体检' : '检查范围'}：${whole}；常用文件夹和手动添加的位置始终包含（含迁移到其他盘的位置）。`));
+  }
+
   function hero(c) {
     const drives = PX.state.init.drives || [];
     const sys = drives.find((d) => d.system) || drives[0];
@@ -187,21 +234,17 @@
         h('span', h('span.dot', { style: { background: 'var(--ink-2)' } }), ' 已用', h('b', fmt.bytes(sys.used))),
         reclaim ? h('span', h('span.dot', { style: { background: 'var(--verdigris)' } }), ' 选中的可以释放', h('b', fmt.bytes(reclaim))) : null,
         h('span', h('span.dot', { style: { background: 'var(--rule)' } }), ' 可用', h('b', fmt.bytes(sys.free))))));
+    checkupChoices(box, sys, drives);
     const cta = box.appendChild(h('div.hero-cta'));
     if (state.status === 'running') {
       cta.appendChild(h('button.btn', { type: 'button', onclick: () => state.jobId && PX.api.cancel(state.jobId) }, '停止体检'));
     } else if (state.status !== 'executing') {
-      cta.appendChild(h('button.btn.primary.large', { type: 'button', onclick: checkup }, PX.icon('shield'),
-        state.plan ? '重新体检' : '一键体检'));
+      cta.appendChild(h('button.btn.primary.large', { type: 'button', disabled: !!state.savingOption, onclick: checkup }, PX.icon('shield'),
+        state.savingOption ? '正在保存选择…' : state.plan ? '重新体检' : '一键体检'));
       const init = PX.state.init;
       const ck = init.settings.checkup || {};
-      const parts = ['垃圾文件', ck.space_scan !== false ? '本地固定磁盘空间' : null, '各磁盘上的我的文件', ck.duplicates !== false ? '跨磁盘重复文件' : null,
-        ck.use_ai !== false ? (init.has_key ? 'AI 复核' : 'AI 复核（未配置模型，跳过）') : null].filter(Boolean);
-      cta.appendChild(h('span.muted.small', '检查：' + parts.join(' · ') + '。体检只看不删，清理前会再问你。'));
-    }
-    if (!state.plan && state.status === 'idle') {
-      box.appendChild(h('div.small.muted', { style: { marginTop: '10px' } },
-        '体检会给出一份清理方案：放心清理的项目默认勾选，其余的由你决定。每一项都可以「问 AI」。'));
+      const parts = ['垃圾缓存', ck.space_scan !== false ? '空间占用' : null, '个人文件整理'].filter(Boolean);
+      cta.appendChild(h('span.muted.small', `基础检查：${parts.join(' · ')}。只分析，不删除文件。`));
     }
   }
 
@@ -587,7 +630,7 @@
         const space = coverage.space;
         const roots = space ? space.roots || [] : [];
         c.appendChild(PX.notice((roots.length ? `空间分析已查看：${roots.map(PX.displayPath).join('、')}。` : '本次未运行空间分析。')
-          + '个人文件和重复文件覆盖常用文件夹及本地固定磁盘；跳过系统、应用数据和排除位置。'
+          + `个人文件${p.options?.duplicates !== false ? '和重复文件' : ''}按本次范围检查；跳过系统、应用数据和排除位置。`
           + (space && space.incomplete ? ` 空间统计有跳过项${space.denied ? `，其中 ${fmt.count(space.denied)} 个目录无法读取` : ''}，显示的是已检查到的占用。` : ''), 'info'));
         if (coverage.duplicates && coverage.duplicates.truncated) {
           c.appendChild(PX.notice('重复文件尚未全部比对：已达到本次体检的文件数、内容读取或比对时间上限。已列出的副本均完成内容校验，可到「重复文件」选择目录继续查找。', 'warn',
@@ -600,7 +643,7 @@
           h('button.btn.small', { type: 'button', onclick: () => PX.go('mine') }, '去我的文件')));
       }
       if (p.ai && p.ai.errors && p.ai.errors.length) c.appendChild(PX.notice('AI 复核没有全部完成：' + p.ai.errors[0], 'info'));
-      else if (p.ai && !p.ai.used) {
+      else if (p.ai && !p.ai.used && p.options?.use_ai !== false) {
         c.appendChild(PX.notice('这次体检没有使用 AI。配置模型后，AI 会帮你判断陌生的大文件夹和你的文件。', 'info',
           h('button.btn.small', { type: 'button', onclick: () => PX.go('settings') }, '去设置')));
       }

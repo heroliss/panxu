@@ -128,6 +128,26 @@ class CheckupTest(TempDirTest):
                 self.assertEqual((item['score'], item['selected']),
                                  (rows[item['rule']]['score'], rows[item['rule']]['selected']))
 
+    def test_home_options_scope_all_scan_stages_and_do_not_reuse_previous_ai(self):
+        self.call('settings_save', changes={'checkup': {'other_drives': False, 'use_ai': False}})
+        self.backend.dup_ai = {'old-path': {'verdict': 'delete', 'reason': 'previous run'}}
+        plan = self.checkup()
+        c, d = self.sb.drive_roots
+        self.assertEqual([paths.key(p) for p in plan['coverage']['space']['roots']], [paths.key(c)])
+        self.assertNotIn(paths.key(d), {paths.key(p) for p in plan['coverage']['personal_roots']})
+        self.assertNotIn(paths.key(d), {paths.key(p) for p in plan['coverage']['duplicates']['roots']})
+        self.assertIsNone(self.backend.scan.find(d))
+        self.assertFalse(plan['ai']['used'])
+        self.assertEqual(self.model.requests, [])
+        self.assertEqual(self.backend.dup_ai, {})
+        # A home choice must not narrow the standalone personal-file tool.
+        self.assertIn(paths.key(d), {paths.key(p) for p in self.call('insights_roots')})
+        broad = self.checkup(other_drives=True, duplicates=False)
+        self.assertEqual({paths.key(p) for p in broad['coverage']['space']['roots']},
+                         {paths.key(c), paths.key(d)})
+        self.assertIsNone(broad['coverage']['duplicates'])
+        self.assertFalse(self.backend.settings.get()['checkup']['other_drives'], 'per-run overrides do not overwrite saved choices')
+
     def test_every_item_explains_its_score_and_selection(self):
         plan = self.checkup()
         for item in plan['items']:

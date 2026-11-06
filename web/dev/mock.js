@@ -102,7 +102,7 @@
 
   const settings = { theme: 'system', ai: { preset: 'deepseek', base_url: 'https://api.deepseek.com', model: 'deepseek-flash', protocol: 'openai',
     json_mode: true, thinking: 'off', anonymize_paths: true, send_file_content: false, max_requests: 8, min_dir_mb: 200, timeout: 120 },
-  checkup: { space_scan: true, duplicates: true, use_ai: true, auto_threshold: 5 }, insights: { stale_days: 365, large_mb: 100, download_days: 180 },
+  checkup: { space_scan: true, other_drives: true, duplicates: true, use_ai: true, auto_threshold: 5 }, insights: { stale_days: 365, large_mb: 100, download_days: 180 },
   duplicates: { min_size_mb: 1 }, large_files: { min_size_mb: 100 }, excluded_paths: [], extra_personal_paths: ['D:\\资料'] };
   let hasKey = true;
 
@@ -325,25 +325,37 @@
   ];
 
   const handlers = {
-    checkup: () => job(40, () => {
+    checkup: () => {
+      const opts = { ...settings.checkup };
+      const roots = opts.other_drives !== false ? ['C:\\', 'D:\\', 'E:\\'] : ['C:\\'];
+      const activeStages = stages.filter((s) => (s.id !== 'space' || opts.space_scan !== false)
+        && (s.id !== 'dups' || opts.duplicates !== false) && (s.id !== 'ai' || (opts.use_ai !== false && hasKey)));
+      return job(40, () => {
       const t = settings.checkup.auto_threshold || 5;
-      plan = { id: 'p' + Date.now(), created: now, threshold: t, items: decide(JSON.parse(JSON.stringify(planItems)), t),
-        groups: planGroups, ai: { used: hasKey, errors: [], usage: { requests: 3 } } };
+      const chosen = planItems.filter((it) => (opts.duplicates !== false || it.kind !== 'dup')
+        && (opts.use_ai !== false || it.source !== 'ai')
+        && (opts.other_drives !== false || !(it.paths || []).some((p) => /^[DE]:/i.test(p))));
+      plan = { id: 'p' + Date.now(), created: now, threshold: t, options: opts, items: decide(JSON.parse(JSON.stringify(chosen)), t),
+        groups: planGroups, ai: { used: hasKey && opts.use_ai !== false, errors: [], usage: { requests: 3 } } };
       plan.summary = summarize();
       insights = personalResult(null, 12);
       plan.personal_scan = { truncated: insights.stats.truncated, limit: insights.stats.limit, files: insights.stats.files };
-      plan.coverage = { space: { roots: ['C:\\', 'D:\\', 'E:\\'], files: 1500000, incomplete: true, denied: 12 },
-        duplicates: { truncated: true, file_limit: 400000, hash_limit: 16 * GB }, omitted_drives: [] };
+      plan.coverage = { space: opts.space_scan !== false ? { roots, files: 1500000, incomplete: true, denied: 12 } : null,
+        duplicates: opts.duplicates !== false ? { truncated: true, file_limit: 400000, hash_limit: 16 * GB } : null,
+        omitted_drives: opts.other_drives !== false ? [] : ['D:\\', 'E:\\'] };
       return plan;
     }, (f) => {
       // like checkup.run: each stage says how far it is (part), except 整理我的文件, which has no total
-      const step = Math.min(6, 1 + Math.floor(f * 6));
-      const part = f * 6 - (step - 1);
-      return { stage: stages[step - 1].id, stage_label: stages[step - 1].label, step, steps: 6, stages,
-        part: step === 3 ? null : part, count: [`${Math.round(part * 52)} / 52 条规则`, `已统计 ${Math.round(part * 412000).toLocaleString()} 个文件`,
-          `已看过 ${Math.round(part * 18233).toLocaleString()} 个文件`, '已找到 3,120 个文件', `已问 ${Math.round(part * 6)} 次`, ''][step - 1],
-        detail: [U + '\\AppData\\Local\\Temp', 'C:\\Program Files', U + '\\Documents', '逐字节比对内容', '空间分析', ''][step - 1] };
-    }),
+      const step = Math.min(activeStages.length, 1 + Math.floor(f * activeStages.length));
+      const part = f * activeStages.length - (step - 1);
+      const stage = activeStages[step - 1];
+      const index = stages.findIndex((s) => s.id === stage.id);
+      return { stage: stage.id, stage_label: stage.label, step, steps: activeStages.length, stages: activeStages,
+        part: stage.id === 'insights' ? null : part, count: [`${Math.round(part * 44)} / 44 条规则`, `已统计 ${Math.round(part * 412000).toLocaleString()} 个文件`,
+          `已看过 ${Math.round(part * 18233).toLocaleString()} 个文件`, '已找到 3,120 个文件', `已问 ${Math.round(part * 6)} 次`, ''][index],
+        detail: [U + '\\AppData\\Local\\Temp', roots.join('、'), U + '\\Documents', '逐字节比对内容', '空间分析', ''][index] };
+    });
+    },
     plan: () => { if (plan) plan.summary = summarize(); return plan; },
     hibernate_set: ({ enabled }) => ({ enabled, freed: enabled ? 0 : 12.7 * GB }),
     // the first re-check finds Edge closed

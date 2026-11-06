@@ -98,7 +98,8 @@
     // ---- one-click check-up
     const ck = s.checkup || {};
     const secCk = form.appendChild(h('section', h('h2', '一键体检')));
-    for (const [key, label, help] of [['space_scan', '分析本地固定磁盘空间', '覆盖 C/D/E 等本地固定磁盘，文件越多耗时越长；可随时停止'],
+    for (const [key, label, help] of [['space_scan', '分析磁盘空间', '统计体检范围内的磁盘占用，文件越多耗时越长；可随时停止'],
+      ['other_drives', '包含其他磁盘', '整盘检查其他本地固定磁盘。关闭后仍检查系统盘、常用文件夹和手动添加的位置；与首页共用选择'],
       ['duplicates', '查找重复文件', '在个人文件夹中比较文件内容'], ['use_ai', '使用 AI 复核', '配置了模型时，让 AI 判断文件夹、文件名和开机启动项']]) {
       secCk.appendChild(field(label, h('label.inline', PX.switchEl(ck[key] !== false, (e) => save({ checkup: { [key]: e.target.checked } })),
         h('span.small.muted', help))));
@@ -139,7 +140,7 @@
 
     // ---- protected folders
     const sec3 = form.appendChild(h('section', h('h2', '排除的文件夹')));
-    sec3.appendChild(h('div.small.muted', { style: { marginBottom: '10px' } }, '这些文件夹里的内容不会被删除，也不会出现在重复文件结果中（垃圾清理的固定项目不受影响）。'));
+    sec3.appendChild(h('div.small.muted', { style: { marginBottom: '10px' } }, '这些位置会从扫描和清理中排除，也不能通过选择上级目录来处理。'));
     const ex = sec3.appendChild(h('div.folder-list'));
     for (const p of s.excluded_paths) {
       ex.appendChild(h('div.row', PX.fileIcon(p, true), h('div.name', PX.pathText(p)), h('div.row-actions', PX.revealButton(p),

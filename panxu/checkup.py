@@ -112,12 +112,13 @@ def personal_roots(env: dict, settings: dict) -> list[str]:
     return out
 
 
-def insights_roots(env: dict, settings: dict, drives: list[dict]) -> list[str]:
+def insights_roots(env: dict, settings: dict, drives: list[dict], *, other_drives: bool = True) -> list[str]:
     """Broad personal-file scope, using only an explicitly supplied drive list.
 
     Visit the familiar/picked folders first, then their wider containers. Only
     fixed local disks are added automatically; redirected shell folders and
-    explicit extra folders remain usable on other kinds of storage.
+    explicit extra folders remain usable on other kinds of storage. Turning
+    off other_drives limits whole-disk enumeration, not these personal roots.
     """
     candidates = personal_roots(env, settings)
     candidates.extend(env.get(name) for name in ('USERPROFILE', 'PUBLIC'))
@@ -125,6 +126,7 @@ def insights_roots(env: dict, settings: dict, drives: list[dict]) -> list[str]:
     if system:
         candidates.append(paths.native(system + ('' if system.endswith(('\\', '/')) else '\\')))
     candidates.extend(d.get('root') for d in drives if d.get('fixed') is True
+                      and (other_drives or d.get('system'))
                       and isinstance(d.get('root'), str)
                       and not ntpath.splitdrive(d['root'])[0].startswith('\\\\'))
     out, seen = [], set()
@@ -138,10 +140,10 @@ def insights_roots(env: dict, settings: dict, drives: list[dict]) -> list[str]:
     return out
 
 
-def space_roots(env: dict, settings: dict, drives: list[dict]) -> list[str]:
+def space_roots(env: dict, settings: dict, drives: list[dict], *, other_drives: bool = True) -> list[str]:
     """Fixed disks plus explicitly known/added personal locations, with overlaps removed."""
     out = []
-    for p in sorted(insights_roots(env, settings, drives), key=len):
+    for p in sorted(insights_roots(env, settings, drives, other_drives=other_drives), key=len):
         if not any(paths.is_within(p, old) for old in out):
             out.append(p)
     return out
@@ -746,7 +748,7 @@ def summarize(plan: dict) -> dict:
 def run(backend, job, options: dict | None = None) -> dict:
     settings = backend.settings.get()
     opts = {**settings.get('checkup', {}), **{k: bool(v) for k, v in (options or {}).items()
-                                            if k in ('space_scan', 'duplicates', 'use_ai')}}
+                                            if k in ('space_scan', 'other_drives', 'duplicates', 'use_ai')}}
     threshold = opts.get('auto_threshold', DEFAULT_THRESHOLD)
     if (options or {}).get('auto_select') in THRESHOLDS:
         threshold = THRESHOLDS[options['auto_select']]
@@ -785,7 +787,7 @@ def run(backend, job, options: dict | None = None) -> dict:
     scan = None  # an earlier tool-page scan must not leak into a new, space-disabled check-up
     if opts.get('space_scan', True):
         stage('space')
-        roots = space_roots(env, settings, drives)
+        roots = space_roots(env, settings, drives, other_drives=opts.get('other_drives', True))
         used = sum(d.get('used', 0) for d in drives if any(paths.key(d['root']) == paths.key(r) for r in roots))
         scan = SpaceScan(roots, skip=space_skip(env, policy, getattr(backend, 'app_dirs', ())))
         scan.run(cancel=job.cancel, progress=lambda p: part(
@@ -794,7 +796,7 @@ def run(backend, job, options: dict | None = None) -> dict:
         backend.scan = scan
         backend.ai_results = {}
 
-    broad_roots = insights_roots(env, settings, drives)
+    broad_roots = insights_roots(env, settings, drives, other_drives=opts.get('other_drives', True))
     stage('insights')
     ins = Insights(env, settings, apps=backend.apps).collect(
         broad_roots, skip=system_skip(env, policy, broad_roots), cancel=job.cancel,
@@ -818,6 +820,7 @@ def run(backend, job, options: dict | None = None) -> dict:
             for f in g['files']:
                 f['blocked'] = policy.reason(f['path'])
         backend.dups = dups
+        backend.dup_ai = {}  # a new scan must not reuse AI judgments when the user turned review off
 
     ai_info = {'used': False, 'errors': [], 'usage': None}
     file_ai, startup_ai = {}, {}
@@ -904,7 +907,8 @@ def run(backend, job, options: dict | None = None) -> dict:
                          'coverage': {'space': scan.stats if scan else None,
                                       'personal_roots': broad_roots,
                                       'duplicates': (backend.dups or {}).get('stats') if opts.get('duplicates', True) else None,
-                                      'omitted_drives': [d['root'] for d in drives if d.get('fixed') is not True]},
+                                      'omitted_drives': [d['root'] for d in drives if d.get('fixed') is not True
+                                                         or (not opts.get('other_drives', True) and not d.get('system'))]},
                          'stats': {'insight_files': ins.stats.get('files', 0),
                                    'scanned_bytes': scan.stats.get('bytes') if scan else None}})
     plan['summary'] = summarize(plan)

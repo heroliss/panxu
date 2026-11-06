@@ -182,6 +182,7 @@ def main(argv=None) -> int:
     parser.add_argument('--threshold', type=int, default=DEFAULT_THRESHOLD, help='勾选门槛 0-10 (default %(default)s)')
     parser.add_argument('--careful', action='store_true', help='same as --threshold 8 (稳妥)')
     parser.add_argument('--no-space', action='store_true', help='skip the local fixed drive scan')
+    parser.add_argument('--no-other-drives', action='store_true', help='skip whole-disk enumeration of other drives; keep personal locations')
     parser.add_argument('--no-dups', action='store_true', help='skip the duplicate search')
     parser.add_argument('--out', help='also write the report to this file')
     parser.add_argument('--save', help='write a summary (JSON) to compare with later')
@@ -214,6 +215,7 @@ def main(argv=None) -> int:
             backend.settings.set_secret('ai_key:' + ai['preset'], key)
         bridge = Bridge(backend)
         options = {'use_ai': bool(args.ai), 'space_scan': not args.no_space, 'duplicates': not args.no_dups,
+                   'other_drives': not args.no_other_drives,
                    'auto_threshold': 8 if args.careful else max(0, min(10, args.threshold))}
         started = time.time()
         r = bridge.call('checkup', {'options': options})
