@@ -107,8 +107,8 @@
 
   // ------------------------------------------------------------------ state
   const state = { status: 'idle', target: null, progress: {}, jobId: null, result: null, nodeId: 0,
-    node: null, treemap: null, view: 'dirs', selected: new Set(), focus: null,
-    ai: { status: 'idle', result: null, progress: {}, selected: new Set(), jobId: null, showKeep: false },
+    node: null, treemap: null, view: 'dirs', selected: PX.sel.paths, focus: null,
+    ai: { status: 'idle', result: null, progress: {}, selected: PX.sel.paths, jobId: null, showKeep: false },
     types: null };
 
   async function start(target) {
@@ -117,8 +117,7 @@
     state.status = 'scanning';
     state.progress = {};
     state.result = null;
-    state.selected.clear();
-    state.ai = { status: 'idle', result: null, progress: {}, selected: new Set(), jobId: null, showKeep: false };
+    state.ai = { status: 'idle', result: null, progress: {}, selected: PX.sel.paths, jobId: null, showKeep: false };
     state.types = null;
     PX.go('space', { top: true });
     try {
@@ -142,7 +141,6 @@
       state.nodeId = nodeId;
       state.node = node;
       state.treemap = tm;
-      state.selected.clear();
       state.view = 'dirs';
     } catch (e) { PX.fail(e); }
     if (!silent) rerender();
@@ -180,7 +178,7 @@
   function draw(container) {
     const stats = state.result && state.result.stats;
     const sub = state.status === 'scanning' ? '正在扫描 ' + PX.displayPath(state.target)
-      : stats ? `${PX.displayPath(state.result.root.path)}：${fmt.count(stats.dirs)} 个文件夹，${fmt.count(stats.files)} 个文件，用时 ${fmt.seconds(stats.seconds)}`
+      : stats ? `${state.result.root.virtual ? state.result.root.name : PX.displayPath(state.result.root.path)}：${fmt.count(stats.dirs)} 个文件夹，${fmt.count(stats.files)} 个文件，用时 ${fmt.seconds(stats.seconds)}`
         : '选择要分析的磁盘或文件夹';
     container.appendChild(h('div.page-head', h('div.grow', h('h1', '空间分析'), h('div.sub', sub)), locationBar()));
 
@@ -231,7 +229,7 @@
     const crumbs = h('div.crumbs');
     data.crumbs.forEach((c, i) => {
       if (i) crumbs.appendChild(h('i', '›'));
-      crumbs.appendChild(h('button', { type: 'button', onclick: () => open(c.id) }, i ? c.name : PX.displayPath(c.name)));
+      crumbs.appendChild(h('button', { type: 'button', onclick: () => open(c.id) }, PX.displayPath(c.name)));
     });
     container.appendChild(h('div.crumbs-line', crumbs, data.node.path ? PX.revealButton(data.node.path, '在资源管理器中打开') : null));
 
@@ -259,7 +257,7 @@
         onkeydown: (e) => { if (e.key === 'Enter') enter(it); },
       }, box,
       h('div.cell-main',
-        h('div.nm', PX.fileIcon(it.path, isDir), h('span.name', it.name)),
+        h('div.nm', PX.fileIcon(it.path, isDir), h('span.name', PX.displayPath(it.name))),
         tags.length ? h('div.label', tags) : null, share),
       h('div.size', fmt.bytes(it.size)),
       h('div.size.muted', isDir ? fmt.count(it.files) : ''),
@@ -316,13 +314,13 @@
     if (x.blocked) tags.push(PX.tag(x.blocked, 'bad', 'lock'));
     const about = x.ai && x.ai.reason ? h('div.sd-text', h('b', 'AI：'), x.ai.reason) : x.note && x.note.advice ? h('div.sd-text', x.note.advice) : null;
     return h('div.space-detail',
-      h('div.sd-kicker', current ? '当前文件夹' : isDir ? '选中的文件夹' : '选中的文件'),
-      h('div.sd-name', PX.fileIcon(x.path, isDir), h('b', current ? PX.displayPath(x.path) : x.name)),
+      h('div.sd-kicker', x.virtual ? '扫描总览' : current ? '当前文件夹' : isDir ? '选中的文件夹' : '选中的文件'),
+      h('div.sd-name', x.virtual ? PX.icon('drive') : PX.fileIcon(x.path, isDir), h('b', x.virtual ? x.name : current ? PX.displayPath(x.path) : PX.displayPath(x.name))),
       current ? null : h('div.sd-path', PX.pathText(x.path)),
       h('div.sd-facts', facts.join(' · ')),
       tags.length ? h('div.label', tags) : null,
       about,
-      h('div.sd-actions',
+      x.virtual ? null : h('div.sd-actions',
         current ? null : isDir ? h('button.btn.small.primary', { type: 'button', onclick: () => open(x.id) }, PX.icon('chev'), '进入')
           : PX.canOpen(x.path) ? h('button.btn.small.primary', { type: 'button', onclick: () => PX.openPath(x.path) }, PX.icon('open'), '打开') : null,
         h('button.btn.small', { type: 'button', onclick: () => PX.reveal(x.path) }, PX.icon('folder'), '在资源管理器中显示'),
@@ -333,6 +331,8 @@
   }
 
   let barEl = null;
+  const visibleSelected = () => [...state.node.children, ...state.node.files]
+    .filter((x) => !x.blocked && state.selected.has(x.path)).map((x) => x.path);
   function actionBar() {
     barEl = h('div.actionbar');
     fillBar();
@@ -341,7 +341,7 @@
   function fillBar() {
     if (!barEl) return;
     PX.clear(barEl);
-    const sel = [...state.selected];
+    const sel = visibleSelected();
     const lookup = new Map([...state.node.children, ...state.node.files].map((x) => [x.path, x]));
     const size = sel.reduce((s, p) => s + ((lookup.get(p) || {}).size || 0), 0);
     barEl.appendChild(h('div.grow', sel.length ? h('span', `已选 ${sel.length} 项，约 `, h('span.fig', fmt.bytes(size)))
@@ -353,8 +353,12 @@
   const updateBar = () => fillBar();
 
   async function deleteSelected() {
-    const result = await PX.deleteFlow({ paths: [...state.selected], title: `删除 ${state.selected.size} 项` });
-    if (result) await open(state.nodeId);
+    const chosen = visibleSelected();
+    const result = await PX.deleteFlow({ paths: chosen, title: `删除 ${chosen.length} 项` });
+    if (result) {
+      for (const p of result.done) state.selected.delete(p);
+      await open(state.nodeId);
+    }
   }
 
   function drawTreemap() {
@@ -381,7 +385,7 @@
       });
       if (row) view.cells.set(row.id, cell);
       const roomy = r.w > 54 && r.h > 30;
-      if (roomy) cell.appendChild(h('b', it.name));
+      if (roomy) cell.appendChild(h('b', PX.displayPath(it.name)));
       if (roomy && r.h > 44) cell.appendChild(h('span', fmt.bytes(it.size)));
       // second level, drawn inside when there is room
       if (it.children && r.w > 70 && r.h > 60) {
@@ -395,7 +399,7 @@
             // a block inside a block: one click selects the folder around it, a double-click goes straight in
             onclick: (e) => { e.stopPropagation(); if (row) focusItem(row, true); },
             ondblclick: (e) => { e.stopPropagation(); if (s.item.id !== null) open(s.item.id); else if (row) open(row.id); },
-          }, s.w > 50 && s.h > 22 ? h('b', s.item.name) : null));
+          }, s.w > 50 && s.h > 22 ? h('b', PX.displayPath(s.item.name)) : null));
         }
       }
       box.appendChild(cell);
@@ -466,7 +470,10 @@
         (id) => { state.ai.jobId = id; });
       state.ai.result = result;
       // ticked by the backend with the check-up's rule (score, threshold and guards), never by confidence alone
-      state.ai.selected = new Set(result.suggestions.filter((s) => s.selected && !s.blocked).map((s) => s.path));
+      for (const s of result.suggestions) {
+        if (s.selected && !s.blocked) state.ai.selected.add(s.path);
+        else state.ai.selected.delete(s.path);
+      }
       if (result.errors && result.errors.length) PX.toast(result.errors[0], true);
       await open(state.nodeId, true);
       state.view = 'ai';
@@ -551,7 +558,7 @@
           h('div.size', fmt.bytes(s.size))));
       }
     }
-    const sel = [...ai.selected];
+    const sel = res.suggestions.filter((s) => !s.blocked && ai.selected.has(s.path)).map((s) => s.path);
     const size = res.suggestions.filter((s) => ai.selected.has(s.path)).reduce((a, s) => a + s.size, 0);
     container.appendChild(h('div.actionbar',
       h('div.grow', sel.length ? h('span', `已选 ${sel.length} 个文件夹，约 `, h('span.fig', fmt.bytes(size))) : h('span.muted', '勾选要清理的文件夹')),
@@ -574,5 +581,23 @@
   }
 
   PX.space = { state, start };
-  PX.pages.space = { render(container) { root = container; draw(container); } };
+  PX.pages.space = { async render(container) {
+    root = container;
+    if (state.status !== 'scanning') {
+      try {
+        const found = await PX.api.call('space_result');
+        if (found && (!state.result || found.scanned_at !== state.result.scanned_at)) {
+          state.result = found;
+          state.target = found.root.path;
+          state.status = 'done';
+          state.types = null;
+          state.ai.result = null;
+          const suggestions = await PX.api.call('ai_results');
+          if (suggestions.length) state.ai.result = { suggestions, requests: 0, errors: [] };
+          await open(found.root.id, true);
+        }
+      } catch (e) { PX.fail(e); }
+    }
+    draw(container);
+  } };
 })();

@@ -1,7 +1,7 @@
 """一键体检 and the cleanup plan (清理方案).
 
 The check-up runs the existing tools one after another — junk rules, a scan of
-the system drive, 「我的文件」, duplicates and (when a model is configured) the
+the local fixed drives, 「我的文件」, duplicates and (when a model is configured) the
 AI — and turns everything into one plan of three groups:
 
 * ``safe``   放心清理: rule-covered caches that are on by default, and folders the
@@ -22,6 +22,7 @@ import hashlib
 import json
 import ntpath
 import os
+import re
 import time
 import uuid
 
@@ -31,14 +32,14 @@ from .duplicates import (AI_RANK, IN_USE, PLACE_RANK, find_duplicates, must_stay
                          verify_unchanged)
 from .insights import KIND_SCORE, Insights, content_question, file_score, is_copy_name, managed_dir, with_ai
 from .junk import RULES_BY_ID
-from .scanner import FLAG_PROGRAM, SpaceScan
+from .scanner import FLAG_CLOUD, FLAG_DENIED, FLAG_EXCLUDED, FLAG_LINKS, FLAG_PROGRAM, SpaceScan
 
 GROUPS = {'safe': '放心清理', 'review': '建议你看看', 'info': '仅供了解'}
 ACTIONS = {'delete': '永久删除', 'recycle': '移到回收站', 'disable': '禁用开机启动', 'none': '不需要操作'}
 SOURCES = {'rule': '规则', 'ai': 'AI', 'insight': '我的文件', 'dup': '重复文件', 'heuristic': '盘序判断',
            'knowledge': '说明'}
 
-STAGES = [('junk', '扫描垃圾文件'), ('space', '分析系统盘空间'), ('insights', '整理我的文件'),
+STAGES = [('junk', '扫描垃圾文件'), ('space', '分析本机磁盘空间'), ('insights', '整理我的文件'),
           ('dups', '查找重复文件'), ('ai', 'AI 复核'), ('plan', '生成清理方案')]
 
 # 勾选门槛 (0-10): eligible items whose 建议清理度 reaches it are pre-ticked. 稳妥 8, 积极 5.
@@ -52,8 +53,8 @@ NEVER_AUTO_RULES = {'recycle_bin', 'windows_old', 'component_store', 'maven'}
 # names inside a folder that suggest something worth keeping although nobody "made" it: game saves,
 # profiles, backups. A folder containing one is never pre-ticked.
 VALUABLE_DIRS = {'save', 'saves', 'savegames', 'savedgames', 'saved games', 'savedata', 'save data', '存档',
-                 'profile', 'profiles', 'user data', 'userdata', 'backup', 'backups', '备份', 'license', 'licenses'}
-CACHE_WORDS = ('cache', 'temp', 'tmp', 'log', 'crash', 'dump', 'shader', 'thumbnail')
+                 'profile', 'profiles', 'user data', 'userdata', 'backup', 'backups', '备份', 'license', 'licenses',
+                 'user', 'history', 'local history', 'local storage', 'indexeddb', 'databases', 'vault', 'vaults'}
 LEFTOVER_MIN = 500 * 1024 * 1024
 OLD_VERSION_MIN = 200 * 1024 * 1024
 YEAR = 365 * 86400
@@ -66,6 +67,8 @@ DUPS_FOR_AI = 36   # groups of duplicates the check-up asks about (three request
 AI_REVIEW_SCORE = 50
 # every copy of a duplicates group chosen: that is deleting the file itself, not a spare copy (2 points)
 ALL_COPIES_SCORE = 15
+DUP_FILE_LIMIT = 400_000
+DUP_HASH_LIMIT = 16 * 1024 ** 3  # bound automatic full-content reads; explicit duplicate scans have no cap
 
 # big things worth explaining, in the order they are shown
 INFO_TARGETS = [
@@ -135,6 +138,32 @@ def insights_roots(env: dict, settings: dict, drives: list[dict]) -> list[str]:
     return out
 
 
+def space_roots(env: dict, settings: dict, drives: list[dict]) -> list[str]:
+    """Fixed disks plus explicitly known/added personal locations, with overlaps removed."""
+    out = []
+    for p in sorted(insights_roots(env, settings, drives), key=len):
+        if not any(paths.is_within(p, old) for old in out):
+            out.append(p)
+    return out
+
+
+def space_skip(env: dict, policy, app_dirs=()):
+    """Space totals may include Windows/app data, but never another account or an exclusion."""
+    personal = [p for p in (env.get('USERPROFILE'), env.get('PUBLIC')) if p] + personal_roots(env, {})
+    excluded = {paths.key(p) for p in list(policy.excluded) + list(app_dirs)}
+
+    def skip(path):
+        if policy.allowed_roots and not any(paths.is_within(path, r) for r in policy.allowed_roots):
+            return True
+        if paths.within_any(path, excluded):
+            return True
+        _, parts = policy._split_root(path)
+        under_users = (len(parts) > 1 and parts[0].lower() == 'users') or any(
+            paths.is_within(path, p) and paths.key(path) != p for p in policy.users_dirs)
+        return under_users and not any(paths.is_within(path, p) or paths.is_within(p, path) for p in personal)
+    return skip
+
+
 def system_skip(env: dict, policy, roots: list[str] | None = None):
     """Paths the personal-file tools skip: system folders, app data, user exclusions, and
     folders programs manage themselves (caches, node_modules, chat storage...) below the chosen roots."""
@@ -143,7 +172,7 @@ def system_skip(env: dict, policy, roots: list[str] | None = None):
     home = env.get('USERPROFILE')
     if home:
         bases.append(ntpath.join(home, 'AppData'))
-    bases = [b for b in bases if b] + list(policy.subtrees) + list(policy.excluded)
+    bases = {paths.key(b) for b in bases if b} | {paths.key(b) for b in list(policy.subtrees) + list(policy.excluded)}
     # Shell folders can be redirected into another drive's Users tree. Trust
     # their confirmed locations and the ancestors needed to reach them, while
     # keeping sibling accounts outside the scan. Broad drive roots are not a
@@ -159,7 +188,7 @@ def system_skip(env: dict, policy, roots: list[str] | None = None):
     def skip(path):
         if policy.allowed_roots and not any(paths.is_within(path, root) for root in policy.allowed_roots):
             return True
-        if any(paths.is_within(path, base) for base in bases):
+        if paths.within_any(path, bases):
             return True
         _, parts = policy._split_root(path)
         parts = [p.lower().rstrip('. ') for p in parts]
@@ -176,7 +205,7 @@ def system_skip(env: dict, policy, roots: list[str] | None = None):
         if any(paths.is_within(path, parent) and key != parent for parent in user_parents) \
                 and not any(paths.is_within(path, p) or paths.is_within(p, path) for p in personal):
             return True
-        if paths.key(path) not in chosen and managed_dir(ntpath.basename(path.rstrip('\\/'))):
+        if key not in chosen and managed_dir(ntpath.basename(path.rstrip('\\/'))):
             return True
         return False
     return skip
@@ -214,7 +243,8 @@ def valuable_inside(node, depth: int = 4) -> str | None:
 
 def cache_like(name: str) -> bool:
     low = name.lower()
-    return any(w in low for w in CACHE_WORDS)
+    return bool(re.search(r'(^|[^a-z])(caches?|temp|tmp|logs?|crash(?:es)?|dumps?|shaders?|thumbnails?)($|[^a-z])', low)
+                or low.endswith(('cache', 'caches')))
 
 
 def points(score) -> int | None:
@@ -238,6 +268,46 @@ def decision_note(item: dict, threshold: int) -> list[str]:
     return ['没有自动勾选：' + (item.get('hold_reason') or '留给你决定')]
 
 
+def rule_assessment(row: dict) -> dict:
+    """One evidence-based assessment for the home plan and the junk tool page."""
+    rule = RULES_BY_ID[row['id']]
+    hold = None
+    if rule.id in ('recycle_bin', 'windows_old'):
+        score, hold = 55, '删除后无法恢复，请你决定'
+        basis = ['删除会失去回收站还原或系统回退的机会']
+    elif rule.id == 'maven':
+        score, hold = 30, '本地仓库可能含有你自己构建、无法重新下载的包'
+        basis = [hold]
+    elif rule.id == 'component_store':
+        score, hold = 60, '耗时较长，且无法预估释放空间，请你决定'
+        basis = ['通过 Windows 自带工具清理已替代的组件']
+    elif rule.id in ('shader_cache', 'adobe_media_cache', 'gradle'):
+        score, basis = 60, ['可以重建，但重新编译、分析媒体或构建的成本较高']
+    elif rule.id == 'crash_dumps':
+        score, basis = 70, ['崩溃快照不影响正常使用，但排查故障时仍可能需要']
+    elif rule.group in ('browser', 'app') and rule.default:
+        score, basis = 85, ['已知缓存位置，清理后会重新下载或生成，不是用户资料']
+    elif not rule.default:
+        score, basis = 70, ['已知可重建的缓存，再次用到时需要下载或生成']
+    else:
+        score, basis = 95, ['内置规则：符合保留期限的临时文件或可重建数据']
+    size = row.get('size') or 0
+    # Benefit and rebuild cost are separate from identity: large does not mean disposable.
+    if size and rule.id not in NEVER_AUTO_RULES and rule.group in ('browser', 'app', 'dev'):
+        if row.get('recent_bytes', 0) >= size / 2:
+            score = max(40, score - 10)
+            basis.append('至少一半占用来自最近 7 天新增或修改的文件，清理后可能很快重建')
+        elif row.get('stale_bytes', 0) >= size * 0.8:
+            score = min(90, score + 5)
+            basis.append('至少八成占用已超过 90 天没有新增或修改，近期重建的可能性较低')
+    if rule.id in NEVER_AUTO_RULES:
+        hold = hold or '默认不自动勾选，请你决定'
+    if row.get('unreadable'):
+        basis.append('部分位置无法读取：大小仅统计已检查的文件')
+    return {'score': score, 'basis': basis, 'eligible': hold is None,
+            'auto_reason': '内置规则确认的可清理数据', 'hold_reason': hold}
+
+
 class PlanBuilder:
     """Collects plan items; a path is offered at most once (first source wins)."""
 
@@ -254,6 +324,19 @@ class PlanBuilder:
 
     def _taken(self, path: str) -> bool:
         return any(paths.is_within(path, c) or paths.is_within(c, path) for c in self._claimed)
+
+    def _unclaimed_nodes(self, scan, node):
+        """Split around rule-covered children instead of losing an entire old-version cache."""
+        stack = [node]
+        while stack:
+            n = stack.pop()
+            path = scan.path_of(n)
+            if any(paths.is_within(path, c) for c in self._claimed):
+                continue
+            if self._taken(path):
+                stack.extend(n.children or ())
+            else:
+                yield n, path
 
     def add(self, item: dict) -> dict | None:
         base = {'id': '', 'group': 'review', 'category': '', 'title': '', 'size': 0, 'count': 0, 'what': '', 'advice': '', 'why': '',
@@ -297,19 +380,6 @@ class PlanBuilder:
                 blocked = '请先关闭 ' + '、'.join(row['running'])
             elif rule.admin and row.get('needs_admin'):
                 blocked = '需要管理员权限'
-            hold = None
-            if rule.default:
-                score, basis, auto = 95, ['内置规则：公认可以重建的缓存和临时文件'], '默认开启的内置规则'
-            elif rule.mode == 'recycle_bin' or rule.id == 'windows_old':
-                score, basis, auto = 55, ['内置规则，但删除后无法恢复：' + (rule.note or '无法从回收站恢复')], None
-                hold = '删除后无法恢复，请你决定'
-            elif rule.id in NEVER_AUTO_RULES:
-                score, basis, auto = 60, ['内置规则，默认不勾：' + (rule.note or '删除前请确认里面没有你自己的东西')], None
-                hold = '默认不勾，请你决定'
-            else:
-                score = 70
-                basis = ['内置规则：可以重建，只是下次用到时要重新下载或生成，第一次会慢一些']
-                auto = '可以重建的缓存'
             self.add({
                 'id': 'rule:' + rule.id, 'kind': 'rule', 'rule': rule.id,
                 'category': '垃圾文件', 'title': rule.name, 'size': size or 0,
@@ -318,12 +388,17 @@ class PlanBuilder:
                 'what': '', 'why': rule.description,
                 'effect': rule.note or '', 'action': 'delete', 'source': 'rule',
                 'confidence': 1.0 if rule.default else 0.7, 'blocked': blocked,
-                'locations': row.get('locations', [])[:5], 'score': score, 'basis': basis,
-                'eligible': hold is None, 'auto_reason': auto, 'hold_reason': hold})
+                'locations': row.get('locations', [])[:5], **rule_assessment(row)})
+            # A rule may delete only old files or only one pattern inside these roots.
+            # Never also offer their parent as an entire-folder AI/heuristic cleanup.
+            self._claimed.extend(row.get('locations', []))
 
     def _folder_guards(self, path: str, node, owner: str | None, basis: list[str]) -> str | None:
         """Reasons a folder must not be pre-ticked whatever the score (also added to the basis)."""
-        mtime = node.mtime if node is not None else None
+        if getattr(node, 'flags', 0) & (FLAG_DENIED | FLAG_LINKS | FLAG_CLOUD | FLAG_EXCLUDED):
+            basis.append('目录没有完整检查：包含无权访问、排除、链接或云端内容，不能凭部分结果清理整个目录')
+            return '目录没有完整检查'
+        mtime = max(getattr(node, 'changed', 0), getattr(node, 'mtime', 0)) if node is not None else None
         if mtime and self.now - mtime < ACTIVE_DAYS * 86400:
             basis.append(f'最近 {ACTIVE_DAYS} 天内还有改动：可能还有程序在用')
             return '最近还有改动'
@@ -347,8 +422,14 @@ class PlanBuilder:
                 continue
             in_app_data = any(paths.is_within(s['path'], b) for b in app_bases)
             confidence = float(s.get('confidence') or 0)
-            score = round(confidence * 100) if s['verdict'] == 'clean' else AI_REVIEW_SCORE
+            # Confidence describes recognition, not how valuable a deletion is.
+            score = 65 if s['verdict'] == 'clean' else AI_REVIEW_SCORE
             basis = [f'AI：{s.get("verdict_label", "")}（把握 {round(confidence * 100)}%）' + ('，来自缓存' if s.get('source') == 'cache' else '')]
+            if s['verdict'] == 'clean':
+                basis.append('AI 的把握用于判断结论是否可信，不直接换算成建议清理度')
+                if cache_like(os.path.basename(s['path'].rstrip('\\/'))):
+                    score += 10
+                    basis.append('目录名称符合缓存或临时数据特征（仍需结合内容判断）')
             owner = analyst.installed_app(s['path']) if analyst is not None else None
             if owner:
                 score = min(score, 70)
@@ -361,15 +442,21 @@ class PlanBuilder:
                     node = None
             if node is None and s.get('mtime'):
                 node = _Stub(s['mtime'])
+            changed = max(getattr(node, 'changed', 0), getattr(node, 'mtime', 0))
+            if s['verdict'] == 'clean' and changed and self.now - changed >= 180 * 86400:
+                score += 5
+                basis.append('至少半年没有新增或修改文件，清理后立即重建的可能性较低')
+            score = min(score, 85)
             hold = self._folder_guards(s['path'], node, owner, basis)
-            if hold and hold.startswith('最近'):
-                score = min(score, 75)
+            if hold:
+                score = min(score, 40 if hold.startswith('最近') else 30)
             if not in_app_data:
                 basis.append('不在应用数据目录：只能由你决定')
                 hold = hold or '不在应用数据目录'
             if s['verdict'] != 'clean':
                 hold = hold or 'AI 也拿不准'
             elif confidence < MIN_AI_CONFIDENCE:
+                score = min(score, 40)
                 hold = hold or f'AI 的把握不到 {round(MIN_AI_CONFIDENCE * 100)}%'
             self.add({
                 'id': _ident('dir', s['path']), 'kind': 'paths',
@@ -397,14 +484,15 @@ class PlanBuilder:
                 n_old = n.mtime and self.now - n.mtime > YEAR
                 newer = newer_sibling(n) if n_old else None
                 if newer:
-                    basis = [f'旁边有更新的版本「{newer}」', f'{_ago(n.mtime, self.now)}没有修改过']
-                    hold = self._folder_guards(p, n, None, basis)
-                    self.add({'id': _ident('dir', p), 'kind': 'paths', 'category': '应用数据', 'title': n.name,
+                    for candidate, location in self._unclaimed_nodes(scan, n):
+                        basis = [f'旧版本「{n.name}」旁边有更新的版本「{newer}」', f'{_ago(n.mtime, self.now)}没有修改过']
+                        hold = self._folder_guards(location, candidate, None, basis)
+                        self.add({'id': _ident('dir', location), 'kind': 'paths', 'category': '应用数据', 'title': candidate.name,
                               'eligible': not hold,
-                              'size': n.size, 'logical_size': n.logical_size, 'count': n.files, 'what': '',
+                              'size': candidate.size, 'logical_size': candidate.logical_size, 'count': candidate.files, 'what': '',
                               'why': f'可能是旧版本留下的：{_ago(n.mtime, self.now)}没有修改过。',
                               'effect': '如果还在用旧版本，它的设置和缓存会丢失。', 'action': 'recycle',
-                              'source': 'heuristic', 'confidence': 0.6, 'paths': [p], 'score': 60, 'basis': basis,
+                              'source': 'heuristic', 'confidence': 0.6, 'paths': [location], 'score': 30 if hold else 60, 'basis': basis,
                               'auto_reason': '旧版本留下的数据，进回收站可以还原', 'hold_reason': hold})
             if node.size >= LEFTOVER_MIN and old and analyst.installed_app(path) == '':
                 basis = ['「已安装的应用」里找不到对应的程序', f'{_ago(node.mtime, self.now)}没有修改过', '没有经过 AI 复核']
@@ -415,8 +503,18 @@ class PlanBuilder:
                           'what': '',
                           'why': f'在「已安装的应用」里没有找到对应的程序，而且 {_ago(node.mtime, self.now)}没有修改过。',
                           'effect': '如果程序其实还在（例如绿色版），它的设置、存档或缓存会丢失。', 'action': 'recycle',
-                          'source': 'heuristic', 'confidence': 0.5, 'paths': [path], 'score': 50, 'basis': basis,
+                          'source': 'heuristic', 'confidence': 0.5, 'paths': [path], 'score': 30 if hold else 50, 'basis': basis,
                           'auto_reason': '很可能是已卸载程序的残留，进回收站可以还原', 'hold_reason': hold})
+
+    def add_known_folders(self, scan, analyst):
+        for row in analyst.known_cleanable(scan):
+            self.add({'id': _ident('dir', row['path']), 'kind': 'paths', 'category': '其他临时目录',
+                      'title': os.path.basename(row['path']), 'size': row['size'], 'count': row['files'],
+                      'logical_size': scan.node(row['node_id']).logical_size,
+                      'why': '磁盘上的临时目录，可能同时存放缓存和你手工暂存的文件。',
+                      'advice': '先打开确认里面的内容，再决定是否移到回收站。',
+                      'action': 'recycle', 'source': 'knowledge', 'paths': [row['path']], 'personal': True,
+                      'score': 40, 'basis': ['位置符合临时目录特征，但不能据此证明里面的文件都可丢弃']})
 
     def add_insights(self, findings: list[dict], file_ai: dict | None = None):
         file_ai = file_ai or {}
@@ -597,7 +695,7 @@ def assess_ai_dirs(suggestions: list[dict], policy, env: dict, analyst=None, sca
         if item is not None:
             s.update(score=item['score'], basis=item['basis'], selected=item['selected'])
         elif s.get('source') == 'knowledge':  # recognised without the model; may hold what someone parked there
-            s.update(score=60, basis=[f'盘序认得：{s.get("app") or "已知位置"}，没有问 AI',
+            s.update(score=40, basis=[f'盘序认得：{s.get("app") or "已知位置"}，没有问 AI',
                                       '没有自动勾选：里面也可能有别人临时放的东西，请你看一眼再决定'], selected=False)
         else:  # 建议保留, or folders the model looked inside
             pct = round(float(s.get('confidence') or 0) * 100)
@@ -684,23 +782,18 @@ def run(backend, job, options: dict | None = None) -> dict:
                                   progress=lambda i, n, name: part(i / n if n else None, detail=name, done=i, total=n))
     backend.junk_rows = junk_rows
 
+    scan = None  # an earlier tool-page scan must not leak into a new, space-disabled check-up
     if opts.get('space_scan', True):
         stage('space')
-        root = env.get('SystemDrive', 'C:') + ('' if env.get('SystemDrive', '').endswith('\\') else '\\')
-        root = paths.native(root)
-        if winapi.IS_WINDOWS and winapi.simulation() is None:
-            root = os.path.realpath(root)
-        # the drive's used space is about what the scan will count
-        used = next((d['used'] for d in drives if d.get('system')), 0)
-        scan = SpaceScan(root)
+        roots = space_roots(env, settings, drives)
+        used = sum(d.get('used', 0) for d in drives if any(paths.key(d['root']) == paths.key(r) for r in roots))
+        scan = SpaceScan(roots, skip=space_skip(env, policy, getattr(backend, 'app_dirs', ())))
         scan.run(cancel=job.cancel, progress=lambda p: part(
-            min(0.98, p.get('bytes', 0) / used) if used else None, detail=p.get('current', ''),
+            min(0.98, p.get('bytes', 0) / used) if used else None, detail='、'.join(roots),
             count=f'已统计 {p.get("files", 0):,} 个文件'))
         backend.scan = scan
         backend.ai_results = {}
 
-    roots = personal_roots(env, settings)
-    skip = system_skip(env, policy, roots)
     broad_roots = insights_roots(env, settings, drives)
     stage('insights')
     ins = Insights(env, settings, apps=backend.apps).collect(
@@ -713,7 +806,13 @@ def run(backend, job, options: dict | None = None) -> dict:
     if opts.get('duplicates', True):
         stage('dups')
         min_mb = float(settings.get('duplicates', {}).get('min_size_mb', 1))
-        dups = find_duplicates(roots, min_size=int(min_mb * 1024 * 1024), skip=skip, cancel=job.cancel,
+        dups = find_duplicates(broad_roots, min_size=int(min_mb * 1024 * 1024),
+                               skip=system_skip(env, policy, broad_roots), cancel=job.cancel,
+                               container_roots=personal_roots(env, {}) + [d['root'] for d in drives]
+                                               + [env.get('USERPROFILE'), env.get('PUBLIC')],
+                               max_files=DUP_FILE_LIMIT, max_hash_bytes=DUP_HASH_LIMIT,
+                               max_reference_bytes=256 * 1024 ** 2,
+                               max_hash_seconds=180, max_reference_seconds=30,
                                progress=lambda p: (lambda f, label, count: part(f, detail=label, count=count))(*dup_progress(p)))
         for g in dups['groups']:
             for f in g['files']:
@@ -739,7 +838,7 @@ def run(backend, job, options: dict | None = None) -> dict:
             if opts.get('duplicates', True) else []
         enabled = [i for i in startup_items if i['enabled']]
         # the AI stage in steps, each with its share of the bar: (name, will it run)
-        steps = [s for s, on in (('space', backend.scan is not None and backend.scan.complete), ('files', bool(files)),
+        steps = [s for s, on in (('space', scan is not None and scan.complete), ('files', bool(files)),
                                  ('dups', bool(unclear)), ('startup', bool(enabled))) if on]
 
         def ai_part(name, label, fraction=0.0, **extra):
@@ -751,7 +850,7 @@ def run(backend, job, options: dict | None = None) -> dict:
         if 'space' in steps:
             ai_part('space', '空间分析')
             result = backend.analyst.analyze_space(
-                backend.scan, client, settings, cancel=job.cancel,
+                scan, client, settings, cancel=job.cancel,
                 progress=lambda p: ai_part('space', '空间分析', p.get('requests', 0) / max(1, p.get('budget', 1)), count=asked(p)))
             backend.ai_results = {s['node_id']: s for s in result['suggestions']}
             for s in result['suggestions']:
@@ -789,19 +888,25 @@ def run(backend, job, options: dict | None = None) -> dict:
     stage('plan')
     builder = PlanBuilder(policy, backend.knowledge, threshold=threshold)
     builder.add_junk(junk_rows)
-    if backend.scan is not None and backend.scan.complete:
-        builder.add_ai_dirs(list(backend.ai_results.values()), env, backend.analyst, backend.scan)
+    if scan is not None and scan.complete:
+        builder.add_ai_dirs(list(backend.ai_results.values()), env, backend.analyst, scan)
         analysed = {nid for nid, s in backend.ai_results.items() if s.get('source') != 'none'}
-        builder.add_heuristics(backend.scan, backend.analyst, env, analysed)
+        builder.add_heuristics(scan, backend.analyst, env, analysed)
     builder.add_insights(findings, file_ai)
     builder.add_duplicates(backend.dups if opts.get('duplicates', True) else None, backend.dup_ai)
+    if scan is not None:
+        builder.add_known_folders(scan, backend.analyst)
     builder.add_startup(startup_items, startup_ai, env)
-    builder.add_info(backend.scan, env)
+    builder.add_info(scan, env)
     plan = builder.plan({'ai': ai_info, 'options': opts,
                          'personal_scan': {'truncated': bool(ins.stats.get('truncated')),
                                            'limit': ins.stats.get('limit'), 'files': ins.stats.get('files', 0)},
+                         'coverage': {'space': scan.stats if scan else None,
+                                      'personal_roots': broad_roots,
+                                      'duplicates': (backend.dups or {}).get('stats') if opts.get('duplicates', True) else None,
+                                      'omitted_drives': [d['root'] for d in drives if d.get('fixed') is not True]},
                          'stats': {'insight_files': ins.stats.get('files', 0),
-                                   'scanned_bytes': backend.scan.stats.get('bytes') if backend.scan else None}})
+                                   'scanned_bytes': scan.stats.get('bytes') if scan else None}})
     plan['summary'] = summarize(plan)
     backend.plan = plan
     starts = sorted(timings.items(), key=lambda kv: kv[1]) + [('', time.time())]

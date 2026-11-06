@@ -48,6 +48,10 @@ def check_plan(plan: dict, env: dict, insights: dict | None = None, junk_rows: l
         out.append({'level': level, 'text': text})
 
     app_bases = [env[k] for k in ('LOCALAPPDATA', 'APPDATA', 'LOCALLOW', 'ProgramData') if env.get(k)]
+    coverage = plan.get('coverage') or {}
+    dup_scope = coverage.get('duplicates') or {}
+    if dup_scope.get('truncated'):
+        add('warn', '重复文件没有全部比对：已达到本次体检的文件数、内容读取或比对时间上限，可按文件夹继续查找')
     home = env.get('USERPROFILE', '')
     public = env.get('PUBLIC', '')
     users = os.path.dirname(home.rstrip('\\/')) if home else ''
@@ -137,6 +141,15 @@ def render(plan: dict, findings: list[dict], env: dict, seconds: float, full_pat
         lines.append(f'系统盘 {drive["root"]} 可用 {drive["free"] / GB:.1f} GB / {drive["total"] / GB:.1f} GB')
     lines.append(f'用时 {seconds:.0f} 秒；勾选门槛：{plan.get("threshold", DEFAULT_THRESHOLD)} 分；AI：{"使用了" if ai_used else "没有使用"}')
     lines.append('没有删除、移动或修改任何东西。' + ('' if full_paths else '路径里的用户名已替换成 %USERPROFILE% 等。'))
+    coverage = plan.get('coverage') or {}
+    space = coverage.get('space') or {}
+    if space:
+        lines.append('空间扫描：' + '、'.join(show(r) for r in space.get('roots', []))
+                     + f'；{space.get("files", 0):,} 个文件，{space.get("dirs", 0):,} 个目录。')
+    dups = coverage.get('duplicates') or {}
+    if dups:
+        lines.append(f'重复比对：{dups.get("files", 0):,} 个候选文件，读取 {dups.get("hashed_bytes", 0) / GB:.2f} GB；'
+                     + ('已到本次上限，未全部完成。' if dups.get('truncated') else '已完成。'))
     titles = {'safe': '会自动勾选（放心清理）', 'review': '建议你看看', 'info': '仅供了解'}
     for n, (group, title) in enumerate(titles.items(), 1):
         rows = [i for i in plan['items'] if i['group'] == group]
@@ -168,7 +181,7 @@ def main(argv=None) -> int:
     parser.add_argument('--ai', action='store_true', help='also ask the configured model (anonymised names are sent)')
     parser.add_argument('--threshold', type=int, default=DEFAULT_THRESHOLD, help='勾选门槛 0-10 (default %(default)s)')
     parser.add_argument('--careful', action='store_true', help='same as --threshold 8 (稳妥)')
-    parser.add_argument('--no-space', action='store_true', help='skip the system drive scan')
+    parser.add_argument('--no-space', action='store_true', help='skip the local fixed drive scan')
     parser.add_argument('--no-dups', action='store_true', help='skip the duplicate search')
     parser.add_argument('--out', help='also write the report to this file')
     parser.add_argument('--save', help='write a summary (JSON) to compare with later')
@@ -207,13 +220,18 @@ def main(argv=None) -> int:
         if not r['ok']:
             print(r['error'], file=sys.stderr)
             return 2
-        last = ''
+        last, last_progress = '', 0.0
         while True:
             s = bridge.call('job', {'job_id': r['data']})['data']
             stage = (s.get('progress') or {}).get('stage_label') or ''
             if stage and stage != last:
                 print('…' + stage, file=sys.stderr, flush=True)
                 last = stage
+            if time.time() - last_progress >= 15:
+                count = (s.get('progress') or {}).get('count')
+                if count:
+                    print('  ' + count, file=sys.stderr, flush=True)
+                last_progress = time.time()
             if s['status'] != 'running':
                 break
             time.sleep(0.3)

@@ -4,7 +4,7 @@
   const { h, fmt } = PX;
 
   // ------------------------------------------------------------------ large files
-  const large = { min: 100, category: '', older: 0, rows: null, loadedFor: null, selected: new Set(), sort: 'size', aiBusy: false };
+  const large = { min: 100, category: '', older: 0, rows: null, loadedFor: null, scanInfo: null, selected: PX.sel.paths, sort: 'size', aiBusy: false };
   const FILE_VERDICT = { keep: 'warn', delete: 'good', archive: 'info', review: '' };
   const CATS = [['', '全部'], ['video', '视频'], ['archive', '压缩包'], ['installer', '安装包'], ['disk', '磁盘镜像'],
     ['image', '图片'], ['audio', '音频'], ['document', '文档'], ['data', '数据库/日志'], ['other', '其他']];
@@ -15,7 +15,6 @@
       const r = await PX.api.call('large_files', { min_mb: large.min, category: large.category, older_days: large.older });
       large.rows = r.files;
       large.loadedFor = r.scanned_at;
-      for (const p of [...large.selected]) if (!large.rows.some((f) => f.path === p)) large.selected.delete(p);
     } catch (e) { PX.fail(e); large.rows = []; }
     drawLarge();
   }
@@ -66,7 +65,7 @@
       c.appendChild(PX.notice('正在扫描，完成后这里会列出最大的文件。', 'info', h('button.btn.small', { type: 'button', onclick: () => PX.go('space') }, '查看进度')));
       return;
     }
-    if (!space.result) {
+    if (!large.scanInfo) {
       const drives = PX.state.init.drives.map((d) => h('button.btn' + (d.system ? '.primary' : ''), { type: 'button',
         onclick: () => PX.space.start(d.root).then(() => { if (PX.isCurrent('space')) PX.go('large'); }) }, PX.icon('drive'), '扫描 ' + (d.letter || d.root.replace(/\\$/, ''))));
       c.appendChild(PX.empty('需要先扫描一个磁盘', '大文件列表来自空间分析的扫描结果。', drives));
@@ -118,7 +117,7 @@
     const barEl = c.appendChild(h('div.actionbar'));
     function bar() {
       PX.clear(barEl);
-      const sel = rows.filter((f) => large.selected.has(f.path));
+      const sel = rows.filter((f) => !f.blocked && large.selected.has(f.path));
       const size = sel.reduce((s, f) => s + f.size, 0);
       barEl.appendChild(h('div.grow', sel.length ? h('span', `已选 ${sel.length} 个，共 `, h('span.fig', fmt.bytes(size))) : h('span.muted', '勾选不再需要的文件')));
       barEl.appendChild(h('button.btn', { type: 'button', disabled: sel.length !== 1, onclick: () => PX.reveal(sel[0].path) }, PX.icon('folder'), '打开位置'));
@@ -131,18 +130,22 @@
     main.scrollTop = top;
   }
 
-  PX.pages.large = { render(container) { largeRoot = container; large.rows = null; large.loadedFor = null;
-    if (PX.space.state.result) { loadLarge(); container.appendChild(PX.progressBar(null)); } else drawLarge(); } };
+  PX.pages.large = { async render(container) {
+    largeRoot = container; large.rows = null; large.loadedFor = null;
+    container.appendChild(PX.progressBar(null));
+    try { large.scanInfo = await PX.api.call('space_result'); } catch (e) { PX.fail(e); }
+    if (large.scanInfo) await loadLarge(); else drawLarge();
+  } };
 
   // ------------------------------------------------------------------ duplicates
-  const dup = { roots: null, min: 1, status: 'idle', progress: {}, result: null, selected: new Set(), keep: 'oldest', jobId: null, shown: 60 };
+  const dup = { roots: null, min: 1, status: 'idle', progress: {}, result: null, selected: PX.sel.paths, keep: 'oldest', jobId: null, shown: 60 };
   let dupRoot = null;
 
   // the copy to keep by the chosen rule; but copies in a program's folder or a code project may be in use there:
   // they stay and only the loose copies are ticked, and a group of nothing but such copies is left to the user
   function autoSelect() {
-    dup.selected.clear();
     for (const g of dup.result.groups) {
+      for (const f of g.files) dup.selected.delete(f.path);
       const files = g.files.filter((f) => !f.blocked);
       if (files.length < 1) continue;
       if (g.files.some((f) => f.place)) {
@@ -207,7 +210,7 @@
     try {
       dup.result = await PX.api.run('dup_scan', { roots: dup.roots, min_size_mb: dup.min }, (p) => { dup.progress = p; drawDups(true); },
         (id) => { dup.jobId = id; });
-      autoSelect();
+      // A scan does not select personal files. Keep any explicit choices made on another page.
     } catch (e) { if (!e.cancelled) PX.fail(e); }
     dup.status = 'idle';
     dup.jobId = null;
@@ -259,11 +262,20 @@
       return;
     }
     if (!dup.result) return;
-    if (!dup.result.groups.length) { c.appendChild(PX.empty('没有找到重复文件', '这些文件夹里没有内容相同的文件。')); return; }
+    if (dup.result.stats.references_complete === false) c.appendChild(PX.notice('部分工程的引用检查没有完成，相关副本已保守评分。不能据此认定工程没有用到它们。', 'info'));
+    if (dup.result.stats.truncated) c.appendChild(PX.notice('这次只完成了部分比对，已列出的副本已校验内容。选择一个文件夹可继续完整查找。', 'warn',
+      h('button.btn.small', { type: 'button', disabled: busy, onclick: async () => {
+        try {
+          const folder = await PX.api.call('pick_folder');
+          if (folder) { dup.roots = [folder]; await scanDups(); }
+        } catch (e) { PX.fail(e); }
+      } }, '选择文件夹继续查找')));
+    if (!dup.result.groups.length) { c.appendChild(PX.empty('暂未找到重复文件', '已完成比对的文件中没有发现内容相同的副本。')); return; }
 
     c.appendChild(h('div.filters', { style: { marginTop: '18px' } },
-      h('label', '自动勾选：每组保留', PX.seg([['oldest', '最早的'], ['newest', '最新的'], ['shortest', '路径最短的']], dup.keep,
-        (v) => { dup.keep = v; autoSelect(); drawDups(true); }), '一份'),
+      h('label', '勾选时每组保留', PX.seg([['oldest', '最早的'], ['newest', '最新的'], ['shortest', '路径最短的']], dup.keep,
+        (v) => { dup.keep = v; drawDups(true); }), '一份'),
+      h('button.btn.small', { type: 'button', onclick: () => { autoSelect(); drawDups(true); } }, '按保留规则勾选'),
       h('span.small.muted', '程序文件夹、代码工程里和工程旁边的副本不会自动勾选'),
       h('div', { style: { flex: 1 } }),
       unclear().length ? h('button.btn', { type: 'button', disabled: dup.aiBusy, onclick: askAI,
@@ -323,6 +335,15 @@
   PX.pages.dups = {
     async render(container) {
       dupRoot = container;
+      if (dup.status !== 'scanning') {
+        try {
+          const found = await PX.api.call('dup_result');
+          if (found) {
+            dup.result = found;
+            if (dup.roots === null && found.stats.roots) dup.roots = found.stats.roots;
+          }
+        } catch (e) { /* no existing result */ }
+      }
       if (dup.roots === null) {
         try { dup.roots = await PX.api.call('dup_default_roots'); } catch (e) { dup.roots = []; }
         dup.min = (PX.state.init.settings.duplicates || {}).min_size_mb || 1;

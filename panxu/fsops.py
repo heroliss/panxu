@@ -235,7 +235,7 @@ def remove_link(path: str, stats: DeleteStats) -> bool:
     return True
 
 
-def walk_files(root: str, cancel=None, recursive=True, skip_dirs: frozenset = frozenset()):
+def walk_files(root: str, cancel=None, recursive=True, skip_dirs: frozenset = frozenset(), skip=None, on_error=None):
     """Yield (dirpath, files, subdirs) top-down; files/subdirs are DirEntry lists.
 
     Links are reported in neither list, so callers never cross them.
@@ -247,9 +247,16 @@ def walk_files(root: str, cancel=None, recursive=True, skip_dirs: frozenset = fr
         current = stack.pop()
         files, dirs = [], []
         try:
+            if skip and skip(current):
+                continue
+            st = os.lstat(long_path(current))
+            if st_is_link(st) or getattr(st, 'st_file_attributes', 0) & winapi.CLOUD_ATTRIBUTES:
+                continue
             with os.scandir(long_path(current)) as it:
                 for entry in it:
                     try:
+                        if skip and skip(entry.path):
+                            continue
                         if is_link(entry):
                             continue
                         if entry.is_dir(follow_symlinks=False):
@@ -259,7 +266,9 @@ def walk_files(root: str, cancel=None, recursive=True, skip_dirs: frozenset = fr
                             files.append(entry)
                     except OSError:
                         continue
-        except OSError:
+        except OSError as exc:
+            if on_error:
+                on_error(current, exc)
             continue
         yield current, files, dirs
         if recursive:
@@ -268,7 +277,7 @@ def walk_files(root: str, cancel=None, recursive=True, skip_dirs: frozenset = fr
 
 def delete_matching(root: str, accept, *, min_age_seconds: float = 0, remove_empty_dirs: bool = True,
                     recursive: bool = True, skip_dirs: frozenset = frozenset(), cancel=None,
-                    progress=None, stats: DeleteStats | None = None) -> DeleteStats:
+                    progress=None, stats: DeleteStats | None = None, skip=None) -> DeleteStats:
     """Permanently delete files under ``root`` for which ``accept(name)`` is true.
 
     ``root`` itself is never removed. Empty sub-directories older than the age
@@ -278,7 +287,7 @@ def delete_matching(root: str, accept, *, min_age_seconds: float = 0, remove_emp
     stats = stats if stats is not None else DeleteStats()
     now = time.time()
     visited_dirs = []
-    for dirpath, files, dirs in walk_files(root, cancel, recursive=recursive, skip_dirs=skip_dirs):
+    for dirpath, files, dirs in walk_files(root, cancel, recursive=recursive, skip_dirs=skip_dirs, skip=skip):
         if dirpath != root:
             visited_dirs.append(dirpath)
         for entry in files:
@@ -287,6 +296,8 @@ def delete_matching(root: str, accept, *, min_age_seconds: float = 0, remove_emp
             try:
                 st = entry.stat(follow_symlinks=False)
             except OSError:
+                continue
+            if getattr(st, 'st_file_attributes', 0) & winapi.CLOUD_ATTRIBUTES:
                 continue
             if min_age_seconds and now - age_time(st) < min_age_seconds:
                 continue

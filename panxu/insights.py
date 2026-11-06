@@ -18,11 +18,13 @@ Nothing here deletes anything; findings feed the cleanup plan and the
 from __future__ import annotations
 
 import hashlib
+import ntpath
 import os
 import re
 import stat
 import time
 import zipfile
+import zlib
 from dataclasses import dataclass, field
 
 from . import fsops, paths, winapi
@@ -71,10 +73,16 @@ KIND_ORDER = list(KIND_INFO)
 # 建议清理度 (0-100): how strongly PanXu suggests removing a file, shown on every row so the decision can
 # be read at a glance. It only explains and sorts; personal files are never pre-selected, whatever the score.
 KIND_SCORE = {'incomplete_download': 90, 'installer_installed': 85, 'installer_old': 55, 'archive_extracted': 50,
-              'name_versions': 35, 'stale_large': 30, 'old_downloads': 25, 'empty_folders': 90}
+              'name_versions': 35, 'stale_large': 30, 'old_downloads': 25, 'empty_folders': 30}
 
 
 def file_score(kind: str, f: dict) -> int:
+    if kind == 'incomplete_download':
+        return 70 if f.get('age_days', 30) < 30 else 90
+    if kind == 'installer_installed':
+        version = f.get('installed_version_comparison')
+        score = 45 if version == 'newer' else 70 if version == 'unknown' else 85
+        return min(score, 50) if f.get('age_days', 7) < 7 else score
     if kind == 'name_versions':
         if f['note'].startswith('最新') or f['note'].startswith('与其他副本内容相同'):
             return 5   # the copy to keep
@@ -91,6 +99,12 @@ def content_question(kind: str, f: dict) -> str | None:
     note), so without the content its 「可以删除」 would only repeat 盘序's guess (see with_ai)."""
     if kind == 'name_versions' and not f.get('remove'):
         return '旧版本里有没有新版本缺少的东西，要看内容才知道'
+    if kind == 'archive_extracted' and not f.get('remove'):
+        return '同名文件夹不能证明压缩包已完整解压，需要核对内容'
+    if kind in ('stale_large', 'old_downloads'):
+        return '很久没有修改不代表不再需要，文件名不能证明内容没有保留价值'
+    if kind == 'installer_installed' and f.get('installed_version_comparison') in ('newer', 'unknown'):
+        return '未确认安装包已被当前版本替代，不能仅凭程序已安装建议丢弃'
     return None
 
 
@@ -105,7 +119,7 @@ def with_ai(score: int, ai: dict | None, needs_content: bool = False) -> int:
     if verdict == 'delete':
         if needs_content and not ai.get('with_content'):
             return score
-        return max(score, min(85, score + 30))
+        return max(score, min(75, score + (20 if ai.get('with_content') else 10)))
     if verdict == 'keep':
         return min(score, 15)
     if verdict == 'archive':
@@ -320,12 +334,13 @@ class Finding:
                 'reason': self.reason, 'confidence': round(self.confidence, 2), **self.extra}
 
 
-def _hash(path: str, limit: int = 64 * 1024 * 1024) -> str | None:
+def _hash(path: str, limit: int = 64 * 1024 * 1024, cancel=None) -> str | None:
     h = hashlib.blake2b(digest_size=16)
     try:
         with open(fsops.long_path(path), 'rb') as fh:
             read = 0
             while read < limit:
+                fsops.check_cancel(cancel)
                 block = fh.read(min(1024 * 1024, limit - read))
                 if not block:
                     break
@@ -376,11 +391,13 @@ class Insights:
         # code projects (see is_project_dir): no versions are guessed and no empty folders offered inside
         self.project_dirs: list[str] = []
         self.stats: dict = {}
+        self.cancel = None
 
     # -- collection ------------------------------------------------------------------
     def collect(self, roots: list[str], skip=None, cancel=None, progress=None,
                 container_roots: list[str] | tuple = ()) -> 'Insights':
         started = time.time()
+        self.cancel = cancel
         self.files = []
         self.bundle_dirs = []
         self.program_dirs = []
@@ -606,6 +623,7 @@ class Insights:
         claimed: set[str] = set()
         out: list[Finding] = []
         for fn in (self._incomplete, self._installers, self._archives, self._versions, self._stale, self._downloads):
+            fsops.check_cancel(self.cancel)
             for f in fn(claimed):
                 out.append(f)
                 claimed.update(paths.key(x['path']) for x in f.files)
@@ -622,6 +640,7 @@ class Insights:
     def _file(self, rec: FileRec, note: str = '', remove: bool = False) -> dict:
         return {'path': rec.path, 'name': rec.name, 'size': rec.disk_size, 'logical_size': rec.size,
                 'mtime': rec.mtime, 'note': note, 'remove': remove,
+                'age_days': max(0, self._age_days(rec)),
                 'category': rec.category}
 
     def _incomplete(self, claimed):
@@ -664,7 +683,16 @@ class Insights:
                 iv, av = version_of(r.name), version_of(app.get('version') or '')
                 if iv and av and iv < av:
                     note += f'（已装 {app["version"]}，比这个安装包新）'
-                installed.append(self._file(r, note, remove=True))
+                elif iv and av and iv > av:
+                    note += '（这个安装包更新，可能正准备升级，请先保留）'
+                elif not (iv and av):
+                    note += '（尚未确认安装包与已装程序的版本关系）'
+                if age < 7:
+                    note += '；最近 7 天内刚下载或修改'
+                item = self._file(r, note, remove=not (iv and av and iv > av))
+                item['installed_version_comparison'] = ('newer' if iv > av else 'older' if iv < av else 'same') \
+                    if iv and av else 'unknown'
+                installed.append(item)
             elif age >= 90:
                 old.append(self._file(r, f'{int(age)} 天前下载，没有找到对应的已安装程序', remove=False))
         out = []
@@ -697,12 +725,12 @@ class Insights:
             folder = siblings.get(base_name(stem))
             if not folder:
                 continue
-            verified, total = _verify_zip(r.path, folder) if ext == '.zip' else (None, 0)
+            verified, total = _verify_zip(r.path, folder, self.cancel) if ext == '.zip' else (None, 0)
             if verified is False:
                 continue
             self.bundle_dirs.append(folder)
-            note = (f'其中 {total} 个文件都已在「{os.path.basename(folder)}」文件夹里，大小一致' if verified
-                    else f'旁边有同名文件夹「{os.path.basename(folder)}」，可能已经解压过（这种格式无法自动核对内容）')
+            note = (f'其中全部 {total} 个文件都已在「{os.path.basename(folder)}」文件夹里，大小和 CRC 校验一致' if verified
+                    else f'旁边有同名文件夹「{os.path.basename(folder)}」，可能已经解压过（尚未完整核对内容）')
             out_files.append((self._file(r, note, remove=bool(verified)), verified))
         if not out_files:
             return []
@@ -743,8 +771,8 @@ class Insights:
                                         not is_copy_name(os.path.splitext(m.name)[0])))
             digests = {}
             for m in members:
-                if m.size <= 512 * 1024 * 1024:
-                    digests[m.path] = _hash(m.path)
+                if m.size <= 64 * 1024 * 1024:
+                    digests[m.path] = _hash(m.path, cancel=self.cancel)
             by_digest: dict[str, list[FileRec]] = {}
             for m in members:
                 d = digests.get(m.path)
@@ -839,14 +867,14 @@ class Insights:
         return [Finding('empty', 'empty_folders', f'{len(files)} 个空文件夹', files, 0, '里面没有任何文件（包括子文件夹）。', 0.95)]
 
 
-def _verify_zip(path: str, folder: str) -> tuple[bool | None, int]:
-    """True if (nearly) every file in the zip exists in ``folder`` with the same size."""
+def _verify_zip(path: str, folder: str, cancel=None) -> tuple[bool | None, int]:
+    """True only if every entry's size AND CRC match; bounded, no extraction or cloud reads."""
     try:
         with zipfile.ZipFile(fsops.long_path(path)) as zf:
-            infos = [i for i in zf.infolist() if not i.is_dir()][:5000]
+            infos = [i for i in zf.infolist() if not i.is_dir()]
     except (OSError, zipfile.BadZipFile, ValueError, RuntimeError):
         return None, 0
-    if not infos:
+    if not infos or len(infos) > 5000 or sum(i.file_size for i in infos) > 128 * 1024 * 1024:
         return None, 0
     names = [i.filename.replace('\\', '/') for i in infos]
     prefixes = {n.split('/', 1)[0] for n in names}
@@ -854,19 +882,49 @@ def _verify_zip(path: str, folder: str) -> tuple[bool | None, int]:
 
     def found(info):
         rel = info.filename.replace('\\', '/')
+        if rel.startswith('/') or ntpath.splitdrive(rel)[0] or any(p in ('', '.', '..') or ':' in p for p in rel.split('/')):
+            return False
         candidates = [rel] + ([rel.split('/', 1)[1]] if strip else [])
         for c in candidates:
             p = os.path.join(folder, *c.split('/'))
             try:
-                if os.path.getsize(fsops.long_path(p)) == info.file_size:
+                # Check every ancestor: a directory junction inside the extracted folder
+                # must not make this verification read outside the chosen scope.
+                ancestor = p
+                safe = True
+                while paths.is_within(ancestor, folder):
+                    st = os.lstat(fsops.long_path(ancestor))
+                    if fsops.st_is_link(st) or getattr(st, 'st_file_attributes', 0) & winapi.CLOUD_ATTRIBUTES:
+                        safe = False
+                        break
+                    if paths.key(ancestor) == paths.key(folder):
+                        break
+                    ancestor = os.path.dirname(ancestor)
+                if not safe:
+                    return None
+                before = os.lstat(fsops.long_path(p))
+                if not stat.S_ISREG(before.st_mode) or before.st_size != info.file_size:
+                    continue
+                crc, size = 0, 0
+                with open(fsops.long_path(p), 'rb') as fh:
+                    while block := fh.read(min(1024 * 1024, info.file_size - size + 1)):
+                        fsops.check_cancel(cancel)
+                        size += len(block)
+                        if size > info.file_size:
+                            return False
+                        crc = zlib.crc32(block, crc)
+                after = os.lstat(fsops.long_path(p))
+                if size == info.file_size and crc == info.CRC and before.st_mtime_ns == after.st_mtime_ns:
                     return True
             except OSError:
                 continue
         return False
-    hits = sum(1 for i in infos if found(i))
-    if hits >= 0.9 * len(infos):
-        return True, len(infos)
-    return (False if hits < 0.5 * len(infos) else None), len(infos)
+    for info in infos:
+        fsops.check_cancel(cancel)
+        verified = found(info)
+        if verified is not True:
+            return verified, len(infos)
+    return True, len(infos)
 
 
 def _best_app(name: str, index: list[dict]) -> dict | None:

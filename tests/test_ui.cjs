@@ -116,4 +116,14 @@ assert.ok(!/min-width: [\d.]+em/.test(rule('.pt-head')), 'no fixed min-width on 
 assert.ok(rule('.pt-tail') && !/max-width: [^;]*%/.test(rule('.pt-tail')), 'no percentage cap on the name');
 // the name's share of the shrink must round to zero in Blink's 1/64 px layout units, or its last letter is cut
 assert.ok(Number((rule('.pt-head').match(/flex: 0 (\d+) auto/) || [])[1]) >= 1e6, 'the head gives way first, by a wide margin');
+// A duplicate group on 首页 and its individual copies on the tool page share one selection.
+const copies = { kind: 'dup', id: 'dup:sample', paths: ['D:\\copy.png', 'E:\\copy.png'] };
+PX.sel.set(copies, true);
+assert.ok(PX.sel.paths.has('D:\\copy.png') && PX.sel.paths.has('E:\\copy.png'));
+PX.sel.paths.delete('D:\\copy.png');
+assert.ok(!PX.sel.has(copies), 'a partial copy selection must not execute the whole home group');
+PX.sel.paths.add('D:\\copy.png');
+assert.ok(PX.sel.has(copies));
+PX.sel.set(copies, false);
+assert.ok(!PX.sel.paths.has('E:\\copy.png'));
 console.log('ui tests passed');

@@ -11,6 +11,7 @@
 
   function blockedReason(rule, res) {
     if (!res) return '';
+    if (res.scope_blocked) return res.error || '已排除';
     if (rule.admin && !PX.state.init.admin) return '需要管理员权限';
     if (res.running && res.running.length) return '请先关闭 ' + rule.name;
     return '';
@@ -18,6 +19,7 @@
   function visible(rule) {
     const res = state.results[rule.id];
     if (!res) return false;
+    if (res.scope_blocked) return true;
     if (rule.admin && !PX.state.init.admin) return true; // show what elevation would unlock
     return res.available && (res.size === null || res.size > 0 || res.count > 0 || rule.mode === 'command');
   }
@@ -34,7 +36,7 @@
     let sum = 0;
     for (const r of rules()) {
       const res = state.results[r.id];
-      if (res && res.size && r.default && visible(r) && !blockedReason(r, res)) sum += res.size;
+      if (res && res.size && res.selected && visible(r) && !blockedReason(r, res)) sum += res.size;
     }
     return sum;
   }
@@ -54,7 +56,7 @@
       state.results = {};
       for (const row of rows) state.results[row.id] = row;
       if (!state.touched) {
-        PX.sel.replace(state.selected, rules().filter((r) => r.default && visible(r) && !blockedReason(r, state.results[r.id])
+        PX.sel.replace(state.selected, rules().filter((r) => state.results[r.id] && state.results[r.id].selected && visible(r) && !blockedReason(r, state.results[r.id])
           && (state.results[r.id].size || 0) > 0).map((r) => r.id));
       } else {
         for (const id of [...state.selected]) {
@@ -158,7 +160,10 @@
       const locs = res.locations || [];
       out.push(PX.detailPanel({
         warn: rule.note,
+        action: 'delete',
+        score: { score: res.score, basis: res.basis || [] },
         facts: [['有多少', res.count ? `${fmt.count(res.count)} 个文件，共 ${fmt.bytes(res.size || 0)}` : ''],
+          ['扫描范围', res.error],
           ['占用空间', PX.sizeDifference(res)],
           ['大小说明', res.size_note],
           ['怎么清理', rule.mode === 'command' ? '通过系统命令清理' : locs.length ? '' : '没有找到对应的位置']],
@@ -268,8 +273,9 @@
       res.running = procs;
       changed = true;
       const rule = ruleById(id);
+      res.selected = !!res.eligible && !procs.length && PX.points(res.score) >= (PX.state.init.settings.checkup.auto_threshold ?? 5);
       if (procs.length) state.selected.delete(id);
-      else if (rule.default && !state.touched && visible(rule) && !blockedReason(rule, res) && (res.size || 0) > 0) state.selected.add(id);
+      else if (res.selected && !state.touched && visible(rule) && !blockedReason(rule, res) && (res.size || 0) > 0) state.selected.add(id);
     }
     if (!changed) return;
     PX.state.junkTotal = recommended();

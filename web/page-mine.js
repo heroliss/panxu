@@ -26,7 +26,6 @@
     try {
       const params = Array.isArray(roots) ? { roots } : {};
       state.result = await PX.api.run('insights_scan', params, (p) => { state.progress = p; draw(true); }, (id) => { state.jobId = id; });
-      state.selected.clear();
       state.status = 'done';
     } catch (e) {
       state.status = state.result ? 'done' : 'idle';
@@ -45,8 +44,9 @@
   }
 
   async function reload() {
+    const previous = state.result ? state.result.findings.flatMap((f) => f.files.map((x) => x.path)) : [];
     try { state.result = await PX.api.call('insights_result'); } catch (e) { PX.fail(e); }
-    for (const p of [...state.selected]) {
+    for (const p of previous) {
       if (!state.result || !state.result.findings.some((f) => f.files.some((x) => x.path === p))) state.selected.delete(p);
     }
     draw(true);
@@ -233,11 +233,11 @@
     if (!r.findings.length) c.appendChild(PX.empty('没有发现需要注意的文件', '已查看的范围里，没有符合整理条件的文件。'));
     else overview(c, r);
     for (const f of r.findings) finding(c, f);
-    if (state.selected.size) {
-      let size = 0;
-      for (const f of r.findings) for (const x of f.files) if (state.selected.has(x.path)) size += x.size;
-      c.appendChild(h('div.actionbar', h('div.grow', h('span.fig', fmt.bytes(size)), h('span.muted', `  已选 ${state.selected.size} 项`)),
-        h('button.btn', { type: 'button', onclick: () => { state.selected.clear(); draw(true); } }, '清除选择'),
+    const chosen = r.findings.flatMap((f) => f.files).filter((x) => state.selected.has(x.path));
+    if (chosen.length) {
+      const size = chosen.reduce((sum, x) => sum + x.size, 0);
+      c.appendChild(h('div.actionbar', h('div.grow', h('span.fig', fmt.bytes(size)), h('span.muted', `  已选 ${chosen.length} 项`)),
+        h('button.btn', { type: 'button', onclick: () => { for (const x of chosen) state.selected.delete(x.path); draw(true); } }, '清除选择'),
         h('button.btn.primary', { type: 'button', onclick: recycle }, PX.icon('trash'), '移到回收站')));
     }
     if (keepScroll) main.scrollTop = top;

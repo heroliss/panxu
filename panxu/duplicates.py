@@ -109,7 +109,10 @@ def _hash_partial(path: str, size: int) -> bytes | None:
         with open(fsops.long_path(path), 'rb') as fh:
             h = hashlib.blake2b(digest_size=16)
             if size <= 2 * EDGE:
-                h.update(fh.read())  # small file: this covers all of it
+                block = fh.read(size + 1)
+                if len(block) != size:
+                    return None
+                h.update(block)  # small file: this covers all of it
             else:
                 h.update(fh.read(EDGE))
                 fh.seek(size - EDGE)
@@ -119,19 +122,25 @@ def _hash_partial(path: str, size: int) -> bytes | None:
         return None
 
 
-def _hash_full(path: str, cancel=None, progress=None) -> bytes | None:
+def _hash_full(path: str, cancel=None, progress=None, expected_size=None, deadline=None) -> bytes | None:
     try:
         with open(fsops.long_path(path), 'rb') as fh:
             h = hashlib.blake2b(digest_size=20)
+            read = 0
             while True:
                 fsops.check_cancel(cancel)
-                block = fh.read(CHUNK)
+                if deadline is not None and time.monotonic() >= deadline:
+                    return None
+                block = fh.read(CHUNK if expected_size is None else min(CHUNK, expected_size - read + 1))
                 if not block:
                     break
+                read += len(block)
+                if expected_size is not None and read > expected_size:
+                    return None
                 h.update(block)
                 if progress:
                     progress(len(block))
-            return h.digest()
+            return h.digest() if expected_size is None or read == expected_size else None
     except OSError:
         return None
 
@@ -154,39 +163,63 @@ REF_MAX_FILES = 20000
 REF_MAX_BYTES = 200 * 1024 * 1024
 
 
-def _search_names(root: str, names: set[str], cancel=None) -> dict:
+def _search_names(root: str, names: set[str], cancel=None, skip=None, max_bytes=REF_MAX_BYTES, deadline=None) -> dict:
     """Which code and settings files below ``root`` mention each of ``names`` (lower-case file names)."""
     found: dict[str, list[str]] = {}
     searched = total = 0
-    for dirpath, files, dirs in fsops.walk_files(root, cancel):
+    complete = True
+
+    def unreadable(_path, _exc):
+        nonlocal complete
+        complete = False
+
+    def excluded(path):
+        nonlocal complete
+        if skip and skip(path):
+            complete = False
+            return True
+        return False
+
+    for dirpath, files, dirs in fsops.walk_files(root, cancel, skip=excluded, on_error=unreadable):
+        if deadline is not None and time.monotonic() >= deadline:
+            return {'found': found, 'searched': searched, 'bytes': total, 'complete': False}
         dirs[:] = [d for d in dirs if d.name.lower() not in REF_SKIP_DIRS]
         for entry in files:
+            if deadline is not None and time.monotonic() >= deadline:
+                return {'found': found, 'searched': searched, 'bytes': total, 'complete': False}
             if os.path.splitext(entry.name)[1].lower() not in REF_EXTS:
                 continue
             try:
                 st = entry.stat(follow_symlinks=False)
             except OSError:
+                complete = False
                 continue
             if not stat.S_ISREG(st.st_mode) or st.st_size > REF_MAX_FILE \
                     or getattr(st, 'st_file_attributes', 0) & winapi.CLOUD_ATTRIBUTES:
+                complete = False
                 continue
-            if searched >= REF_MAX_FILES or total >= REF_MAX_BYTES:
-                return {'found': found, 'searched': searched, 'complete': False}
+            if searched >= REF_MAX_FILES or total + st.st_size > max_bytes:
+                return {'found': found, 'searched': searched, 'bytes': total, 'complete': False}
             path = os.path.join(dirpath, entry.name)
             try:
                 with open(fsops.long_path(path), 'rb') as fh:
-                    text = fh.read().decode('utf-8', 'ignore').lower()
+                    raw = fh.read(st.st_size + 1)
+                    if len(raw) != st.st_size:
+                        complete = False
+                        continue
+                    text = raw.decode('utf-8', 'ignore').lower()
             except OSError:
+                complete = False
                 continue
             searched += 1
             total += st.st_size
             for name in names:
                 if name in text:
                     found.setdefault(name, []).append(path)
-    return {'found': found, 'searched': searched, 'complete': True}
+    return {'found': found, 'searched': searched, 'bytes': total, 'complete': complete}
 
 
-def check_references(groups: list[dict], cancel=None, progress=None) -> None:
+def check_references(groups: list[dict], cancel=None, progress=None, skip=None, max_bytes=None, max_seconds=None) -> dict:
     """Add ``refs`` to every copy in a code project or next to one: {'found': [files mentioning its name, relative
     to the searched folder], 'count', 'searched', 'complete'}. Each folder is read once for all its names."""
     wanted: dict[str, tuple[str, set[str]]] = {}
@@ -196,10 +229,17 @@ def check_references(groups: list[dict], cancel=None, progress=None) -> None:
                 root = f['place_root']
                 wanted.setdefault(paths.key(root), (root, set()))[1].add(os.path.basename(f['path']).lower())
     results = {}
+    total = 0
+    deadline = time.monotonic() + max_seconds if max_seconds is not None else None
     for i, (k, (root, names)) in enumerate(wanted.items()):
         if progress:
             progress({'phase': 'refs', 'done': i, 'total': len(wanted), 'current': root})
-        results[k] = _search_names(root, names, cancel)
+        budget = REF_MAX_BYTES if max_bytes is None else min(REF_MAX_BYTES, max(0, max_bytes - total))
+        if deadline is not None and time.monotonic() >= deadline:
+            budget = 0
+        results[k] = _search_names(root, names, cancel, skip=skip, max_bytes=budget, deadline=deadline) if budget else {
+            'found': {}, 'searched': 0, 'bytes': 0, 'complete': False}
+        total += results[k]['bytes']
     for g in groups:
         for f in g['files']:
             r = results.get(paths.key(f.get('place_root') or '')) if f.get('place') in ('project', 'near') else None
@@ -209,9 +249,12 @@ def check_references(groups: list[dict], cancel=None, progress=None) -> None:
             found = [p for p in r['found'].get(os.path.basename(f['path']).lower(), []) if paths.key(p) != mine]
             f['refs'] = {'found': [os.path.relpath(p, f['place_root']) for p in found[:5]], 'count': len(found),
                          'searched': r['searched'], 'complete': r['complete']}
+    return {'bytes': total, 'complete': all(r['complete'] for r in results.values())}
 
 
-def find_duplicates(roots: list[str], *, min_size: int = 1024 * 1024, skip=None, cancel=None, progress=None) -> dict:
+def find_duplicates(roots: list[str], *, min_size: int = 1024 * 1024, skip=None, cancel=None, progress=None,
+                    container_roots=(), max_files: int | None = None, max_hash_bytes: int | None = None,
+                    max_reference_bytes: int | None = None, max_hash_seconds=None, max_reference_seconds=None) -> dict:
     """Return {'groups': [...], 'stats': {...}}.
 
     ``skip(path) -> bool`` excludes directories (system folders, user exclusions).
@@ -221,12 +264,20 @@ def find_duplicates(roots: list[str], *, min_size: int = 1024 * 1024, skip=None,
     seen_dirs = set()
     homes: dict[str, tuple[str, str]] = {}  # programs' folders and code projects met on the way
     files_seen = 0
+    truncated = False
+    deferred = hashed_bytes = 0
+    containers = {paths.key(r) for r in container_roots if r}
+    listing_done = False
 
     def report(phase, **extra):
         if progress:
             progress({'phase': phase, 'files': files_seen, 'elapsed': time.time() - started, **extra})
 
     for root in roots:
+        if listing_done:
+            break
+        if fsops.path_is_link(root) or (skip and skip(root)):
+            continue
         for dirpath, files, dirs in fsops.walk_files(root, cancel):
             dkey = os.path.normcase(os.path.abspath(dirpath))
             if dkey in seen_dirs:
@@ -236,11 +287,13 @@ def find_duplicates(roots: list[str], *, min_size: int = 1024 * 1024, skip=None,
             if skip and skip(dirpath):
                 dirs.clear()  # walk_files extends the stack after yield, so this prunes
                 continue
-            if dirpath != root:
+            if paths.key(dirpath) not in containers:
                 kind = 'program' if is_program_dir(files, dirs) else 'project' if is_project_dir(files, dirs) else None
                 if kind:
                     homes[paths.key(dirpath)] = (kind, dirpath)
             for entry in files:
+                if skip and skip(entry.path):
+                    continue
                 try:
                     st = entry.stat(follow_symlinks=False)
                 except OSError:
@@ -249,17 +302,23 @@ def find_duplicates(roots: list[str], *, min_size: int = 1024 * 1024, skip=None,
                     continue
                 if getattr(st, 'st_file_attributes', 0) & winapi.CLOUD_ATTRIBUTES:
                     continue
+                if max_files is not None and files_seen >= max_files:
+                    truncated = listing_done = True
+                    break
                 files_seen += 1
                 by_size.setdefault(st.st_size, []).append([os.path.join(dirpath, entry.name), st.st_mtime,
                                                          fsops.file_size(entry.path, st)])
             if files_seen % 500 == 0:
                 report('listing')
+            if listing_done:
+                break
 
     candidates = {s: v for s, v in by_size.items() if len(v) > 1}
     # drop hard links to the same physical file
     for size, items in list(candidates.items()):
         unique, ids = [], set()
         for item in items:
+            fsops.check_cancel(cancel)
             try:
                 st = os.stat(fsops.long_path(item[0]))
                 ident = (st.st_dev, st.st_ino) if st.st_ino else None
@@ -276,19 +335,38 @@ def find_duplicates(roots: list[str], *, min_size: int = 1024 * 1024, skip=None,
             del candidates[size]
 
     total_candidates = sum(len(v) for v in candidates.values())
+    deadline = time.monotonic() + max_hash_seconds if max_hash_seconds is not None else None
+    timed_out = False
     done = 0
-    partial_groups = []
-    for size, items in candidates.items():
-        groups: dict[bytes, list] = {}
-        for item in items:
-            fsops.check_cancel(cancel)
-            digest = _hash_partial(item[0], size)
-            done += 1
-            if digest is not None:
-                groups.setdefault(digest, []).append(item)
-            if done % 200 == 0:
-                report('quick', done=done, total=total_candidates)
-        partial_groups.extend((size, g) for g in groups.values() if len(g) > 1)
+    def partial_groups():
+        # Verify each size batch fully before visiting the next. A slow drive
+        # must not spend its entire budget on quick hashes and return nothing.
+        nonlocal done, deferred, hashed_bytes, timed_out
+        for size, items in sorted(candidates.items(), reverse=True):
+            groups: dict[bytes, list] = {}
+            for item in items:
+                fsops.check_cancel(cancel)
+                if deadline is not None and time.monotonic() >= deadline:
+                    timed_out = True
+                    break
+                cost = min(size, 2 * EDGE)
+                if max_hash_bytes is not None and hashed_bytes + cost > max_hash_bytes:
+                    deferred += 1
+                    continue
+                if not verify_unchanged(item[0], size, item[1]):
+                    continue
+                digest = _hash_partial(item[0], size)
+                hashed_bytes += cost
+                done += 1
+                if digest is not None and verify_unchanged(item[0], size, item[1]):
+                    groups.setdefault(digest, []).append(item)
+                if done % 200 == 0:
+                    report('quick', done=done, total=total_candidates)
+            for group in groups.values():
+                if len(group) > 1:
+                    yield size, group
+            if timed_out:
+                break
 
     # folders that hold a code project (never a folder the user chose to search, nor a drive): what else lies in
     # them is often the project's material
@@ -299,24 +377,37 @@ def find_duplicates(roots: list[str], *, min_size: int = 1024 * 1024, skip=None,
         if kind == 'project' and paths.key(parent) not in chosen and os.path.dirname(parent) != parent:
             near[paths.key(parent)] = parent
 
-    bytes_total = sum(size * len(g) for size, g in partial_groups if size > 2 * EDGE)
+    bytes_total = sum(size * len(g) for size, g in candidates.items() if size > 2 * EDGE)
+    if max_hash_bytes is not None:
+        bytes_total = min(bytes_total, max_hash_bytes)
     hashed = [0]
 
     def on_bytes(n):
+        nonlocal hashed_bytes
+        hashed_bytes += n
         hashed[0] += n
         if hashed[0] % (64 * CHUNK) < n:
             report('full', bytes_done=hashed[0], bytes_total=bytes_total)
 
     groups_out = []
-    for size, items in partial_groups:
+    for size, items in partial_groups():
+        if deadline is not None and time.monotonic() >= deadline:
+            timed_out = True
+            break
+        cost = size * len(items) if size > 2 * EDGE else 0
+        if max_hash_bytes is not None and hashed_bytes + cost > max_hash_bytes:
+            deferred += len(items)
+            continue
         if size <= 2 * EDGE:
             # the partial hash already covered the whole file
             full_groups = {b'': items}
         else:
             full_groups = {}
             for item in items:
-                digest = _hash_full(item[0], cancel, on_bytes)
-                if digest is not None:
+                if not verify_unchanged(item[0], size, item[1]):
+                    continue
+                digest = _hash_full(item[0], cancel, on_bytes, expected_size=size, deadline=deadline)
+                if digest is not None and verify_unchanged(item[0], size, item[1]):
                     full_groups.setdefault(digest, []).append(item)
         for digest, group in full_groups.items():
             if len(group) < 2:
@@ -332,15 +423,23 @@ def find_duplicates(roots: list[str], *, min_size: int = 1024 * 1024, skip=None,
     groups_out.sort(key=lambda g: g['wasted'], reverse=True)
     for index, g in enumerate(groups_out):
         g['id'] = index
-    check_references(groups_out, cancel, lambda p: report(**p))
+    if deadline is not None and time.monotonic() >= deadline:
+        timed_out = True
+    refs = check_references(groups_out, cancel, lambda p: report(**p), skip=skip,
+                            max_bytes=max_reference_bytes, max_seconds=max_reference_seconds)
     return {'groups': groups_out, 'stats': {
         'files': files_seen, 'groups': len(groups_out), 'wasted': sum(g['wasted'] for g in groups_out),
+        'roots': list(roots), 'truncated': truncated or deferred > 0 or timed_out, 'file_limit': max_files,
+        'timed_out': timed_out, 'hash_seconds_limit': max_hash_seconds,
+        'hash_limit': max_hash_bytes, 'hashed_bytes': hashed_bytes, 'deferred_files': deferred,
+        'reference_bytes': refs['bytes'], 'references_complete': refs['complete'],
         'seconds': round(time.time() - started, 1)}}
 
 
 def verify_unchanged(path: str, size: int, mtime: float) -> bool:
     try:
-        st = os.stat(fsops.long_path(path))
+        st = os.lstat(fsops.long_path(path))
     except OSError:
         return False
-    return st.st_size == size and abs(st.st_mtime - mtime) < 2
+    return (not fsops.st_is_link(st) and not getattr(st, 'st_file_attributes', 0) & winapi.CLOUD_ATTRIBUTES
+            and st.st_size == size and st.st_mtime == mtime)

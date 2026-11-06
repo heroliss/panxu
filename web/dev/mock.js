@@ -209,8 +209,8 @@
       advice: '镜像和容器存放在虚拟磁盘里。先用 docker system prune 清理，再在 Docker 设置中压缩磁盘。', why: '体积较大，但不能直接删除。',
       actions: [{ kind: 'copy', arg: 'docker system prune', label: '复制清理命令' }, { kind: 'reveal', label: '打开文件夹' }] }),
   ];
-  const SCORES = { 'rule:user_temp': 95, 'rule:chrome': 95, 'rule:crash_dumps': 95, 'dir:unity': 86, 'rule:edge': 95, 'rule:npm': 70,
-    'dir:idea21': 60, 'dir:oldgame': 50, 'file:iso': 60, 'file:wechat': 85, 'file:vscode': 85, 'file:crdl': 90, 'file:thesis': 85,
+  const SCORES = { 'rule:user_temp': 95, 'rule:chrome': 75, 'rule:crash_dumps': 70, 'dir:unity': 70, 'rule:edge': 75, 'rule:npm': 70,
+    'dir:idea21': 60, 'dir:oldgame': 30, 'file:iso': 30, 'file:wechat': 85, 'file:vscode': 85, 'file:crdl': 90, 'file:thesis': 85,
     'dup:1': 85, 'startup:qv': 60 };
   const HOLD = { 'dir:oldgame': '找不到对应的程序，但不确定是不是绿色版', 'startup:qv': '开机启动项由你决定' };
   for (const it of planItems) {
@@ -243,7 +243,7 @@
     const sel = rows.filter((i) => i.selected && i.status === 'pending');
     return [id, { count: rows.length, size: rows.reduce((s, i) => s + (i.size || 0), 0), selected: sel.length, selected_size: sel.reduce((s, i) => s + (i.size || 0), 0) }];
   }));
-  const stages = [['junk', '扫描垃圾文件'], ['space', '分析系统盘空间'], ['insights', '整理我的文件'], ['dups', '查找重复文件'], ['ai', 'AI 复核'], ['plan', '生成清理方案']]
+  const stages = [['junk', '扫描垃圾文件'], ['space', '分析本机磁盘空间'], ['insights', '整理我的文件'], ['dups', '查找重复文件'], ['ai', 'AI 复核'], ['plan', '生成清理方案']]
     .map(([id, label]) => ({ id, label }));
 
   const F = (path, size, age, note, remove, extra) => Object.assign({ path, name: path.split('\\').pop(), size, mtime: now - age * day, note, remove,
@@ -273,13 +273,13 @@
       files: [F(U + '\\Desktop\\新建文件夹', 0, 0, '空文件夹', true, { mtime: 0, category: 'folder' }), F(U + '\\Desktop\\新建文件夹 (2)', 0, 0, '空文件夹', true, { mtime: 0, category: 'folder' })] },
   ].map((f) => Object.assign(f, { count: f.files.length, size: f.files.reduce((s, x) => s + x.size, 0),
     logical_size: f.files.reduce((s, x) => s + (x.logical_size === undefined ? x.size : x.logical_size), 0) }));
-  const KIND_SCORE = { incomplete_download: 90, installer_installed: 85, name_versions: 35, stale_large: 30, empty_folders: 90 };
+  const KIND_SCORE = { incomplete_download: 90, installer_installed: 85, name_versions: 35, stale_large: 30, empty_folders: 30 };
   for (const f of findings) {
     for (const x of f.files) {
       x.score = f.kind === 'name_versions' ? (x.note.startsWith('最新') || x.note.startsWith('与其他') ? 5 : x.remove ? 85 : 35) : KIND_SCORE[f.kind];
       // like insights.with_ai: an older version that differs is raised only by a model that saw its content
-      const nameOnly = f.kind === 'name_versions' && !x.remove && !(x.ai && x.ai.with_content);
-      if (x.ai && x.ai.verdict === 'delete' && !nameOnly) x.score = Math.max(x.score, Math.min(85, x.score + 30));
+      const nameOnly = ['name_versions', 'stale_large', 'old_downloads', 'archive_extracted'].includes(f.kind) && !x.remove && !(x.ai && x.ai.with_content);
+      if (x.ai && x.ai.verdict === 'delete' && !nameOnly) x.score = Math.max(x.score, Math.min(75, x.score + (x.ai.with_content ? 20 : 10)));
       if (x.ai && x.ai.verdict === 'keep') x.score = Math.min(x.score, 15);
     }
   }
@@ -332,6 +332,8 @@
       plan.summary = summarize();
       insights = personalResult(null, 12);
       plan.personal_scan = { truncated: insights.stats.truncated, limit: insights.stats.limit, files: insights.stats.files };
+      plan.coverage = { space: { roots: ['C:\\', 'D:\\', 'E:\\'], files: 1500000, incomplete: true, denied: 12 },
+        duplicates: { truncated: true, file_limit: 400000, hash_limit: 16 * GB }, omitted_drives: [] };
       return plan;
     }, (f) => {
       // like checkup.run: each stage says how far it is (part), except 整理我的文件, which has no total
@@ -442,20 +444,25 @@
       presets: [{ id: 'deepseek', name: 'DeepSeek', base_url: 'https://api.deepseek.com', protocol: 'openai', models: ['deepseek-flash', 'deepseek-v4-pro'], json_mode: true, thinking_toggle: true, key_url: 'x' },
         { id: 'kimi', name: 'Kimi（月之暗面）', base_url: 'https://api.moonshot.cn/v1', protocol: 'openai', models: [], json_mode: true },
         { id: 'ollama', name: '本地 Ollama', base_url: 'http://127.0.0.1:11434/v1', protocol: 'openai', models: [], json_mode: true, needs_key: false }],
-      drives: [{ root: 'C:\\', label: '', fstype: 'NTFS', total: 476 * GB, used: 389 * GB - freedNow, free: 87 * GB + freedNow, system: true, removable: false },
-        { root: 'D:\\', label: '数据', fstype: 'NTFS', total: 931 * GB, used: 512 * GB, free: 419 * GB, system: false, removable: false },
-        { root: 'E:\\', label: '工作', fstype: 'NTFS', total: 954 * GB, used: 702 * GB, free: 252 * GB, system: false, removable: false }],
+      drives: [{ root: 'C:\\', label: '', fstype: 'NTFS', total: 476 * GB, used: 389 * GB - freedNow, free: 87 * GB + freedNow, system: true, removable: false, fixed: true },
+        { root: 'D:\\', label: '数据', fstype: 'NTFS', total: 931 * GB, used: 512 * GB, free: 419 * GB, system: false, removable: false, fixed: true },
+        { root: 'E:\\', label: '工作', fstype: 'NTFS', total: 954 * GB, used: 702 * GB, free: 252 * GB, system: false, removable: false, fixed: true }],
       rules: catalogue, groups: [{ id: 'system', name: '系统垃圾' }, { id: 'browser', name: '浏览器缓存' }, { id: 'app', name: '应用缓存' }, { id: 'dev', name: '开发工具缓存' }, { id: 'advanced', name: '系统深度清理' }],
       start_types: { auto: '自动', delayed: '自动（延迟启动）', manual: '手动', disabled: '禁用' }, home: 'C:\\Users\\demo', system_drive: 'C:\\', data_dir: 'C:\\Users\\demo\\AppData\\Local\\PanXu' }),
     job: ({ job_id }) => status(job_id),
     cancel_job: ({ job_id }) => { if (jobs[job_id]) jobs[job_id].cancel = true; return true; },
     junk_scan: () => job(4, rules.map(([id, , , , , admin, size]) => ({ id, size: admin ? 0 : size,
+      score: SCORES['rule:' + id] || 70, eligible: !['recycle_bin', 'windows_old', 'component_store'].includes(id),
+      selected: !admin && !['edge', 'recycle_bin', 'windows_old', 'component_store'].includes(id)
+        && PX.points(SCORES['rule:' + id] || 70) >= settings.checkup.auto_threshold,
+      basis: ['按缓存重建成本和最近活动评分'],
       logical_size: id === 'user_temp' ? 510 * GB : admin ? 0 : size, count: size ? Math.round(size / (200 * 1024)) : 0,
       size_note: id === 'recycle_bin' ? 'Windows 提供的估算大小，可能包含稀疏或压缩文件的标称大小；清空后的已释放按磁盘可用空间变化计算。' : '',
       locations: ['C:\\Users\\demo\\AppData\\Local\\Temp'], needs_admin: admin, running: id === 'edge' ? ['msedge.exe'] : [], error: '', available: size === null || size > 0 })),
       (f) => ({ index: Math.round(f * rules.length), total: rules.length, current: rules[Math.min(rules.length - 1, Math.round(f * rules.length))][1] })),
     junk_clean: ({ rule_ids }) => job(6, { freed: 3.9 * GB, rules: rule_ids.map((id) => ({ id, name: id, freed: 1 * GB, files: 1200, failed: 12, in_use: 12, skipped: '', failures: [] })) },
       (f) => ({ index: Math.round(f * rule_ids.length), total: rule_ids.length, current: '用户临时文件', freed: f * 3.9 * GB })),
+    space_result: () => ({ root: row(tree), stats: { dirs: 186204, files: 1203344, bytes: tree.size, denied: 412, seconds: 74.2 }, scanned_at: 1 }),
     space_scan: ({ root }) => job(6, { root: row(tree), stats: { dirs: 186204, files: 1203344, bytes: tree.size, cloud_files: 0, cloud_bytes: 0, denied: 412, seconds: 74.2 } },
       (f) => ({ dirs: Math.round(f * 186204), files: Math.round(f * 1203344), bytes: f * tree.size, elapsed: f * 74 })),
     space_node: ({ node_id }) => {
@@ -500,6 +507,7 @@
     ai_analyze: () => job(8, () => { const s = suggestions(); aiResults = {}; s.forEach((x) => { aiResults[x.node_id] = x; }); return { suggestions: s, usage: { requests: 2, input_tokens: 6230, output_tokens: 1520 }, errors: [], requests: 2, budget: 8, remaining: { count: 23, size: 1.6 * GB } }; },
       (f) => ({ stage: f < 0.4 ? 'summarize' : 'ask', requests: f < 0.6 ? 1 : 2, budget: 8, done: Math.round(f * 5), current: 'C:\\Users\\demo\\AppData\\Local\\Unity' })),
     dup_default_roots: () => ['C:\\Users\\demo\\Desktop', 'C:\\Users\\demo\\Documents', 'C:\\Users\\demo\\Downloads', 'C:\\Users\\demo\\Pictures'],
+    dup_result: () => null,
     dup_scan: () => job(6, { groups: [
       { id: 0, size: 1.4 * GB, wasted: 1.4 * GB, files: [{ path: 'C:\\Users\\demo\\Downloads\\项目资料-final.zip', mtime: now - 200 * day }, { path: 'C:\\Users\\demo\\Documents\\归档\\项目资料-final (1).zip', mtime: now - 20 * day }] },
       { id: 1, size: 320 * MB, wasted: 640 * MB, files: [{ path: 'C:\\Users\\demo\\Videos\\旅行\\IMG_2041.MOV', mtime: now - 400 * day }, { path: 'C:\\Users\\demo\\Pictures\\手机备份\\IMG_2041.MOV', mtime: now - 300 * day }, { path: 'C:\\Users\\demo\\Desktop\\IMG_2041.MOV', mtime: now - 3 * day }] },

@@ -172,7 +172,8 @@
     const drives = PX.state.init.drives || [];
     const sys = drives.find((d) => d.system) || drives[0];
     if (!sys) return;
-    const reclaim = state.plan ? selectedSize() : 0;
+    // The plan now spans disks; its total must not be drawn as freeable space on C:.
+    const reclaim = 0;
     const [v, u] = fmt.split(sys.free);
     const name = sys.letter || sys.root.replace(/\\$/, '');
     // after a cleanup: how much more free space the drive really has now (the Recycle Bin still holds the rest)
@@ -194,7 +195,7 @@
         state.plan ? '重新体检' : '一键体检'));
       const init = PX.state.init;
       const ck = init.settings.checkup || {};
-      const parts = ['垃圾文件', ck.space_scan !== false ? '系统盘空间' : null, '我的文件', ck.duplicates !== false ? '重复文件' : null,
+      const parts = ['垃圾文件', ck.space_scan !== false ? '本地固定磁盘空间' : null, '各磁盘上的我的文件', ck.duplicates !== false ? '跨磁盘重复文件' : null,
         ck.use_ai !== false ? (init.has_key ? 'AI 复核' : 'AI 复核（未配置模型，跳过）') : null].filter(Boolean);
       cta.appendChild(h('span.muted.small', '检查：' + parts.join(' · ') + '。体检只看不删，清理前会再问你。'));
     }
@@ -581,6 +582,18 @@
     reportBox(c);
     if (state.plan && state.status !== 'running') {
       const p = state.plan;
+      const coverage = p.coverage;
+      if (coverage) {
+        const space = coverage.space;
+        const roots = space ? space.roots || [] : [];
+        c.appendChild(PX.notice((roots.length ? `空间分析已查看：${roots.map(PX.displayPath).join('、')}。` : '本次未运行空间分析。')
+          + '个人文件和重复文件覆盖常用文件夹及本地固定磁盘；跳过系统、应用数据和排除位置。'
+          + (space && space.incomplete ? ` 空间统计有跳过项${space.denied ? `，其中 ${fmt.count(space.denied)} 个目录无法读取` : ''}，显示的是已检查到的占用。` : ''), 'info'));
+        if (coverage.duplicates && coverage.duplicates.truncated) {
+          c.appendChild(PX.notice('重复文件尚未全部比对：已达到本次体检的文件数、内容读取或比对时间上限。已列出的副本均完成内容校验，可到「重复文件」选择目录继续查找。', 'warn',
+            h('button.btn.small', { type: 'button', onclick: () => PX.go('dups') }, '去重复文件')));
+        }
+      }
       const personalScan = p.personal_scan || (p.extra && p.extra.personal_scan);
       if (personalScan && personalScan.truncated) {
         c.appendChild(PX.notice(`我的文件这次没有全部扫完：已到 ${fmt.count(personalScan.limit || personalScan.files)} 个文件上限。可到「我的文件」选择文件夹分批整理。`, 'warn',

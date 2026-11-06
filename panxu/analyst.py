@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import threading
@@ -246,14 +247,23 @@ class VerdictCache:
     def clear(self):
         with self._lock:
             self.data = {}
-            self.save()
+            self.save(strict=True)
 
-    def save(self):
+    def save(self, strict=False):
         with self._lock:
             tmp = self.path + '.tmp'
-            with open(tmp, 'w', encoding='utf-8') as fh:
-                json.dump(self.data, fh, ensure_ascii=False)
-            os.replace(tmp, self.path)
+            try:
+                with open(tmp, 'w', encoding='utf-8') as fh:
+                    json.dump(self.data, fh, ensure_ascii=False)
+                os.replace(tmp, self.path)
+            except OSError as exc:
+                if strict:
+                    raise
+                # Windows readers/antivirus can briefly deny replacement. Caching is
+                # optional: keep the result in memory and retry at the next save.
+                logging.getLogger(__name__).warning('AI cache could not be saved; keeping results in memory: %s', exc)
+                return False
+            return True
 
 
 class Analyst:
@@ -309,7 +319,8 @@ class Analyst:
             if node.size <= 0 or node.size < min_size:
                 continue
             path = scan.path_of(node)
-            role = 'descend' if node is scan.root else self.knowledge.ai_role(path)
+            role = 'descend' if node is scan.root or (getattr(scan, 'multiple', False) and node.parent is scan.root) \
+                else self.knowledge.ai_role(path)
             if role == 'skip':
                 continue
             if role == 'descend':
@@ -369,7 +380,7 @@ class Analyst:
         """Folders the built-in knowledge recognises as cleanable but no cleanup rule covers (a drive's Temp
         folder): listed with the AI's suggestions, without asking the model."""
         out = []
-        stack = [(scan.root, 0)]
+        stack = [(scan.root, -1 if getattr(scan, 'multiple', False) else 0)]
         while stack:
             node, depth = stack.pop()
             if node.size < min_size:

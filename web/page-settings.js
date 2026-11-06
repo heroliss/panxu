@@ -98,7 +98,7 @@
     // ---- one-click check-up
     const ck = s.checkup || {};
     const secCk = form.appendChild(h('section', h('h2', '一键体检')));
-    for (const [key, label, help] of [['space_scan', '分析系统盘空间', '找出陌生的大文件夹，需要几十秒到几分钟'],
+    for (const [key, label, help] of [['space_scan', '分析本地固定磁盘空间', '覆盖 C/D/E 等本地固定磁盘，文件越多耗时越长；可随时停止'],
       ['duplicates', '查找重复文件', '在个人文件夹中比较文件内容'], ['use_ai', '使用 AI 复核', '配置了模型时，让 AI 判断文件夹、文件名和开机启动项']]) {
       secCk.appendChild(field(label, h('label.inline', PX.switchEl(ck[key] !== false, (e) => save({ checkup: { [key]: e.target.checked } })),
         h('span.small.muted', help))));

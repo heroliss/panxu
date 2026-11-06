@@ -75,7 +75,8 @@ class Backend:
         self.oplog = OperationLog(os.path.join(data_dir, 'history.jsonl'))
         self.jobs = JobManager()
         self.knowledge = Knowledge(self.env)
-        self.junk = JunkEngine(self.env, self.admin, oplog=self.oplog)
+        self.junk = JunkEngine(self.env, self.admin, oplog=self.oplog,
+                               excluded=lambda: self.settings.get().get('excluded_paths', []) + self.app_dirs)
         registry = sandbox.registry if sandbox is not None else None
         self.startup = StartupManager(registry=registry, env=self.env, admin=self.admin, oplog=self.oplog,
                                       hkcu_ok=sandbox is not None or not paths.is_foreign_user())
@@ -414,7 +415,16 @@ class Backend:
         def run(job):
             def progress(i, total, name):
                 job.update(index=i, total=total, current=name)
-            return self.junk.scan(cancel=job.cancel, progress=progress)
+            rows = self.junk.scan(cancel=job.cancel, progress=progress)
+            builder = checkup.PlanBuilder(self.policy(), threshold=self.settings.get()['checkup']['auto_threshold'])
+            builder.add_junk(rows)
+            assessed = {i['rule']: i for i in builder.items}
+            for row in rows:
+                item = assessed.get(row['id'])
+                if item:
+                    row.update({k: item[k] for k in ('score', 'basis', 'eligible', 'selected', 'blocked')})
+            self.junk_rows = rows
+            return rows
         return self.jobs.start('junk_scan', run)
 
     def m_running_check(self):
@@ -443,6 +453,12 @@ class Backend:
         return self.jobs.start('junk_clean', run, group='modify')
 
     # ------------------------------------------------------------------ space
+    def m_space_result(self):
+        if self.scan is None:
+            return None
+        return {'root': self._node_row(self.scan, self.scan.root), 'stats': self.scan.stats,
+                'scanned_at': self.scan.finished_at}
+
     def m_space_scan(self, root: str):
         if not isinstance(root, str) or not os.path.isdir(root):
             raise UserError('请选择一个存在的磁盘或文件夹')
@@ -452,16 +468,16 @@ class Backend:
             root = os.path.realpath(root)
 
         def run(job):
-            scan = SpaceScan(root)
+            scan = SpaceScan(root, skip=checkup.space_skip(self.env, self.policy(), self.app_dirs))
             scan.run(cancel=job.cancel, progress=lambda p: job.update(**p))
             self.scan = scan
             self.ai_results = {}
-            return {'root': self._node_row(scan, scan.root), 'stats': scan.stats}
+            return {'root': self._node_row(scan, scan.root), 'stats': scan.stats, 'scanned_at': scan.finished_at}
         return self.jobs.start('space_scan', run, group='space')
 
     def _node_row(self, scan: SpaceScan, node) -> dict:
         path = scan.path_of(node)
-        row = {'id': node.id, 'name': node.name if node.parent else path, 'path': path, 'type': 'dir',
+        row = {'id': node.id, 'name': node.name, 'path': path, 'type': 'dir', 'virtual': not bool(path),
                'size': node.size, 'logical_size': node.logical_size,
                'files': node.files, 'dirs': node.dirs, 'mtime': node.mtime,
                'has_children': bool(node.children), 'denied': bool(node.flags & FLAG_DENIED),
@@ -488,7 +504,7 @@ class Backend:
             c['blocked'] = policy.reason(c['path'])
         return {
             'node': self._node_row(scan, node),
-            'crumbs': [{'id': n.id, 'name': n.name if n.parent else scan.path_of(n)} for n in scan.ancestors(node)],
+            'crumbs': [{'id': n.id, 'name': n.name} for n in scan.ancestors(node)],
             'children': children, 'files': files, 'more_files': max(0, total_files - len(files)), 'more_bytes': rest,
         }
 
@@ -505,7 +521,7 @@ class Backend:
             return note['kind'] if note else 'unknown'
 
         def build(n, level):
-            item = {'id': n.id, 'name': n.name if n.parent else scan.path_of(n), 'size': n.size, 'kind': kind_of(n),
+            item = {'id': n.id, 'name': n.name, 'size': n.size, 'kind': kind_of(n),
                     'has_children': bool(n.children)}
             if level < depth and n.children and budget[0] > 0:
                 kids = []
@@ -549,7 +565,7 @@ class Backend:
                          'note': self.knowledge.annotate(f['path']), 'ai': self.file_ai.get(f['path'])})
             if len(rows) >= limit:
                 break
-        return {'files': rows, 'scanned_root': scan.root_path, 'scanned_at': scan.finished_at}
+        return {'files': rows, 'scanned_root': scan.root_path or scan.root.name, 'scanned_at': scan.finished_at}
 
     def large_files_for_ai(self, files: list) -> list[dict]:
         """Files of the 大文件 list in what analyst.review_files sends. Only files the scan listed, and none
@@ -728,9 +744,27 @@ class Backend:
         return self.jobs.start('ai_analyze', run, group='ai')
 
     def m_ai_results(self):
-        return sorted(self.ai_results.values(), key=lambda r: r['size'], reverse=True)
+        if self.scan is None:
+            return []
+        suggestions = [dict(s) for s in self.ai_results.values()]
+        suggestions += [k for k in self.analyst.known_cleanable(self.scan)
+                        if not any(paths.is_within(k['path'], s['path']) for s in suggestions)]
+        policy = self.policy()
+        for s in suggestions:
+            s['blocked'] = policy.reason(s['path'])
+            s['caution'] = policy.caution(s['path'])
+        checkup.assess_ai_dirs(suggestions, policy, self.env, self.analyst, self.scan,
+                              self.settings.get().get('checkup', {}).get('auto_threshold', checkup.DEFAULT_THRESHOLD))
+        return sorted(suggestions, key=lambda r: r['size'], reverse=True)
 
     # ------------------------------------------------------------------ duplicates
+    def m_dup_result(self):
+        if self.dups:
+            for g in self.dups['groups']:
+                for f in g['files']:
+                    f['ai'] = self.dup_ai.get(f['path'])
+        return self.dups
+
     def m_dup_default_roots(self):
         out = []
         for name in ('desktop', 'documents', 'downloads', 'pictures', 'videos', 'music'):
@@ -748,9 +782,12 @@ class Backend:
             raise UserError('请至少选择一个存在的文件夹')
         policy = self.policy()
         skip = checkup.system_skip(self.env, policy, roots)
+        containers = checkup.personal_roots(self.env, {}) + [d['root'] for d in self.m_drives()] \
+            + [self.env.get('USERPROFILE'), self.env.get('PUBLIC')]
 
         def run(job):
             result = find_duplicates(roots, min_size=int(float(min_size_mb) * 1024 * 1024), skip=skip,
+                                     container_roots=containers,
                                      cancel=job.cancel, progress=lambda p: job.update(**p))
             for g in result['groups']:
                 for f in g['files']:

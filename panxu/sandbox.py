@@ -241,6 +241,12 @@ def _layout() -> tuple[list[_Spec], list[tuple[str, float]]]:
     add(F(f'{R}/Code/CachedData/a1b2c3/chrome/js/index.js', 122 * MB, age=3))
     add(F(f'{R}/Code/logs/20260801T101010/main.log', 11 * MB, age=90))
     add(F(f'{R}/Code/User/settings.json', data=b'{"editor.fontSize": 14}', age=30))
+    for channel in ('Chrome Beta', 'Chrome Dev', 'Chrome SxS'):
+        add(F(f'{L}/Google/{channel}/User Data/Default/Cache/Cache_Data/demo', 1 * MB, age=40))
+        add(F(f'{L}/Google/{channel}/User Data/Default/Bookmarks', data=b'{"roots": {}}', age=40))
+    for app in ('Code - Insiders', 'obsidian'):
+        add(F(f'{R}/{app}/Code Cache/js/demo', 1 * MB, age=40))
+        add(F(f'{R}/{app}/IndexedDB/keep-data', data=b'KEEP USER DATA', age=40))
     add(F(f'{R}/Adobe/Common/Media Cache Files/clip_0001.cfa', 705 * MB, age=60))
     add(F(f'{R}/Slack/Cache/Cache_Data/data_3', 124 * MB, age=12))
     add(F(f'{u}/AppData/LocalLow/Intel/ShaderCache/cache.bin', 21 * MB, age=12))
@@ -680,23 +686,25 @@ class Sandbox:
         """Full paths of the simulated running programs (itemfacts.running_programs)."""
         return list(self.state.get('process_paths', []))
 
-    def recycle_dir(self) -> str:
-        return self.native('C/$Recycle.Bin/S-1-5-21-1000')
+    def recycle_dir(self, drive: str = 'C') -> str:
+        if drive not in DRIVES:
+            raise ValueError('不是演练磁盘')
+        return self.native(f'{drive}/$Recycle.Bin/S-1-5-21-1000')
 
     # like a real Recycle Bin that is too small for an item, and a user who answers Windows' 「直接删除?」 with yes:
     # anything larger than this many bytes is deleted for good (None: everything fits)
     recycle_limit: int | None = None
 
     def recycle_paths(self, items: list[str]) -> tuple[int, bool]:
-        bin_dir = self.recycle_dir()
-        os.makedirs(bin_dir, exist_ok=True)
         with self.lock:
             for path in items:
                 if not os.path.lexists(path):
                     continue
-                inside = any(paths.is_within(path, r) for r in self.drive_roots)
-                if not inside:
+                drive = next((d for d in DRIVES if paths.is_within(path, self.native(d))), None)
+                if drive is None:
                     continue  # never move anything from outside the simulation
+                bin_dir = self.recycle_dir(drive)
+                os.makedirs(bin_dir, exist_ok=True)
                 size = _tree_size(path)
                 if self.recycle_limit is not None and size > self.recycle_limit:
                     shutil.rmtree(path) if os.path.isdir(path) and not os.path.islink(path) else os.remove(path)
@@ -737,10 +745,12 @@ class Sandbox:
             return row['original']
 
     def empty_recycle_bin(self) -> bool:
+        from . import fsops
         with self.lock:
-            bin_dir = self.recycle_dir()
-            if os.path.isdir(bin_dir):
-                shutil.rmtree(bin_dir, onerror=_force_remove)
+            for drive in DRIVES:
+                bin_dir = self.recycle_dir(drive)
+                if os.path.isdir(bin_dir):
+                    fsops.delete_path(bin_dir)
             self.state['recycle'] = []
             self.save()
             return True

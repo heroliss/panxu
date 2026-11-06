@@ -85,8 +85,7 @@ class CheckupTest(TempDirTest):
             self.assertIsNone(item['blocked'], item['title'])
             self.assertFalse(item.get('personal'), 'personal files are never pre-selected: ' + item['title'])
             if item['source'] == 'rule':
-                from panxu.junk import RULES_BY_ID
-                self.assertTrue(RULES_BY_ID[item['rule']].default, item['title'])
+                self.assertGreaterEqual(int(item['score'] / 10 + 0.5), 8, item['title'])
             else:
                 self.assertEqual(item['source'], 'ai')
                 self.assertGreaterEqual(item['confidence'], 0.8)
@@ -97,6 +96,37 @@ class CheckupTest(TempDirTest):
         edge = next(i for i in plan['items'] if i['title'] == 'Microsoft Edge')
         self.assertIn('msedge.exe', edge['blocked'], 'a running browser blocks its rule')
         self.assertTrue(any(i['group'] == 'info' and i['title'] == '休眠文件' for i in plan['items']))
+
+    def test_checkup_scans_both_disks_and_never_reuses_space_when_disabled(self):
+        plan = self.checkup(use_ai=False)
+        scan = self.backend.scan
+        self.assertEqual({paths.key(r) for r in plan['coverage']['space']['roots']},
+                         {paths.key(r) for r in self.sb.drive_roots})
+        for root in self.sb.drive_roots:
+            self.assertIsNotNone(scan.find(root))
+        self.assertEqual(self.call('space_node', node_id=0)['node']['name'], '本机磁盘')
+        self.assertEqual(self.call('space_node', node_id=0)['files'], [])
+        result = self.call('space_result')
+        self.assertTrue(result['root']['virtual'])
+        self.assertEqual(result['scanned_at'], scan.finished_at)
+        self.assertEqual(result['stats']['roots'], scan.roots)
+        known = [s for s in self.call('ai_results') if s.get('source') == 'knowledge']
+        self.assertEqual(len(known), 2)
+        self.assertTrue(all(s['score'] == 40 and not s['selected'] for s in known))
+        self.assertTrue(self.call('dup_result')['stats']['roots'])
+        self.model.requests.clear()
+        second = self.checkup(space_scan=False, duplicates=False)
+        self.assertIsNone(second['coverage']['space'])
+        self.assertIsNone(second['coverage']['duplicates'])
+        self.assertFalse([row for req in self.model.requests if isinstance(req, list) for row in req if 'subdirs' in row])
+
+    def test_junk_tool_uses_the_same_rule_scores_and_threshold_as_home(self):
+        plan = self.checkup(use_ai=False, auto_threshold=5)
+        rows = {r['id']: r for r in self.wait(self.call('junk_scan'))}
+        for item in plan['items']:
+            if item['kind'] == 'rule':
+                self.assertEqual((item['score'], item['selected']),
+                                 (rows[item['rule']]['score'], rows[item['rule']]['selected']))
 
     def test_every_item_explains_its_score_and_selection(self):
         plan = self.checkup()
@@ -194,8 +224,8 @@ class CheckupTest(TempDirTest):
         sent = [row['path'] for req in self.model.requests if isinstance(req, list) for row in req if 'subdirs' in row]
         result = self.wait(self.call('ai_analyze', use_cache=False))
         temp = [s for s in result['suggestions'] if s['source'] == 'knowledge']
-        self.assertEqual([os.path.basename(s['path']) for s in temp], ['Temp'])
-        self.assertEqual((temp[0]['app'], temp[0]['verdict'], temp[0]['selected'], temp[0]['score']), ('临时文件夹', 'clean', False, 60))
+        self.assertEqual([os.path.basename(s['path']) for s in temp], ['Temp', 'Temp'])
+        self.assertEqual((temp[0]['app'], temp[0]['verdict'], temp[0]['selected'], temp[0]['score']), ('临时文件夹', 'clean', False, 40))
         self.assertIn('没有问 AI', temp[0]['basis'][0])
         self.assertFalse([p for p in sent if p.lower().endswith('\\temp')], 'the model is not asked about it')
         self.assertFalse([i for i in plan['items'] if i['source'] == 'ai' and i['paths'] and i['paths'][0] == temp[0]['path']])
@@ -293,7 +323,8 @@ class CheckupTest(TempDirTest):
             if 'rule:' + rule in by_id:
                 self.assertFalse(by_id['rule:' + rule]['selected'], rule)
         guessed = {i['title']: i for i in plan['items'] if i['source'] == 'heuristic'}
-        self.assertTrue(guessed['IntelliJIdea2021.1']['selected'], 'an old version next to a newer one')
+        self.assertTrue(guessed['caches']['selected'], 'offer the old cache separately from rule-covered logs')
+        self.assertIn('IntelliJIdea2021.1', guessed['caches']['paths'][0])
         game = guessed['OldGameStudio']
         self.assertFalse(game['selected'], 'it holds SaveGames')
         self.assertIn('存档', game['basis'][-1])
@@ -380,7 +411,7 @@ class CheckupTest(TempDirTest):
         self.assertEqual(by_name['delivery_notes.md']['score'], 35)
         self.assertTrue(any('只看了文件名' in line for line in by_name['delivery_notes.md']['basis']))
         self.assertEqual(by_name['notes - 副本.md']['score'], 85, 'an identical copy needs no content to be judged')
-        self.assertEqual(scores({**said, 'with_content': True})['delivery_notes.md']['score'], 65)
+        self.assertEqual(scores({**said, 'with_content': True})['delivery_notes.md']['score'], 55)
         self.assertNotIn('pack.rar', by_name, 'an archive 盘序 could not check against its folder is not offered')
         self.assertNotIn('plan.md', by_name, 'a 2 KB file frees nothing worth a place in the plan')
 
@@ -470,7 +501,7 @@ class CheckupTest(TempDirTest):
         self.assertFalse(plan['ai']['used'])
         guessed = {i['title']: i for i in plan['items'] if i['source'] == 'heuristic'}
         self.assertIn('OldGameStudio', guessed, 'no installed program and untouched for years')
-        self.assertIn('IntelliJIdea2021.1', guessed, 'a newer IntelliJIdea2025.2 sits next to it')
+        self.assertIn('caches', guessed, 'the old-version cache stays visible without also offering its rule-covered logs')
         self.assertNotIn('FooSoft', guessed, 'FooSoft is still installed')
         for item in guessed.values():
             self.assertFalse(item['selected'])

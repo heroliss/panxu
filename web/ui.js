@@ -203,8 +203,7 @@
   };
 
   // One selection for the whole app: ticking a junk rule or a file is the same tick on 首页 and on its
-  // own page. Junk rules by id, files and folders by path, anything else (duplicate groups, startup
-  // items) by plan item id.
+  // own page. Junk rules by id, files/folders/duplicate copies by path, startup items by plan id.
   PX.sel = {
     rules: new Set(), paths: new Set(), items: new Set(),
     keyOf(it) {
@@ -212,8 +211,17 @@
       if (it.kind === 'paths' && it.paths && it.paths.length === 1) return ['paths', it.paths[0]];
       return ['items', it.id];
     },
-    has(it) { const [s, k] = this.keyOf(it); return this[s].has(k); },
-    set(it, on) { const [s, k] = this.keyOf(it); if (on) this[s].add(k); else this[s].delete(k); },
+    has(it) {
+      if ((it.kind === 'paths' || it.kind === 'dup') && it.paths && it.paths.length) return it.paths.every((p) => this.paths.has(p));
+      const [s, k] = this.keyOf(it); return this[s].has(k);
+    },
+    set(it, on) {
+      if ((it.kind === 'paths' || it.kind === 'dup') && it.paths && it.paths.length) {
+        for (const p of it.paths) { if (on) this.paths.add(p); else this.paths.delete(p); }
+        return;
+      }
+      const [s, k] = this.keyOf(it); if (on) this[s].add(k); else this[s].delete(k);
+    },
     replace(set, values) { set.clear(); for (const v of values) set.add(v); },
   };
 
@@ -458,7 +466,7 @@
   const DECISION = /^(自动勾选|没有自动勾选|没有勾选)/;
   // reasons that hold an item back or ask for care (checkup.py's guards and duplicates.removal_score), as opposed to
   // evidence for cleaning it (「可能是旧版本留下的」 is evidence)
-  const CAUTION = /还有改动|可能是存档|可能是程序本身|仍在使用|只能由你|由你决定|无法恢复|默认不勾|各自引用|出问题|有文件提到|可能引用|素材来源|请你|不能运行|没有经过|拿不准|不到 ?\d/;
+  const CAUTION = /还有改动|可能是存档|可能是程序本身|仍在使用|只能由你|由你决定|无法恢复|默认不勾|各自引用|出问题|有文件提到|可能引用|素材来源|请你|不能运行|没有经过|拿不准|不到 ?\d|没有完整|无法读取|很快重建|成本较高|仍可能需要|不能据此|尚未|不代表/;
   PX.basisKind = (line) => (/^AI/.test(line) ? 'ai' : CAUTION.test(line) ? 'warn' : 'plus');
   // what a cleanup does, in one line: [icon, what, the one thing to know about it]
   PX.ACTIONS = { delete: ['trash', '永久删除', '不经过回收站'], recycle: ['trash', '移到回收站', '需要时可以还原'],

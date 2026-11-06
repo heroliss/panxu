@@ -30,7 +30,7 @@ DEFAULTS = {
         'timeout': 120,
     },
     'checkup': {
-        'space_scan': True,      # scan the system drive during the one-click check-up
+        'space_scan': True,      # scan fixed local disks and explicitly added/redirected personal roots
         'duplicates': True,
         'use_ai': True,          # ask the model when a key is configured
         'auto_threshold': 5,     # 勾选门槛 0-10: pre-tick eligible items scoring at least this (稳妥 8, 积极 5)
