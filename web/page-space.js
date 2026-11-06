@@ -113,6 +113,7 @@
 
   async function start(target) {
     if (state.status === 'scanning') { PX.go('space'); return; }
+    if (PX.workBlocked()) return;
     state.target = target;
     state.status = 'scanning';
     state.progress = {};

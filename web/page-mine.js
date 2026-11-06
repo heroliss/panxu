@@ -20,6 +20,7 @@
 
   async function scan(roots) {
     if (state.status === 'scanning') return;
+    if (PX.workBlocked()) return;
     state.status = 'scanning';
     state.progress = {};
     draw();

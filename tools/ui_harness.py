@@ -1,14 +1,16 @@
 """Development only: the real UI against the real backend in a 演练环境, in any browser.
 
     python tools/ui_harness.py [--port 8766] [--sandbox DIR] [--live]
+    python tools/ui_harness.py --native [--stage-delay 2]
 
 Serves the app's HTML bundle on http://127.0.0.1:PORT/ with a shim that sends
 ``pywebview.api.call`` to ``Bridge.call`` over HTTP, so pages, jobs and the
 backend can be checked together without pywebview. Without --live a scripted
 model answers (no network). The simulation is kept in %LOCALAPPDATA%\\PanXu\\ui-harness
 (rebuild it from the banner). This is a test tool: the app itself never runs a
-web server (see docs/DESIGN.md). Folder pickers and window functions are not
-available here.
+web server (see docs/DESIGN.md). --native opens the same desktop window in the
+simulation, without an HTTP server. Folder pickers and window functions are
+only available in that native mode.
 """
 from __future__ import annotations
 
@@ -17,6 +19,7 @@ import json
 import os
 import secrets
 import sys
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -43,13 +46,29 @@ def main():
     parser.add_argument('--port', type=int, default=8766)
     parser.add_argument('--sandbox', metavar='DIR', help='use (and keep) this simulation folder')
     parser.add_argument('--live', action='store_true', help='use the configured real model')
+    parser.add_argument('--native', action='store_true', help='open an isolated native window instead of a browser server')
+    parser.add_argument('--stage-delay', type=float, default=0, help='development only: pause at each checkup stage (0-2 seconds)')
     args = parser.parse_args()
 
     # one reusable folder (the server is usually stopped by killing it), inside PanXu's own protected data
     # folder rather than %TEMP%, where its tens of GB of sparse files would inflate a real junk scan
     sb = sandbox.Sandbox(args.sandbox or os.path.join(default_data_dir(), 'ui-harness'))
     sandbox.activate(sb)
-    backend = Backend(os.path.join(sb.root, 'data'), sandbox=sb)
+    window_ref = {}
+    backend = Backend(os.path.join(sb.root, 'data'), sandbox=sb, window_provider=lambda: window_ref.get('w'))
+    if args.stage_delay:
+        start = backend.jobs.start
+        def delayed_start(kind, fn, *a, **kw):
+            def delayed(job):
+                update = job.update
+                def progress(**values):
+                    update(**values)
+                    if 'stage' in values:
+                        time.sleep(max(0, min(args.stage_delay, 2)))
+                job.update = progress
+                return fn(job)
+            return start(kind, delayed, *a, **kw)
+        backend.jobs.start = delayed_start
     if args.live:
         key, source = live_key()
         if not key:
@@ -63,6 +82,14 @@ def main():
         backend.client_or_none = lambda purpose='classify': model
         backend._client = lambda purpose='classify': model
         backend.settings.set_secret('ai_key:' + backend.settings.get()['ai']['preset'], 'scripted')
+    if args.native:
+        import webview
+        from panxu.app import create_app_window
+        window_ref['w'] = create_app_window(backend, '盘序（窗口演练）')
+        webview.start(gui='edgechromium', storage_path=os.path.join(sb.root, 'data', 'native-webview'))
+        backend.jobs.stop()
+        sandbox.deactivate()
+        return
     bridge = Bridge(backend)
     token = secrets.token_hex(8)  # other local pages cannot drive the backend without it
     page = ui_bundle.build().replace('<!-- mock -->', SHIM % token).encode('utf-8')

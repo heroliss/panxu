@@ -23,7 +23,6 @@
 
   PX.renderRail = function () {
     const rail = PX.clear(document.getElementById('rail'));
-    rail.appendChild(h('div.brand', h('b', '盘序'), h('span', 'v' + (PX.state.init ? PX.state.init.version : ''))));
     for (const [section, entries] of NAV) {
       if (section) rail.appendChild(h('div.nav-section', section));
       for (const [id, label, icon] of entries) {
@@ -104,6 +103,8 @@
     PX.renderRail();
     PX.clear(main);
     if (PX.state.init && PX.state.init.sandbox) main.appendChild(PX.sandbox.banner());
+    main.appendChild(h('div.work-status', { id: 'work-status', hidden: true }));
+    if (PX.renderActivity) PX.renderActivity();
     const root = main.appendChild(h('div.page'));
     main.scrollTop = 0;
     try {
@@ -268,6 +269,7 @@
       return;
     }
     PX.applyTheme(PX.state.init.settings.theme);
+    await PX.startActivity();
     PX.go('home');
   }
   document.addEventListener('DOMContentLoaded', start);

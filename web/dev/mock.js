@@ -94,10 +94,11 @@
   function status(id) {
     const j = jobs[id];
     if (!j) return { status: 'missing' };
+    if (j.snapshot && j.snapshot.status !== 'running') return j.snapshot;
     j.i += 1;
-    if (j.cancel) return { id, status: 'cancelled' };
-    if (j.i < j.steps) return { id, status: 'running', progress: j.progressFn ? j.progressFn(j.i / j.steps) : {} };
-    return { id, status: 'done', result: typeof j.result === 'function' ? j.result() : j.result };
+    if (j.cancel) return j.snapshot = { id, kind: j.kind, status: 'cancelled' };
+    if (j.i < j.steps) return j.snapshot = { id, kind: j.kind, status: 'running', progress: j.progressFn ? j.progressFn(j.i / j.steps) : {} };
+    return j.snapshot = { id, kind: j.kind, status: 'done', result: typeof j.result === 'function' ? j.result() : j.result };
   }
 
   const settings = { theme: 'system', ai: { preset: 'deepseek', base_url: 'https://api.deepseek.com', model: 'deepseek-flash', protocol: 'openai',
@@ -328,6 +329,8 @@
   ];
 
   const handlers = {
+    activity: () => ({ jobs: Object.entries(jobs).filter(([, j]) => j.kind !== 'ai_ask' && (!j.snapshot || j.snapshot.status === 'running'))
+      .map(([id, j]) => j.snapshot || { id, kind: j.kind, status: 'running', progress: {} }), window: { available: false } }),
     checkup: () => {
       const opts = { ...settings.checkup };
       const roots = PX.checkupDriveRoots(handlers.drives(), opts);
@@ -600,6 +603,10 @@
     await new Promise((r) => setTimeout(r, 40));
     const fn = handlers[method];
     if (!fn) return { ok: false, error: '未知操作：' + method };
-    try { return { ok: true, data: fn(params || {}) }; } catch (e) { return { ok: false, error: e.message }; }
+    try {
+      const data = fn(params || {});
+      if (typeof data === 'string' && jobs[data]) jobs[data].kind = method;
+      return { ok: true, data };
+    } catch (e) { return { ok: false, error: e.message }; }
   } } };
 })();

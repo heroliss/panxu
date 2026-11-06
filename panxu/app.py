@@ -109,6 +109,18 @@ def _self_command() -> tuple[str, list[str]]:
     return sys.executable, [script]
 
 
+def create_app_window(backend, title):
+    """Shared by the desktop app and the isolated native UI harness."""
+    import webview
+    window = webview.create_window(title, html=ui_bundle.build(), js_api=Bridge(backend), width=1320, height=860,
+                                   min_size=(1040, 700), text_select=True, background_color='#ECEEEB',
+                                   frameless=True, easy_drag=False, shadow=True)
+    backend.window_controls.bind(window)
+    window.events.closing += lambda: confirm_close(
+        backend, lambda text: winapi.ask_yes_no(text, APP_NAME, winapi.find_window(title)))
+    return window
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description='盘序：Windows 磁盘清理助手')
     parser.add_argument('--data-dir')
@@ -170,14 +182,9 @@ def main(argv=None):
 
     backend = Backend(data_dir, window_provider=lambda: window_ref.get('w'), relaunch=relaunch, sandbox=sb,
                       legacy_key_paths=None if sb else legacy_key_paths(data_dir))
-    html = ui_bundle.build()
     title = APP_NAME + ('（演练环境）' if sb else '')
-    window = webview.create_window(title, html=html, js_api=Bridge(backend), width=1320, height=860,
-                                   min_size=(1040, 700), text_select=True, background_color='#F4F5F7')
+    window = create_app_window(backend, title)
     window_ref['w'] = window
-
-    window.events.closing += lambda: confirm_close(
-        backend, lambda text: winapi.ask_yes_no(text, APP_NAME, winapi.find_window(title)))
     # Separate WebView2 profile folders: an elevated and a normal WebView2 must
     # never share one user-data folder.
     storage = os.path.join(data_dir, 'webview-admin' if winapi.is_admin() else 'webview')

@@ -203,6 +203,7 @@
   }
 
   async function scanDups() {
+    if (PX.workBlocked()) return;
     dup.status = 'scanning';
     dup.progress = {};
     dup.result = null;

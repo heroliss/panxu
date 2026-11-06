@@ -9,6 +9,7 @@
 
   async function loadResidues(scan = false) {
     if (state.residueBusy) return;
+    if (scan && PX.workBlocked()) return;
     state.residueBusy = true;
     draw();
     try {

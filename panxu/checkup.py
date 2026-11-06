@@ -835,6 +835,12 @@ def run(backend, job, options: dict | None = None) -> dict:
               and (s[0] != 'dups' or opts.get('duplicates', True)) and (s[0] != 'ai' or client is not None)]
     total = len(stages)
     timings = {}
+    completed = []
+    job.update(completed=[])
+
+    def ready(*pages):
+        completed.extend(p for p in pages if p not in completed)
+        job.update(completed=list(completed))
     # how long each stage took here last time (seconds): the progress bar's proportions and the time estimate
     learned = load_timings(backend.data_dir)
     expected = {s: learned[s] for s, _ in stages if s in learned}
@@ -859,6 +865,7 @@ def run(backend, job, options: dict | None = None) -> dict:
     junk_rows = backend.junk.scan(cancel=job.cancel,
                                   progress=lambda i, n, name: part(i / n if n else None, detail=name, done=i, total=n))
     backend.junk_rows = junk_rows
+    ready('junk')
 
     scan = None  # an earlier tool-page scan must not leak into a new, space-disabled check-up
     if opts.get('space_scan', True):
@@ -871,6 +878,7 @@ def run(backend, job, options: dict | None = None) -> dict:
             count=f'已统计 {p.get("files", 0):,} 个文件'))
         backend.scan = scan
         backend.ai_results = {}
+        ready('space', 'large')
 
     broad_roots = insights_roots(env, settings, drives, whole_drives=whole_drives)
     stage('insights')
@@ -883,6 +891,7 @@ def run(backend, job, options: dict | None = None) -> dict:
     for finding in findings:
         for file in finding['files']:
             backend.file_ai.pop(file['path'], None)
+    ready('mine')
 
     if opts.get('duplicates', True):
         stage('dups')
@@ -901,6 +910,7 @@ def run(backend, job, options: dict | None = None) -> dict:
                 f['blocked'] = policy.reason(f['path'])
         backend.dups = dups
         backend.dup_ai = {}  # a new scan must not reuse AI judgments when the user turned review off
+        ready('dups')
 
     ai_info = {'used': False, 'enabled': ai_enabled, 'scopes': [], 'errors': [], 'usage': None}
     file_ai, startup_ai = {}, {}
@@ -1009,6 +1019,7 @@ def run(backend, job, options: dict | None = None) -> dict:
                                    'scanned_bytes': scan.stats.get('bytes') if scan else None}})
     plan['summary'] = summarize(plan)
     backend.plan = plan
+    ready('apps', 'startup')
     starts = sorted(timings.items(), key=lambda kv: kv[1]) + [('', time.time())]
     save_timings(backend.data_dir, {k: max(0.1, round(starts[i + 1][1] - t, 1)) for i, (k, t) in enumerate(starts[:-1])})
     return plan

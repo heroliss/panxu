@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import time
+from contextlib import nullcontext
 
 from . import APP_NAME, __version__, ai_client, checkup, fsops, insights, itemfacts, paths, winapi
 from .analyst import FILE_BATCH, Analyst, VerdictCache
@@ -22,7 +23,8 @@ from .analyst import _fmt_size as fmt_size
 from .apps import KIND_LABELS as APP_KINDS
 from .apps import AppManager
 from .duplicates import find_duplicates, verify_unchanged
-from .jobs import JobManager, UserError
+from .jobs import BusyError, JobManager, UserError
+from .windowing import WindowControls
 from .junk import GROUPS, RULES_BY_ID, JunkEngine
 from .knowledge import Knowledge
 from .oplog import OperationLog
@@ -32,6 +34,13 @@ from .settings import Settings
 from .startup import StartupManager
 
 log = logging.getLogger(__name__)
+
+# These operations replace shared results or change the files/system described by those results.
+# Keep their input reads and job registration together; viewing results and asking the adviser remain available.
+SERIAL_METHODS = frozenset('''checkup junk_scan space_scan insights_scan dup_scan app_residues_scan
+    ai_analyze large_ai_review ai_review_files dup_ai_review ai_explain apps_measure_all app_measure app_leftovers
+    junk_clean delete_paths dup_delete insights_delete plan_execute plan_dup_choose app_uninstall startup_set
+    service_set hibernate_set revert sandbox_reset sandbox_restore ai_clear_cache'''.split())
 
 SETTINGS_URIS = {
     'storage': 'ms-settings:storagesense',
@@ -73,7 +82,7 @@ class Backend:
             except Exception:  # noqa: BLE001 - a broken old file must not stop the program
                 log.exception('importing the 0.x API key failed')
         self.oplog = OperationLog(os.path.join(data_dir, 'history.jsonl'))
-        self.jobs = JobManager()
+        self.jobs = JobManager(synchronize=True)
         self.knowledge = Knowledge(self.env)
         self.junk = JunkEngine(self.env, self.admin, oplog=self.oplog,
                                excluded=lambda: self.settings.get().get('excluded_paths', []) + self.app_dirs)
@@ -101,6 +110,7 @@ class Backend:
         self._icons: dict[tuple, str | None] = {}
         self._type_icons: dict[str, str | None] = {}
         self._window = window_provider
+        self.window_controls = WindowControls(window_provider)
         self._relaunch = relaunch
         self.app_dirs = [os.path.dirname(os.path.abspath(__file__)), data_dir]
         if getattr(sys, 'frozen', False):
@@ -279,6 +289,13 @@ class Backend:
 
     def m_job(self, job_id: str):
         return self.jobs.status(job_id)
+
+    def m_activity(self):
+        return {'jobs': [j for j in self.jobs.running() if j.get('synchronized')],
+                'window': self.window_controls.state()}
+
+    def m_window_action(self, action: str):
+        return self.window_controls.perform(action)
 
     def m_cancel_job(self, job_id: str):
         return self.jobs.cancel(job_id)
@@ -1470,8 +1487,11 @@ class Bridge:
         if handler is None:
             return {'ok': False, 'error': f'未知操作：{method}'}
         try:
-            data = handler(**(params or {})) if isinstance(params, dict) else handler()
+            with self._backend.jobs.submission() if method in SERIAL_METHODS else nullcontext():
+                data = handler(**(params or {})) if isinstance(params, dict) else handler()
             return {'ok': True, 'data': data}
+        except BusyError as exc:
+            return {'ok': False, 'error': str(exc), 'busy': exc.job}
         except UserError as exc:
             return {'ok': False, 'error': str(exc)}
         except TypeError as exc:

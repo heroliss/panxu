@@ -6,6 +6,7 @@ import threading
 import time
 import traceback
 import uuid
+from contextlib import contextmanager
 
 from . import winapi
 from .fsops import Cancelled
@@ -17,11 +18,19 @@ class UserError(Exception):
     """An error whose message is meant for the user (Chinese, actionable)."""
 
 
+class BusyError(UserError):
+    def __init__(self, job):
+        self.job = job.snapshot()
+        super().__init__('首页一键体检正在进行，本页会复用体检结果，无需重复检查。' if job.kind == 'checkup'
+                         else '另一项检查或处理正在进行，请等它完成后再开始；已有结果仍可查看。')
+
+
 class Job:
-    def __init__(self, kind: str, group: str | None):
+    def __init__(self, kind: str, group: str | None, synchronized: bool = False):
         self.id = uuid.uuid4().hex[:10]
         self.kind = kind
         self.group = group
+        self.synchronized = synchronized
         self.status = 'running'
         self.progress: dict = {}
         self.result = None
@@ -39,6 +48,7 @@ class Job:
         with self._lock:
             return {
                 'id': self.id, 'kind': self.kind, 'status': self.status,
+                'synchronized': self.synchronized,
                 'progress': dict(self.progress), 'error': self.error,
                 'elapsed': round((self.finished or time.time()) - self.started, 1),
                 'result': self.result if self.status == 'done' else None,
@@ -48,20 +58,36 @@ class Job:
 class JobManager:
     KEEP_SECONDS = 600
 
-    def __init__(self):
+    def __init__(self, synchronize: bool = False):
         self._jobs: dict[str, Job] = {}
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
+        self.synchronize = synchronize
+
+    def _check_busy(self):
+        for job in self._jobs.values():
+            if job.synchronized and job.status == 'running':
+                raise BusyError(job)
+
+    @contextmanager
+    def submission(self):
+        """Keep input reads and job registration atomic with respect to other submissions."""
+        with self._lock:
+            self._check_busy()
+            yield
 
     def start(self, kind: str, fn, *args, group: str | None = None, **kwargs) -> str:
         """Run ``fn(job, *args, **kwargs)`` in a thread. ``group`` serialises
         jobs that must not overlap (e.g. anything that deletes)."""
         with self._lock:
             self._prune()
+            synchronized = self.synchronize and kind != 'ai_ask'
+            if synchronized:
+                self._check_busy()
             if group:
                 for other in self._jobs.values():
                     if other.group == group and other.status == 'running':
                         raise UserError('另一项清理操作正在进行，请等它完成后再试。')
-            job = Job(kind, group)
+            job = Job(kind, group, synchronized)
             self._jobs[job.id] = job
 
         def runner():

@@ -67,12 +67,13 @@
     try {
       const rows = await PX.api.call('junk_result');
       if (rows !== null) { adopt(rows); rerender(true); }
-      else await scan();
+      else if (!PX.home || PX.home.state.status !== 'running') await scan();
     } catch (e) { PX.fail(e); }
   }
 
   async function scan() {
     if (state.status === 'scanning' || state.status === 'cleaning') return;
+    if (PX.workBlocked()) return;
     state.status = 'scanning';
     state.progress = {};
     rerender();

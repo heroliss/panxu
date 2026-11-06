@@ -70,6 +70,7 @@
 
   async function checkup() {
     if (state.status === 'running' || state.status === 'executing' || state.savingOption) return;
+    if (PX.workBlocked()) return;
     state.status = 'running';
     state.activeOptions = { ...(PX.state.init.settings.checkup || {}) };
     const opts = state.activeOptions;
@@ -82,10 +83,8 @@
     draw();
     try {
       const plan = await PX.api.run('checkup', { options: state.activeOptions }, (p) => { state.progress = p; draw(true); }, (id) => { state.jobId = id; });
-      state.planId = null;
       adopt(plan);
       PX.state.init.drives = await PX.api.call('drives');
-      if (PX.junk) PX.junk.invalidate();
     } catch (e) {
       state.status = state.plan ? 'done' : 'idle';
       if (!e.cancelled) PX.fail(e);
@@ -735,7 +734,7 @@
   }
   const waitingForPrograms = () => items().some((it) => it.status === 'pending' && it.blocked && it.blocked.startsWith('请先关闭'));
 
-  PX.home = { state, checkup, applyRunning, waitingForPrograms };
+  PX.home = { state, checkup, adopt, applyRunning, waitingForPrograms };
   // the tool pages may have cleaned something since: always take the plan's current statuses
   PX.pages.home = { render(container) { root = container; draw(); loadExisting(); } };
 })();
