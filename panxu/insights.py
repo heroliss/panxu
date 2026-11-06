@@ -46,6 +46,14 @@ VERSION_CATEGORIES = {'document', 'image', 'video', 'audio', 'archive'}
 MAX_FILES = 400_000
 # sub-folders programs bring along (Qt, Chromium / Electron, Java): next to an .exe they mark a program's folder
 RUNTIME_DIRS = {'platforms', 'plugins', 'imageformats', 'locales', 'swiftshader', 'jre', 'runtime'}
+# Even a bad installer registration must not hide a general storage container.
+# Only AppManager's resolved app-owned folder is considered, never InstallLocation.
+GENERIC_PROGRAM_ROOTS = {'app', 'apps', 'application', 'applications', 'programs', 'program files',
+                         'program files (x86)', 'common files', 'programdata', 'appdata', 'windows',
+                         'system32', 'syswow64', 'data', 'users', 'user', 'public', 'shared', 'storage',
+                         'files', 'documents', 'downloads', 'desktop', 'pictures', 'videos', 'music',
+                         'tools', 'software', 'games', 'projects', '资料', '文件', '文档', '下载', '桌面',
+                         '图片', '视频', '音乐', '用户', '公共', '共享', '应用', '应用程序', '软件', '工具', '游戏', '项目'}
 
 KIND_INFO = {
     # kind: (label, what to do, removable by default rule)
@@ -318,11 +326,13 @@ def _hash(path: str, limit: int = 64 * 1024 * 1024) -> str | None:
         with open(fsops.long_path(path), 'rb') as fh:
             read = 0
             while read < limit:
-                block = fh.read(1024 * 1024)
+                block = fh.read(min(1024 * 1024, limit - read))
                 if not block:
                     break
                 h.update(block)
                 read += len(block)
+            if read >= limit and fh.read(1):
+                return None  # a prefix match must never be described as identical content
     except OSError:
         return None
     return h.hexdigest()
@@ -368,41 +378,165 @@ class Insights:
         self.stats: dict = {}
 
     # -- collection ------------------------------------------------------------------
-    def collect(self, roots: list[str], skip=None, cancel=None, progress=None) -> 'Insights':
+    def collect(self, roots: list[str], skip=None, cancel=None, progress=None,
+                container_roots: list[str] | tuple = ()) -> 'Insights':
         started = time.time()
+        self.files = []
+        self.bundle_dirs = []
+        self.program_dirs = []
         self.roots = []
-        seen = set()
+        requested, root_details, requested_keys = [], [], set()
+        for root in roots:
+            if not isinstance(root, str) or not root:
+                continue
+            root = os.path.abspath(root)
+            k = paths.key(root)
+            if k in requested_keys:
+                continue
+            requested_keys.add(k)
+            requested.append(root)
+            root_details.append({'path': root, 'status': 'not_started'})
+        # A Desktop/home/drive may hold a stray executable next to personal
+        # files. An explicitly chosen ordinary program folder gets no exemption.
+        containers = {paths.key(p) for p in container_roots if p}
+        containers.update(paths.key(self.env[n]) for n in ('USERPROFILE', 'PUBLIC', 'SystemDrive') if self.env.get(n))
+        home = self.env.get('USERPROFILE')
+        if home:
+            containers.update(paths.key(os.path.join(home, n))
+                              for n in ('Desktop', 'Documents', 'Downloads', 'Pictures', 'Videos', 'Music'))
+
+        def container(path):
+            return paths.key(path) in containers or os.path.dirname(path) == path
+
+        program_keys = set()
+        installed_program_dirs = 0
+        app_list = getattr(self.apps, 'list', None)
+        if callable(app_list):
+            try:
+                app_rows = list(app_list())
+            except Exception:  # noqa: BLE001 - unavailable app registration leaves the existing heuristics in place
+                app_rows = []
+            for app in app_rows:
+                if not isinstance(app, dict):
+                    continue
+                own = app.get('own_location')
+                if not isinstance(own, str) or not own or not os.path.isabs(own):
+                    continue
+                own = os.path.abspath(own)
+                k = paths.key(own)
+                if k in program_keys or container(own) or any(paths.is_within(c, own) for c in containers):
+                    continue
+                if os.path.basename(own).casefold() in GENERIC_PROGRAM_ROOTS:
+                    continue
+                try:
+                    st = os.lstat(fsops.long_path(own))
+                except OSError:
+                    continue
+                if not stat.S_ISDIR(st.st_mode) or fsops.st_is_link(st):
+                    continue
+                self.program_dirs.append(own)
+                program_keys.add(k)
+            installed_program_dirs = len(self.program_dirs)
+
+        visited = set()
         dir_children: dict[str, list[str]] = {}
         dir_has_files: dict[str, bool] = {}
         self.project_dirs = projects = []
-        cloud = 0
-        for root in roots:
-            k = paths.key(root)
-            if k in seen or not os.path.isdir(root) or any(paths.is_within(root, r) for r in self.roots):
+        cloud = directories = 0
+        truncated = False
+        last_report = float('-inf')
+        current = ''
+
+        def report(path, force=False):
+            nonlocal last_report, current
+            current = path
+            now = time.monotonic()
+            if progress and (force or now - last_report >= 0.2):
+                progress({'files': len(self.files), 'dirs': directories, 'current': path,
+                          'truncated': truncated, 'limit': MAX_FILES, 'program_dirs': len(self.program_dirs)})
+                last_report = now
+
+        for detail in root_details:
+            root = detail['path']
+            fsops.check_cancel(cancel)
+            if not os.path.isdir(root):
+                detail['status'] = 'missing'
                 continue
-            seen.add(k)
             self.roots.append(root)
+        for detail in root_details:
+            root = detail['path']
+            if detail['status'] == 'missing':
+                continue
+            fsops.check_cancel(cancel)
+            report(root)
+            if fsops.path_is_link(root):
+                detail['status'] = 'link'
+                continue
+            if skip and skip(root):
+                detail['status'] = 'excluded'
+                continue
+            if paths.within_any(root, program_keys):
+                detail['status'] = 'program'
+                continue
+            if paths.key(root) in visited:
+                detail['status'] = 'covered'
+                continue
+            detail['status'] = 'scanned'
             for dirpath, files, dirs in fsops.walk_files(root, cancel):
-                if skip and dirpath != root and skip(dirpath):
+                k = paths.key(dirpath)
+                if k in visited:
                     dirs.clear()
                     continue
-                if dirpath != root and is_program_dir(files, dirs):
+                visited.add(k)
+                directories += 1
+                report(dirpath)
+                if skip and skip(dirpath):
+                    dir_has_files[dirpath] = True
+                    dirs.clear()
+                    continue
+                if paths.within_any(dirpath, program_keys):
+                    dir_has_files[dirpath] = True
+                    dirs.clear()
+                    continue
+                if not container(dirpath) and is_program_dir(files, dirs):
                     self.program_dirs.append(dirpath)
+                    program_keys.add(k)
+                    if any(paths.key(r) != k and paths.key(r) in visited and paths.is_within(r, dirpath)
+                           for r in self.roots):
+                        # A narrow extra root may have been read before its
+                        # parent was discovered to be a portable application.
+                        self.files[:] = [f for f in self.files if not paths.is_within(f.path, dirpath)]
+                        for prior in root_details:
+                            if prior['status'] in ('scanned', 'covered') and paths.is_within(prior['path'], dirpath):
+                                prior['status'] = 'program'
+                    if dirpath == root:
+                        detail['status'] = 'program'
                     dir_has_files[dirpath] = True  # not walked further: not empty, nothing inside is offered
                     dirs.clear()
                     continue
-                kept = [d for d in dirs if not managed_dir(d.name)]
-                has = len(kept) != len(dirs)  # holds a program-managed folder (node_modules, .git...): not empty
-                if dirpath != root and is_project_dir(files, dirs):  # a stray package.json on the Desktop is no project
+                kept = [d for d in dirs if not managed_dir(d.name)
+                        and paths.key(os.path.join(dirpath, d.name)) not in visited
+                        and not paths.within_any(os.path.join(dirpath, d.name), program_keys)
+                        and not (skip and skip(os.path.join(dirpath, d.name)))]
+                # A pruned branch is not empty: it may have been scanned through
+                # an earlier personal root, or may be a protected/managed folder.
+                has = len(kept) != len(dirs)
+                if not container(dirpath) and is_project_dir(files, dirs):
                     projects.append(dirpath)
                 dirs[:] = kept
                 dir_children[dirpath] = [os.path.join(dirpath, d.name) for d in dirs]
                 program = False
-                for entry in files:
+                for index, entry in enumerate(files):
+                    fsops.check_cancel(cancel)
+                    if index % 256 == 0:
+                        report(dirpath)
+                    has = True
                     if entry.name.lower() in IGNORED_FILES:
                         continue
+                    file_path = os.path.join(dirpath, entry.name)
+                    if skip and skip(file_path):
+                        continue
                     program = program or entry.name.lower().endswith(('.exe', '.dll'))
-                    has = True
                     try:
                         st = entry.stat(follow_symlinks=False)
                     except OSError:
@@ -412,17 +546,25 @@ class Insights:
                     if getattr(st, 'st_file_attributes', 0) & winapi.CLOUD_ATTRIBUTES:
                         cloud += 1
                         continue
-                    self.files.append(FileRec(os.path.join(dirpath, entry.name), entry.name, dirpath, st.st_size,
+                    if len(self.files) >= MAX_FILES:
+                        truncated = True
+                        dirs.clear()
+                        break
+                    self.files.append(FileRec(file_path, entry.name, dirpath, st.st_size,
                                               st.st_mtime, fsops.age_time(st), st.st_atime,
                                               paths.category_of(entry.name), root, fsops.file_size(entry.path, st)))
+                    if len(self.files) >= MAX_FILES:
+                        truncated = True
+                        dirs.clear()
+                        break
                 dir_has_files[dirpath] = has
-                if program and dirpath != root:
+                if program and not container(dirpath):
                     # a program's folder (portable tool, unpacked package): its documents belong to the program
                     self.bundle_dirs.append(dirpath)
-                if progress and len(self.files) % 2000 == 0:
-                    progress({'files': len(self.files), 'current': dirpath})
-                if len(self.files) >= MAX_FILES:
+                if truncated:
                     break
+            if truncated:
+                break
         # topmost folders with nothing in them at any depth
         empty: dict[str, bool] = {}
 
@@ -430,6 +572,16 @@ class Insights:
             if d in empty:
                 return empty[d]
             value = not dir_has_files.get(d, True) and all(is_empty(c) for c in dir_children.get(d, []))
+            if value:
+                # walk_files omits links, and an inaccessible/new entry must not
+                # turn a folder into an "empty folder" recommendation.
+                known = {paths.key(c) for c in dir_children.get(d, [])}
+                try:
+                    with os.scandir(fsops.long_path(d)) as entries:
+                        value = all(not fsops.is_link(e) and e.is_dir(follow_symlinks=False)
+                                    and paths.key(os.path.join(d, e.name)) in known for e in entries)
+                except OSError:
+                    value = False
             empty[d] = value
             return value
         for d in sorted(dir_children, key=len, reverse=True):
@@ -440,10 +592,13 @@ class Insights:
             parent = os.path.dirname(d)
             return paths.key(parent) in root_keys or not empty.get(parent, False)
         self.empty_dirs = sorted(d for d, e in empty.items() if e and paths.key(d) not in root_keys and topmost(d)
-                                 and not any(paths.is_within(d, p) for p in projects))
+                                 and not any(paths.is_within(d, p) for p in projects + self.program_dirs))
         self.stats = {'files': len(self.files), 'cloud_skipped': cloud, 'bytes': sum(f.disk_size for f in self.files),
                       'seconds': round(time.time() - started, 1), 'roots': self.roots,
-                      'program_dirs': len(self.program_dirs)}
+                      'root_details': root_details, 'requested_roots': requested, 'dirs': directories,
+                      'program_dirs': len(self.program_dirs), 'installed_program_dirs': installed_program_dirs,
+                      'truncated': truncated, 'limit': MAX_FILES}
+        report(current, force=True)
         return self
 
     # -- analysis --------------------------------------------------------------------
@@ -494,7 +649,12 @@ class Insights:
             if ext not in INSTALLER_EXTS or r.size < 400 * 1024 or paths.key(r.path) in claimed:
                 continue
             depth = len(paths.key(r.path)[len(paths.key(r.root)):].strip('\\').split('\\'))
-            if depth > 2:  # only installers lying around, not programs inside a portable app folder
+            # A disk root is now a default scan root: depth alone cannot hide
+            # packages in a user's nested archive/download folders. For .exe,
+            # require an installer name when it is far from a personal root.
+            named_installer = re.search(r'setup|install|安装', r.name, re.I) \
+                and not re.search(r'uninstall|卸载', r.name, re.I)
+            if depth > 2 and ext == '.exe' and not named_installer:
                 continue
             name = compact(os.path.splitext(r.name)[0])
             app = _best_app(name, index) if len(name) >= 2 else None

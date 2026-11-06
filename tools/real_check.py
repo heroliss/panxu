@@ -49,6 +49,7 @@ def check_plan(plan: dict, env: dict, insights: dict | None = None, junk_rows: l
 
     app_bases = [env[k] for k in ('LOCALAPPDATA', 'APPDATA', 'LOCALLOW', 'ProgramData') if env.get(k)]
     home = env.get('USERPROFILE', '')
+    public = env.get('PUBLIC', '')
     users = os.path.dirname(home.rstrip('\\/')) if home else ''
     for item in plan.get('items', []):
         if item['action'] == 'none':
@@ -61,7 +62,8 @@ def check_plan(plan: dict, env: dict, insights: dict | None = None, junk_rows: l
                 if not any(paths.is_within(p, b) for b in app_bases):
                     add('severe', f'自动勾选了应用数据目录以外的文件夹：{title}（{p}）')
         for p in item['paths']:
-            if users and paths.is_within(p, users) and home and not paths.is_within(p, home):
+            if users and paths.is_within(p, users) and home and not paths.is_within(p, home) \
+                    and not (public and paths.is_within(p, public)):
                 add('severe', f'方案里出现了其他账户的文件：{p}')
             if item.get('personal') and home and paths.is_within(p, home):
                 below = p[len(home.rstrip('\\/')):].replace('/', '\\').strip('\\').split('\\')
@@ -82,6 +84,9 @@ def check_plan(plan: dict, env: dict, insights: dict | None = None, junk_rows: l
         if n > MANY_IN_CATEGORY:
             add('warn', f'「{category}」有 {n} 项，可能在误报')
     if insights:
+        stats = insights.get('stats') or {}
+        if stats.get('truncated'):
+            add('warn', f'我的文件没有全部扫完：已到 {stats.get("limit", 0):,} 个文件上限，请按文件夹分批整理')
         groups = sum(1 for f in insights.get('findings', []) if f['kind'] == 'name_versions')
         if groups > MANY_VERSION_GROUPS:
             add('warn', f'「同一文件的多个版本」有 {groups} 组，可能把编号文件当成了版本')

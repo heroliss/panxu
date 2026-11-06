@@ -1,4 +1,4 @@
-/* 我的文件: what is lying around in the personal folders — unfinished downloads, installers of installed
+/* 我的文件: loose files across local fixed disks — unfinished downloads, installers of installed
    programs, extracted archives, several versions of one document, big files nobody touched in years. */
 (function () {
   'use strict';
@@ -18,13 +18,14 @@
     draw();
   }
 
-  async function scan() {
+  async function scan(roots) {
     if (state.status === 'scanning') return;
     state.status = 'scanning';
     state.progress = {};
     draw();
     try {
-      state.result = await PX.api.run('insights_scan', {}, (p) => { state.progress = p; draw(true); }, (id) => { state.jobId = id; });
+      const params = Array.isArray(roots) ? { roots } : {};
+      state.result = await PX.api.run('insights_scan', params, (p) => { state.progress = p; draw(true); }, (id) => { state.jobId = id; });
       state.selected.clear();
       state.status = 'done';
     } catch (e) {
@@ -33,6 +34,14 @@
     }
     state.jobId = null;
     draw();
+  }
+
+  async function chooseFolder() {
+    if (state.status === 'scanning') return;
+    try {
+      const folder = await PX.api.call('pick_folder');
+      if (folder) await scan([folder]);
+    } catch (e) { PX.fail(e); }
   }
 
   async function reload() {
@@ -193,17 +202,25 @@
     h('div.actions',
       r && r.findings.length ? h('button.btn', { type: 'button', disabled: state.aiBusy, onclick: askAI }, PX.icon('spark'), state.aiBusy ? 'AI 正在看…' : '让 AI 看看这些文件') : null,
       state.status === 'scanning' ? h('button.btn', { type: 'button', onclick: () => state.jobId && PX.api.cancel(state.jobId) }, '停止')
-        : h('button.btn' + (r ? '' : '.primary'), { type: 'button', onclick: scan }, PX.icon('refresh'), r ? '重新整理' : '开始整理'))));
+        : [h('button.btn', { type: 'button', onclick: chooseFolder }, PX.icon('folder'), '选择文件夹整理'),
+          h('button.btn' + (r ? '' : '.primary'), { type: 'button', onclick: () => scan() }, PX.icon('refresh'), r ? '重新整理本机文件' : '整理本机文件')])));
+    c.appendChild(h('div.small.muted', { style: { marginBottom: '16px' } },
+      '默认先看桌面、文档、下载等常用位置，再看你的用户目录、公共文件夹和 C/D/E 等本地固定磁盘。系统、程序、缓存和其他账户等位置会跳过，可移动磁盘和网络位置不默认整盘查看。只看不删，文件由你勾选。'));
     if (state.status === 'scanning') {
       const p = state.progress;
       c.appendChild(h('section.working', h('div.line', h('span.big', fmt.count(p.files || 0)), h('span.muted', '个文件已查看')),
-        PX.progressBar(null), h('div.cur', p.current || '')));
+        h('div.small.muted', `已查看 ${fmt.count(p.dirs || 0)} 个文件夹`),
+        PX.progressBar(null), h('div.cur', PX.displayPath(p.current || ''))));
       return;
     }
     if (!r) {
-      c.appendChild(PX.empty('还没有整理过', '会查看桌面、文档、下载、图片、视频、音乐，以及设置里添加的文件夹。只看不删。',
-        [h('button.btn.primary', { type: 'button', onclick: scan }, '开始整理')]));
+      c.appendChild(PX.empty('还没有整理过', '会找出没下完的下载、旧安装包、多个版本和很久没动过的大文件，供你逐项查看。',
+        [h('button.btn.primary', { type: 'button', onclick: () => scan() }, '整理本机文件')]));
       return;
+    }
+    if (r.stats.truncated) {
+      c.appendChild(PX.notice(`本次未扫完，已到 ${fmt.count(r.stats.limit || r.stats.files)} 个文件上限。已查看的结果仍可整理；可以选择一个文件夹，分批查看。`, 'warn',
+        h('button.btn.small', { type: 'button', onclick: chooseFolder }, '选择文件夹整理')));
     }
     if (PX.home && PX.home.state.plan) {
       c.appendChild(PX.notice('这里的勾选和首页「清理方案」里的是同一份：在哪里勾都一样。', 'info',
@@ -213,7 +230,7 @@
       `查看了 ${fmt.count(r.stats.files)} 个文件（${fmt.bytes(r.stats.bytes)}），位置：` + r.roots.map((p) => fmt.place(p, PX.state.init.home)).join('、') +
       (r.stats.cloud_skipped ? `。${r.stats.cloud_skipped} 个只在云端的文件没有读取。` : '') +
       (r.stats.program_dirs ? `。${r.stats.program_dirs} 个程序自己的文件夹（例如解压出来的免安装程序）整个跳过，没有列出里面的文件。` : '')));
-    if (!r.findings.length) c.appendChild(PX.empty('没有发现需要注意的文件', '你的个人文件夹很整洁。'));
+    if (!r.findings.length) c.appendChild(PX.empty('没有发现需要注意的文件', '已查看的范围里，没有符合整理条件的文件。'));
     else overview(c, r);
     for (const f of r.findings) finding(c, f);
     if (state.selected.size) {

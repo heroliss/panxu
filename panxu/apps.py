@@ -172,7 +172,7 @@ class AppManager:
             out.append({
                 'id': app_id, 'name': name, 'version': str(values.get('DisplayVersion') or ''),
                 'publisher': str(values.get('Publisher') or ''), 'installed': _date(values.get('InstallDate')),
-                'location': location, 'location_exists': exists, 'size': size,
+                'location': location, 'own_location': own, 'location_exists': exists, 'size': size,
                 'size_source': 'measured' if app_id in self._measured else 'estimated' if size is not None else '',
                 'scope': scope, 'kind': kind, 'icon': icon, 'icon_index': icon_index,
                 'kind_label': KIND_LABELS[kind],

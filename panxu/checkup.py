@@ -20,6 +20,7 @@ from __future__ import annotations
 import glob
 import hashlib
 import json
+import ntpath
 import os
 import time
 import uuid
@@ -108,18 +109,76 @@ def personal_roots(env: dict, settings: dict) -> list[str]:
     return out
 
 
+def insights_roots(env: dict, settings: dict, drives: list[dict]) -> list[str]:
+    """Broad personal-file scope, using only an explicitly supplied drive list.
+
+    Visit the familiar/picked folders first, then their wider containers. Only
+    fixed local disks are added automatically; redirected shell folders and
+    explicit extra folders remain usable on other kinds of storage.
+    """
+    candidates = personal_roots(env, settings)
+    candidates.extend(env.get(name) for name in ('USERPROFILE', 'PUBLIC'))
+    system = env.get('SystemDrive')
+    if system:
+        candidates.append(paths.native(system + ('' if system.endswith(('\\', '/')) else '\\')))
+    candidates.extend(d.get('root') for d in drives if d.get('fixed') is True
+                      and isinstance(d.get('root'), str)
+                      and not ntpath.splitdrive(d['root'])[0].startswith('\\\\'))
+    out, seen = [], set()
+    for candidate in candidates:
+        if not isinstance(candidate, str) or not candidate:
+            continue
+        key = paths.key(candidate)
+        if key not in seen and os.path.isdir(candidate):
+            out.append(candidate)
+            seen.add(key)
+    return out
+
+
 def system_skip(env: dict, policy, roots: list[str] | None = None):
-    """Directories the personal-file tools never enter: system folders, app data, user exclusions, and
+    """Paths the personal-file tools skip: system folders, app data, user exclusions, and
     folders programs manage themselves (caches, node_modules, chat storage...) below the chosen roots."""
     bases = [env.get(k) for k in ('SystemRoot', 'ProgramFiles', 'ProgramFiles(x86)', 'ProgramData', 'LOCALAPPDATA',
-                                  'APPDATA')]
-    bases = [b for b in bases if b]
+                                  'APPDATA', 'LOCALLOW')]
+    home = env.get('USERPROFILE')
+    if home:
+        bases.append(ntpath.join(home, 'AppData'))
+    bases = [b for b in bases if b] + list(policy.subtrees) + list(policy.excluded)
+    # Shell folders can be redirected into another drive's Users tree. Trust
+    # their confirmed locations and the ancestors needed to reach them, while
+    # keeping sibling accounts outside the scan. Broad drive roots are not a
+    # statement of profile ownership, and must never join this list.
+    personal = [p for p in (home, env.get('PUBLIC')) if p] + personal_roots(env, {})
+    user_parents = set(policy.users_dirs)
+    # Unlike deletion, scanning may enter a container that holds protected
+    # children. Block only the forbidden subtree itself, never its ancestors.
+    system_trees = paths._ROOT_SYSTEM_SUBTREES | {'program files', 'program files (x86)', 'programdata',
+                                                'config.msi', 'msocache', 'documents and settings'}
     chosen = {paths.key(r) for r in roots or []}
 
     def skip(path):
-        if paths.key(path) not in chosen and managed_dir(os.path.basename(path.rstrip('\\/'))):
+        if policy.allowed_roots and not any(paths.is_within(path, root) for root in policy.allowed_roots):
             return True
-        return any(paths.is_within(path, b) for b in bases) or policy.reason(path) == '位于你设置的排除目录中'
+        if any(paths.is_within(path, base) for base in bases):
+            return True
+        _, parts = policy._split_root(path)
+        parts = [p.lower().rstrip('. ') for p in parts]
+        if parts:
+            top = parts[0]
+            if 'appdata' in parts:
+                return True
+            if top in system_trees or (len(parts) == 1 and top in paths._ROOT_SYSTEM_NAMES - {'users'}):
+                return True
+            if top == 'users' and len(parts) > 1 \
+                    and not any(paths.is_within(path, p) or paths.is_within(p, path) for p in personal):
+                return True
+        key = paths.key(path)
+        if any(paths.is_within(path, parent) and key != parent for parent in user_parents) \
+                and not any(paths.is_within(path, p) or paths.is_within(p, path) for p in personal):
+            return True
+        if paths.key(path) not in chosen and managed_dir(ntpath.basename(path.rstrip('\\/'))):
+            return True
+        return False
     return skip
 
 
@@ -618,6 +677,7 @@ def run(backend, job, options: dict | None = None) -> dict:
 
     policy = backend.policy()
     env = backend.env
+    drives = backend.m_drives()
 
     stage('junk')
     junk_rows = backend.junk.scan(cancel=job.cancel,
@@ -631,7 +691,7 @@ def run(backend, job, options: dict | None = None) -> dict:
         if winapi.IS_WINDOWS and winapi.simulation() is None:
             root = os.path.realpath(root)
         # the drive's used space is about what the scan will count
-        used = next((d['used'] for d in backend.m_drives() if d.get('system')), 0)
+        used = next((d['used'] for d in drives if d.get('system')), 0)
         scan = SpaceScan(root)
         scan.run(cancel=job.cancel, progress=lambda p: part(
             min(0.98, p.get('bytes', 0) / used) if used else None, detail=p.get('current', ''),
@@ -641,9 +701,11 @@ def run(backend, job, options: dict | None = None) -> dict:
 
     roots = personal_roots(env, settings)
     skip = system_skip(env, policy, roots)
+    broad_roots = insights_roots(env, settings, drives)
     stage('insights')
     ins = Insights(env, settings, apps=backend.apps).collect(
-        roots, skip=skip, cancel=job.cancel,
+        broad_roots, skip=system_skip(env, policy, broad_roots), cancel=job.cancel,
+        container_roots=personal_roots(env, {}) + [d['root'] for d in drives],
         progress=lambda p: part(None, detail=p.get('current', ''), count=f'已看过 {p.get("files", 0):,} 个文件'))
     findings = ins.findings()
     backend.insights = {'findings': findings, 'stats': ins.stats, 'roots': ins.roots, 'time': time.time()}
@@ -736,6 +798,8 @@ def run(backend, job, options: dict | None = None) -> dict:
     builder.add_startup(startup_items, startup_ai, env)
     builder.add_info(backend.scan, env)
     plan = builder.plan({'ai': ai_info, 'options': opts,
+                         'personal_scan': {'truncated': bool(ins.stats.get('truncated')),
+                                           'limit': ins.stats.get('limit'), 'files': ins.stats.get('files', 0)},
                          'stats': {'insight_files': ins.stats.get('files', 0),
                                    'scanned_bytes': backend.scan.stats.get('bytes') if backend.scan else None}})
     plan['summary'] = summarize(plan)

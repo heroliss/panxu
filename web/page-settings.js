@@ -114,7 +114,10 @@
     // ---- 我的文件
     const ins = s.insights || {};
     const secMine = form.appendChild(h('section', h('h2', '我的文件')));
-    secMine.appendChild(h('div.small.muted', { style: { marginBottom: '10px' } }, '除了桌面、文档、下载、图片、视频和音乐，也整理这些文件夹（例如 D:\\资料）：'));
+    secMine.appendChild(h('div.small.muted', { style: { marginBottom: '10px' } },
+      '默认会查看桌面等常用位置、你的用户目录、公共文件夹，以及 C/D/E 等本地固定磁盘上的其他文件；系统、程序、缓存和其他账户等位置会跳过。只看不删，文件由你勾选。'));
+    secMine.appendChild(h('div.small.muted', { style: { marginBottom: '10px' } },
+      '这里可以补充其他位置，例如可移动磁盘或网络文件夹。可移动磁盘和网络位置不默认整盘查看；已重定向到这些位置的桌面、文档等常用文件夹仍会查看。'));
     const extra = s.extra_personal_paths || [];
     const exList = secMine.appendChild(h('div.folder-list'));
     for (const p of extra) {

@@ -263,10 +263,11 @@ class Backend:
                 usage = shutil.disk_usage(root)
             except OSError:
                 continue
+            kind = winapi.drive_type(root)
             rows.append({'root': root, 'label': winapi.volume_label(root), 'fstype': p.fstype,
                          'total': usage.total, 'used': usage.used, 'free': usage.free,
                          'system': paths.key(root) == paths.key(self.env.get('SystemDrive', 'C:') + '\\'),
-                         'removable': winapi.drive_type(root) == winapi.DRIVE_REMOVABLE})
+                         'removable': kind == winapi.DRIVE_REMOVABLE, 'fixed': kind == winapi.DRIVE_FIXED})
         rows.sort(key=lambda r: (not r['system'], r['root']))
         return rows
 
@@ -961,11 +962,13 @@ class Backend:
 
     # ------------------------------------------------------------------ 我的文件
     def m_insights_roots(self):
-        return checkup.personal_roots(self.env, self.settings.get())
+        return checkup.insights_roots(self.env, self.settings.get(), self.m_drives())
 
     def m_insights_scan(self, roots: list | None = None):
         settings = self.settings.get()
-        roots = [r for r in (roots or checkup.personal_roots(self.env, settings)) if isinstance(r, str) and os.path.isdir(r)]
+        drives = self.m_drives()
+        chosen = roots if roots is not None else checkup.insights_roots(self.env, settings, drives)
+        roots = [r for r in chosen if isinstance(r, str) and os.path.isdir(r)]
         if not roots:
             raise UserError('请至少选择一个存在的文件夹')
         policy = self.policy()
@@ -973,6 +976,7 @@ class Backend:
         def run(job):
             ins = insights.Insights(self.env, settings, apps=self.apps).collect(
                 roots, skip=checkup.system_skip(self.env, policy, roots), cancel=job.cancel,
+                container_roots=checkup.personal_roots(self.env, {}) + [d['root'] for d in drives],
                 progress=lambda p: job.update(**p))
             self.insights = {'findings': ins.findings(), 'stats': ins.stats, 'roots': ins.roots, 'time': time.time()}
             return self.m_insights_result()

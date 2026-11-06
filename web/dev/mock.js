@@ -284,6 +284,21 @@
     }
   }
   let insights = null;
+  const personalRoots = [U + '\\Desktop', U + '\\Documents', U + '\\Downloads', U + '\\Pictures', U + '\\Videos', U + '\\Music',
+    'D:\\资料', U, 'C:\\Users\\Public', 'C:\\资料', 'D:\\', 'E:\\'];
+  function personalResult(roots, cloudSkipped = 0) {
+    const chosen = Array.isArray(roots) ? roots : personalRoots;
+    const inScope = (path) => chosen.some((folder) => path.toLowerCase() === folder.toLowerCase()
+      || path.toLowerCase().startsWith(folder.replace(/\\$/, '').toLowerCase() + '\\'));
+    const rows = Array.isArray(roots) ? findings.map((finding) => {
+      const files = finding.files.filter((file) => inScope(file.path));
+      return { ...finding, files, count: files.length, size: files.reduce((sum, file) => sum + file.size, 0),
+        logical_size: files.reduce((sum, file) => sum + (file.logical_size === undefined ? file.size : file.logical_size), 0) };
+    }).filter((finding) => finding.files.length) : findings;
+    return { findings: rows, stats: { files: Array.isArray(roots) ? 120 : 18233, dirs: Array.isArray(roots) ? 18 : 3061,
+      bytes: rows.reduce((sum, finding) => sum + finding.size, 0), cloud_skipped: cloudSkipped,
+      seconds: 3, roots: chosen, truncated: false, limit: 400000 }, roots: chosen, time: now };
+  }
   let freedNow = 0;  // what the mock cleanup deleted: the system drive's free space grows by it
 
   const A = (id, name, publisher, version, kind, size, installed, used, extra) => Object.assign({ id, name, publisher, version, kind,
@@ -315,7 +330,8 @@
       plan = { id: 'p' + Date.now(), created: now, threshold: t, items: decide(JSON.parse(JSON.stringify(planItems)), t),
         groups: planGroups, ai: { used: hasKey, errors: [], usage: { requests: 3 } } };
       plan.summary = summarize();
-      insights = { findings, stats: { files: 18233, bytes: 96 * GB, cloud_skipped: 12, seconds: 3, roots: [] }, roots: [U + '\\Desktop', U + '\\Documents', U + '\\Downloads', 'D:\\资料'], time: now };
+      insights = personalResult(null, 12);
+      plan.personal_scan = { truncated: insights.stats.truncated, limit: insights.stats.limit, files: insights.stats.files };
       return plan;
     }, (f) => {
       // like checkup.run: each stage says how far it is (part), except 整理我的文件, which has no total
@@ -377,9 +393,9 @@
       freedNow += del;  // only what was deleted: the Recycle Bin still holds the rest
       return { deleted: { count: 9000, bytes: del }, recycled: { count: recN, bytes: rec }, disabled: dis, failures, items, summary: plan.summary };
     }, (f) => ({ stage: 'junk', detail: '用户临时文件', freed: f * 4 * GB })),
-    insights_roots: () => [U + '\\Desktop', U + '\\Documents', U + '\\Downloads'],
-    insights_scan: () => job(6, () => { insights = { findings, stats: { files: 18233, bytes: 96 * GB, cloud_skipped: 0, seconds: 3, roots: [] }, roots: [U + '\\Desktop', U + '\\Documents', U + '\\Downloads'], time: now }; return insights; },
-      (f) => ({ files: Math.round(f * 18233), current: U + '\\Documents' })),
+    insights_roots: () => personalRoots,
+    insights_scan: ({ roots }) => job(6, () => { insights = personalResult(roots); return insights; },
+      (f) => ({ files: Math.round(f * (roots ? 120 : 18233)), dirs: Math.round(f * (roots ? 18 : 3061)), current: roots ? roots[0] : U + '\\Documents' })),
     insights_result: () => insights,
     insights_delete: ({ paths_to_delete }) => job(2, { done: paths_to_delete, freed: 1 * GB, failed: 0, failures: [], mode: 'recycle' }),
     ai_review_preview: () => ({ files: findings.filter((f) => f.kind !== 'empty_folders').flatMap((f) => f.files).map((x) => ({ path: x.path, name: x.name, size: x.size })),

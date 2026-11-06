@@ -581,6 +581,11 @@
     reportBox(c);
     if (state.plan && state.status !== 'running') {
       const p = state.plan;
+      const personalScan = p.personal_scan || (p.extra && p.extra.personal_scan);
+      if (personalScan && personalScan.truncated) {
+        c.appendChild(PX.notice(`我的文件这次没有全部扫完：已到 ${fmt.count(personalScan.limit || personalScan.files)} 个文件上限。可到「我的文件」选择文件夹分批整理。`, 'warn',
+          h('button.btn.small', { type: 'button', onclick: () => PX.go('mine') }, '去我的文件')));
+      }
       if (p.ai && p.ai.errors && p.ai.errors.length) c.appendChild(PX.notice('AI 复核没有全部完成：' + p.ai.errors[0], 'info'));
       else if (p.ai && !p.ai.used) {
         c.appendChild(PX.notice('这次体检没有使用 AI。配置模型后，AI 会帮你判断陌生的大文件夹和你的文件。', 'info',

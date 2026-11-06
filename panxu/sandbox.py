@@ -761,7 +761,7 @@ class Sandbox:
             root = self.native(letter)
             u = self.disk_usage(root)
             out.append({'root': root + os.sep, 'label': label, 'fstype': 'NTFS', 'total': u.total, 'used': u.used,
-                        'free': u.free, 'system': letter == 'C', 'removable': False, 'letter': letter + ':'})
+                        'free': u.free, 'system': letter == 'C', 'removable': False, 'fixed': True, 'letter': letter + ':'})
         return out
 
     def file_allocation_size(self, path: str) -> int:
