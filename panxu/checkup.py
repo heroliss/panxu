@@ -231,7 +231,7 @@ class PlanBuilder:
             if rule is None:
                 continue
             size = row.get('size')
-            if not row.get('available') or (size is not None and size <= 0 and rule.mode != 'command'):
+            if not row.get('available') or (size is not None and size <= 0 and not row.get('count') and rule.mode != 'command'):
                 continue
             blocked = None
             if row.get('running'):
@@ -253,7 +253,9 @@ class PlanBuilder:
                 auto = '可以重建的缓存'
             self.add({
                 'id': 'rule:' + rule.id, 'kind': 'rule', 'rule': rule.id,
-                'category': '垃圾文件', 'title': rule.name, 'size': size or 0, 'count': row.get('count') or 0,
+                'category': '垃圾文件', 'title': rule.name, 'size': size or 0,
+                'logical_size': row.get('logical_size', size), 'count': row.get('count') or 0,
+                'size_note': row.get('size_note', ''),
                 'what': '', 'why': rule.description,
                 'effect': rule.note or '', 'action': 'delete', 'source': 'rule',
                 'confidence': 1.0 if rule.default else 0.7, 'blocked': blocked,
@@ -313,7 +315,9 @@ class PlanBuilder:
             self.add({
                 'id': _ident('dir', s['path']), 'kind': 'paths',
                 'category': '应用数据', 'title': s.get('app') if s.get('app') not in (None, '', '未知') else
-                os.path.basename(s['path']), 'size': s['size'], 'count': s.get('files', 0), 'what': '',
+                os.path.basename(s['path']), 'size': s['size'],
+                'logical_size': getattr(node, 'logical_size', s.get('logical_size', s['size'])),
+                'count': s.get('files', 0), 'what': '',
                 'why': s.get('reason') or f'AI 判断：{s.get("verdict_label", "")}', 'effect': s.get('effect') or '',
                 'action': 'recycle', 'source': 'ai', 'confidence': s.get('confidence'),
                 'paths': [s['path']], 'node_id': s.get('node_id'), 'score': score, 'basis': basis,
@@ -338,7 +342,7 @@ class PlanBuilder:
                     hold = self._folder_guards(p, n, None, basis)
                     self.add({'id': _ident('dir', p), 'kind': 'paths', 'category': '应用数据', 'title': n.name,
                               'eligible': not hold,
-                              'size': n.size, 'count': n.files, 'what': '',
+                              'size': n.size, 'logical_size': n.logical_size, 'count': n.files, 'what': '',
                               'why': f'可能是旧版本留下的：{_ago(n.mtime, self.now)}没有修改过。',
                               'effect': '如果还在用旧版本，它的设置和缓存会丢失。', 'action': 'recycle',
                               'source': 'heuristic', 'confidence': 0.6, 'paths': [p], 'score': 60, 'basis': basis,
@@ -348,7 +352,7 @@ class PlanBuilder:
                 hold = self._folder_guards(path, node, None, basis)
                 self.add({'id': _ident('dir', path), 'kind': 'paths', 'category': '应用数据', 'title': node.name,
                           'eligible': not hold,
-                          'size': node.size, 'count': node.files,
+                          'size': node.size, 'logical_size': node.logical_size, 'count': node.files,
                           'what': '',
                           'why': f'在「已安装的应用」里没有找到对应的程序，而且 {_ago(node.mtime, self.now)}没有修改过。',
                           'effect': '如果程序其实还在（例如绿色版），它的设置、存档或缓存会丢失。', 'action': 'recycle',
@@ -386,6 +390,7 @@ class PlanBuilder:
                 self.add({
                     'id': _ident('file', x['path']), 'kind': 'paths', 'group': 'review', 'category': f['kind_label'],
                     'finding': f['id'], 'finding_kind': f['kind'], 'title': x['name'], 'size': x['size'],
+                    'logical_size': x.get('logical_size', x['size']),
                     'count': 1 if x.get('category') != 'folder' else 0, 'what': '', 'advice': f['advice'], 'why': why,
                     'effect': '', 'action': 'recycle', 'source': 'insight',
                     'confidence': f['confidence'] if x.get('remove') else min(f['confidence'], 0.4),
@@ -413,7 +418,7 @@ class PlanBuilder:
                                                      AI_RANK.get((ai(f) or {}).get('verdict'), 1), *plain_first(f)))]
             # the group's copies with what is known about each: the item keeps them, so a later choice of the user
             # (api.m_plan_dup_choose) is scored by the same rules
-            copies = [{**{k: f[k] for k in ('path', 'mtime', 'place', 'place_root', 'refs') if k in f}, 'ai': ai(f)}
+            copies = [{**{k: f[k] for k in ('path', 'mtime', 'size', 'logical_size', 'place', 'place_root', 'refs') if k in f}, 'ai': ai(f)}
                       for f in files]
             self._claimed.extend(f['path'] for f in keepers)  # what stays must not be offered by anything else
             self.add({
@@ -447,12 +452,15 @@ class PlanBuilder:
             matches = glob.glob(paths.native(expanded)) if '*' in expanded else [paths.native(expanded)]
             for path in matches:
                 size = None
+                logical_size = None
                 node = scan.find(path) if scan is not None and scan.complete else None
                 if node is not None:
                     size = node.size
+                    logical_size = node.logical_size
                 elif os.path.isfile(path):
                     try:
-                        size = os.stat(path).st_size
+                        st = os.lstat(fsops.long_path(path))
+                        size, logical_size = fsops.file_size(path, st), st.st_size
                     except OSError:
                         size = None
                 if not size or size < INFO_MIN and not path.lower().endswith('hiberfil.sys'):
@@ -460,6 +468,7 @@ class PlanBuilder:
                 note = self.knowledge.annotate(path) if self.knowledge else None
                 self.add({'id': _ident('info', path), 'kind': 'info', 'group': 'info', 'category': '说明',
                           'title': (note or {}).get('label') or os.path.basename(path), 'size': size,
+                          'logical_size': logical_size,
                           'what': '', 'advice': (note or {}).get('advice', ''), 'why': '体积较大，但不能直接删除。',
                           'action': 'none', 'source': 'knowledge', 'location': path, 'actions': info_actions(path)})
 
@@ -477,6 +486,8 @@ def dup_choice(size: int, copies: list[dict], keep: set[str]) -> dict:
     place, refs and the model's advice ('ai')."""
     keepers = [f for f in copies if f['path'] in keep]
     remove = [f for f in copies if f['path'] not in keep]
+    removed_size = sum(f.get('size', size) for f in remove)
+    logical_size = size * len(remove)
     rated = [(f, *removal_score(f, f.get('ai'))) for f in remove]
     score = min(s for _, s, _ in rated)
     basis = ['内容逐字节相同']
@@ -484,7 +495,7 @@ def dup_choice(size: int, copies: list[dict], keep: set[str]) -> dict:
         # the user chose to let every copy go: the file itself goes, only the Recycle Bin still has it
         name = os.path.basename(copies[0]['path'])
         return {
-            'title': f'{name} 等 {len(copies)} 份', 'size': size * len(remove), 'count': len(remove),
+            'title': f'{name} 等 {len(copies)} 份', 'size': removed_size, 'logical_size': logical_size, 'count': len(remove),
             'why': f'这 {len(copies)} 份全部移到回收站', 'effect': '一份都不保留：这个文件只能从回收站还原了。',
             'confidence': 0.2, 'paths': [f['path'] for f in remove], 'keep': None, 'keeps': [],
             'score': min(score, ALL_COPIES_SCORE),
@@ -507,7 +518,8 @@ def dup_choice(size: int, copies: list[dict], keep: set[str]) -> dict:
     first = keepers[0]['path']
     folder = os.path.basename(os.path.dirname(first)) or os.path.dirname(first)
     return {
-        'title': f'{os.path.basename(first)} 等 {len(copies)} 份', 'size': size * len(remove), 'count': len(remove),
+        'title': f'{os.path.basename(first)} 等 {len(copies)} 份', 'size': removed_size,
+        'logical_size': logical_size, 'count': len(remove),
         'why': f'保留「{folder}」里的那份' + (f'等 {len(keepers)} 份' if len(keepers) > 1 else '') + f'，其余 {len(remove)} 份移到回收站',
         'effect': '内容还在保留的那份里，但用到被删那份的程序或工程可能会找不到它。' if score < 85 else '',
         'confidence': 0.9 if score >= 85 else 0.4, 'paths': [f['path'] for f in remove], 'keep': first,
@@ -874,14 +886,16 @@ def execute(backend, plan: dict, item_ids: list[str], job) -> dict:
             report['failures'].append({'path': f.get('path'), 'reason': f.get('reason')})
         for item in {id(i): i for i, _ in to_recycle}.values():
             ok = [p for p in item['paths'] if paths.key(p) in gone or any(paths.is_within(p, g) for g in recycled)]
-            share = (item['size'] or 0) * len(ok) // max(1, len(item['paths']))
-            # in the Recycle Bin: the space comes back when it is emptied (the size is the check-up's measure)
+            share = sum(stats.measured[p][0] for p in ok if p in stats.measured)
+            # A selected parent may have covered this path; use this item's scan measure only then.
+            share += sum((item['size'] or 0) // max(1, len(item['paths'])) for p in ok if p not in stats.measured)
+            # In the Recycle Bin: the space comes back when it is emptied.
             if ok and any(paths.within_any(p, nuked_keys) for p in ok):
                 item['permanent'] = True
                 done(item, 'done' if len(ok) == len(item['paths']) else 'partial', '回收站放不下，按你在 Windows 提示里的选择直接删除了',
                      freed=share)
             elif len(ok) == len(item['paths']):
-                done(item, 'done', '已移到回收站', freed=item['size'] or 0)
+                done(item, 'done', '已移到回收站', freed=share)
             elif ok:
                 done(item, 'partial', f'{len(ok)}/{len(item["paths"])} 项已移到回收站', freed=share)
             else:
@@ -894,7 +908,7 @@ def execute(backend, plan: dict, item_ids: list[str], job) -> dict:
                                        'permanent_bytes': stats.permanent_bytes}, replaces=pending)
         else:
             backend.oplog.drop(pending)
-        backend.forget_paths(recycled)
+        backend.forget_paths(recycled, stats.measured)
 
     # 3. startup items
     for item in chosen:

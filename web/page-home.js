@@ -481,7 +481,7 @@
         ? h('div.info-actions', it.actions.map((a) => h('button.btn.small' + (a.kind === 'hibernate' ? '.primary' : ''), {
           type: 'button', onclick: (e) => { e.stopPropagation(); infoAction(it, a); } }, a.label))) : null),
     PX.score(it.score, (it.basis || []).join('\n')),
-    h('div.size', it.size ? fmt.bytes(it.size) : ''),
+    h('div.size', it.size || it.logical_size > 0 ? fmt.bytes(it.size) : ''),
     h('div.row-actions', one && !isFolder(it) ? PX.openButton(one) : null, one ? PX.revealButton(one) : null,
       h('button.btn.quiet.small', { type: 'button', title: '问 AI', onclick: (e) => { e.stopPropagation(); PX.ask({ type: 'plan_item', id: it.id }, it.title); } },
         PX.icon('spark'), '问 AI')));
@@ -534,7 +534,7 @@
       action: it.status === 'pending' ? it.action : null,
       warn: everyCopy ? `你选了全部 ${(it.dup_files || []).length} 份：这个文件一份都不保留，只能从回收站还原。` : it.caution,
       facts: [['是什么', fact(it.what)], ['AI 认为它是', fact(it.ai && it.ai.what), 'ai'], ['建议', fact(it.advice)],
-        ['还要知道', fact(it.effect)]],
+        ['占用空间', PX.sizeDifference(it)], ['大小说明', it.size_note], ['还要知道', fact(it.effect)]],
       // 「很久没动过的大文件：1.9 年没有修改过」 when the row says 「1.9 年没有修改过」: once is enough
       score: { score: it.score, basis: (it.basis || []).filter((l) => l !== shown && l.replace(/^[^：]{1,12}：/, '') !== shown) },
       places: { title, note: dup ? `${(it.dup_files || []).length} 份，勾选的移到回收站` : all.length > 1 ? `${all.length} 项` : '', rows, more },

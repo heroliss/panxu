@@ -284,6 +284,11 @@ class FileRec:
     atime: float
     category: str
     root: str           # which personal folder it was found under
+    allocated_size: int | None = None
+
+    @property
+    def disk_size(self) -> int:
+        return self.size if self.allocated_size is None else self.allocated_size
 
 
 @dataclass
@@ -302,6 +307,7 @@ class Finding:
         removable = [f for f in self.files if f.get('remove')]
         return {'id': self.id, 'kind': self.kind, 'kind_label': label, 'advice': advice, 'title': self.title,
                 'files': self.files, 'count': len(self.files), 'size': self.size,
+                'logical_size': sum(f.get('logical_size', f['size']) for f in self.files),
                 'removable_size': sum(f['size'] for f in removable), 'removable_count': len(removable),
                 'reason': self.reason, 'confidence': round(self.confidence, 2), **self.extra}
 
@@ -408,7 +414,7 @@ class Insights:
                         continue
                     self.files.append(FileRec(os.path.join(dirpath, entry.name), entry.name, dirpath, st.st_size,
                                               st.st_mtime, fsops.age_time(st), st.st_atime,
-                                              paths.category_of(entry.name), root))
+                                              paths.category_of(entry.name), root, fsops.file_size(entry.path, st)))
                 dir_has_files[dirpath] = has
                 if program and dirpath != root:
                     # a program's folder (portable tool, unpacked package): its documents belong to the program
@@ -435,7 +441,7 @@ class Insights:
             return paths.key(parent) in root_keys or not empty.get(parent, False)
         self.empty_dirs = sorted(d for d, e in empty.items() if e and paths.key(d) not in root_keys and topmost(d)
                                  and not any(paths.is_within(d, p) for p in projects))
-        self.stats = {'files': len(self.files), 'cloud_skipped': cloud, 'bytes': sum(f.size for f in self.files),
+        self.stats = {'files': len(self.files), 'cloud_skipped': cloud, 'bytes': sum(f.disk_size for f in self.files),
                       'seconds': round(time.time() - started, 1), 'roots': self.roots,
                       'program_dirs': len(self.program_dirs)}
         return self
@@ -459,7 +465,8 @@ class Insights:
         return (self.now - rec.changed) / DAY
 
     def _file(self, rec: FileRec, note: str = '', remove: bool = False) -> dict:
-        return {'path': rec.path, 'name': rec.name, 'size': rec.size, 'mtime': rec.mtime, 'note': note, 'remove': remove,
+        return {'path': rec.path, 'name': rec.name, 'size': rec.disk_size, 'logical_size': rec.size,
+                'mtime': rec.mtime, 'note': note, 'remove': remove,
                 'category': rec.category}
 
     def _incomplete(self, claimed):
@@ -469,7 +476,7 @@ class Insights:
             return []
         files = [self._file(r, f'{int(self._age_days(r))} 天前中断', remove=True) for r in rows]
         return [Finding('incomplete', 'incomplete_download', f'{len(rows)} 个没有下载完的文件', files,
-                        sum(r.size for r in rows), '扩展名表明下载没有完成，而且已经超过 3 天没有继续。', 0.9)]
+                        sum(r.disk_size for r in rows), '扩展名表明下载没有完成，而且已经超过 3 天没有继续。', 0.9)]
 
     def _installed_index(self):
         if self.apps is None:
@@ -623,7 +630,7 @@ class Insights:
                 reason = f'{len(members)} 个文件名字相近，像是「{base}」的不同版本'
             reason += (f'，其中 {identical} 个与另一份内容完全相同' if identical else '') + '。'
             title = f'「{os.path.splitext(newest.name)[0]}」等 {len(members)} 个版本'
-            out.append(Finding(ident, 'name_versions', title, files, sum(m.size for m in members), reason,
+            out.append(Finding(ident, 'name_versions', title, files, sum(m.disk_size for m in members), reason,
                                0.85 if identical else 0.45,
                                {'group_base': base, 'folder': members[0].folder}))
         return out
@@ -633,7 +640,7 @@ class Insights:
         days = float(self.settings.get('stale_days', 365))
         rows = []
         for r in self.files:
-            if r.size < min_size or paths.key(r.path) in claimed:
+            if r.disk_size < min_size or paths.key(r.path) in claimed:
                 continue
             age = self._age_days(r)
             opened = (self.now - r.atime) / DAY
@@ -647,7 +654,7 @@ class Insights:
             return []
         files = [self._file(r, f'{_years(self._age_days(r))}没有修改过' + _category_hint(r.category)) for r in rows]
         files.sort(key=lambda f: -f['size'])
-        return [Finding('stale', 'stale_large', f'{len(rows)} 个很久没动过的大文件', files, sum(r.size for r in rows),
+        return [Finding('stale', 'stale_large', f'{len(rows)} 个很久没动过的大文件', files, sum(r.disk_size for r in rows),
                         f'大于 {int(min_size / 1024 / 1024)} MB，且超过 {int(days)} 天没有修改。', 0.4)]
 
     def _downloads(self, claimed):
@@ -657,12 +664,12 @@ class Insights:
             return []
         days = float(self.settings.get('download_days', 180))
         rows = [r for r in self.files if paths.is_within(r.path, downloads) and paths.key(r.path) not in claimed
-                and self._age_days(r) >= days and r.size >= 1024 * 1024]
+                and self._age_days(r) >= days and r.disk_size >= 1024 * 1024]
         if not rows:
             return []
-        files = [self._file(r, f'{int(self._age_days(r))} 天前下载') for r in sorted(rows, key=lambda r: -r.size)]
+        files = [self._file(r, f'{int(self._age_days(r))} 天前下载') for r in sorted(rows, key=lambda r: -r.disk_size)]
         return [Finding('downloads', 'old_downloads', f'下载文件夹里 {len(rows)} 个放了很久的文件', files,
-                        sum(r.size for r in rows), f'在下载文件夹里超过 {int(days)} 天。', 0.3)]
+                        sum(r.disk_size for r in rows), f'在下载文件夹里超过 {int(days)} 天。', 0.3)]
 
     def _empty(self):
         if not self.empty_dirs:

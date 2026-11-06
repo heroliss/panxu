@@ -134,14 +134,15 @@ class Backend:
         app = self.apps.match_folder(folder_name, self._app_index[1])
         return app['name'] if app else None
 
-    def forget_paths(self, removed: list[str]):
+    def forget_paths(self, removed: list[str], measured: dict | None = None):
         """Keep the shared results in step after files were deleted or recycled."""
         if not removed:
             return
         if self.scan is not None and self.scan.complete:
             for p in removed:
                 try:
-                    self.scan.remove_path(p, 0, 0)
+                    used, logical, count = (measured or {}).get(p, (0, None, 0))
+                    self.scan.remove_path(p, used, count, logical)
                 except (ValueError, KeyError):
                     pass
         gone = {paths.key(p) for p in removed}
@@ -159,6 +160,7 @@ class Backend:
                 if f['files']:
                     f['count'] = len(f['files'])
                     f['size'] = sum(x['size'] for x in f['files'])
+                    f['logical_size'] = sum(x.get('logical_size', x['size']) for x in f['files'])
                     f['removable_count'] = sum(1 for x in f['files'] if x.get('remove'))
                     f['removable_size'] = sum(x['size'] for x in f['files'] if x.get('remove'))
                     kept.append(f)
@@ -168,9 +170,10 @@ class Backend:
             for g in self.dups['groups']:
                 g['files'] = [f for f in g['files'] if alive(f['path'])]
                 if len(g['files']) > 1:
-                    g['wasted'] = g['size'] * (len(g['files']) - 1)
+                    g['wasted'] = sum(f.get('size', g['size']) for f in g['files'][1:])
                     groups.append(g)
             self.dups['groups'] = groups
+            self.dups['stats'].update(groups=len(groups), wasted=sum(g['wasted'] for g in groups))
 
     def files_for_ai(self, finding_ids: list, include_content: bool) -> list[dict]:
         """「我的文件」 findings flattened into what analyst.review_files sends."""
@@ -182,7 +185,8 @@ class Backend:
             if f['id'] not in wanted or f['kind'] == 'empty_folders':
                 continue
             for x in f['files']:
-                row = {'path': x['path'], 'name': x['name'], 'size': x['size'], 'mtime': x['mtime'],
+                row = {'path': x['path'], 'name': x['name'], 'size': x['size'],
+                       'logical_size': x.get('logical_size', x['size']), 'mtime': x['mtime'],
                        'category': x.get('category', 'other'), 'group': f['kind_label'], 'note': x.get('note', ''),
                        'group_id': f['id'] if f['kind'] == 'name_versions' else ''}
                 if include_content:
@@ -370,7 +374,7 @@ class Backend:
         """Switch hibernation (and with it hiberfil.sys and Fast Startup) off or on; logged with an undo."""
         path = self._hiberfil()
         try:
-            size = os.path.getsize(path)
+            size = fsops.file_size(path)
         except OSError:
             size = 0
         try:
@@ -457,7 +461,8 @@ class Backend:
     def _node_row(self, scan: SpaceScan, node) -> dict:
         path = scan.path_of(node)
         row = {'id': node.id, 'name': node.name if node.parent else path, 'path': path, 'type': 'dir',
-               'size': node.size, 'files': node.files, 'dirs': node.dirs, 'mtime': node.mtime,
+               'size': node.size, 'logical_size': node.logical_size,
+               'files': node.files, 'dirs': node.dirs, 'mtime': node.mtime,
                'has_children': bool(node.children), 'denied': bool(node.flags & FLAG_DENIED),
                'links': bool(node.flags & FLAG_LINKS), 'cloud': bool(node.flags & FLAG_CLOUD),
                'note': self.knowledge.annotate(path)}
@@ -558,7 +563,8 @@ class Backend:
                 continue
             seen.add(f['path'])
             note = self.knowledge.annotate(f['path']) or {}
-            out.append({'path': f['path'], 'name': os.path.basename(f['path']), 'size': f['size'], 'mtime': f['mtime'],
+            out.append({'path': f['path'], 'name': os.path.basename(f['path']), 'size': f['size'],
+                        'logical_size': f.get('logical_size', f['size']), 'mtime': f['mtime'],
                         'category': paths.category_of(f['path']), 'group': '大文件', 'group_id': '',
                         'note': note.get('advice') or ''})
         return out
@@ -596,12 +602,14 @@ class Backend:
                 continue
             node = self.scan.find(path) if self.scan and self.scan.complete else None
             if node is not None and node is not self.scan.root:
-                size, count = node.size, node.files
+                size, logical_size, count = node.size, node.logical_size, node.files
             elif os.path.isfile(path):
-                size, count = os.path.getsize(path), 1
+                st = os.lstat(fsops.long_path(path))
+                size, logical_size, count = fsops.file_size(path, st), st.st_size, 1
             else:
-                size, count = None, None
-            out.append({'path': path, 'exists': os.path.lexists(path), 'size': size, 'files': count,
+                size, logical_size, count = None, None, None
+            out.append({'path': path, 'exists': os.path.lexists(path), 'size': size,
+                        'logical_size': logical_size, 'files': count,
                         'blocked': policy.reason(path), 'caution': policy.caution(path),
                         'note': self.knowledge.annotate(path)})
         return out
@@ -671,7 +679,7 @@ class Backend:
                                    replaces=pending)
                 else:
                     self.oplog.drop(pending)
-                self.forget_paths(done)
+                self.forget_paths(done, stats.measured)
                 if after is not None:
                     after(done)
             return {'done': done, 'freed': stats.bytes, 'failed': stats.failed, 'failures': stats.failures,
@@ -1122,7 +1130,8 @@ class Backend:
         ctx = {'path': self._anon(path)}
         node = self.scan.find(path) if self.scan is not None and self.scan.complete else None
         if node is not None:
-            ctx.update(type='文件夹', size=fmt_size(node.size), files=node.files, modified=fmt_date(node.mtime),
+            ctx.update(type='文件夹', size=fmt_size(node.size), logical_size=fmt_size(node.logical_size),
+                       size_basis='本机磁盘占用', files=node.files, modified=fmt_date(node.mtime),
                        largest_subfolders=[[c.name, fmt_size(c.size)] for c in (node.children or ())[:8]])
             hints = self.analyst.hints(node)
             if hints:
@@ -1131,8 +1140,9 @@ class Backend:
                 r = self.ai_results[node.id]
                 ctx['earlier_ai_verdict'] = {'verdict': r['verdict_label'], 'reason': r['reason']}
         elif os.path.isfile(path):
-            st = os.stat(path)
-            ctx.update(type=paths.category_label(paths.category_of(path)), size=fmt_size(st.st_size),
+            st = os.lstat(fsops.long_path(path))
+            ctx.update(type=paths.category_label(paths.category_of(path)), size=fmt_size(fsops.file_size(path, st)),
+                       logical_size=fmt_size(st.st_size), size_basis='本机磁盘占用',
                        modified=fmt_date(st.st_mtime))
         elif os.path.isdir(path):
             ctx['type'] = '文件夹'
@@ -1213,8 +1223,9 @@ class Backend:
     def _file_context(self, path: str, include_content: bool) -> dict:
         ctx = {'path': self._anon(path), 'type': paths.category_label(paths.category_of(path))}
         try:
-            st = os.stat(path)
-            ctx.update(size=fmt_size(st.st_size), modified=fmt_date(st.st_mtime))
+            st = os.lstat(fsops.long_path(path))
+            ctx.update(size=fmt_size(fsops.file_size(path, st)), logical_size=fmt_size(st.st_size),
+                       size_basis='本机磁盘占用', modified=fmt_date(st.st_mtime))
         except OSError:
             ctx['missing'] = True
         for f in (self.insights or {}).get('findings', []):

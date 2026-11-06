@@ -283,6 +283,37 @@ def disk_free(env: dict) -> int:
         return 0
 
 
+def free_by_drive(roots: list[str] | None = None) -> dict[str, int]:
+    """Free-byte snapshot; explicit roots keep before/after on the same drives.
+
+    Discovery and disk usage can both be injected in tests. In sandbox mode,
+    never enumerate the host's partitions. An unreadable drive is omitted;
+    callers must not replace missing measurements with logical file sizes.
+    """
+    if roots is None:
+        try:
+            sim = winapi.simulation()
+            if sim is not None:
+                roots = [d['root'] for d in sim.drives()]
+            else:
+                import psutil
+                roots = [p.mountpoint for p in psutil.disk_partitions(all=False)
+                         if p.fstype and 'cdrom' not in (p.opts or '')]
+        except Exception:  # noqa: BLE001 - an unavailable snapshot must never prevent cleanup
+            return {}
+    out, seen = {}, set()
+    for root in roots:
+        key = paths.key(root)
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            out[root] = winapi.disk_usage(root).free
+        except OSError:
+            continue
+    return out
+
+
 @dataclass
 class RuleScan:
     id: str
@@ -292,6 +323,8 @@ class RuleScan:
     needs_admin: bool = False      # rule (or part of it) skipped for lack of elevation
     running: list = field(default_factory=list)
     error: str = ''
+    logical_size: int | None = 0
+    size_note: str = ''
 
 
 class JunkEngine:
@@ -342,14 +375,19 @@ class JunkEngine:
 
     def _public(self, result: RuleScan) -> dict:
         rule = RULES_BY_ID[result.id]
-        return {'id': rule.id, 'size': result.size, 'count': result.count, 'locations': result.locations[:20],
+        return {'id': rule.id, 'size': result.size, 'logical_size': result.logical_size,
+                'size_note': result.size_note,
+                'count': result.count, 'locations': result.locations[:20],
                 'needs_admin': result.needs_admin, 'running': result.running, 'error': result.error,
-                'available': result.size is None or result.size > 0 or rule.mode in ('command',)}
+                'available': result.size is None or result.size > 0 or result.count > 0 or rule.mode in ('command',)}
 
     def _scan_rule(self, rule: Rule, cancel) -> RuleScan:
         result = RuleScan(rule.id)
         if rule.mode == 'recycle_bin':
             result.size, result.count = winapi.recycle_bin_info(None)
+            result.logical_size = result.size
+            result.size_note = ('Windows 提供的估算大小，可能包含稀疏或压缩文件的标称大小；'
+                                '清空后的已释放按磁盘可用空间变化计算。')
             return result
         if rule.admin and not self.admin:
             result.needs_admin = True
@@ -361,7 +399,11 @@ class JunkEngine:
                 result.locations.append(root)
                 if target.single_file:
                     try:
-                        result.size += os.stat(root).st_size
+                        st = os.lstat(fsops.long_path(root))
+                        if fsops.st_is_link(st):
+                            continue
+                        result.size += fsops.file_size(root, st)
+                        result.logical_size += st.st_size
                         result.count += 1
                     except OSError:
                         pass
@@ -379,12 +421,14 @@ class JunkEngine:
                                 continue
                             if min_age and now - fsops.age_time(st) < min_age:
                                 continue
-                            result.size += st.st_size
+                            result.size += fsops.file_size(entry.path, st)
+                            result.logical_size += st.st_size
                             result.count += 1
                 except PermissionError:
                     result.needs_admin = True
         if rule.id == 'component_store':
             result.size = None  # cannot be estimated cheaply
+            result.logical_size = None
         return result
 
     # -- cleaning ------------------------------------------------------------
@@ -444,9 +488,10 @@ class JunkEngine:
 
     def _clean_rule(self, rule: Rule, row: dict, cancel, progress):
         if rule.mode == 'recycle_bin':
-            before, _ = winapi.recycle_bin_info(None)
+            before = free_by_drive()
             if winapi.empty_recycle_bin(None):
-                row['freed'] = before
+                after = free_by_drive(list(before))
+                row['freed'] = max(0, sum(after[root] - free for root, free in before.items() if root in after))
             return
         if rule.mode in ('cleanmgr', 'command'):
             before = disk_free(self.env)
@@ -465,7 +510,10 @@ class JunkEngine:
                 for root in resolve_target(target, self.env):
                     if target.single_file:
                         try:
-                            size = os.stat(root).st_size
+                            st = os.lstat(fsops.long_path(root))
+                            if fsops.st_is_link(st):
+                                continue
+                            size = fsops.file_size(root, st)
                         except OSError:
                             continue
                         fsops.remove_file(root, stats, size)

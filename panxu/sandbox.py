@@ -10,7 +10,9 @@ system changes (registry, services, DISM, cleanmgr, uninstallers) are applied
 to the fake state only.
 
 Large files are *sparse*: they report their full size (so the numbers look
-real) but use almost no disk space.
+real) but use almost no disk space. While this simulation is active, allocation
+queries also return their simulated size; leftover files scanned outside the
+simulation are measured by their real allocation.
 """
 from __future__ import annotations
 
@@ -761,6 +763,24 @@ class Sandbox:
             out.append({'root': root + os.sep, 'label': label, 'fstype': 'NTFS', 'total': u.total, 'used': u.used,
                         'free': u.free, 'system': letter == 'C', 'removable': False, 'letter': letter + ':'})
         return out
+
+    def file_allocation_size(self, path: str) -> int:
+        """Pretend sparse fixtures occupy their logical size on the fake PC.
+
+        Never query a path outside the simulation, including a link's target.
+        """
+        def comparison_path(value):
+            if value.startswith('\\\\?\\UNC\\'):
+                return '\\\\' + value[8:]
+            return value[4:] if value.startswith('\\\\?\\') else value
+
+        if not paths.is_within(comparison_path(path), self.root) \
+                or not paths.is_within(comparison_path(os.path.realpath(path)), self.root):
+            return 0
+        try:
+            return os.lstat(path).st_size
+        except OSError:
+            return 0
 
     # -- system changes ---------------------------------------------------------------
     def services(self) -> list[dict]:

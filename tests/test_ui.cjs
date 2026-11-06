@@ -25,6 +25,16 @@ assert.strictEqual(PX.fmt.bytes(150 * 1024 ** 3), '150 GB');
 assert.strictEqual(PX.fmt.bytes(null), '—');
 assert.deepStrictEqual(PX.fmt.split(1024 ** 4 * 2), ['2.0', 'TB']);
 assert.strictEqual(PX.fmt.seconds(75), '1 分 15 秒');
+// Disk usage is distinct from content length, including a completely sparse (zero allocation) file.
+assert.strictEqual(PX.sizeDifference({ size: 128 * 1024, logical_size: 62.5 * 1024 ** 3 }), '标称 62.5 GB，实际占用 128 KB');
+assert.strictEqual(PX.sizeDifference({ size: 0, logical_size: 1024 ** 3 }), '标称 1.0 GB，实际占用 0 B');
+assert.strictEqual(PX.sizeDifference({ size: 1024, logical_size: 1024 }), '');
+assert.strictEqual(PX.sizeDifference({ size: 1024 }), '');
+assert.strictEqual(PX.sizeDifference({ size: null, logical_size: 1024 }), '');
+assert.strictEqual(PX.copySize({ size: 0 }, 1024 ** 3), 0, 'zero allocation must not fall back to logical size');
+assert.strictEqual(PX.copySize({}, 1024), 1024, 'old records retain their original size');
+assert.strictEqual(PX.duplicateWaste({ size: 1024 ** 3, files: [{ size: 128 * 1024 }, { size: 0 }, { size: 64 * 1024 }] }),
+  64 * 1024, 'remaining duplicate copies count their own allocation');
 // places under the user folder read like Explorer
 const R = String.raw;
 assert.strictEqual(PX.fmt.place(R`C:\Users\me\Documents\项目A`, R`C:\Users\me`), R`文档\项目A`);

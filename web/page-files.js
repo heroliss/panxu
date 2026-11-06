@@ -110,6 +110,7 @@
           h('div.name-line', h('span.name-text', f.name),
             f.ai ? h('span.inline-tags', PX.tag('AI：' + f.ai.verdict_label, FILE_VERDICT[f.ai.verdict] || '', 'spark')) : null),
           f.blocked ? h('div.sub', f.blocked + '：' + PX.displayPath(f.path)) : h('div.sub', PX.pathText(f.path)),
+          PX.sizeDifference(f) ? h('div.small.muted', PX.sizeDifference(f)) : null,
           f.ai ? h('div.ai-note', h('span', f.ai.what), h('span.muted', f.ai.reason)) : null)),
         h('div.sub', f.category_label), h('div.size.muted.small', fmt.date(f.mtime)), h('div.size', fmt.bytes(f.size), PX.meter(f.size / largest)),
         PX.pathButtons(f.path)));
@@ -272,7 +273,7 @@
     const list = c.appendChild(h('div', { style: { borderTop: '1px solid var(--rule)' } }));
     for (const g of dup.result.groups.slice(0, dup.shown)) {
       const grp = list.appendChild(h('div.dup-group', h('div.dup-head', h('b', `${g.files.length} 个相同文件`),
-        h('span.muted.small', `每个 ${fmt.bytes(g.size)}`), h('span.size', '可节省 ' + fmt.bytes(g.wasted)))));
+        h('span.muted.small', `每份标称 ${fmt.bytes(g.size)}`), h('span.size', '可节省 ' + fmt.bytes(g.wasted)))));
       if (g.files.every((f) => f.place) && g.files.some((f) => f.place !== 'build')) {
         grp.appendChild(h('div.small.muted.dup-note', '每一份都在程序文件夹、代码工程里或工程旁边，可能各自被用到，所以没有自动勾选。'
           + '删掉其中一份前，先确认对应的程序或工程不再需要它。'));
@@ -287,7 +288,7 @@
           onchange: (e) => { e.target.checked ? dup.selected.add(f.path) : dup.selected.delete(f.path); drawDups(true); } });
         grp.appendChild(h('div.row.dup-file' + (checked ? '' : '.keep'), box,
           h('div.cell-main.ic-cell', PX.fileIcon(f.path), h('div', h('div.name', PX.pathText(f.path)),
-            f.place || f.ai ? h('div.dup-facts', PX.copyFacts(f)) : null)),
+            f.place || f.ai || PX.sizeDifference(f) ? h('div.dup-facts', PX.copyFacts(f)) : null)),
           h('div.size.muted.small', '修改于 ' + fmt.date(f.mtime)), PX.pathButtons(f.path)));
       }
     }
@@ -297,7 +298,7 @@
     }
     const sel = [];
     let size = 0;
-    for (const g of dup.result.groups) for (const f of g.files) if (dup.selected.has(f.path)) { sel.push(f.path); size += g.size; }
+    for (const g of dup.result.groups) for (const f of g.files) if (dup.selected.has(f.path)) { sel.push(f.path); size += PX.copySize(f, g.size); }
     c.appendChild(h('div.actionbar',
       h('div.grow', sel.length ? h('span', `已选 ${sel.length} 个副本，共 `, h('span.fig', fmt.bytes(size))) : h('span.muted', '勾选要删除的副本')),
       h('button.btn.primary', { type: 'button', disabled: !sel.length, onclick: async () => {
@@ -310,7 +311,7 @@
           const gone = new Set(r.done);
           for (const g of dup.result.groups) g.files = g.files.filter((f) => !gone.has(f.path));
           dup.result.groups = dup.result.groups.filter((g) => g.files.length > 1);
-          for (const g of dup.result.groups) g.wasted = g.size * (g.files.length - 1);
+          for (const g of dup.result.groups) g.wasted = PX.duplicateWaste(g);
           dup.result.stats.wasted = dup.result.groups.reduce((s, g) => s + g.wasted, 0);
           for (const p of gone) dup.selected.delete(p);
           drawDups();

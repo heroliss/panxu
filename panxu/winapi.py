@@ -113,6 +113,8 @@ if IS_WINDOWS:
     _kernel32.GetVolumeInformationW.restype = wintypes.BOOL
     _kernel32.GetDriveTypeW.argtypes = [wintypes.LPCWSTR]
     _kernel32.GetDriveTypeW.restype = wintypes.UINT
+    _kernel32.GetCompressedFileSizeW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(wintypes.DWORD)]
+    _kernel32.GetCompressedFileSizeW.restype = wintypes.DWORD
     _crypt32.CryptProtectData.argtypes = [ctypes.POINTER(DATA_BLOB), wintypes.LPCWSTR, ctypes.POINTER(DATA_BLOB),
                                           ctypes.c_void_p, ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(DATA_BLOB)]
     _crypt32.CryptProtectData.restype = wintypes.BOOL
@@ -544,6 +546,25 @@ def set_file_times(path: str, created: float | None = None, modified: float | No
         return bool(k32.SetFileTime(handle, ctypes.byref(ft), None, None))
     finally:
         k32.CloseHandle(handle)
+
+
+def file_allocation_size(path: str) -> int | None:
+    """Disk bytes for a sparse/compressed file, or None if unavailable.
+
+    Metadata only: this does not read file contents. Callers must first reject
+    links and cloud placeholders, because GetCompressedFileSizeW follows links.
+    https://learn.microsoft.com/windows/win32/api/fileapi/nf-fileapi-getcompressedfilesizew
+    """
+    if _sim is not None:
+        return _sim.file_allocation_size(path)
+    if not IS_WINDOWS:
+        return None
+    high = wintypes.DWORD(0)
+    ctypes.set_last_error(0)  # 0xffffffff can also be a successful low DWORD
+    low = _kernel32.GetCompressedFileSizeW(path, ctypes.byref(high))
+    if low == 0xffffffff and ctypes.get_last_error():
+        return None
+    return (high.value << 32) | low
 
 
 def make_sparse(fileobj) -> bool:

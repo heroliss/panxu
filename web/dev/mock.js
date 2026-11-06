@@ -39,7 +39,9 @@
           T('Local', 81 * GB, null, null, [
             T('Docker', 28.4 * GB, 'vdisk', 'Docker Desktop 数据'),
             T('JetBrains', 9.6 * GB, null, null, [T('IntelliJIdea2025.3', 7.1 * GB), T('Toolbox', 2.5 * GB)]),
-            T('Temp', 2.4 * GB, 'cache', '可清理：用户临时文件'),
+            T('Temp', 2.4 * GB, 'cache', '可清理：用户临时文件', [
+              T('sparse-demo.bin', 128 * 1024, 'file', null, [], { logical_size: 62.5 * GB }),
+            ], { logical_size: 510 * GB }),
             T('Google', 3.9 * GB, 'appdata', 'Chrome 用户数据'),
             T('npm-cache', 3.4 * GB, 'cache', '可清理：npm 缓存'),
             T('Unity', 6.2 * GB),
@@ -65,6 +67,10 @@
     T('hiberfil.sys', 12.7 * GB, 'file'),
     T('pagefile.sys', 16 * GB, 'file'),
   ]);
+  (function logicalSizes(n) {
+    for (const child of n.children) logicalSizes(child);
+    if (n.logical_size === undefined) n.logical_size = n.size + n.children.reduce((sum, child) => sum + child.logical_size - child.size, 0);
+  })(tree);
   const nodes = [];
   (function index(n, parent, path) {
     n.id = nodes.length; n.parent = parent; n.path = path; nodes.push(n);
@@ -74,7 +80,7 @@
   const dirs = nodes.filter((n) => n.kind !== 'file');
   const note = (n) => n.label ? { kind: n.kind, label: n.label, advice: '', rule: '', inherited: false } : null;
   let aiResults = {};
-  const row = (n) => ({ id: n.id, name: n.parent ? n.name : n.path, path: n.path, type: 'dir', size: n.size, files: Math.round(n.size / (3 * MB)) + 7,
+  const row = (n) => ({ id: n.id, name: n.parent ? n.name : n.path, path: n.path, type: 'dir', size: n.size, logical_size: n.logical_size, files: Math.round(n.size / (3 * MB)) + 7,
     dirs: n.children.length, mtime: now - (n.id % 9) * 40 * day, has_children: n.children.length > 0, denied: n.name === 'Windows', links: false, cloud: false,
     note: note(n), ai: aiResults[n.id], blocked: n.parent && !n.parent.parent ? '这是 Windows 系统文件或目录' : null });
 
@@ -141,6 +147,7 @@
     ['C:\\Users\\demo\\Downloads\\PS2024.rar', 2.6 * GB, 500, 'archive', '压缩包'],
   ].map(([path, size, age, category, category_label, blocked]) => ({ path, name: path.split('\\').pop(), size, mtime: now - age * day, category, category_label, blocked: blocked || null, note: null }))
     .sort((a, b) => b.size - a.size);
+  largeFiles.find((f) => f.path.endsWith('docker_data.vhdx')).logical_size = 128 * GB;
 
   const suggestions = () => [
     { node_id: 12, path: 'C:\\Users\\demo\\AppData\\Local\\Unity', size: 6.2 * GB, files: 18000, verdict: 'clean', verdict_label: '可清理', app: 'Unity 编辑器', reason: 'Unity 的资源导入与着色器缓存，打开项目时会自动重建', effect: '下次打开项目时重新导入，耗时较长', confidence: 0.86, source: 'ai', expanded: false,
@@ -164,7 +171,7 @@
   const P = (o) => Object.assign({ group: 'review', count: 0, what: '', why: '', effect: '', action: 'recycle', source: 'heuristic',
     confidence: null, selected: false, paths: [], blocked: null, caution: null, status: 'pending', ai: null }, o);
   const planItems = [
-    P({ id: 'rule:user_temp', group: 'safe', category: '垃圾文件', title: '用户临时文件', size: 2.31 * GB, count: 9120, action: 'delete', source: 'rule', selected: true,
+    P({ id: 'rule:user_temp', group: 'safe', category: '垃圾文件', title: '用户临时文件', size: 2.31 * GB, logical_size: 510 * GB, count: 9120, action: 'delete', source: 'rule', selected: true,
       why: rules[0][3], locations: [U + '\\AppData\\Local\\Temp'] }),
     P({ id: 'rule:chrome', group: 'safe', category: '垃圾文件', title: 'Google Chrome', size: 1.46 * GB, action: 'delete', source: 'rule', selected: true, why: rules[8][3] }),
     P({ id: 'rule:crash_dumps', group: 'safe', category: '垃圾文件', title: '崩溃转储文件', size: 640 * MB, action: 'delete', source: 'rule', selected: true, why: '程序崩溃时保存的内存快照，只在排查故障时有用。' }),
@@ -244,7 +251,7 @@
   const findings = [
     { id: 'incomplete', kind: 'incomplete_download', kind_label: '没有下载完的文件', advice: '浏览器或下载工具中断后留下的半成品，无法直接打开。确认不再继续下载后可以删除。',
       title: '2 个没有下载完的文件', reason: '扩展名表明下载没有完成，而且已经超过 3 天没有继续。', confidence: 0.9,
-      files: [F(U + '\\Downloads\\电影.mkv.crdownload', 702 * MB, 30, '30 天前中断', true), F(U + '\\Downloads\\年度报告.pdf.part', 12 * MB, 45, '45 天前中断', true)] },
+      files: [F(U + '\\Downloads\\电影.mkv.crdownload', 702 * MB, 30, '30 天前中断', true, { logical_size: 20 * GB }), F(U + '\\Downloads\\年度报告.pdf.part', 12 * MB, 45, '45 天前中断', true)] },
     { id: 'installers', kind: 'installer_installed', kind_label: '已安装程序的安装包', advice: '程序已经装好，安装包一般用不到了。需要重装时可以去官网下载最新版。',
       title: '3 个已安装程序的安装包', reason: '安装包对应的程序在「已安装的应用」中能找到。', confidence: 0.85,
       files: [F(U + '\\Downloads\\WeChatSetup_3.9.12.17.exe', 186 * MB, 200, '已安装：微信', true, { ai: { verdict: 'delete', verdict_label: '可以删除', what: '微信安装包', reason: '微信已安装，安装包不再需要' } }),
@@ -264,7 +271,8 @@
     { id: 'empty', kind: 'empty_folders', kind_label: '空文件夹', advice: '这些文件夹里什么都没有，删除不会丢失任何内容。', title: '2 个空文件夹',
       reason: '里面没有任何文件（包括子文件夹）。', confidence: 0.95,
       files: [F(U + '\\Desktop\\新建文件夹', 0, 0, '空文件夹', true, { mtime: 0, category: 'folder' }), F(U + '\\Desktop\\新建文件夹 (2)', 0, 0, '空文件夹', true, { mtime: 0, category: 'folder' })] },
-  ].map((f) => Object.assign(f, { count: f.files.length, size: f.files.reduce((s, x) => s + x.size, 0) }));
+  ].map((f) => Object.assign(f, { count: f.files.length, size: f.files.reduce((s, x) => s + x.size, 0),
+    logical_size: f.files.reduce((s, x) => s + (x.logical_size === undefined ? x.size : x.logical_size), 0) }));
   const KIND_SCORE = { incomplete_download: 90, installer_installed: 85, name_versions: 35, stale_large: 30, empty_folders: 90 };
   for (const f of findings) {
     for (const x of f.files) {
@@ -334,7 +342,9 @@
     plan_dup_choose: ({ item_id, remove }) => {
       const it = plan.items.find((i) => i.id === item_id);
       const keep = it.dup_files.filter((f) => !remove.includes(f.path));
-      Object.assign(it, { paths: remove, keep: keep.length ? keep[0].path : null, count: remove.length, size: it.dup_size * remove.length,
+      Object.assign(it, { paths: remove, keep: keep.length ? keep[0].path : null, count: remove.length,
+        size: it.dup_files.filter((f) => remove.includes(f.path)).reduce((sum, f) => sum + PX.copySize(f, it.dup_size), 0),
+        logical_size: it.dup_size * remove.length,
         score: keep.length ? 85 : 15,
         why: keep.length ? `保留「${keep[0].path.split('\\').slice(-2, -1)[0]}」里的那份，其余 ${remove.length} 份移到回收站`
           : `这 ${remove.length} 份全部移到回收站` });
@@ -423,7 +433,9 @@
       start_types: { auto: '自动', delayed: '自动（延迟启动）', manual: '手动', disabled: '禁用' }, home: 'C:\\Users\\demo', system_drive: 'C:\\', data_dir: 'C:\\Users\\demo\\AppData\\Local\\PanXu' }),
     job: ({ job_id }) => status(job_id),
     cancel_job: ({ job_id }) => { if (jobs[job_id]) jobs[job_id].cancel = true; return true; },
-    junk_scan: () => job(4, rules.map(([id, , , , , admin, size]) => ({ id, size: admin ? 0 : size, count: size ? Math.round(size / (200 * 1024)) : 0,
+    junk_scan: () => job(4, rules.map(([id, , , , , admin, size]) => ({ id, size: admin ? 0 : size,
+      logical_size: id === 'user_temp' ? 510 * GB : admin ? 0 : size, count: size ? Math.round(size / (200 * 1024)) : 0,
+      size_note: id === 'recycle_bin' ? 'Windows 提供的估算大小，可能包含稀疏或压缩文件的标称大小；清空后的已释放按磁盘可用空间变化计算。' : '',
       locations: ['C:\\Users\\demo\\AppData\\Local\\Temp'], needs_admin: admin, running: id === 'edge' ? ['msedge.exe'] : [], error: '', available: size === null || size > 0 })),
       (f) => ({ index: Math.round(f * rules.length), total: rules.length, current: rules[Math.min(rules.length - 1, Math.round(f * rules.length))][1] })),
     junk_clean: ({ rule_ids }) => job(6, { freed: 3.9 * GB, rules: rule_ids.map((id) => ({ id, name: id, freed: 1 * GB, files: 1200, failed: 12, in_use: 12, skipped: '', failures: [] })) },
@@ -433,7 +445,8 @@
     space_node: ({ node_id }) => {
       const n = nodes[node_id];
       const children = n.children.filter((c) => c.kind !== 'file').map(row);
-      const files = n.children.filter((c) => c.kind === 'file').map((c) => ({ name: c.name, path: c.path, size: c.size, mtime: now - day, cloud: false, type: 'file', category: 'other', blocked: '这是 Windows 系统文件或目录' }));
+      const files = n.children.filter((c) => c.kind === 'file').map((c) => ({ name: c.name, path: c.path, size: c.size, logical_size: c.logical_size,
+        mtime: now - day, cloud: false, type: 'file', category: 'other', blocked: c.path.endsWith('.sys') ? '这是 Windows 系统文件或目录' : null }));
       const crumbs = []; for (let x = n; x; x = x.parent) crumbs.unshift({ id: x.id, name: x.parent ? x.name : x.path });
       return { node: row(n), crumbs, children, files, more_files: 23, more_bytes: 140 * MB };
     },

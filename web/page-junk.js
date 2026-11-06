@@ -19,7 +19,7 @@
     const res = state.results[rule.id];
     if (!res) return false;
     if (rule.admin && !PX.state.init.admin) return true; // show what elevation would unlock
-    return res.available && (res.size === null || res.size > 0 || rule.mode === 'command');
+    return res.available && (res.size === null || res.size > 0 || res.count > 0 || rule.mode === 'command');
   }
   function total() {
     let sum = 0;
@@ -81,7 +81,10 @@
     for (const id of ids) {
       const r = ruleById(id);
       const res = state.results[id];
-      list.appendChild(h('div.row', h('div.name', r.name), h('div.size', res.size === null ? '无法预估' : fmt.bytes(res.size))));
+      list.appendChild(h('div.row', h('div.name', h('div', r.name),
+        PX.sizeDifference(res) ? h('div.small.muted', PX.sizeDifference(res)) : null,
+        res.size_note ? h('div.small.muted', res.size_note) : null),
+      h('div.size', res.size === null ? '无法预估' : fmt.bytes(res.size))));
       if (r.note) warnings.push(r.name + '：' + r.note);
     }
     const body = h('div',
@@ -156,6 +159,8 @@
       out.push(PX.detailPanel({
         warn: rule.note,
         facts: [['有多少', res.count ? `${fmt.count(res.count)} 个文件，共 ${fmt.bytes(res.size || 0)}` : ''],
+          ['占用空间', PX.sizeDifference(res)],
+          ['大小说明', res.size_note],
           ['怎么清理', rule.mode === 'command' ? '通过系统命令清理' : locs.length ? '' : '没有找到对应的位置']],
         places: { title: '清理这些位置', note: locs.length > 1 ? `${locs.length} 个` : '', rows: locs.map((loc) => PX.placeRow(loc, { folder: true })) },
       }));

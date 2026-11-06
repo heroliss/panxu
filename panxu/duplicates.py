@@ -250,7 +250,8 @@ def find_duplicates(roots: list[str], *, min_size: int = 1024 * 1024, skip=None,
                 if getattr(st, 'st_file_attributes', 0) & winapi.CLOUD_ATTRIBUTES:
                     continue
                 files_seen += 1
-                by_size.setdefault(st.st_size, []).append([os.path.join(dirpath, entry.name), st.st_mtime])
+                by_size.setdefault(st.st_size, []).append([os.path.join(dirpath, entry.name), st.st_mtime,
+                                                         fsops.file_size(entry.path, st)])
             if files_seen % 500 == 0:
                 report('listing')
 
@@ -324,8 +325,9 @@ def find_duplicates(roots: list[str], *, min_size: int = 1024 * 1024, skip=None,
             groups_out.append({
                 'id': len(groups_out),
                 'size': size,
-                'wasted': size * (len(group) - 1),
-                'files': [{'path': p, 'mtime': m, **(place_of(p, homes, near) or {})} for p, m in group],
+                'wasted': sum(used for _, _, used in group[1:]),
+                'files': [{'path': p, 'mtime': m, 'size': used, 'logical_size': size,
+                           **(place_of(p, homes, near) or {})} for p, m, used in group],
             })
     groups_out.sort(key=lambda g: g['wasted'], reverse=True)
     for index, g in enumerate(groups_out):

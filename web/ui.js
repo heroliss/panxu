@@ -131,6 +131,14 @@
       return parts.join('\\');
     },
   };
+  // The main figure is disk usage. Explain a sparse/compressed file's declared length only when it differs.
+  PX.sizeDifference = function (row) {
+    if (!row || !Number.isFinite(row.size) || !Number.isFinite(row.logical_size) || row.size === row.logical_size) return '';
+    return `标称 ${PX.fmt.bytes(row.logical_size)}，实际占用 ${PX.fmt.bytes(row.size)}`;
+  };
+  // Duplicate groups match by content length; individual copies can occupy different amounts of disk space.
+  PX.copySize = (file, groupSize) => (Number.isFinite(file.size) ? file.size : groupSize);
+  PX.duplicateWaste = (group) => group.files.slice(1).reduce((sum, file) => sum + PX.copySize(file, group.size), 0);
   // a program's icon, or its initial on a colour derived from the name
   PX.avatar = function (name, icon) {
     if (icon) return h('img.app-icon', { src: icon, alt: '' });
@@ -427,6 +435,8 @@
   PX.copyFacts = function (f, brief) {
     if (!f) return [];
     const out = [PX.placeTag(f)];
+    const size = PX.sizeDifference(f);
+    if (size) out.push(h('span.small.muted', size));
     const refs = f.refs;
     if (refs && refs.count) {
       out.push(h('span.tag.warn', { title: '提到它的文件：\n' + refs.found.join('\n') },

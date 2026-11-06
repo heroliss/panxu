@@ -401,8 +401,9 @@ class Analyst:
                 except OSError:
                     continue
                 ext = os.path.splitext(entry.name)[1].lower() or '(无)'
-                exts[ext] = exts.get(ext, 0) + st.st_size
-                largest.append((st.st_size, entry.name))
+                used = fsops.file_size(entry.path, st)
+                exts[ext] = exts.get(ext, 0) + used
+                largest.append((used, entry.name))
                 if oldest is None or st.st_mtime < oldest:
                     oldest = st.st_mtime
                 seen += 1
@@ -413,7 +414,8 @@ class Analyst:
         top_exts = sorted(exts.items(), key=lambda kv: kv[1], reverse=True)[:8]
         own = [n for n in sorted(largest, reverse=True)[:6]]
         summary = {
-            'id': ident, 'path': shown, 'size': _fmt_size(node.size), 'files': node.files,
+            'id': ident, 'path': shown, 'size': _fmt_size(node.size),
+            'logical_size': _fmt_size(node.logical_size), 'size_basis': '本机磁盘占用', 'files': node.files,
             'subdir_count': len(node.children or ()), 'newest': _fmt_date(node.mtime), 'oldest': _fmt_date(oldest or 0),
             'subdirs': subdirs, 'types': [[e, _fmt_size(s)] for e, s in top_exts],
             'largest_files': [[name, _fmt_size(size)] for size, name in own],
@@ -545,7 +547,8 @@ class Analyst:
         results[node.id] = self._row(scan, node, verdict, source)
 
     def _row(self, scan, node, verdict: dict, source: str, expanded: bool = False) -> dict:
-        return {'node_id': node.id, 'path': scan.path_of(node), 'size': node.size, 'files': node.files, 'mtime': node.mtime,
+        return {'node_id': node.id, 'path': scan.path_of(node), 'size': node.size,
+                'logical_size': node.logical_size, 'files': node.files, 'mtime': node.mtime,
                 'verdict': verdict['verdict'], 'verdict_label': VERDICT_LABELS[verdict['verdict']],
                 'app': verdict.get('app', ''), 'reason': verdict.get('reason', ''), 'effect': verdict.get('effect', ''),
                 'confidence': verdict.get('confidence', 0), 'source': source, 'expanded': expanded}
@@ -649,6 +652,8 @@ class Analyst:
                        'size': _fmt_size(f.get('size') or 0), 'modified': _fmt_date(f.get('mtime') or 0),
                        'type': paths.category_label(f.get('category') or 'other'), 'group': f.get('group', ''),
                        'group_id': f.get('group_id', ''), 'note': f.get('note', '')}
+                if f.get('logical_size') is not None and f['logical_size'] != f.get('size'):
+                    row.update(logical_size=_fmt_size(f['logical_size']), size_basis='本机磁盘占用')
                 if f.get('excerpt'):
                     row['excerpt'] = f['excerpt']
                 payload.append(row)

@@ -20,7 +20,8 @@
     const cautions = ok.filter((c) => c.caution);
     let mode = defaultMode;
     const list = h('div.confirm-list');
-    for (const c of ok.slice(0, 300)) list.appendChild(h('div.row', h('div.name.mono-path', PX.displayPath(c.path)), h('div.size', fmt.bytes(c.size))));
+    for (const c of ok.slice(0, 300)) list.appendChild(h('div.row', h('div.name', h('div.mono-path', PX.displayPath(c.path)),
+      PX.sizeDifference(c) ? h('div.small.muted', PX.sizeDifference(c)) : null), h('div.size', fmt.bytes(c.size))));
     if (ok.length > 300) list.appendChild(h('div.row.muted', `另有 ${ok.length - 300} 项`));
     const choices = h('div');
     const drawChoices = () => {
@@ -305,7 +306,7 @@
     const current = !it;
     const x = it || state.node.node;
     const isDir = x.type !== 'file';
-    const facts = [fmt.bytes(x.size)];
+    const facts = [PX.sizeDifference(x) || fmt.bytes(x.size)];
     if (isDir) {
       facts.push(`${fmt.count(x.files)} 个文件`);
       if (x.dirs) facts.push(`${fmt.count(x.dirs)} 个文件夹`);
