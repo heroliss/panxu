@@ -65,6 +65,40 @@ class AppsTest(TempDirTest):
         self.assertTrue(foo['location_exists'])
         self.assertTrue(foo['msi'])
 
+    def test_broken_registration_requires_both_absolute_paths_missing_on_connected_disk(self):
+        base = self.pf + '\\Gone'
+        self.reg.keys[('HKCU', BASE + '\\Gone')] = {'DisplayName': 'Gone Tool', 'InstallLocation': base,
+                                                     'UninstallString': '"' + base + '\\uninstall.exe"'}
+        self.apps._cache = None
+        rows = self.apps.registry_issues([self.tmp])
+        self.assertEqual([r['title'] for r in rows], ['Gone Tool'])
+        self.assertEqual(self.apps.registry_issues([]), [], 'disconnected/remote roots are not evidence of missing files')
+        original_stat = os.stat
+        def inaccessible(path, *args, **kwargs):
+            if str(path).endswith('Gone\\uninstall.exe'):
+                raise PermissionError('not readable')
+            return original_stat(path, *args, **kwargs)
+        with mock.patch('panxu.apps.os.stat', side_effect=inaccessible):
+            self.assertEqual(self.apps.registry_issues([self.tmp]), [])
+        self.reg.keys[('HKCU', BASE + '\\Gone')]['UninstallString'] = 'uninstall.exe'
+        self.assertEqual(self.apps.registry_issues([self.tmp]), [], 'relative commands cannot be declared missing')
+
+    def test_uninstall_history_survives_restart_and_reinstalled_locations_are_preserved(self):
+        app = next(a for a in self.apps.list() if a['name'].startswith('FooSoft'))
+        with mock.patch('panxu.winapi.shell_execute', return_value=True):
+            self.apps.uninstall(app['id'])
+        with self.assertRaises(ValueError):
+            self.apps.leftovers(app['id'])  # uninstaller started but registration still present
+        del self.reg.keys[('HKLM', BASE + '\\FooSoft')]
+        again = AppManager(registry=self.reg, env=self.env, admin=True, oplog=self.log)
+        self.assertEqual(again.removed_apps()[0]['id'], app['id'])
+        self.assertTrue(again.leftovers(app['id']))
+        # A different package now owns the old install path: do not offer it as a leftover.
+        self.reg.keys[('HKCU', BASE + '\\NewPackage')] = {'DisplayName': 'New Owner', 'InstallLocation': app['location'],
+                                                            'UninstallString': 'uninstaller.exe'}
+        again._cache = None
+        self.assertEqual(again.leftovers(app['id']), [])
+
     def test_last_run_from_prefetch(self):
         self.assertFalse(self.apps.list()[0]['usage_known'], 'no Prefetch folder: usage unknown')
         pf = self.make('Windows/Prefetch/FOOSOFT.EXE-1A2B3C4D.pf', 10)

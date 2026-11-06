@@ -92,6 +92,7 @@ class Backend:
         self.dups: dict | None = None
         self.junk_rows: list[dict] | None = None
         self.startup_ai: dict = {}
+        self.app_residues: dict | None = None
         self.insights: dict | None = None
         self.file_ai: dict[str, dict] = {}
         self.dup_ai: dict[str, dict] = {}   # duplicate copy -> the model's advice (Analyst.review_duplicates)
@@ -153,6 +154,9 @@ class Backend:
             return not paths.within_any(path, gone)
         # the plan on 首页 shows what was done on the tool pages too
         for item in (self.plan or {}).get('items', []):
+            if item['status'] == 'pending' and item.get('paths') and not any(alive(p) for p in item['paths']):
+                item['status'], item['result'] = 'done', '已处理'
+        for item in (self.app_residues or {}).get('items', []):
             if item['status'] == 'pending' and item.get('paths') and not any(alive(p) for p in item['paths']):
                 item['status'], item['result'] = 'done', '已处理'
         if self.insights:
@@ -896,6 +900,28 @@ class Backend:
         return self.jobs.start('ai_explain', run, group='ai')
 
     # ------------------------------------------------------------------ installed programs
+    def m_app_residues_result(self):
+        return self.app_residues
+
+    def m_app_residues_scan(self):
+        """An independent tool scan; home disk/AI switches do not control this operation."""
+        def run(job):
+            policy = self.policy()
+            roots = [self.env[k] for k in ('LOCALAPPDATA', 'APPDATA', 'LOCALLOW', 'ProgramData')
+                     if self.env.get(k) and os.path.isdir(self.env[k])]
+            roots += [a['location'] for a in self.apps.removed_apps() if a['location'] and os.path.isdir(a['location'])]
+            roots = [r for r in dict.fromkeys(roots) if not any(paths.key(r) != paths.key(p) and paths.is_within(r, p) for p in roots)]
+            scan = SpaceScan(roots, skip=checkup.space_skip(self.env, policy, self.app_dirs))
+            scan.run(cancel=job.cancel, progress=lambda p: job.update(**p))
+            builder = checkup.PlanBuilder(policy, self.knowledge, threshold=self.settings.get()['checkup']['auto_threshold'])
+            builder.reserve_rule_locations(self.env)
+            stats = builder.add_removed_apps(self.apps, scan)
+            stats.update(builder.add_heuristics(scan, self.analyst, self.env, set()))
+            registry = self.apps.registry_issues([d['root'] for d in self.m_drives() if d.get('fixed')])
+            self.app_residues = checkup.residue_result(builder, scan, stats, registry)
+            return self.app_residues
+        return self.jobs.start('app_residues_scan', run, group='apps')
+
     def m_apps_list(self, fresh: bool = False):
         apps = self.apps.list(fresh=bool(fresh))
         return {'apps': apps, 'admin': self.admin, 'usage_known': any(a['usage_known'] for a in apps)}
@@ -1000,6 +1026,9 @@ class Backend:
             extra['size'] = fmt_size(a['size'])
         if a['installed']:
             extra['installed'] = fmt_date(a['installed'])
+        issue = next((r for r in (self.app_residues or {}).get('registry', []) if r['id'] == a['id']), None)
+        if issue:
+            extra['registration_check'] = issue['why'] + issue['advice']
         if a['usage_known']:
             extra['last_run'] = fmt_date(a['last_used']) if a['last_used'] else '没有运行记录'
         # without administrator rights there is no run history: a program open right now is still plainly in use
@@ -1007,7 +1036,7 @@ class Backend:
             base = os.path.normcase(os.path.normpath(a['location'])) + os.sep
             if any(p.startswith(base) for p in running):
                 extra['open_now'] = '现在正开着'
-        return {'key': 'app:' + a['name'] + '|' + a['version'], 'id': a['id'], 'kind': 'app', 'name': a['name'],
+        return {'key': 'app:' + a['name'] + '|' + a['version'] + ('|missing-registration' if issue else ''), 'id': a['id'], 'kind': 'app', 'name': a['name'],
                 'publisher': a['publisher'], 'command': '', 'extra': extra}
 
     # ------------------------------------------------------------------ 我的文件
@@ -1213,6 +1242,11 @@ class Backend:
         app = self.analyst.installed_app(path)
         if app is not None:
             ctx['installed_app'] = app or '未找到对应的已安装程序'
+        residue = next((item for item in (self.app_residues or {}).get('items', [])
+                        if any(paths.key(p) == paths.key(path) for p in item['paths'])), None)
+        if residue:
+            ctx['residue_evidence'] = residue['basis']
+            ctx['residue_caution'] = residue['effect']
         return ctx
 
     def _ask_context(self, target: dict, page: str, include_content: bool) -> dict:
@@ -1346,6 +1380,7 @@ class Backend:
             raise UserError(f'重建失败：{exc}') from None
         self.scan, self.ai_results, self.dups, self.junk_rows = None, {}, None, None
         self.startup_ai = {}
+        self.app_residues = None
         self.insights, self.file_ai, self.plan, self._app_index = None, {}, None, None
         self.apps._cache = None
         self.junk.last_scan.clear()

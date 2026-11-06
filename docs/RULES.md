@@ -96,3 +96,10 @@
 规则评分由 `checkup.rule_assessment` 集中生成：符合期限的临时数据基础 95 分，浏览器/界面缓存 85，下载缓存 70，重建成本较高的着色器/媒体/构建缓存 60。最近 7 天新增/修改的占用超过一半减 10；至少八成超过 90 天未变加 5。不可还原的操作仍单独确认，Maven 本地仓库可能有用户自产包，降到 30 且永不自动勾选。文件大小只影响排序和释放量，不提高可丢弃的把握。
 
 新实现保留 `eligible + 分数门槛` 的单一自动勾选规则。扫描和清理都遵守用户排除目录；整目录建议不能再覆盖已由规则计入的位置。老版本目录含规则日志时只继续建议未覆盖的子目录，不删除父目录来绕过日志保留期限。
+
+## 2026-11-06：软件残留及系统缓存补充
+
+- 新版 Teams：微软的[缓存维护说明](https://learn.microsoft.com/en-us/troubleshoot/microsoftteams/teams-administration/clear-teams-cache)确认新版独立包的 LocalCache 路径。本规则进一步仅取 EBWebView/Default 下 Cache、Code Cache、GPUCache，保留 Cookies、Local Storage 和其他应用资料；进程 ms-teams.exe 存在时不执行。目录子项白名单依据 WebView/Chromium 的缓存用途，不能扩大为整个 LocalCache 或应用重置。
+- NVIDIA：[官方着色器缓存说明](https://nvidia.custhelp.com/app/answers/detail/a_id/5735)列出 Local/NVIDIA Corporation/NV_Cache，补入现有着色器缓存规则。重新编译可能使首次游戏运行变慢，继续按较高重建成本评分。
+- DISM：[官方日志说明](https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/deployment-image-servicing-and-management--dism--best-practices)区分当前 dism.log 与轮换的 .bak。仅匹配 dism.log.bak、保留 7 天并检查维护进程；诊断历史不可重建，列为手动确认且永不自动勾选。不会清理当前日志、其他备份或系统事件日志。
+- 失效登记仅供核实，不把全注册表里陌生、空或过时的键批量当成垃圾。软件的修复、卸载元数据仍受保护；Windows 维护组件、Installer、DriverStore 等继续通过系统工具或说明入口处理。

@@ -31,7 +31,7 @@ from .analyst import FILE_BATCH, newer_sibling
 from .duplicates import (AI_RANK, IN_USE, PLACE_RANK, find_duplicates, must_stay, place_label, removal_score,
                          verify_unchanged)
 from .insights import KIND_SCORE, Insights, content_question, file_score, is_copy_name, managed_dir, with_ai
-from .junk import RULES_BY_ID
+from .junk import RULES_BY_ID, resolve_target
 from .scanner import FLAG_CLOUD, FLAG_DENIED, FLAG_EXCLUDED, FLAG_LINKS, FLAG_PROGRAM, SpaceScan
 
 GROUPS = {'safe': '放心清理', 'review': '建议你看看', 'info': '仅供了解'}
@@ -49,14 +49,15 @@ MIN_AI_CONFIDENCE = 0.7      # below this a 「可清理」 verdict is never pre
 ACTIVE_DAYS = 7             # folders changed more recently are left for the user
 # rules never pre-ticked: no undo (Recycle Bin, rollback to the old Windows), very slow (DISM), or
 # possibly holding the user's own builds (mvn install puts them in the local repository)
-NEVER_AUTO_RULES = {'recycle_bin', 'windows_old', 'component_store', 'maven'}
+NEVER_AUTO_RULES = {'recycle_bin', 'windows_old', 'component_store', 'maven', 'dism_logs'}
 # names inside a folder that suggest something worth keeping although nobody "made" it: game saves,
 # profiles, backups. A folder containing one is never pre-ticked.
 VALUABLE_DIRS = {'save', 'saves', 'savegames', 'savedgames', 'saved games', 'savedata', 'save data', '存档',
                  'profile', 'profiles', 'user data', 'userdata', 'backup', 'backups', '备份', 'license', 'licenses',
                  'user', 'history', 'local history', 'local storage', 'indexeddb', 'databases', 'vault', 'vaults'}
-LEFTOVER_MIN = 500 * 1024 * 1024
-OLD_VERSION_MIN = 200 * 1024 * 1024
+LEFTOVER_MIN = 10 * 1024 * 1024
+OLD_VERSION_MIN = 20 * 1024 * 1024
+RESIDUE_CATEGORIES = {'软件残留', '旧版本数据'}
 YEAR = 365 * 86400
 INFO_MIN = 1024 ** 3
 PERSONAL_PER_KIND = 80
@@ -295,6 +296,9 @@ def rule_assessment(row: dict) -> dict:
     elif rule.id == 'maven':
         score, hold = 30, '本地仓库可能含有你自己构建、无法重新下载的包'
         basis = [hold]
+    elif rule.id == 'dism_logs':
+        score, hold = 45, '旧日志可能用于排查系统维护故障，需要你确认'
+        basis = ['只包含 7 天前已轮换的 DISM 日志，不包含当前日志', hold]
     elif rule.id == 'component_store':
         score, hold = 60, '耗时较长，且无法预估释放空间，请你决定'
         basis = ['通过 Windows 自带工具清理已替代的组件']
@@ -432,10 +436,18 @@ class PlanBuilder:
             return f'属于仍在使用的程序「{owner}」'
         return None
 
+    def reserve_rule_locations(self, env):
+        """Residual-folder suggestions must not repackage rule caches or bypass their age filters."""
+        for rule in RULES_BY_ID.values():
+            for target in rule.targets:
+                self._claimed.extend(resolve_target(target, env))
+
     def add_ai_dirs(self, suggestions: list[dict], env: dict, analyst=None, scan=None):
         app_bases = [env.get(k) for k in ('LOCALAPPDATA', 'APPDATA', 'LOCALLOW', 'ProgramData') if env.get(k)]
         for s in sorted(suggestions, key=lambda r: -r['size']):
             if s.get('source') in ('none', 'knowledge') or s.get('expanded') or s['verdict'] not in ('clean', 'review'):
+                continue
+            if self.policy.reason(s['path']):
                 continue
             in_app_data = any(paths.is_within(s['path'], b) for b in app_bases)
             confidence = float(s.get('confidence') or 0)
@@ -477,7 +489,9 @@ class PlanBuilder:
                 hold = hold or f'AI 的把握不到 {round(MIN_AI_CONFIDENCE * 100)}%'
             self.add({
                 'id': _ident('dir', s['path']), 'kind': 'paths',
-                'category': '应用数据', 'title': s.get('app') if s.get('app') not in (None, '', '未知') else
+                'category': '软件残留' if in_app_data and owner == '' and s['verdict'] == 'review'
+                    and changed and self.now - changed > 180 * 86400 else '应用数据',
+                'title': s.get('app') if s.get('app') not in (None, '', '未知') else
                 os.path.basename(s['path']), 'size': s['size'],
                 'logical_size': getattr(node, 'logical_size', s.get('logical_size', s['size'])),
                 'count': s.get('files', 0), 'what': '',
@@ -491,20 +505,28 @@ class PlanBuilder:
     def add_heuristics(self, scan, analyst, env: dict, analysed: set[int]):
         """Without the model: likely leftovers of uninstalled programs and old versions."""
         app_bases = [env.get(k) for k in ('LOCALAPPDATA', 'APPDATA', 'LOCALLOW', 'ProgramData') if env.get(k)]
-        for node in analyst.frontier(scan, OLD_VERSION_MIN, limit=120):
+        frontier = [n for n in analyst.frontier(scan, min(LEFTOVER_MIN, OLD_VERSION_MIN))
+                    if any(paths.is_within(scan.path_of(n), b) for b in app_bases)
+                    and not self.policy.reason(scan.path_of(n))]
+        for node in frontier[:500]:
             path = scan.path_of(node)
             if node.id in analysed or not any(paths.is_within(path, b) for b in app_bases):
                 continue
-            old = node.mtime and self.now - node.mtime > YEAR
+            changed = max(node.mtime or 0, node.changed or 0)
+            old = changed and self.now - changed > 180 * 86400
             candidates = [(node, path)] + [(c, scan.path_of(c)) for c in node.children or () if c.size >= OLD_VERSION_MIN]
             for n, p in candidates:
                 n_old = n.mtime and self.now - n.mtime > YEAR
                 newer = newer_sibling(n) if n_old else None
                 if newer:
                     for candidate, location in self._unclaimed_nodes(scan, n):
+                        if self.policy.reason(location):
+                            continue
                         basis = [f'旧版本「{n.name}」旁边有更新的版本「{newer}」', f'{_ago(n.mtime, self.now)}没有修改过']
                         hold = self._folder_guards(location, candidate, None, basis)
-                        self.add({'id': _ident('dir', location), 'kind': 'paths', 'category': '应用数据', 'title': candidate.name,
+                        if not cache_like(candidate.name):
+                            hold = hold or '旧版本数据可能包含设置或本地历史，需要你确认'
+                        self.add({'id': _ident('dir', location), 'kind': 'paths', 'category': '旧版本数据', 'title': candidate.name,
                               'eligible': not hold,
                               'size': candidate.size, 'logical_size': candidate.logical_size, 'count': candidate.files, 'what': '',
                               'why': f'可能是旧版本留下的：{_ago(n.mtime, self.now)}没有修改过。',
@@ -512,16 +534,43 @@ class PlanBuilder:
                               'source': 'heuristic', 'confidence': 0.6, 'paths': [location], 'score': 30 if hold else 60, 'basis': basis,
                               'auto_reason': '旧版本留下的数据，进回收站可以还原', 'hold_reason': hold})
             if node.size >= LEFTOVER_MIN and old and analyst.installed_app(path) == '':
-                basis = ['「已安装的应用」里找不到对应的程序', f'{_ago(node.mtime, self.now)}没有修改过', '没有经过 AI 复核']
+                basis = ['「已安装的应用」里找不到对应的程序', f'{_ago(changed, self.now)}没有新增或修改',
+                         '绿色软件和未登记的程序也可能使用它，未匹配不等于已卸载', '没有经过 AI 复核']
                 hold = self._folder_guards(path, node, None, basis)
-                self.add({'id': _ident('dir', path), 'kind': 'paths', 'category': '应用数据', 'title': node.name,
-                          'eligible': not hold,
+                self.add({'id': _ident('dir', path), 'kind': 'paths', 'category': '软件残留', 'title': node.name,
+                          'eligible': False,
                           'size': node.size, 'logical_size': node.logical_size, 'count': node.files,
                           'what': '',
-                          'why': f'在「已安装的应用」里没有找到对应的程序，而且 {_ago(node.mtime, self.now)}没有修改过。',
+                          'why': f'可能是软件残留：没有匹配到安装登记，而且 {_ago(changed, self.now)}没有新增或修改。',
                           'effect': '如果程序其实还在（例如绿色版），它的设置、存档或缓存会丢失。', 'action': 'recycle',
-                          'source': 'heuristic', 'confidence': 0.5, 'paths': [path], 'score': 30 if hold else 50, 'basis': basis,
-                          'auto_reason': '很可能是已卸载程序的残留，进回收站可以还原', 'hold_reason': hold})
+                          'source': 'heuristic', 'confidence': 0.5, 'paths': [path], 'score': 20 if hold else 40, 'basis': basis,
+                          'hold_reason': hold or '没有安装登记不足以确认已经卸载，需要你选择'})
+        return {'candidates': len(frontier), 'checked': min(len(frontier), 500), 'truncated': len(frontier) > 500}
+
+    def add_removed_apps(self, apps, scan):
+        """An actual uninstall record is stronger evidence than a failed name match; settings still need consent."""
+        removed = apps.removed_apps()
+        for app in removed[:100]:
+            for row in apps.leftovers(app['id'], scan=scan):
+                node = scan.find(row['path'])
+                for candidate, path in self._unclaimed_nodes(scan, node):
+                    if not candidate.size or self.policy.reason(path):
+                        continue
+                    basis = [f'盘序记录过「{app["name"]}」的卸载，现在已没有该程序的安装登记',
+                             '目录仍然存在，未被其他已安装程序认领']
+                    hold = self._folder_guards(path, candidate, None, basis) or row['caution']
+                    if row['where'] == '安装文件夹':
+                        hold = hold or '卸载后留下的安装目录需要你确认，不能仅凭目录名称自动清理'
+                    if not cache_like(candidate.name):
+                        hold = hold or '卸载后留下的设置或资料仍可能有用，需要你选择'
+                    self.add({'id': _ident('dir', path), 'kind': 'paths', 'category': '软件残留',
+                              'title': app['name'] + ' · ' + candidate.name, 'paths': [path],
+                              'size': candidate.size, 'logical_size': candidate.logical_size, 'count': candidate.files,
+                              'action': 'recycle', 'score': 30 if hold else 65, 'eligible': not hold,
+                              'basis': basis, 'hold_reason': hold, 'source': 'heuristic',
+                              'why': '有卸载记录的剩余目录，确认不再需要其中的资料后可移到回收站。',
+                              'effect': '重新安装时，原有设置、离线资料或存档可能无法恢复。'})
+        return {'uninstall_records': len(removed), 'history_truncated': len(removed) > 100}
 
     def add_known_folders(self, scan, analyst):
         for row in analyst.known_cleanable(scan):
@@ -711,6 +760,8 @@ def assess_ai_dirs(suggestions: list[dict], policy, env: dict, analyst=None, sca
         item = by_path.get(paths.key(s['path']))
         if item is not None:
             s.update(score=item['score'], basis=item['basis'], selected=item['selected'])
+        elif reason := policy.reason(s['path']):
+            s.update(score=0, basis=['受保护的位置：' + reason, '没有自动勾选：保护规则不允许清理此位置'], selected=False)
         elif s.get('source') == 'knowledge':  # recognised without the model; may hold what someone parked there
             s.update(score=40, basis=[f'盘序认得：{s.get("app") or "已知位置"}，没有问 AI',
                                       '没有自动勾选：里面也可能有别人临时放的东西，请你看一眼再决定'], selected=False)
@@ -922,27 +973,34 @@ def run(backend, job, options: dict | None = None) -> dict:
     backend.startup_ai = startup_ai
     builder = PlanBuilder(policy, backend.knowledge, threshold=threshold)
     builder.add_junk(junk_rows)
+    builder.reserve_rule_locations(env)
     assessed_junk = {i['rule']: i for i in builder.items if i.get('kind') == 'rule'}
     for row in junk_rows:
         item = assessed_junk.get(row['id'])
         if item:
             row.update({k: item[k] for k in ('score', 'basis', 'eligible', 'selected', 'blocked')})
+    residue_stats = {'checked': 0, 'truncated': False}
     if scan is not None and scan.complete:
+        residue_stats.update(builder.add_removed_apps(backend.apps, scan))
         builder.add_ai_dirs(list(backend.ai_results.values()), env, backend.analyst, scan)
         analysed = {nid for nid, s in backend.ai_results.items() if s.get('source') != 'none'}
-        builder.add_heuristics(scan, backend.analyst, env, analysed)
+        residue_stats.update(builder.add_heuristics(scan, backend.analyst, env, analysed))
     builder.add_insights(findings, file_ai)
     builder.add_duplicates(backend.dups if opts.get('duplicates', True) else None, backend.dup_ai)
     if scan is not None:
         builder.add_known_folders(scan, backend.analyst)
     builder.add_startup(startup_items, startup_ai, env)
     builder.add_info(scan, env)
+    registry_issues = backend.apps.registry_issues([d['root'] for d in drives if d.get('fixed')])
+    backend.app_residues = residue_result(builder, scan, residue_stats, registry_issues)
     plan = builder.plan({'ai': ai_info, 'options': opts,
                          'personal_scan': {'truncated': bool(ins.stats.get('truncated')),
                                            'limit': ins.stats.get('limit'), 'files': ins.stats.get('files', 0)},
                          'coverage': {'space': scan.stats if scan else None,
                                       'junk': {'rules': len(junk_rows), 'unavailable': sum(bool(r.get('error') or r.get('scope_blocked')) for r in junk_rows)},
                                       'startup': {'count': len(startup_items), 'error': startup_error, 'ai_count': len(startup_ai)},
+                                      'apps': {'residues': scan is not None, 'folders': len(backend.app_residues['items']),
+                                               'registry': len(registry_issues), 'truncated': residue_stats.get('truncated', False)},
                                       'whole_drives': whole_drives,
                                       'personal_roots': broad_roots,
                                       'duplicates': (backend.dups or {}).get('stats') if opts.get('duplicates', True) else None,
@@ -954,6 +1012,13 @@ def run(backend, job, options: dict | None = None) -> dict:
     starts = sorted(timings.items(), key=lambda kv: kv[1]) + [('', time.time())]
     save_timings(backend.data_dir, {k: max(0.1, round(starts[i + 1][1] - t, 1)) for i, (k, t) in enumerate(starts[:-1])})
     return plan
+
+
+def residue_result(builder, scan, stats, registry):
+    return {'items': [item for item in builder.items if item['category'] in RESIDUE_CATEGORIES],
+            'registry': registry, 'stats': {**stats, 'roots': scan.roots if scan else [],
+                                          'incomplete': bool(scan and scan.stats.get('incomplete'))},
+            'scanned_at': time.time()}
 
 
 TIMINGS_FILE = 'checkup_timings.json'

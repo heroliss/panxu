@@ -234,6 +234,16 @@ def _layout() -> tuple[list[_Spec], list[tuple[str, float]]]:
     add(F(f'{L}/CrashDumps/FooSoft.exe.13456.dmp', 212 * MB, age=40))
     add(F(f'{L}/D3DSCache/a1b2c3/shader.idx', 93 * MB, age=7))
     add(F(f'{L}/NVIDIA/DXCache/dx_0001.bin', 151 * MB, age=7))
+    add(F(f'{L}/NVIDIA Corporation/NV_Cache/old-shader.bin', 68 * MB, age=45))
+    add(F('C/Windows/Logs/DISM/dism.log.bak', 12 * MB, age=60))
+    add(F('C/Windows/Logs/DISM/dism.log', 1 * MB, age=1))
+    teams = f'{L}/Packages/MSTeams_8wekyb3d8bbwe/LocalCache/Microsoft/MSTeams/EBWebView/Default'
+    add(F(f'{teams}/Cache/Cache_Data/data_0', 45 * MB, age=30))
+    add(F(f'{teams}/Code Cache/js/index', 12 * MB, age=30))
+    add(F(f'{teams}/GPUCache/data_1', 4 * MB, age=30))
+    add(F(f'{teams}/Cookies', data=b'fake account data to preserve', age=1))
+    add(F(f'{teams}/Local Storage/leveldb/000001.log', data=b'fake settings to preserve', age=1))
+    add(F(f'{L}/OldSmallEditor/settings.bin', 18 * MB, age=300))
     add(F(f'{L}/npm-cache/_cacache/content-v2/sha512/ab/cd/0123456789', 655 * MB, age=30))
     add(F(f'{L}/pip/cache/http-v2/a/b/c/wheel.body', 233 * MB, age=60))
     add(F(f'{L}/uv/cache/archive-v0/torch-2.5.1/torch_cpu.dll', 305 * MB, age=45))
@@ -392,6 +402,8 @@ def _state(native) -> dict:
     put(HKCU, APPROVED + '\\Run', 'Steam', {'__bin__': '03000000' + '00' * 8})
 
     apps = [
+        (HKCU, UNINSTALL, 'OldPhotoDemo', '旧相册工具（失效登记示例）', '1.0', 'Demo Studio', '20200101',
+         f'{PF}/OldPhotoDemo', q(f'{PF}/OldPhotoDemo/uninstall.exe')),
         (HKLM, UNINSTALL, 'Google Chrome', 'Google Chrome', '130.0.6723.92', 'Google LLC', '20240105',
          f'{PF}/Google/Chrome/Application', q(f'{PF}/Google/Chrome/Application/130.0.6723.92/Installer/setup.exe') +
          ' --uninstall --channel=stable --system-level'),

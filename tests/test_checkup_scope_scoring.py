@@ -153,6 +153,59 @@ class DuplicateScopeTest(TempDirTest):
 
 
 class ScoringTest(TempDirTest):
+    def test_recorded_uninstall_does_not_autoselect_an_install_folder_named_cache(self):
+        env = self.posix_env()
+        env['ProgramFiles'] = os.path.join(self.tmp, 'Program Files')
+        folder = os.path.join(env['ProgramFiles'], 'cache')
+        os.makedirs(folder)
+        node = Node('cache', None)
+        node.size = node.logical_size = 10 * 1024 ** 2
+        node.files = 1
+        node.mtime = node.changed = time.time() - 500 * 86400
+        scan = type('Scan', (), {'path_of': lambda *a: folder, 'find': lambda *a: node})()
+        apps = type('Apps', (), {
+            'removed_apps': lambda *a: [{'id': 'gone', 'name': 'Old App'}],
+            'leftovers': lambda *a, **k: [{'path': folder, 'where': '安装文件夹', 'caution': None}],
+        })()
+        policy = paths.ProtectionPolicy(env, allowed_roots=[self.tmp])
+        builder = checkup.PlanBuilder(policy, threshold=0)
+        builder.add_removed_apps(apps, scan)
+        self.assertTrue(builder.items)
+        self.assertFalse(builder.items[0]['eligible'])
+        self.assertFalse(builder.items[0]['selected'])
+
+    def test_missing_install_registration_alone_never_autoselects_old_app_data(self):
+        env = self.posix_env()
+        folder = os.path.join(env['LOCALAPPDATA'], 'PortableEditor')
+        os.makedirs(folder)
+        node = Node('PortableEditor', None)
+        node.size = node.logical_size = 600 * 1024 ** 2
+        node.files = 1
+        node.mtime = node.changed = time.time() - 500 * 86400
+        analyst = type('Analyst', (), {'frontier': lambda *a, **k: [node], 'installed_app': lambda *a: ''})()
+        scan = type('Scan', (), {'path_of': lambda *a: folder})()
+        policy = paths.ProtectionPolicy(env, allowed_roots=[self.tmp])
+        builder = checkup.PlanBuilder(policy, threshold=0)
+        builder.add_heuristics(scan, analyst, env, set())
+        self.assertTrue(builder.items)
+        self.assertFalse(builder.items[0]['eligible'])
+        self.assertFalse(builder.items[0]['selected'])
+
+        # An excluded subtree or its parent is not a residue candidate, even when old and unregistered.
+        for excluded in (folder, os.path.join(folder, 'keep')):
+            protected = paths.ProtectionPolicy(env, excluded=[excluded], allowed_roots=[self.tmp])
+            builder = checkup.PlanBuilder(protected, threshold=0)
+            builder.add_heuristics(scan, analyst, env, set())
+            self.assertEqual(builder.items, [])
+            builder.add_ai_dirs([{'path': folder, 'size': node.size, 'source': 'ai',
+                                  'verdict': 'clean', 'confidence': 1}], env)
+            self.assertEqual(builder.items, [])
+            suggestions = [{'path': folder, 'size': node.size, 'source': 'ai', 'verdict': 'clean', 'confidence': 1}]
+            checkup.assess_ai_dirs(suggestions, protected, env)
+            self.assertEqual(suggestions[0]['score'], 0)
+            self.assertFalse(suggestions[0]['selected'])
+            self.assertIn('保护规则', suggestions[0]['basis'][-1])
+
     def test_rule_cost_activity_and_irreversible_actions(self):
         def score(rule, **kw):
             return checkup.rule_assessment({'id': rule, 'size': 100, **kw})

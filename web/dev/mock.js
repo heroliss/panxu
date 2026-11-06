@@ -349,6 +349,7 @@
       plan.personal_scan = { truncated: insights.stats.truncated, limit: insights.stats.limit, files: insights.stats.files };
       plan.coverage = { whole_drives: roots,
         junk: { rules: rules.length, unavailable: 1 }, startup: { count: startup.length, error: '', ai_count: Object.keys(startupAI).length },
+        apps: { residues: opts.space_scan !== false, folders: plan.items.filter((i) => ['软件残留', '旧版本数据'].includes(i.category)).length, registry: 0, truncated: false },
         space: opts.space_scan !== false ? { roots: roots.includes('C:\\') ? roots : [U, ...roots], files: 1500000, incomplete: true, denied: 12 } : null,
         duplicates: opts.duplicates !== false ? { truncated: true, file_limit: 400000, hash_limit: 16 * GB, cross_drives: opts.cross_drive_duplicates !== false } : null,
         omitted_drives: handlers.drives().map((d) => d.root).filter((r) => !roots.includes(r)) };
@@ -427,6 +428,13 @@
     ai_review_files: () => job(5, { files: {}, usage: { requests: 1 }, errors: [] }),
     large_ai_review: ({ files }) => job(5, () => { for (const f of largeFiles) if (files.includes(f.path)) f.ai = { verdict: 'archive', verdict_label: '建议归档', what: '很久以前的录像或备份', reason: '一年多没改过，体积大，适合移到移动硬盘' };
       return { files: {}, usage: { requests: 1 }, errors: [], sent: files.length }; }),
+    app_residues_result: () => plan ? { items: plan.items.filter((i) => ['软件残留', '旧版本数据'].includes(i.category)), registry: [],
+      stats: { roots: [U + '\\AppData\\Local'], checked: 12, truncated: false }, scanned_at: now } : null,
+    app_residues_scan: () => job(3, { items: [P({ id: 'residue:oldeditor', category: '软件残留', title: '旧编辑器数据',
+      paths: [U + '\\AppData\\Local\\OldEditor'], size: 18 * MB, score: 40, eligible: false, selected: false,
+      action: 'recycle', why: '未匹配到安装登记，半年没有新增或修改；可能属于绿色软件。',
+      basis: ['未匹配到安装登记不等于已经卸载', '需要你决定是否保留'], effect: '可能包含以前的设置' })], registry: [],
+      stats: { roots: [U + '\\AppData\\Local'], checked: 12, truncated: false }, scanned_at: now }),
     apps_list: () => ({ apps, admin: true, usage_known: true }),
     file_icons: () => ({}),
     // stand-ins for the shell's type icons: a yellow folder, a page with the extension on it

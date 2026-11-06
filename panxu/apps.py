@@ -433,21 +433,77 @@ class AppManager:
             return False
         return bool(self._reg().values(hive, base + '\\' + sub))
 
+    def removed_apps(self) -> list[dict]:
+        """Remember uninstall attempts across launches, but only return registrations now absent."""
+        if self.oplog is not None:
+            for entry in self.oplog.entries(1000):
+                record = entry.get('details', {}).get('uninstall_record', {})
+                app_id, app = record.get('id'), record.get('app')
+                if not isinstance(app_id, str) or not isinstance(app, dict):
+                    continue
+                parts = app_id.split('|', 2)
+                if len(parts) == 3 and any(parts[:2] == [h, b] for h, b, _ in UNINSTALL_KEYS) \
+                        and all(isinstance(app.get(k), str) for k in ('name', 'publisher', 'registry_key', 'location')):
+                    self._removed.setdefault(app_id, app)
+        return [{'id': app_id, **app} for app_id, app in self._removed.items() if not self.installed(app_id)]
+
+    def registry_issues(self, drive_roots: list[str]) -> list[dict]:
+        """Read-only evidence of broken uninstall registrations, not a general registry cleaner.
+
+        Both an explicitly registered install folder and its absolute uninstaller must be missing
+        on a connected fixed disk. MSI, protocols, drivers, runtimes and uncertain access are omitted.
+        """
+        def missing(path):
+            path = paths.native(path)
+            if not os.path.isabs(path) or not any(paths.is_within(path, root) and os.path.isdir(root) for root in drive_roots):
+                return False
+            try:
+                os.stat(path, follow_symlinks=False)
+            except FileNotFoundError:
+                return True
+            except OSError:
+                pass
+            return False
+
+        out = []
+        for app in self.list():
+            if app['kind'] in ('runtime', 'driver') or app['msi']:
+                continue
+            hive, base, sub = app['id'].split('|', 2)
+            values = dict(self._reg().values(hive, base + '\\' + sub))
+            command = str(values.get('UninstallString') or '')
+            exe, _ = split_command(command, self.env)
+            location = expand_vars(str(values.get('InstallLocation') or '').strip().strip('"'), self.env)
+            if not location or not exe.lower().endswith('.exe') or ntpath.basename(exe).lower() in _SHARED_EXES \
+                    or ntpath.splitext(ntpath.basename(exe))[0].lower() in _SHARED_EXES:
+                continue
+            if missing(location) and missing(exe):
+                out.append({'id': app['id'], 'title': app['name'], 'registry_path': hive + '\\' + base + '\\' + sub,
+                            'location': location, 'uninstaller': exe,
+                            'why': '登记的安装目录和卸载程序均不存在，可能是移动程序或卸载不完整留下的登记。',
+                            'advice': '先在 Windows「已安装的应用」中尝试卸载，或重装后再卸载。此项不计入可释放空间。',
+                            'ask': {'type': 'app', 'id': app['id']}})
+        return out
+
     # folders uninstallers usually leave behind, and what is typically in them
     _LEFTOVER_BASES = (('', '安装文件夹', ''), ('LOCALAPPDATA', '本地应用数据', ''),
                        ('APPDATA', '漫游应用数据', '通常是设置和账号数据：确认以后不会再装它'),
                        ('LOCALLOW', 'LocalLow', '游戏常把存档放在这里'), ('ProgramData', '所有用户的应用数据', ''))
 
-    def leftovers(self, app_id: str) -> list[dict]:
+    def leftovers(self, app_id: str, scan=None) -> list[dict]:
         """Folders an uninstalled program left behind: its install folder if still there, and folders named
         like it in AppData, LocalLow and ProgramData -- directly, or inside its publisher's folder
         (AppData\\Roaming\\Tencent\\WeChat, never all of Tencent). Folders another installed program still
         claims are left out. Nothing is deleted here."""
-        from .checkup import VALUABLE_DIRS
+        from .checkup import VALUABLE_DIRS, valuable_inside
         from .fsops import path_size
+        if app_id not in self._removed:
+            self.removed_apps()
         gone = self._removed.get(app_id)
         if gone is None:
             raise ValueError('没有这个程序的卸载记录，请先在这里卸载它')
+        if self.installed(app_id):
+            raise ValueError('程序仍有安装登记，可能尚未卸载完成或已经重装，请先刷新应用列表')
         vendor_words = set(tokens(gone['publisher']))
         keys = {compact(gone['name'])}
         if not re.match(r'^(\{|steam app)', gone['registry_key'], re.I):
@@ -462,7 +518,8 @@ class AppManager:
         if gone['location']:
             vendors.add(compact(ntpath.basename(ntpath.dirname(gone['location'].rstrip('\\/')))))
         vendors = {v for v in vendors if len(v) >= 3 and v not in _GENERIC}
-        still = [row for row in self.match_index() if row['name'] != gone['name']]
+        still = self.match_index()
+        installed_locations = [a['own_location'] or a['location'] for a in self.list() if a['location_exists']]
 
         def subdirs(folder):
             try:
@@ -490,17 +547,23 @@ class AppManager:
         out = []
         for path, where, note in found:
             name = ntpath.basename(path)
+            if any(paths.is_within(path, p) or paths.is_within(p, path) for p in installed_locations if p):
+                continue
             if where != '安装文件夹' and self.match_folder(name, still):
                 continue  # another installed program goes by that name
             if any(paths.is_within(path, o['path']) for o in out):
                 continue
-            size, count = path_size(path)
-            valuable = _named_inside(path, VALUABLE_DIRS)
+            node = scan.find(path) if scan is not None else None
+            if scan is not None and node is None:
+                continue  # outside the selected scope or excluded from this scan
+            size, count = (node.size, node.files) if node is not None else path_size(path)
+            valuable = valuable_inside(node) if node is not None else _named_inside(path, VALUABLE_DIRS)
             try:
-                mtime = os.stat(path).st_mtime
+                mtime = node.mtime if node is not None else os.stat(path).st_mtime
             except OSError:
                 mtime = None
             out.append({'path': path, 'where': where, 'size': size, 'files': count, 'mtime': mtime,
+                        'logical_size': node.logical_size if node is not None else None,
                         'caution': f'里面有「{valuable}」文件夹，可能是存档、个人资料或备份' if valuable else note or None})
         return out
 
@@ -508,4 +571,5 @@ class AppManager:
         if self.oplog is not None:
             self.oplog.add('uninstall', f'卸载：{app["name"]}', items=[{'name': app['name'], 'version': app['version'],
                                                                          'publisher': app['publisher'], 'note': note,
-                                                                         'location': app['location']}])
+                                                                         'location': app['location']}],
+                           details={'uninstall_record': {'id': app['id'], 'app': self._removed.get(app['id'], {})}})

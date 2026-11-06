@@ -34,7 +34,7 @@ class AllocatedSizeIntegrationTest(TempDirTest):
         backend.scan = scan
         backend.policy = lambda: self.policy
         backend.knowledge = Knowledge(self.env)
-        backend.plan = backend.insights = backend.dups = None
+        backend.plan = backend.insights = backend.dups = backend.app_residues = None
         return backend
 
     def test_junk_scan_plan_clean_and_log_count_occupied_bytes(self):

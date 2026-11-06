@@ -214,6 +214,11 @@ input[type=checkbox]:disabled { cursor: not-allowed; }
 .checkup-coverage { margin: 24px 0; }
 .coverage-row { display: grid; grid-template-columns: minmax(0, 1fr) auto 180px; gap: 16px; align-items: center; padding: 12px 0; border-bottom: 1px solid var(--rule); }
 .coverage-row b { font-size: 14px; font-weight: 500; }
+.residue-row { display: grid; grid-template-columns: 18px minmax(0, 1fr) 90px auto; gap: 12px; padding: 16px 0; border-bottom: 1px solid var(--rule); align-items: start; }
+.residue-row input { margin-top: 5px; }
+.residue-row details { margin-top: 6px; }
+.residue-row summary { cursor: pointer; }
+.residue-row + .section-title, .list + .section-title { margin-top: 28px; }
 .coverage-row .actions { justify-content: flex-end; flex-wrap: wrap; }
 .checkup-coverage > .small:last-child { margin-top: 12px; }
 .plan-disclosure { display: flex; align-items: center; gap: 10px; width: 100%; padding: 16px 0; border: 0; border-top: 1px solid var(--rule); background: none; color: var(--ink); font: inherit; text-align: left; cursor: pointer; }

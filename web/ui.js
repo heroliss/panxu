@@ -210,7 +210,7 @@
     return drives.filter((d) => chosen ? chosen.has(key(d.root)) : d.fixed === true && (options.other_drives !== false || d.system))
       .map((d) => d.root);
   };
-  PX.checkupAIScopes = [['space', '陌生文件夹'], ['files', '个人文件'], ['duplicates', '重复副本'], ['startup', '开机启动项']];
+  PX.checkupAIScopes = [['space', '陌生目录与残留'], ['files', '个人文件'], ['duplicates', '重复副本'], ['startup', '开机启动项']];
 
   // A check-up's coverage is tied to that run, never to switches changed afterwards.
   PX.checkupCoverage = (plan) => {
@@ -230,7 +230,9 @@
       { page: 'startup', name: '开机与服务', status: '部分覆盖',
         note: startup?.error ? '启动项读取失败；服务需单独检查' : `开机启动项${startup ? ` ${startup.count} 个` : '已读取'}${ai.includes('startup') ? `，AI 已解释 ${startup?.ai_count || 0} 个` : '，未进行 AI 复核'}；服务需单独检查`,
         action: '查看启动项', extra: ['services', '检查服务'] },
-      { page: 'apps', name: '应用', status: '未覆盖', note: '应用占用、使用情况和卸载建议需单独检查', skipped: true },
+      cov.apps ? { page: 'residues', name: '应用', status: '部分覆盖', action: '查看残留', extra: ['apps', '应用列表'],
+        note: `${cov.apps.residues ? `软件残留 ${cov.apps.folders} 项` : '本次未扫描残留目录'}、可疑登记 ${cov.apps.registry} 项；卸载建议需单独分析` }
+        : { page: 'apps', name: '应用', status: '未覆盖', note: '应用占用、使用情况和卸载建议需单独检查', skipped: true },
     ];
   };
   PX.checkupAIReady = (init) => !!(init.has_key || init.settings.ai.preset === 'ollama') && !!(init.settings.ai.model || '').trim();

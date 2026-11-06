@@ -210,6 +210,32 @@ class CheckupTest(TempDirTest):
         self.assertFalse(any(i['ai'] for i in self.call('startup_list')))
         self.assertFalse(any(file.get('ai') for f in self.call('insights_result')['findings'] for file in f['files']))
 
+    def test_residue_and_registration_results_sync_without_claiming_missing_apps_are_junk(self):
+        plan = self.checkup(use_ai=False)
+        report = self.call('app_residues_result')
+        small = next(i for i in report['items'] if i['title'] == 'OldSmallEditor')
+        self.assertLess(small['size'], 500 * 1024 ** 2, 'small residual candidates are now discoverable')
+        self.assertFalse(small['eligible'])
+        self.assertFalse(small['selected'])
+        self.assertTrue(any(i['id'] == small['id'] for i in plan['items']))
+        issue = next(r for r in report['registry'] if '失效登记' in r['title'])
+        context = self.backend._ask_context(issue['ask'], 'apps', False)
+        self.assertIn('registration_check', context['about'])
+        self.assertTrue(self.call('app_installed', app_ids=[issue['id']])[issue['id']], 'detection never deletes a key')
+        self.assertTrue(plan['coverage']['apps']['residues'])
+        self.assertTrue(plan['coverage']['apps']['registry'])
+
+    def test_independent_residue_scan_obeys_exclusions_and_ignores_home_switches(self):
+        excluded = os.path.join(self.backend.env['LOCALAPPDATA'], 'OldSmallEditor')
+        self.call('settings_save', changes={'checkup': {'selected_drives': [], 'space_scan': False, 'use_ai': False},
+                                            'excluded_paths': [excluded]})
+        with patch.object(self.backend, '_client', side_effect=AssertionError('local scan must not call AI')):
+            report = self.wait(self.call('app_residues_scan'))
+        self.assertTrue(report['stats']['roots'])
+        self.assertNotIn('OldSmallEditor', [i['title'] for i in report['items']])
+        self.assertIsNone(self.backend.scan, 'standalone residue scan does not replace the space tool scan')
+        self.assertTrue(os.path.isdir(excluded))
+
     def test_every_item_explains_its_score_and_selection(self):
         plan = self.checkup()
         for item in plan['items']:

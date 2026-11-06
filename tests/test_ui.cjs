@@ -28,6 +28,9 @@ assert.strictEqual(partial.find((r) => r.page === 'space').status, '有跳过项
 assert.strictEqual(partial.find((r) => r.page === 'mine').status, '部分完成');
 assert.strictEqual(partial.find((r) => r.page === 'dups').status, '部分完成');
 assert.match(partial.find((r) => r.page === 'dups').note, /同一磁盘/);
+const residueCoverage = PX.checkupCoverage({ coverage: { apps: { residues: true, folders: 2, registry: 1 } } });
+assert.strictEqual(residueCoverage.find((r) => r.name === '应用').page, 'residues');
+assert.strictEqual(residueCoverage.find((r) => r.name === '应用').status, '部分覆盖');
 
 // treemap: areas proportional, inside bounds, no overlap of total area
 const items = [{ size: 60 }, { size: 25 }, { size: 10 }, { size: 4 }, { size: 1 }, { size: 0 }];

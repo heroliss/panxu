@@ -14,7 +14,9 @@
   };
   // where each category is handled in detail
   const CAT_PAGE = { 垃圾文件: ['junk', '垃圾清理'], 应用数据: ['space', '空间分析'], 重复文件: ['dups', '重复文件'],
-    开机启动: ['startup', '开机与服务'] };
+    开机启动: ['startup', '开机与服务'], 软件残留: ['residues', '应用·软件残留'], 旧版本数据: ['residues', '应用·软件残留'] };
+  const openTool = (page) => page === 'residues' ? PX.apps.open('residues') : page === 'apps' ? PX.apps.open()
+    : page === 'startup' || page === 'services' ? PX.startup.open(page) : PX.go(page);
   const THRESHOLDS = [9, 8, 7, 6, 5].map((t) => [t, `≥ ${t} 分`]);
   const state = { status: 'idle', plan: null, planId: null, open: new Set(), progress: {}, report: null, jobId: null,
     withMine: false, picked: null, run: { started: Date.now(), stage: null, stageAt: Date.now(), shown: 0, left: null },
@@ -416,12 +418,11 @@
   const scrollTo = (id) => { state.planOpen = true; draw(true); PX.flash(document.getElementById(id)); };
 
   function toolCoverage(c) {
-    const openTool = (page) => page === 'startup' || page === 'services' ? PX.startup.open(page) : PX.go(page);
     if (!state.plan) {
       const opts = PX.state.init.settings.checkup;
       c.appendChild(h('section.checkup-includes', h('b', '一键体检包含'),
-        h('span', `垃圾清理、我的文件、开机启动项${opts.space_scan !== false ? '、空间分析与大文件' : ''}${opts.duplicates !== false ? '、重复文件' : ''}。`),
-        h('span.muted', '服务和应用需单独检查：'),
+        h('span', `垃圾清理、我的文件、开机启动项、软件登记${opts.space_scan !== false ? '、空间分析与大文件、软件残留' : ''}${opts.duplicates !== false ? '、重复文件' : ''}。`),
+        h('span.muted', '服务和应用卸载建议需单独检查：'),
         h('button.btn.quiet.small', { type: 'button', onclick: () => openTool('services') }, '服务'),
         h('button.btn.quiet.small', { type: 'button', onclick: () => openTool('apps') }, '应用')));
       return;
@@ -651,7 +652,7 @@
           '选择「' + cat.name + '」这一组') : null,
         h('b', cat.name), h('span.muted.small', `${cat.rows.length} 项 · ${fmt.bytes(cat.rows.reduce((s, it) => s + (it.size || 0), 0))}`),
         h('span.grow'),
-        page && id !== 'info' ? h('button.btn.quiet.small.go', { type: 'button', title: `在「${page[1]}」里看全部细节`, onclick: () => PX.go(page[0]) },
+        page && id !== 'info' ? h('button.btn.quiet.small.go', { type: 'button', title: `在「${page[1]}」里看全部细节`, onclick: () => openTool(page[0]) },
           `去「${page[1]}」`, PX.icon('chev')) : null));
       const limit = cat.rows.length > 12 && !state.open.has('cat:' + id + cat.name) ? 8 : cat.rows.length;
       cat.rows.slice(0, limit).forEach((it) => itemRow(list, it));
