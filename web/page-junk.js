@@ -46,6 +46,31 @@
     return sum;
   }
 
+  function adopt(rows) {
+    state.results = Object.fromEntries(rows.map((row) => [row.id, row]));
+    if (!state.touched) {
+      PX.sel.replace(state.selected, rules().filter((r) => state.results[r.id]?.selected && visible(r)
+        && !blockedReason(r, state.results[r.id]) && (state.results[r.id].size || 0) > 0).map((r) => r.id));
+    } else {
+      for (const id of [...state.selected]) {
+        const rule = ruleById(id);
+        if (!rule || !visible(rule) || blockedReason(rule, state.results[id])) state.selected.delete(id);
+      }
+    }
+    state.status = 'done';
+    PX.state.junkTotal = recommended();
+    PX.renderRail();
+  }
+
+  async function loadExisting() {
+    if (state.status === 'scanning' || state.status === 'cleaning') return;
+    try {
+      const rows = await PX.api.call('junk_result');
+      if (rows !== null) { adopt(rows); rerender(true); }
+      else await scan();
+    } catch (e) { PX.fail(e); }
+  }
+
   async function scan() {
     if (state.status === 'scanning' || state.status === 'cleaning') return;
     state.status = 'scanning';
@@ -53,18 +78,7 @@
     rerender();
     try {
       const rows = await PX.api.run('junk_scan', {}, (p) => { state.progress = p; rerender(true); });
-      state.results = {};
-      for (const row of rows) state.results[row.id] = row;
-      if (!state.touched) {
-        PX.sel.replace(state.selected, rules().filter((r) => state.results[r.id] && state.results[r.id].selected && visible(r) && !blockedReason(r, state.results[r.id])
-          && (state.results[r.id].size || 0) > 0).map((r) => r.id));
-      } else {
-        for (const id of [...state.selected]) {
-          const r = ruleById(id);
-          if (!visible(r) || blockedReason(r, state.results[id])) state.selected.delete(id);
-        }
-      }
-      state.status = 'done';
+      adopt(rows);
     } catch (e) {
       state.status = 'idle';
       if (!e.cancelled) PX.fail(e);
@@ -294,8 +308,8 @@
   PX.pages.junk = {
     render(container) {
       root = container;
-      if (state.status === 'idle' && !Object.keys(state.results).length) scan();
-      else draw(container);
+      draw(container);
+      loadExisting();
     },
   };
 })();

@@ -72,6 +72,16 @@ class PersonalScopeTest(TempDirTest):
         self.assertEqual({paths.key(p) for p in space},
                          {paths.key(p) for p in (self.c, self.shell['documents'], extra)})
 
+    def test_each_drive_is_optional_and_only_enumerated_roots_are_accepted(self):
+        for chosen in ([self.c], [self.d], [], [self.usb], [self.tmp], [self.d.upper()]):
+            selected = checkup.selected_drives(self.drives, {'selected_drives': chosen})
+            expected = [d for d in self.drives if paths.key(d['root']) in {paths.key(p) for p in chosen}]
+            self.assertEqual(selected, expected)
+            roots = checkup.space_roots(self.env, {}, self.drives, whole_drives=[d['root'] for d in selected])
+            self.assertEqual(paths.key(self.c) in {paths.key(p) for p in roots}, self.c in [d['root'] for d in expected])
+            self.assertIn(paths.key(self.home), {paths.key(p) for p in checkup.insights_roots(self.env, {}, self.drives, whole_drives=[])})
+        self.assertEqual(checkup.selected_drives(self.drives, {'other_drives': False}), [self.drives[0]])
+
     def test_known_and_explicit_folders_work_on_nonfixed_storage(self):
         redirected = self.directory('USB/Documents')
         extra = self.directory('Unknown/Chosen')

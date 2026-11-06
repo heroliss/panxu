@@ -102,7 +102,9 @@
 
   const settings = { theme: 'system', ai: { preset: 'deepseek', base_url: 'https://api.deepseek.com', model: 'deepseek-flash', protocol: 'openai',
     json_mode: true, thinking: 'off', anonymize_paths: true, send_file_content: false, max_requests: 8, min_dir_mb: 200, timeout: 120 },
-  checkup: { space_scan: true, other_drives: true, duplicates: true, use_ai: true, auto_threshold: 5 }, insights: { stale_days: 365, large_mb: 100, download_days: 180 },
+  checkup: { space_scan: true, other_drives: true, selected_drives: null, duplicates: true, cross_drive_duplicates: true,
+    use_ai: true, ai_scopes: { space: true, files: true, duplicates: true, startup: true }, auto_threshold: 5 },
+  insights: { stale_days: 365, large_mb: 100, download_days: 180 },
   duplicates: { min_size_mb: 1 }, large_files: { min_size_mb: 100 }, excluded_paths: [], extra_personal_paths: ['D:\\资料'] };
   let hasKey = true;
 
@@ -238,6 +240,7 @@
   };
   const planGroups = [{ id: 'safe', name: '放心清理' }, { id: 'review', name: '建议你看看' }, { id: 'info', name: '仅供了解' }];
   let plan = null;
+  let startupAI = {};
   const summarize = () => Object.fromEntries(planGroups.map(({ id }) => {
     const rows = plan.items.filter((i) => i.group === id);
     const sel = rows.filter((i) => i.selected && i.status === 'pending');
@@ -327,22 +330,28 @@
   const handlers = {
     checkup: () => {
       const opts = { ...settings.checkup };
-      const roots = opts.other_drives !== false ? ['C:\\', 'D:\\', 'E:\\'] : ['C:\\'];
+      const roots = PX.checkupDriveRoots(handlers.drives(), opts);
       const activeStages = stages.filter((s) => (s.id !== 'space' || opts.space_scan !== false)
-        && (s.id !== 'dups' || opts.duplicates !== false) && (s.id !== 'ai' || (opts.use_ai !== false && hasKey)));
+        && (s.id !== 'dups' || opts.duplicates !== false) && (s.id !== 'ai' || (PX.checkupAIEnabled(opts) && hasKey)));
       return job(40, () => {
       const t = settings.checkup.auto_threshold || 5;
       const chosen = planItems.filter((it) => (opts.duplicates !== false || it.kind !== 'dup')
-        && (opts.use_ai !== false || it.source !== 'ai')
-        && (opts.other_drives !== false || !(it.paths || []).some((p) => /^[DE]:/i.test(p))));
+        && (it.source !== 'ai' || (hasKey && PX.checkupAIEnabled(opts) && opts.ai_scopes?.[it.id.startsWith('startup:') ? 'startup' : 'space'] !== false))
+        && !(it.paths || []).some((p) => !p.startsWith(U) && !roots.some((r) => p.startsWith(r))));
       plan = { id: 'p' + Date.now(), created: now, threshold: t, options: opts, items: decide(JSON.parse(JSON.stringify(chosen)), t),
-        groups: planGroups, ai: { used: hasKey && opts.use_ai !== false, errors: [], usage: { requests: 3 } } };
+        groups: planGroups, ai: { used: hasKey && PX.checkupAIEnabled(opts), enabled: PX.checkupAIEnabled(opts), errors: [], usage: { requests: 3 } } };
+      plan.ai.scopes = hasKey && PX.checkupAIEnabled(opts) ? PX.checkupAIScopes.filter(([key]) => opts.ai_scopes?.[key] !== false
+        && (key !== 'space' || opts.space_scan !== false) && (key !== 'duplicates' || opts.duplicates !== false)).map(([key]) => key === 'duplicates' ? 'dups' : key) : [];
+      startupAI = plan.ai.scopes.includes('startup') ? Object.fromEntries(startup.filter((item) => item.enabled).map((item) => [item.id,
+        { what: item.display_name, suggestion: 'keep', reason: '需要时可以在这里单独复核' }])) : {};
       plan.summary = summarize();
       insights = personalResult(null, 12);
       plan.personal_scan = { truncated: insights.stats.truncated, limit: insights.stats.limit, files: insights.stats.files };
-      plan.coverage = { space: opts.space_scan !== false ? { roots, files: 1500000, incomplete: true, denied: 12 } : null,
-        duplicates: opts.duplicates !== false ? { truncated: true, file_limit: 400000, hash_limit: 16 * GB } : null,
-        omitted_drives: opts.other_drives !== false ? [] : ['D:\\', 'E:\\'] };
+      plan.coverage = { whole_drives: roots,
+        junk: { rules: rules.length, unavailable: 1 }, startup: { count: startup.length, error: '', ai_count: Object.keys(startupAI).length },
+        space: opts.space_scan !== false ? { roots: roots.includes('C:\\') ? roots : [U, ...roots], files: 1500000, incomplete: true, denied: 12 } : null,
+        duplicates: opts.duplicates !== false ? { truncated: true, file_limit: 400000, hash_limit: 16 * GB, cross_drives: opts.cross_drive_duplicates !== false } : null,
+        omitted_drives: handlers.drives().map((d) => d.root).filter((r) => !roots.includes(r)) };
       return plan;
     }, (f) => {
       // like checkup.run: each stage says how far it is (part), except 整理我的文件, which has no total
@@ -463,7 +472,8 @@
       start_types: { auto: '自动', delayed: '自动（延迟启动）', manual: '手动', disabled: '禁用' }, home: 'C:\\Users\\demo', system_drive: 'C:\\', data_dir: 'C:\\Users\\demo\\AppData\\Local\\PanXu' }),
     job: ({ job_id }) => status(job_id),
     cancel_job: ({ job_id }) => { if (jobs[job_id]) jobs[job_id].cancel = true; return true; },
-    junk_scan: () => job(4, rules.map(([id, , , , , admin, size]) => ({ id, size: admin ? 0 : size,
+    junk_result: () => plan ? handlers.junk_rows() : null,
+    junk_rows: () => rules.map(([id, , , , , admin, size]) => ({ id, size: admin ? 0 : size,
       score: SCORES['rule:' + id] || 70, eligible: !['recycle_bin', 'windows_old', 'component_store'].includes(id),
       selected: !admin && !['edge', 'recycle_bin', 'windows_old', 'component_store'].includes(id)
         && PX.points(SCORES['rule:' + id] || 70) >= settings.checkup.auto_threshold,
@@ -471,6 +481,7 @@
       logical_size: id === 'user_temp' ? 510 * GB : admin ? 0 : size, count: size ? Math.round(size / (200 * 1024)) : 0,
       size_note: id === 'recycle_bin' ? 'Windows 提供的估算大小，可能包含稀疏或压缩文件的标称大小；清空后的已释放按磁盘可用空间变化计算。' : '',
       locations: ['C:\\Users\\demo\\AppData\\Local\\Temp'], needs_admin: admin, running: id === 'edge' ? ['msedge.exe'] : [], error: '', available: size === null || size > 0 })),
+    junk_scan: () => job(4, handlers.junk_rows(),
       (f) => ({ index: Math.round(f * rules.length), total: rules.length, current: rules[Math.min(rules.length - 1, Math.round(f * rules.length))][1] })),
     junk_clean: ({ rule_ids }) => job(6, { freed: 3.9 * GB, rules: rule_ids.map((id) => ({ id, name: id, freed: 1 * GB, files: 1200, failed: 12, in_use: 12, skipped: '', failures: [] })) },
       (f) => ({ index: Math.round(f * rule_ids.length), total: rule_ids.length, current: '用户临时文件', freed: f * 3.9 * GB })),
@@ -541,11 +552,11 @@
       'C:\\Users\\demo\\Downloads\\long_score.wav': { verdict: 'delete', verdict_label: '更推荐删除', reason: '下载文件夹里的零散副本' },
     }, usage: { requests: 1 }, errors: [] }),
     dup_delete: ({ paths_to_delete }) => job(3, { done: paths_to_delete, freed: 1.4 * GB, failed: 0, failures: [], mode: 'recycle' }),
-    startup_list: () => startup,
+    startup_list: () => startup.map((item) => ({ ...item, ai: startupAI[item.id] || null })),
     startup_set: ({ item_id, enabled }) => { const it = startup.find((x) => x.id === item_id); it.enabled = enabled; return it; },
     services_list: () => services,
     service_set: ({ name, start_type }) => ({ name, start_type, stopped: false }),
-    ai_explain: ({ kind }) => job(4, { items: kind === 'apps' ? {
+    ai_explain: ({ kind }) => job(4, () => { const result = { items: kind === 'apps' ? {
       a4: { what: '看图软件，附带资讯弹窗', suggestion: 'uninstall', reason: '常驻弹出广告资讯，可换用系统自带的照片应用' },
       a5: { what: '独立游戏', suggestion: 'optional', reason: '一年多没有运行，不玩了可以卸载，存档在云端' },
       a6: { what: 'VC++ 运行库', suggestion: 'keep', reason: '很多程序依赖它，卸载后这些程序无法启动' },
@@ -556,7 +567,7 @@
       'hklm_run:AdobeAAMUpdater': { what: 'Adobe 更新检查程序', suggestion: 'disable', reason: '只用于检查更新，可在 Adobe 应用内手动更新' },
       'hkcu_run:OneDrive': { what: 'OneDrive 同步', suggestion: 'keep', reason: '禁用后文件不会自动同步' },
       'hklm_run:SecurityHealth': { what: 'Windows 安全中心托盘图标', suggestion: 'keep', reason: '系统安全提醒入口' },
-    } : { AdobeARMservice: { what: 'Adobe 自动更新服务', suggestion: 'disable', reason: '设为手动后仍可在应用内更新' } }, usage: {}, errors: [] }),
+    } : { AdobeARMservice: { what: 'Adobe 自动更新服务', suggestion: 'disable', reason: '设为手动后仍可在应用内更新' } }, usage: {}, errors: [] }; if (kind === 'startup') startupAI = result.items; return result; }),
     history: () => history,
     revert: () => true,
     settings_save: ({ changes }) => {

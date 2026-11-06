@@ -254,13 +254,22 @@ def check_references(groups: list[dict], cancel=None, progress=None, skip=None, 
 
 def find_duplicates(roots: list[str], *, min_size: int = 1024 * 1024, skip=None, cancel=None, progress=None,
                     container_roots=(), max_files: int | None = None, max_hash_bytes: int | None = None,
-                    max_reference_bytes: int | None = None, max_hash_seconds=None, max_reference_seconds=None) -> dict:
+                    max_reference_bytes: int | None = None, max_hash_seconds=None, max_reference_seconds=None,
+                    cross_drives: bool = True, drive_roots=()) -> dict:
     """Return {'groups': [...], 'stats': {...}}.
 
     ``skip(path) -> bool`` excludes directories (system folders, user exclusions).
     """
     started = time.time()
-    by_size: dict[int, list] = {}
+    by_size: dict[tuple[int, str], list] = {}
+    drive_keys = sorted((paths.key(r) for r in drive_roots if r), key=len, reverse=True)
+
+    def volume_of(path, device):
+        if cross_drives:
+            return ''
+        key = paths.key(path)
+        return next((root for root in drive_keys if paths.is_within(key, root)),
+                    os.path.splitdrive(key)[0] or str(device))
     seen_dirs = set()
     homes: dict[str, tuple[str, str]] = {}  # programs' folders and code projects met on the way
     files_seen = 0
@@ -306,8 +315,9 @@ def find_duplicates(roots: list[str], *, min_size: int = 1024 * 1024, skip=None,
                     truncated = listing_done = True
                     break
                 files_seen += 1
-                by_size.setdefault(st.st_size, []).append([os.path.join(dirpath, entry.name), st.st_mtime,
-                                                         fsops.file_size(entry.path, st)])
+                bucket = (st.st_size, volume_of(entry.path, st.st_dev))
+                by_size.setdefault(bucket, []).append([os.path.join(dirpath, entry.name), st.st_mtime,
+                                                      fsops.file_size(entry.path, st)])
             if files_seen % 500 == 0:
                 report('listing')
             if listing_done:
@@ -315,7 +325,7 @@ def find_duplicates(roots: list[str], *, min_size: int = 1024 * 1024, skip=None,
 
     candidates = {s: v for s, v in by_size.items() if len(v) > 1}
     # drop hard links to the same physical file
-    for size, items in list(candidates.items()):
+    for bucket, items in list(candidates.items()):
         unique, ids = [], set()
         for item in items:
             fsops.check_cancel(cancel)
@@ -330,9 +340,9 @@ def find_duplicates(roots: list[str], *, min_size: int = 1024 * 1024, skip=None,
                 ids.add(ident)
             unique.append(item)
         if len(unique) > 1:
-            candidates[size] = unique
+            candidates[bucket] = unique
         else:
-            del candidates[size]
+            del candidates[bucket]
 
     total_candidates = sum(len(v) for v in candidates.values())
     deadline = time.monotonic() + max_hash_seconds if max_hash_seconds is not None else None
@@ -342,7 +352,7 @@ def find_duplicates(roots: list[str], *, min_size: int = 1024 * 1024, skip=None,
         # Verify each size batch fully before visiting the next. A slow drive
         # must not spend its entire budget on quick hashes and return nothing.
         nonlocal done, deferred, hashed_bytes, timed_out
-        for size, items in sorted(candidates.items(), reverse=True):
+        for (size, _volume), items in sorted(candidates.items(), reverse=True):
             groups: dict[bytes, list] = {}
             for item in items:
                 fsops.check_cancel(cancel)
@@ -377,7 +387,7 @@ def find_duplicates(roots: list[str], *, min_size: int = 1024 * 1024, skip=None,
         if kind == 'project' and paths.key(parent) not in chosen and os.path.dirname(parent) != parent:
             near[paths.key(parent)] = parent
 
-    bytes_total = sum(size * len(g) for size, g in candidates.items() if size > 2 * EDGE)
+    bytes_total = sum(size * len(g) for (size, _volume), g in candidates.items() if size > 2 * EDGE)
     if max_hash_bytes is not None:
         bytes_total = min(bytes_total, max_hash_bytes)
     hashed = [0]
@@ -430,6 +440,7 @@ def find_duplicates(roots: list[str], *, min_size: int = 1024 * 1024, skip=None,
     return {'groups': groups_out, 'stats': {
         'files': files_seen, 'groups': len(groups_out), 'wasted': sum(g['wasted'] for g in groups_out),
         'roots': list(roots), 'truncated': truncated or deferred > 0 or timed_out, 'file_limit': max_files,
+        'cross_drives': cross_drives,
         'timed_out': timed_out, 'hash_seconds_limit': max_hash_seconds,
         'hash_limit': max_hash_bytes, 'hashed_bytes': hashed_bytes, 'deferred_files': deferred,
         'reference_bytes': refs['bytes'], 'references_complete': refs['complete'],

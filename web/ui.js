@@ -204,6 +204,40 @@
 
   // One selection for the whole app: ticking a junk rule or a file is the same tick on 首页 and on its
   // own page. Junk rules by id, files/folders/duplicate copies by path, startup items by plan id.
+  PX.checkupDriveRoots = (drives, options = {}) => {
+    const key = (p) => String(p).replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+    const chosen = Array.isArray(options.selected_drives) ? new Set(options.selected_drives.map(key)) : null;
+    return drives.filter((d) => chosen ? chosen.has(key(d.root)) : d.fixed === true && (options.other_drives !== false || d.system))
+      .map((d) => d.root);
+  };
+  PX.checkupAIScopes = [['space', '陌生文件夹'], ['files', '个人文件'], ['duplicates', '重复副本'], ['startup', '开机启动项']];
+
+  // A check-up's coverage is tied to that run, never to switches changed afterwards.
+  PX.checkupCoverage = (plan) => {
+    const opts = plan.options || {}, cov = plan.coverage || {}, ai = plan.ai?.scopes || [];
+    const space = cov.space, dup = cov.duplicates, startup = cov.startup;
+    const personal = plan.personal_scan || {};
+    return [
+      { page: 'junk', name: '垃圾清理', status: cov.junk?.unavailable ? '有跳过项' : '已检查',
+        note: `按缓存和临时文件规则检查${cov.junk ? ` · ${cov.junk.rules} 条规则` : ''}` },
+      { page: 'space', name: '空间分析 · 大文件', status: !space ? '未检查' : space.incomplete ? '有跳过项' : '已检查',
+        note: space ? '大文件直接复用这次空间扫描，无需重扫' : '本次未启用空间扫描', skipped: !space, extra: ['large', '大文件'] },
+      { page: 'mine', name: '我的文件', status: personal.truncated ? '部分完成' : '已检查',
+        note: `已查看 ${PX.fmt.count(personal.files || plan.stats?.insight_files || 0)} 个文件 · 个人文件由你决定` },
+      { page: 'dups', name: '重复文件', status: opts.duplicates === false ? '未检查' : dup?.truncated ? '部分完成' : '已检查',
+        note: opts.duplicates === false ? '本次未启用查重' : opts.cross_drive_duplicates === false ? '只比较同一磁盘内的副本' : '包括不同磁盘之间的副本',
+        skipped: opts.duplicates === false },
+      { page: 'startup', name: '开机与服务', status: '部分覆盖',
+        note: startup?.error ? '启动项读取失败；服务需单独检查' : `开机启动项${startup ? ` ${startup.count} 个` : '已读取'}${ai.includes('startup') ? `，AI 已解释 ${startup?.ai_count || 0} 个` : '，未进行 AI 复核'}；服务需单独检查`,
+        action: '查看启动项', extra: ['services', '检查服务'] },
+      { page: 'apps', name: '应用', status: '未覆盖', note: '应用占用、使用情况和卸载建议需单独检查', skipped: true },
+    ];
+  };
+  PX.checkupAIReady = (init) => !!(init.has_key || init.settings.ai.preset === 'ollama') && !!(init.settings.ai.model || '').trim();
+  PX.checkupAIEnabled = (options = {}) => options.use_ai !== false && PX.checkupAIScopes.some(([key]) =>
+    options.ai_scopes?.[key] !== false && (key !== 'space' || options.space_scan !== false)
+      && (key !== 'duplicates' || options.duplicates !== false));
+
   PX.sel = {
     rules: new Set(), paths: new Set(), items: new Set(),
     keyOf(it) {

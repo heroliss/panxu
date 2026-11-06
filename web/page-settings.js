@@ -98,8 +98,9 @@
     // ---- one-click check-up
     const ck = s.checkup || {};
     const secCk = form.appendChild(h('section', h('h2', '一键体检')));
+    secCk.appendChild(h('p.small.muted', '体检磁盘、重复比对方式和 AI 分析内容在首页选择；只影响一键体检。',
+      h('button.btn.quiet.small', { type: 'button', onclick: () => PX.go('home') }, '去首页选择')));
     for (const [key, label, help] of [['space_scan', '分析磁盘空间', '统计体检范围内的磁盘占用，文件越多耗时越长；可随时停止'],
-      ['other_drives', '包含其他磁盘', '整盘检查其他本地固定磁盘。关闭后仍检查系统盘、常用文件夹和手动添加的位置；与首页共用选择'],
       ['duplicates', '查找重复文件', '在个人文件夹中比较文件内容'], ['use_ai', '使用 AI 复核', '配置了模型时，让 AI 判断文件夹、文件名和开机启动项']]) {
       secCk.appendChild(field(label, h('label.inline', PX.switchEl(ck[key] !== false, (e) => save({ checkup: { [key]: e.target.checked } })),
         h('span.small.muted', help))));

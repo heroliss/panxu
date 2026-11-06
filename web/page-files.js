@@ -262,6 +262,7 @@
       return;
     }
     if (!dup.result) return;
+    if (dup.result.stats.cross_drives === false) c.appendChild(PX.notice('这份体检结果只比较同一磁盘内的文件。本页重新查找时，会将所选文件夹放在一起比对。', 'info'));
     if (dup.result.stats.references_complete === false) c.appendChild(PX.notice('部分工程的引用检查没有完成，相关副本已保守评分。不能据此认定工程没有用到它们。', 'info'));
     if (dup.result.stats.truncated) c.appendChild(PX.notice('这次只完成了部分比对，已列出的副本已校验内容。选择一个文件夹可继续完整查找。', 'warn',
       h('button.btn.small', { type: 'button', disabled: busy, onclick: async () => {

@@ -62,6 +62,23 @@ class ScopeTest(TempDirTest):
 
 
 class DuplicateScopeTest(TempDirTest):
+    def test_within_drive_mode_skips_cross_disk_only_candidates_before_hashing(self):
+        a = self.make('C/Docs/a.bin', 200000)
+        b = self.make('D/Photos/b.bin', 200000)
+        drives = [os.path.join(self.tmp, d) for d in ('C', 'D')]
+        cross = duplicates.find_duplicates(drives, min_size=1, drive_roots=drives)
+        self.assertEqual(len(cross['groups']), 1)
+        with patch('panxu.duplicates._hash_partial', side_effect=AssertionError('unnecessary disk read')):
+            local = duplicates.find_duplicates(drives, min_size=1, cross_drives=False, drive_roots=drives)
+        self.assertEqual(local['groups'], [])
+        self.assertEqual(local['stats']['hashed_bytes'], 0)
+        self.make('C/Other/c.bin', 200000)
+        # Two selected folders on C: still compare together, regardless of traversal roots.
+        roots = [os.path.dirname(a), os.path.join(self.tmp, 'C/Other'), os.path.dirname(b)]
+        local = duplicates.find_duplicates(roots, min_size=1, cross_drives=False, drive_roots=drives)
+        self.assertEqual(len(local['groups']), 1)
+        self.assertTrue(all(paths.is_within(f['path'], drives[0]) for f in local['groups'][0]['files']))
+
     def test_time_limit_keeps_completed_groups_before_visiting_more_candidates(self):
         for name, size in [('a', 200000), ('b', 200000), ('c', 190000), ('d', 190000)]:
             self.make('batches/' + name, size)

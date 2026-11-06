@@ -10,7 +10,10 @@
   async function load(force) {
     if (force) { state.refreshing = true; draw(); }
     try {
-      if (state.tab === 'startup' && (force || !state.items)) state.items = await PX.api.call('startup_list');
+      if (state.tab === 'startup' && (force || !state.items)) {
+        state.items = await PX.api.call('startup_list');
+        state.ai.startup = Object.fromEntries(state.items.filter((item) => item.ai).map((item) => [item.id, item.ai]));
+      }
       if (state.tab === 'services' && (force || !state.services)) state.services = await PX.api.call('services_list');
       if (force) {
         const n = state.tab === 'startup' ? state.items.length : state.services.length;
@@ -182,5 +185,6 @@
     main.scrollTop = top;
   }
 
-  PX.pages.startup = { render(container) { root = container; draw(); load(); } };
+  PX.startup = { open(tab) { state.tab = tab; PX.go('startup'); } };
+  PX.pages.startup = { render(container) { root = container; state.items = null; draw(); load(); } };
 })();

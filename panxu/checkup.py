@@ -112,7 +112,18 @@ def personal_roots(env: dict, settings: dict) -> list[str]:
     return out
 
 
-def insights_roots(env: dict, settings: dict, drives: list[dict], *, other_drives: bool = True) -> list[str]:
+def selected_drives(drives: list[dict], options: dict) -> list[dict]:
+    """Only enumerated drives can be selected; preserve old all/system defaults until the first choice."""
+    chosen = options.get('selected_drives')
+    if isinstance(chosen, list):
+        keys = {paths.key(p) for p in chosen if isinstance(p, str) and p}
+        return [d for d in drives if paths.key(d['root']) in keys]
+    return [d for d in drives if d.get('fixed') is True
+            and (options.get('other_drives', True) or d.get('system'))]
+
+
+def insights_roots(env: dict, settings: dict, drives: list[dict], *, other_drives: bool = True,
+                   whole_drives: list[str] | None = None) -> list[str]:
     """Broad personal-file scope, using only an explicitly supplied drive list.
 
     Visit the familiar/picked folders first, then their wider containers. Only
@@ -122,13 +133,16 @@ def insights_roots(env: dict, settings: dict, drives: list[dict], *, other_drive
     """
     candidates = personal_roots(env, settings)
     candidates.extend(env.get(name) for name in ('USERPROFILE', 'PUBLIC'))
-    system = env.get('SystemDrive')
-    if system:
-        candidates.append(paths.native(system + ('' if system.endswith(('\\', '/')) else '\\')))
-    candidates.extend(d.get('root') for d in drives if d.get('fixed') is True
-                      and (other_drives or d.get('system'))
-                      and isinstance(d.get('root'), str)
-                      and not ntpath.splitdrive(d['root'])[0].startswith('\\\\'))
+    if whole_drives is not None:
+        candidates.extend(whole_drives)
+    else:
+        system = env.get('SystemDrive')
+        if system:
+            candidates.append(paths.native(system + ('' if system.endswith(('\\', '/')) else '\\')))
+        candidates.extend(d.get('root') for d in drives if d.get('fixed') is True
+                          and (other_drives or d.get('system'))
+                          and isinstance(d.get('root'), str)
+                          and not ntpath.splitdrive(d['root'])[0].startswith('\\\\'))
     out, seen = [], set()
     for candidate in candidates:
         if not isinstance(candidate, str) or not candidate:
@@ -140,10 +154,11 @@ def insights_roots(env: dict, settings: dict, drives: list[dict], *, other_drive
     return out
 
 
-def space_roots(env: dict, settings: dict, drives: list[dict], *, other_drives: bool = True) -> list[str]:
+def space_roots(env: dict, settings: dict, drives: list[dict], *, other_drives: bool = True,
+                whole_drives: list[str] | None = None) -> list[str]:
     """Fixed disks plus explicitly known/added personal locations, with overlaps removed."""
     out = []
-    for p in sorted(insights_roots(env, settings, drives, other_drives=other_drives), key=len):
+    for p in sorted(insights_roots(env, settings, drives, other_drives=other_drives, whole_drives=whole_drives), key=len):
         if not any(paths.is_within(p, old) for old in out):
             out.append(p)
     return out
@@ -748,14 +763,23 @@ def summarize(plan: dict) -> dict:
 def run(backend, job, options: dict | None = None) -> dict:
     settings = backend.settings.get()
     opts = {**settings.get('checkup', {}), **{k: bool(v) for k, v in (options or {}).items()
-                                            if k in ('space_scan', 'other_drives', 'duplicates', 'use_ai')}}
+                                            if k in ('space_scan', 'other_drives', 'duplicates', 'cross_drive_duplicates', 'use_ai')}}
+    if 'selected_drives' in (options or {}) and (options['selected_drives'] is None or isinstance(options['selected_drives'], list)):
+        opts['selected_drives'] = options['selected_drives']
+    scopes = {k: True for k in ('space', 'files', 'duplicates', 'startup')}
+    for source in (opts.get('ai_scopes'), (options or {}).get('ai_scopes')):
+        if isinstance(source, dict):
+            scopes.update({k: bool(v) for k, v in source.items() if k in scopes})
+    opts['ai_scopes'] = scopes
     threshold = opts.get('auto_threshold', DEFAULT_THRESHOLD)
     if (options or {}).get('auto_select') in THRESHOLDS:
         threshold = THRESHOLDS[options['auto_select']]
     if isinstance((options or {}).get('auto_threshold'), int):
         threshold = options['auto_threshold']
     opts['auto_threshold'] = threshold = max(0, min(10, int(threshold)))
-    client = backend.client_or_none('classify') if opts.get('use_ai', True) else None
+    ai_enabled = opts.get('use_ai', True) and any(on and (key != 'space' or opts.get('space_scan', True))
+                       and (key != 'duplicates' or opts.get('duplicates', True)) for key, on in scopes.items())
+    client = backend.client_or_none('classify') if ai_enabled else None
     stages = [s for s in STAGES if (s[0] != 'space' or opts.get('space_scan', True))
               and (s[0] != 'dups' or opts.get('duplicates', True)) and (s[0] != 'ai' or client is not None)]
     total = len(stages)
@@ -778,6 +802,7 @@ def run(backend, job, options: dict | None = None) -> dict:
     policy = backend.policy()
     env = backend.env
     drives = backend.m_drives()
+    whole_drives = [d['root'] for d in selected_drives(drives, opts)]
 
     stage('junk')
     junk_rows = backend.junk.scan(cancel=job.cancel,
@@ -787,7 +812,7 @@ def run(backend, job, options: dict | None = None) -> dict:
     scan = None  # an earlier tool-page scan must not leak into a new, space-disabled check-up
     if opts.get('space_scan', True):
         stage('space')
-        roots = space_roots(env, settings, drives, other_drives=opts.get('other_drives', True))
+        roots = space_roots(env, settings, drives, whole_drives=whole_drives)
         used = sum(d.get('used', 0) for d in drives if any(paths.key(d['root']) == paths.key(r) for r in roots))
         scan = SpaceScan(roots, skip=space_skip(env, policy, getattr(backend, 'app_dirs', ())))
         scan.run(cancel=job.cancel, progress=lambda p: part(
@@ -796,7 +821,7 @@ def run(backend, job, options: dict | None = None) -> dict:
         backend.scan = scan
         backend.ai_results = {}
 
-    broad_roots = insights_roots(env, settings, drives, other_drives=opts.get('other_drives', True))
+    broad_roots = insights_roots(env, settings, drives, whole_drives=whole_drives)
     stage('insights')
     ins = Insights(env, settings, apps=backend.apps).collect(
         broad_roots, skip=system_skip(env, policy, broad_roots), cancel=job.cancel,
@@ -804,11 +829,15 @@ def run(backend, job, options: dict | None = None) -> dict:
         progress=lambda p: part(None, detail=p.get('current', ''), count=f'已看过 {p.get("files", 0):,} 个文件'))
     findings = ins.findings()
     backend.insights = {'findings': findings, 'stats': ins.stats, 'roots': ins.roots, 'time': time.time()}
+    for finding in findings:
+        for file in finding['files']:
+            backend.file_ai.pop(file['path'], None)
 
     if opts.get('duplicates', True):
         stage('dups')
         min_mb = float(settings.get('duplicates', {}).get('min_size_mb', 1))
         dups = find_duplicates(broad_roots, min_size=int(min_mb * 1024 * 1024),
+                               cross_drives=opts.get('cross_drive_duplicates', True), drive_roots=[d['root'] for d in drives],
                                skip=system_skip(env, policy, broad_roots), cancel=job.cancel,
                                container_roots=personal_roots(env, {}) + [d['root'] for d in drives]
                                                + [env.get('USERPROFILE'), env.get('PUBLIC')],
@@ -822,27 +851,28 @@ def run(backend, job, options: dict | None = None) -> dict:
         backend.dups = dups
         backend.dup_ai = {}  # a new scan must not reuse AI judgments when the user turned review off
 
-    ai_info = {'used': False, 'errors': [], 'usage': None}
+    ai_info = {'used': False, 'enabled': ai_enabled, 'scopes': [], 'errors': [], 'usage': None}
     file_ai, startup_ai = {}, {}
     startup_items = []
+    startup_error = ''
     try:
         startup_items = backend.startup.list()
-    except OSError:
-        startup_items = []
+    except OSError as exc:
+        startup_error = str(exc)
     if client is not None:
         stage('ai')
-        ai_info['used'] = True
         anonymize = settings['ai'].get('anonymize_paths', True)
         # as many file names as the request budget holds (it was a fixed 120: half of the default budget)
         budget = max(1, int(settings['ai'].get('max_requests', 8)))
-        files = backend.files_for_ai([f['id'] for f in findings], include_content=False)[:budget * FILE_BATCH]
+        files = backend.files_for_ai([f['id'] for f in findings], include_content=False)[:budget * FILE_BATCH] if scopes['files'] else []
         # duplicates that need judging: a copy in a program, a project or next to one (loose copies are clear)
         unclear = [g for g in (backend.dups or {}).get('groups', []) if any(f.get('place') for f in g['files'])] \
-            if opts.get('duplicates', True) else []
-        enabled = [i for i in startup_items if i['enabled']]
+            if opts.get('duplicates', True) and scopes['duplicates'] else []
+        enabled = [i for i in startup_items if i['enabled']] if scopes['startup'] else []
         # the AI stage in steps, each with its share of the bar: (name, will it run)
-        steps = [s for s, on in (('space', scan is not None and scan.complete), ('files', bool(files)),
+        steps = [s for s, on in (('space', scopes['space'] and scan is not None and scan.complete), ('files', bool(files)),
                                  ('dups', bool(unclear)), ('startup', bool(enabled))) if on]
+        ai_info['used'], ai_info['scopes'] = bool(steps), steps
 
         def ai_part(name, label, fraction=0.0, **extra):
             i = steps.index(name)
@@ -889,8 +919,14 @@ def run(backend, job, options: dict | None = None) -> dict:
                               details={'usage': ai_info['usage'], 'model': client.model, 'errors': ai_info['errors'][:5]})
 
     stage('plan')
+    backend.startup_ai = startup_ai
     builder = PlanBuilder(policy, backend.knowledge, threshold=threshold)
     builder.add_junk(junk_rows)
+    assessed_junk = {i['rule']: i for i in builder.items if i.get('kind') == 'rule'}
+    for row in junk_rows:
+        item = assessed_junk.get(row['id'])
+        if item:
+            row.update({k: item[k] for k in ('score', 'basis', 'eligible', 'selected', 'blocked')})
     if scan is not None and scan.complete:
         builder.add_ai_dirs(list(backend.ai_results.values()), env, backend.analyst, scan)
         analysed = {nid for nid, s in backend.ai_results.items() if s.get('source') != 'none'}
@@ -905,10 +941,12 @@ def run(backend, job, options: dict | None = None) -> dict:
                          'personal_scan': {'truncated': bool(ins.stats.get('truncated')),
                                            'limit': ins.stats.get('limit'), 'files': ins.stats.get('files', 0)},
                          'coverage': {'space': scan.stats if scan else None,
+                                      'junk': {'rules': len(junk_rows), 'unavailable': sum(bool(r.get('error') or r.get('scope_blocked')) for r in junk_rows)},
+                                      'startup': {'count': len(startup_items), 'error': startup_error, 'ai_count': len(startup_ai)},
+                                      'whole_drives': whole_drives,
                                       'personal_roots': broad_roots,
                                       'duplicates': (backend.dups or {}).get('stats') if opts.get('duplicates', True) else None,
-                                      'omitted_drives': [d['root'] for d in drives if d.get('fixed') is not True
-                                                         or (not opts.get('other_drives', True) and not d.get('system'))]},
+                                      'omitted_drives': [d['root'] for d in drives if d['root'] not in whole_drives]},
                          'stats': {'insight_files': ins.stats.get('files', 0),
                                    'scanned_bytes': scan.stats.get('bytes') if scan else None}})
     plan['summary'] = summarize(plan)

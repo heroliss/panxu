@@ -2,6 +2,7 @@ import json
 import os
 import time
 import unittest
+from unittest.mock import patch
 
 from helpers import TempDirTest
 
@@ -147,6 +148,67 @@ class CheckupTest(TempDirTest):
                          {paths.key(c), paths.key(d)})
         self.assertIsNone(broad['coverage']['duplicates'])
         self.assertFalse(self.backend.settings.get()['checkup']['other_drives'], 'per-run overrides do not overwrite saved choices')
+
+    def test_drive_choices_are_per_checkup_and_personal_locations_stay_in_scope(self):
+        c, d = self.sb.drive_roots
+        for selected in ([d], []):
+            with self.subTest(selected=selected):
+                plan = self.checkup(selected_drives=selected, use_ai=False)
+                self.assertEqual([paths.key(r) for r in plan['coverage']['whole_drives']], [paths.key(r) for r in selected])
+                self.assertNotIn(paths.key(c), {paths.key(r) for r in plan['coverage']['space']['roots']})
+                self.assertIsNotNone(self.backend.scan.find(self.backend.env['USERPROFILE']))
+                for name in ('personal_roots',):
+                    self.assertEqual(paths.key(d) in {paths.key(r) for r in plan['coverage'][name]}, bool(selected))
+                self.assertEqual(paths.key(d) in {paths.key(r) for r in plan['coverage']['duplicates']['roots']}, bool(selected))
+        self.assertIn(paths.key(d), {paths.key(r) for r in self.call('insights_roots')})
+        self.assertIsNone(self.backend.settings.get()['checkup']['selected_drives'])
+
+    def test_ai_subscopes_only_call_the_chosen_analysis(self):
+        methods = {'space': 'analyze_space', 'files': 'review_files', 'duplicates': 'review_duplicates', 'startup': 'explain_items'}
+        from contextlib import ExitStack
+        for chosen in methods:
+            with self.subTest(chosen=chosen), ExitStack() as stack:
+                spies = {key: stack.enter_context(patch.object(self.backend.analyst, method, wraps=getattr(self.backend.analyst, method)))
+                         for key, method in methods.items()}
+                plan = self.checkup(ai_scopes={key: key == chosen for key in methods})
+                for key, spy in spies.items():
+                    self.assertEqual(bool(spy.call_count), key == chosen, key)
+                self.assertEqual(plan['ai']['scopes'], ['dups' if chosen == 'duplicates' else chosen])
+                if chosen == 'files':
+                    self.assertTrue(all('excerpt' not in file for file in spies['files'].call_args.args[0]))
+
+    def test_all_ai_subscopes_off_never_creates_client_but_manual_ai_still_works(self):
+        off = dict.fromkeys(('space', 'files', 'duplicates', 'startup'), False)
+        self.call('settings_save', changes={'checkup': {'ai_scopes': off}})
+        with patch.object(self.backend, 'client_or_none', side_effect=AssertionError('AI is off')):
+            plan = self.checkup()
+        self.assertFalse(plan['ai']['enabled'])
+        self.assertFalse(plan['ai']['used'])
+        self.assertEqual(self.model.requests, [])
+        result = self.wait(self.call('ai_explain', kind='startup'))
+        self.assertTrue(result['items'])
+        self.assertTrue(self.model.requests)
+        self.assertTrue(any(item['ai'] for item in self.call('startup_list')))
+
+    def test_checkup_results_are_reused_by_junk_and_startup_tools(self):
+        plan = self.checkup()
+        with patch.object(self.backend.junk, 'scan', side_effect=AssertionError('must reuse scan')):
+            rows = {row['id']: row for row in self.call('junk_result')}
+        for item in plan['items']:
+            if item['kind'] == 'rule':
+                self.assertEqual((item['score'], item['selected']), (rows[item['rule']]['score'], rows[item['rule']]['selected']))
+        item = next(i for i in plan['items'] if i['kind'] == 'startup' and not i['blocked'])
+        row = next(i for i in self.call('startup_list') if i['id'] == item['startup_id'])
+        self.assertEqual(row['ai']['suggestion'], 'disable')
+        self.call('startup_set', item_id=row['id'], enabled=False)
+        self.assertEqual(item['status'], 'done')
+        self.call('startup_set', item_id=row['id'], enabled=True)
+        self.assertEqual(item['status'], 'pending')
+        self.assertFalse(item['selected'])
+        self.assertTrue(plan['coverage']['startup']['count'])
+        self.checkup(use_ai=False)
+        self.assertFalse(any(i['ai'] for i in self.call('startup_list')))
+        self.assertFalse(any(file.get('ai') for f in self.call('insights_result')['findings'] for file in f['files']))
 
     def test_every_item_explains_its_score_and_selection(self):
         plan = self.checkup()

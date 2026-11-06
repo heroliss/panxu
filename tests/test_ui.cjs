@@ -4,6 +4,31 @@ const assert = require('assert');
 global.window = global;
 const PX = require('../web/ui.js');
 
+// Home-only defaults migrate without changing standalone tools; an empty disk selection stays empty.
+const homeDisks = [{ root: 'C:\\', fixed: true, system: true }, { root: 'D:\\', fixed: true }, { root: 'F:\\', removable: true }];
+assert.deepStrictEqual(PX.checkupDriveRoots(homeDisks), ['C:\\', 'D:\\']);
+assert.deepStrictEqual(PX.checkupDriveRoots(homeDisks, { other_drives: false }), ['C:\\']);
+assert.deepStrictEqual(PX.checkupDriveRoots(homeDisks, { selected_drives: ['d:/', 'F:\\', 'X:\\'] }), ['D:\\', 'F:\\']);
+assert.deepStrictEqual(PX.checkupDriveRoots(homeDisks, { selected_drives: [] }), []);
+const noAIScopes = Object.fromEntries(PX.checkupAIScopes.map(([key]) => [key, false]));
+assert.strictEqual(PX.checkupAIEnabled({ ai_scopes: noAIScopes }), false);
+assert.strictEqual(PX.checkupAIEnabled({ use_ai: false }), false);
+assert.strictEqual(PX.checkupAIEnabled({ duplicates: false, ai_scopes: { ...noAIScopes, duplicates: true } }), false);
+assert.strictEqual(PX.checkupAIEnabled({ ai_scopes: { ...noAIScopes, files: true } }), true);
+// Coverage describes the completed run, with derived large-file results and partial startup coverage.
+const coverage = PX.checkupCoverage({ options: { duplicates: false }, coverage: { space: null, startup: { count: 3 } } });
+assert.strictEqual(coverage.find((r) => r.page === 'space').status, '未检查');
+assert.deepStrictEqual(coverage.find((r) => r.page === 'space').extra, ['large', '大文件']);
+assert.strictEqual(coverage.find((r) => r.page === 'dups').status, '未检查');
+assert.strictEqual(coverage.find((r) => r.page === 'startup').status, '部分覆盖');
+assert.strictEqual(coverage.find((r) => r.page === 'apps').status, '未覆盖');
+const partial = PX.checkupCoverage({ options: { cross_drive_duplicates: false },
+  personal_scan: { truncated: true }, coverage: { space: { incomplete: true }, duplicates: { truncated: true } } });
+assert.strictEqual(partial.find((r) => r.page === 'space').status, '有跳过项');
+assert.strictEqual(partial.find((r) => r.page === 'mine').status, '部分完成');
+assert.strictEqual(partial.find((r) => r.page === 'dups').status, '部分完成');
+assert.match(partial.find((r) => r.page === 'dups').note, /同一磁盘/);
+
 // treemap: areas proportional, inside bounds, no overlap of total area
 const items = [{ size: 60 }, { size: 25 }, { size: 10 }, { size: 4 }, { size: 1 }, { size: 0 }];
 const rects = PX.treemap(items, 0, 0, 400, 300);

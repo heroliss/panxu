@@ -91,6 +91,7 @@ class Backend:
         self.ai_results: dict[int, dict] = {}
         self.dups: dict | None = None
         self.junk_rows: list[dict] | None = None
+        self.startup_ai: dict = {}
         self.insights: dict | None = None
         self.file_ai: dict[str, dict] = {}
         self.dup_ai: dict[str, dict] = {}   # duplicate copy -> the model's advice (Analyst.review_duplicates)
@@ -411,6 +412,10 @@ class Backend:
         return picked[0] if isinstance(picked, (list, tuple)) else picked
 
     # ------------------------------------------------------------------ junk
+    def m_junk_result(self):
+        """Reuse the most recent tool/check-up scan without another filesystem walk."""
+        return self.junk_rows
+
     def m_junk_scan(self):
         def run(job):
             def progress(i, total, name):
@@ -444,6 +449,7 @@ class Backend:
             def progress(i, total, name, freed):
                 job.update(index=i, total=total, current=name, freed=freed)
             result = self.junk.clean([str(r) for r in rule_ids], cancel=job.cancel, progress=progress)
+            self.junk_rows = None
             # the same rules in the plan on 首页 are done now
             cleaned = {r['id'] for r in result['rules'] if not r['skipped']}
             for item in (self.plan or {}).get('items', []):
@@ -842,11 +848,16 @@ class Backend:
 
     # ------------------------------------------------------------------ startup & services
     def m_startup_list(self):
-        return self.startup.list()
+        return [{**item, 'ai': self.startup_ai.get(item['id'])} for item in self.startup.list()]
 
     def m_startup_set(self, item_id: str, enabled: bool):
         try:
-            return self.startup.set_enabled(str(item_id), bool(enabled))
+            result = self.startup.set_enabled(str(item_id), bool(enabled))
+            for item in (self.plan or {}).get('items', []):
+                if item.get('startup_id') == str(item_id):
+                    item.update(status='pending' if result['enabled'] else 'done',
+                                result='' if result['enabled'] else '已在「开机与服务」禁用', selected=False)
+            return result
         except (ValueError, PermissionError) as exc:
             raise UserError(str(exc)) from None
 
@@ -878,6 +889,8 @@ class Backend:
             job.update(count=len(items))
             result = self.analyst.explain_items(items, client, s['ai'].get('anonymize_paths', True), use_cache)
             by_id = {i['id']: result['items'].get(i['key']) for i in items}
+            if kind == 'startup':
+                self.startup_ai.update({k: v for k, v in by_id.items() if v})
             return {'items': {k: v for k, v in by_id.items() if v}, 'usage': result['usage'],
                     'errors': result['errors']}
         return self.jobs.start('ai_explain', run, group='ai')
@@ -1141,6 +1154,8 @@ class Backend:
                 return checkup.execute(self, plan, [str(i) for i in item_ids], job)
             except ValueError as exc:
                 raise UserError(str(exc)) from None
+            finally:
+                self.junk_rows = None
         return self.jobs.start('plan_execute', run, group='modify')
 
     def _require_plan(self) -> dict:
@@ -1330,6 +1345,7 @@ class Backend:
         except (RuntimeError, OSError) as exc:
             raise UserError(f'重建失败：{exc}') from None
         self.scan, self.ai_results, self.dups, self.junk_rows = None, {}, None, None
+        self.startup_ai = {}
         self.insights, self.file_ai, self.plan, self._app_index = None, {}, None, None
         self.apps._cache = None
         self.junk.last_scan.clear()
