@@ -25,6 +25,7 @@ from .apps import AppManager
 from .duplicates import find_duplicates, verify_unchanged
 from .jobs import BusyError, JobManager, UserError
 from .windowing import WindowControls
+from .ai_health import AIHealth
 from .junk import GROUPS, RULES_BY_ID, JunkEngine
 from .knowledge import Knowledge
 from .oplog import OperationLog
@@ -116,6 +117,7 @@ class Backend:
         self._relaunch = relaunch
         self.restart_ui = {}
         self.resume = None
+        self.ai_health = AIHealth(self.settings, self._probe_ai)
         self.app_dirs = [os.path.dirname(os.path.abspath(__file__)), data_dir]
         if getattr(sys, 'frozen', False):
             self.app_dirs.append(os.path.dirname(sys.executable))
@@ -132,7 +134,8 @@ class Backend:
         s = self.settings.get()
         key = self.settings.get_secret('ai_key:' + s['ai']['preset'])
         try:
-            return ai_client.client_from_settings(s['ai'], key, purpose=purpose)
+            return self.ai_health.observe(ai_client.client_from_settings(s['ai'], key, purpose=purpose),
+                                          self.ai_health.signature(s['ai'], key))
         except ai_client.AIError as exc:
             raise UserError(str(exc)) from None
 
@@ -141,6 +144,16 @@ class Backend:
             return self._client(purpose)
         except UserError:
             return None
+
+    def _probe_ai(self, ai, key):
+        if self.sandbox is not None:
+            return self.sandbox.ai_probe(ai, key)
+        client = ai_client.client_from_settings({**ai, 'timeout': min(12, float(ai.get('timeout') or 12))}, key)
+        client.max_tokens = 64
+        reply = ai_client.extract_json(client.complete('你是连接测试助手。只输出 JSON。', '请回复 {"ok": true}', want_json=True))
+        if reply.get('ok') is not True:
+            raise ai_client.AIError('连接测试未返回确认信息')
+        return {'reply': reply, 'usage': client.usage.as_dict(), 'model': client.model}
 
     def _match_app(self, folder_name: str) -> str | None:
         if self._app_index is None or time.time() - self._app_index[0] > 60:
@@ -296,7 +309,16 @@ class Backend:
 
     def m_activity(self):
         return {'jobs': [j for j in self.jobs.running() if j.get('synchronized')],
-                'window': self.window_controls.state()}
+                'window': self.window_controls.state(), 'ai_health': self.ai_health.status()}
+
+    def m_ai_health(self):
+        return self.ai_health.status()
+
+    def m_ai_health_check(self):
+        return self.ai_health.check(force=True)
+
+    def m_ai_health_ack(self, signature: str):
+        return self.ai_health.acknowledge(signature)
 
     def m_window_action(self, action: str):
         return self.window_controls.perform(action)
@@ -1556,12 +1578,10 @@ class Backend:
             raise UserError(str(exc)) from None
 
     def m_ai_test(self):
-        client = self._client()
         try:
-            reply = client.complete_json('你是连接测试助手。只输出 JSON。', '请回复 {"ok": true}')
-        except (ai_client.AIError, ValueError) as exc:
+            return self.ai_health.test()
+        except ai_client.AIError as exc:
             raise UserError(f'测试失败：{exc}') from None
-        return {'reply': reply, 'usage': client.usage.as_dict(), 'model': client.model}
 
     def m_ai_clear_cache(self):
         self.cache.clear()

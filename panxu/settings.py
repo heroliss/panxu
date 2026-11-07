@@ -17,6 +17,8 @@ DEFAULTS = {
     'version': SETTINGS_VERSION,
     'theme': 'system',  # system | light | dark
     'admin_on_start': True,  # request UAC once; a refusal still opens the app normally
+    'ai_check_on_start': True,
+    'ai_status_notice': {'signature': '', 'state': '', 'message': '', 'time': 0},
     'ai': {
         'preset': 'deepseek',
         'base_url': 'https://api.deepseek.com',

@@ -4,6 +4,7 @@ const assert = require('assert');
 global.window = global;
 const PX = require('../web/ui.js');
 require('./test_activity_ui.cjs');
+require('./test_ai_status_ui.cjs');
 
 // Home-only defaults migrate without changing standalone tools; an empty disk selection stays empty.
 const homeDisks = [{ root: 'C:\\', fixed: true, system: true }, { root: 'D:\\', fixed: true }, { root: 'F:\\', removable: true }];

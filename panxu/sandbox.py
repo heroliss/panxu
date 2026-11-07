@@ -677,6 +677,13 @@ class Sandbox:
             self.save()
 
     # -- winapi hooks -----------------------------------------------------------------
+    def ai_probe(self, ai, key):
+        """Fixed fake connectivity response; the simulation never calls a model endpoint."""
+        if self.state.get('ai_connection_error'):
+            from .ai_client import AIError
+            raise AIError('演练模型连接失败')
+        return {'reply': {'ok': True}, 'usage': {'requests': 1}, 'model': ai.get('model', 'scripted')}
+
     def is_admin(self) -> bool:
         return bool(self.state.get('admin', True))
 

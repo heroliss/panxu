@@ -95,6 +95,15 @@ a { color: var(--cobalt); }
 .appbar-brand b { font-size: 16px; font-weight: 650; letter-spacing: .08em; }
 .appbar-brand span { font-size: 11px; color: var(--ink-2); }
 .appbar-activity { align-self: center; max-width: 360px; margin: 0 16px; padding: 4px 10px; border: 0; border-radius: var(--r-m); background: var(--cobalt-tint); color: var(--cobalt); font-size: 12px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; cursor: pointer; }
+.ai-health-chip { align-self: center; flex: none; margin: 0 8px; padding: 4px 10px; border: 0; border-radius: var(--r-m); background: var(--cobalt-tint); color: var(--cobalt); font-size: 12px; cursor: pointer; }
+.ai-health-chip[data-state="ready"] { background: var(--verdigris-tint); color: var(--verdigris); }
+.ai-health-chip[data-state="error"], .ai-health-chip[data-state="unconfigured"] { background: var(--amber-tint); color: var(--amber); }
+.ai-health-banner { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin: 16px 36px 0; padding: 12px 16px; border-radius: var(--r-m); background: var(--cobalt-tint); }
+.ai-health-banner[data-state="error"], .ai-health-banner[data-state="unconfigured"] { background: var(--amber-tint); }
+.ai-health-banner .grow { flex: 1 1 260px; }
+.ai-health-banner p, .ai-health-panel p { margin: 3px 0 0; color: var(--ink-2); font-size: 12.5px; }
+.ai-health-panel { padding: 12px 0; margin-bottom: 12px; border-bottom: 1px solid var(--rule); }
+.ai-health-panel .btn { margin-top: 8px; }
 .window-controls { display: flex; flex: none; }
 .window-controls button { display: grid; place-items: center; width: 46px; padding: 0; border: 0; background: transparent; }
 .window-controls button:hover { background: var(--rule); }

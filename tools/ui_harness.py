@@ -49,6 +49,7 @@ def main():
     parser.add_argument('--native', action='store_true', help='open an isolated native window instead of a browser server')
     parser.add_argument('--stage-delay', type=float, default=0, help='development only: pause at each checkup stage (0-2 seconds)')
     parser.add_argument('--resume-demo', action='store_true', help='simulate a completed normal checkup handed to an admin process (no UAC)')
+    parser.add_argument('--ai-status-demo', choices=('missing', 'error', 'ready'), help='simulate model readiness without networking')
     args = parser.parse_args()
 
     # one reusable folder (the server is usually stopped by killing it), inside PanXu's own protected data
@@ -70,6 +71,8 @@ def main():
                 return fn(job)
             return start(kind, delayed, *a, **kw)
         backend.jobs.start = delayed_start
+    if args.live and args.ai_status_demo:
+        raise SystemExit('--live and --ai-status-demo cannot be combined')
     if args.live:
         key, source = live_key()
         if not key:
@@ -83,6 +86,14 @@ def main():
         backend.client_or_none = lambda purpose='classify': model
         backend._client = lambda purpose='classify': model
         backend.settings.set_secret('ai_key:' + backend.settings.get()['ai']['preset'], 'scripted')
+    if args.ai_status_demo:
+        backend.settings.set_secret('ai_key:' + backend.settings.get()['ai']['preset'], '' if args.ai_status_demo == 'missing' else 'scripted')
+        sb.state['ai_connection_error'] = args.ai_status_demo == 'error'
+        original_probe = backend.ai_health.probe
+        def demo_probe(ai, key):
+            time.sleep(2)
+            return original_probe(ai, key)
+        backend.ai_health.probe = demo_probe
     if args.resume_demo:
         from panxu import handoff
         # All state below belongs to the fake machine. Never request actual Windows elevation.
