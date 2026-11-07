@@ -8,11 +8,11 @@
 
 体检进行中可以切换工具页查看结果，完成的阶段会自动同步。再次点扫描会提示当前进度，不会同时启动另一项检查或清理；体检结束后，可在单项工具里按需要重新检查其他范围。窗口顶部与界面采用统一样式，保留拖动、缩放、最小化和最大化。
 
-> 当前版本 **2.0.1**。更新内容见 [CHANGELOG](CHANGELOG.md)。
+> 当前版本 **2.0.2**。更新内容见 [CHANGELOG](CHANGELOG.md)。
 
 ## 下载和使用
 
-1. 在 [Releases](https://github.com/heroliss/panxu/releases) 下载 `PanXu-2.0.1-win-x64.zip`，解压到任意文件夹（例如 `D:\工具\PanXu`）。
+1. 在 [Releases](https://github.com/heroliss/panxu/releases) 下载 `PanXu-2.0.2-win-x64.zip`，解压到任意文件夹（例如 `D:\工具\PanXu`）。
 2. 双击 `PanXu.exe`。不需要安装，不写注册表的安装信息。
 
 **系统要求：** Windows 10 或 11（64 位），以及 Microsoft Edge WebView2 运行时（Windows 11 自带；Windows 10 一般随 Edge 已经装好）。
