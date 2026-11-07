@@ -265,6 +265,19 @@ class AnalystTest(TempDirTest):
         self.assertTrue(done.wait(5), 'clear, put and save finished')
         self.assertEqual(set(VerdictCache(os.path.join(self.tmp, 'cache.json')).data), {'k2'})
 
+    def test_a_locked_cache_does_not_discard_results_or_interrupt_analysis(self):
+        from unittest.mock import patch
+        self.cache.put('old', {'verdict': 'keep'})
+        self.cache.save()
+        self.cache.put('new', {'verdict': 'clean'})
+        with patch('panxu.analyst.os.replace', side_effect=PermissionError('locked')):
+            with self.assertLogs('panxu.analyst', level='WARNING'):
+                self.assertFalse(self.cache.save())
+            self.assertEqual(self.cache.get('new')['verdict'], 'clean')
+            self.assertEqual(set(VerdictCache(self.cache.path).data), {'old'})
+        self.assertTrue(self.cache.save())
+        self.assertEqual(set(VerdictCache(self.cache.path).data), {'old', 'new'})
+
     def test_rounds_descend_and_cache(self):
         a = self.analyst()
         a.frontier = lambda scan, min_size, limit=60: Analyst.frontier(a, scan, 1000, limit)

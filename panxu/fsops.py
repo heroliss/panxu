@@ -77,6 +77,27 @@ def path_is_link(path: str) -> bool:
         return True
 
 
+def file_size(path: str, st: os.stat_result | None = None) -> int:
+    """Local disk bytes, with no extra system call for ordinary files.
+
+    Sparse/compressed Windows files use their allocated size; if the filesystem
+    cannot report it, fall back to logical size. Ordinary files use logical
+    size (cluster slack and shared hard-link storage are not accounted for).
+    Links and online-only placeholders contribute no local bytes. ``st`` must
+    come from lstat/stat(follow_symlinks=False), never a followed link.
+    """
+    if st is None:
+        st = os.lstat(long_path(path))
+    attrs = getattr(st, 'st_file_attributes', 0)
+    if st_is_link(st) or attrs & winapi.CLOUD_ATTRIBUTES or not stat.S_ISREG(st.st_mode):
+        return 0
+    if attrs & (winapi.FILE_ATTRIBUTE_SPARSE_FILE | winapi.FILE_ATTRIBUTE_COMPRESSED):
+        allocated = winapi.file_allocation_size(long_path(path))
+        if allocated is not None:
+            return allocated
+    return st.st_size
+
+
 def age_time(st: os.stat_result) -> float:
     """When a file last changed *on this machine*.
 
@@ -131,6 +152,9 @@ class DeleteStats:
     # for the bin, and the user said yes to Windows' prompt). Counted in files / bytes as well.
     permanent: list = field(default_factory=list)
     permanent_bytes: int = 0
+    # Successfully removed selections: path -> (disk bytes, logical bytes, files).
+    # Internal accounting for updating scans/plans; not part of the public result.
+    measured: dict[str, tuple[int, int, int]] = field(default_factory=dict)
     # recycle(): the item being moved right now and how many are done, for a progress display
     current: str = ''
     done_items: int = 0
@@ -155,6 +179,7 @@ class DeleteStats:
             self.failures.extend(other.failures[:room])
         self.permanent.extend(other.permanent)
         self.permanent_bytes += other.permanent_bytes
+        self.measured.update(other.measured)
 
     def as_dict(self) -> dict:
         return {'files': self.files, 'dirs': self.dirs, 'bytes': self.bytes, 'failed': self.failed,
@@ -210,7 +235,7 @@ def remove_link(path: str, stats: DeleteStats) -> bool:
     return True
 
 
-def walk_files(root: str, cancel=None, recursive=True, skip_dirs: frozenset = frozenset()):
+def walk_files(root: str, cancel=None, recursive=True, skip_dirs: frozenset = frozenset(), skip=None, on_error=None):
     """Yield (dirpath, files, subdirs) top-down; files/subdirs are DirEntry lists.
 
     Links are reported in neither list, so callers never cross them.
@@ -222,9 +247,16 @@ def walk_files(root: str, cancel=None, recursive=True, skip_dirs: frozenset = fr
         current = stack.pop()
         files, dirs = [], []
         try:
+            if skip and skip(current):
+                continue
+            st = os.lstat(long_path(current))
+            if st_is_link(st) or getattr(st, 'st_file_attributes', 0) & winapi.CLOUD_ATTRIBUTES:
+                continue
             with os.scandir(long_path(current)) as it:
                 for entry in it:
                     try:
+                        if skip and skip(entry.path):
+                            continue
                         if is_link(entry):
                             continue
                         if entry.is_dir(follow_symlinks=False):
@@ -234,7 +266,9 @@ def walk_files(root: str, cancel=None, recursive=True, skip_dirs: frozenset = fr
                             files.append(entry)
                     except OSError:
                         continue
-        except OSError:
+        except OSError as exc:
+            if on_error:
+                on_error(current, exc)
             continue
         yield current, files, dirs
         if recursive:
@@ -243,7 +277,7 @@ def walk_files(root: str, cancel=None, recursive=True, skip_dirs: frozenset = fr
 
 def delete_matching(root: str, accept, *, min_age_seconds: float = 0, remove_empty_dirs: bool = True,
                     recursive: bool = True, skip_dirs: frozenset = frozenset(), cancel=None,
-                    progress=None, stats: DeleteStats | None = None) -> DeleteStats:
+                    progress=None, stats: DeleteStats | None = None, skip=None) -> DeleteStats:
     """Permanently delete files under ``root`` for which ``accept(name)`` is true.
 
     ``root`` itself is never removed. Empty sub-directories older than the age
@@ -253,7 +287,7 @@ def delete_matching(root: str, accept, *, min_age_seconds: float = 0, remove_emp
     stats = stats if stats is not None else DeleteStats()
     now = time.time()
     visited_dirs = []
-    for dirpath, files, dirs in walk_files(root, cancel, recursive=recursive, skip_dirs=skip_dirs):
+    for dirpath, files, dirs in walk_files(root, cancel, recursive=recursive, skip_dirs=skip_dirs, skip=skip):
         if dirpath != root:
             visited_dirs.append(dirpath)
         for entry in files:
@@ -263,9 +297,12 @@ def delete_matching(root: str, accept, *, min_age_seconds: float = 0, remove_emp
                 st = entry.stat(follow_symlinks=False)
             except OSError:
                 continue
+            if getattr(st, 'st_file_attributes', 0) & winapi.CLOUD_ATTRIBUTES:
+                continue
             if min_age_seconds and now - age_time(st) < min_age_seconds:
                 continue
-            remove_file(os.path.join(dirpath, entry.name), stats, st.st_size)
+            path = os.path.join(dirpath, entry.name)
+            remove_file(path, stats, file_size(path, st))
             if progress and stats.files % 200 == 0:
                 progress(stats)
     if remove_empty_dirs:
@@ -289,21 +326,28 @@ def delete_path(path: str, *, cancel=None, progress=None, stats: DeleteStats | N
         return stats
     if not os.path.isdir(long_path(path)):
         try:
-            size = os.stat(long_path(path)).st_size
+            st = os.lstat(long_path(path))
+            size = file_size(path, st)
         except OSError as exc:
             stats.fail(path, exc)
             return stats
-        remove_file(path, stats, size)
+        if remove_file(path, stats, size):
+            stats.measured[path] = (size, st.st_size, 1)
         return stats
     dirs = []
+    initial_bytes, initial_files = stats.bytes, stats.files
+    logical = 0
     for dirpath, files, subdirs in walk_files(path, cancel):
         dirs.append(dirpath)
         for entry in files:
             try:
-                size = entry.stat(follow_symlinks=False).st_size
+                st = entry.stat(follow_symlinks=False)
+                size = file_size(os.path.join(dirpath, entry.name), st)
+                file_logical = st.st_size
             except OSError:
-                size = 0
-            remove_file(os.path.join(dirpath, entry.name), stats, size)
+                size = file_logical = 0
+            if remove_file(os.path.join(dirpath, entry.name), stats, size):
+                logical += file_logical
             if progress and stats.files % 200 == 0:
                 progress(stats)
         # Links inside the tree are removed as links so the parent can go.
@@ -319,27 +363,39 @@ def delete_path(path: str, *, cancel=None, progress=None, stats: DeleteStats | N
             stats.dirs += 1
         elif dirpath == path and os.path.lexists(long_path(path)):
             stats.fail(path, '部分内容无法删除，目录已保留')
+    if not os.path.lexists(long_path(path)):
+        stats.measured[path] = (stats.bytes - initial_bytes, logical, stats.files - initial_files)
     return stats
 
 
-def path_size(path: str, cancel=None) -> tuple[int, int]:
-    """(bytes, file count) of a file or directory tree, links not followed."""
+def path_sizes(path: str, cancel=None) -> tuple[int, int, int]:
+    """(local disk bytes, logical bytes, file count), without following links."""
+    check_cancel(cancel)
     if path_is_link(path):
-        return 0, 0
+        return 0, 0, 0
     if not os.path.isdir(long_path(path)):
         try:
-            return os.stat(long_path(path)).st_size, 1
+            st = os.lstat(long_path(path))
+            return file_size(path, st), st.st_size, 1
         except OSError:
-            return 0, 0
-    total = count = 0
-    for _, files, _ in walk_files(path, cancel):
+            return 0, 0, 0
+    total = logical = count = 0
+    for dirpath, files, _ in walk_files(path, cancel):
         for entry in files:
             try:
-                total += entry.stat(follow_symlinks=False).st_size
+                st = entry.stat(follow_symlinks=False)
+                total += file_size(os.path.join(dirpath, entry.name), st)
+                logical += st.st_size
                 count += 1
             except OSError:
                 pass
-    return total, count
+    return total, logical, count
+
+
+def path_size(path: str, cancel=None) -> tuple[int, int]:
+    """(local disk bytes, file count), without following links."""
+    size, _, count = path_sizes(path, cancel)
+    return size, count
 
 
 def _arrived_in_bin(gone: list[str], since: float) -> set[str] | None:
@@ -372,17 +428,17 @@ def recycle(paths: list[str], *, batch: int = 64, cancel=None, progress=None, hw
         if not os.path.lexists(long_path(path)):
             stats.fail(path, '已不存在')
             continue
-        size, count = path_size(path, cancel)
-        pending.append((path, size, count))
+        size, logical, count = path_sizes(path, cancel)
+        pending.append((path, size, logical, count))
     stats.total_items = len(pending)
     for start in range(0, len(pending), batch):
         if cancel is not None and cancel.is_set():
-            for path, _, _ in pending[start:]:
+            for path, _, _, _ in pending[start:]:
                 stats.fail(path, '已取消')
             break
         chunk = pending[start:start + batch]
         long_ones = [p for p in chunk if len(p[0]) >= 260]
-        for path, _, _ in long_ones:
+        for path, _, _, _ in long_ones:
             stats.fail(path, '路径过长，回收站无法处理')
         chunk = [p for p in chunk if len(p[0]) < 260]
         if not chunk:
@@ -394,17 +450,18 @@ def recycle(paths: list[str], *, batch: int = 64, cancel=None, progress=None, hw
         try:
             rc, aborted = winapi.recycle_paths([p[0] for p in chunk], hwnd)
         except OSError as exc:
-            for path, _, _ in chunk:
+            for path, _, _, _ in chunk:
                 stats.fail(path, exc)
             continue
-        gone = [(path, size, count) for path, size, count in chunk if not os.path.lexists(path)]
-        binned = _arrived_in_bin([p for p, _, _ in gone], started)
-        for path, size, count in chunk:
+        gone = [path for path, _, _, _ in chunk if not os.path.lexists(path)]
+        binned = _arrived_in_bin(gone, started)
+        for path, size, logical, count in chunk:
             if os.path.lexists(path):
                 stats.fail(path, '已取消' if aborted else f'移到回收站失败（代码 {rc}）')
                 continue
             stats.files += count
             stats.bytes += size
+            stats.measured[path] = (size, logical, count)
             done.append(path)
             if binned is not None and os.path.normcase(os.path.abspath(path)) not in binned:
                 stats.permanent.append(path)
@@ -413,7 +470,7 @@ def recycle(paths: list[str], *, batch: int = 64, cancel=None, progress=None, hw
         if progress:
             progress(stats)
         if aborted:
-            for path, _, _ in pending[start + batch:]:
+            for path, _, _, _ in pending[start + batch:]:
                 stats.fail(path, '已取消')
             break
     return stats, done

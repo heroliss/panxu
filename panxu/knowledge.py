@@ -26,6 +26,11 @@ class Entry:
     rule: str = ''     # junk rule id that cleans this location
 
 
+# a 演练环境 kept outside PanXu's data folder (paths.is_sandbox_root): recognised by its layout, not its path
+SANDBOX = Entry('', 'dev', '盘序演练环境',
+                '盘序的演练环境：一台模拟的电脑，里面的文件都是演练用的假文件，「我的文件」和「重复文件」不会列出它们。'
+                '想重新开始可以在演练环境里「重建演练环境」；不再需要时可以把这个文件夹整个删除。')
+
 KIND_LABELS = {
     'system': '系统', 'program': '程序', 'personal': '个人文件', 'appdata': '应用数据', 'cache': '可清理',
     'cloud': '云同步', 'vdisk': '虚拟磁盘', 'game': '游戏', 'dev': '开发', 'container': '',
@@ -178,6 +183,9 @@ class Knowledge:
 
     def annotate(self, path: str) -> dict | None:
         """Label for the space view, or None when nothing is known."""
+        if paths.is_sandbox_root(path):
+            return {'kind': SANDBOX.kind, 'kind_label': KIND_LABELS[SANDBOX.kind], 'label': SANDBOX.label,
+                    'advice': SANDBOX.advice, 'rule': '', 'inherited': False}
         entry, exact = self.match(path)
         if entry is None or entry.kind == 'container':
             return None
@@ -189,6 +197,8 @@ class Knowledge:
     def ai_role(self, path: str) -> str:
         """'skip' (known), 'descend' (structural folder) or 'ask' (unknown) for the AI analyst."""
         entry, exact = self.match(path)
+        if entry is None and paths.is_sandbox_root(path):
+            return 'skip'  # 盘序's own 演练环境: nothing in it to ask the model about
         if entry is None:
             return 'ask'
         if entry.container:

@@ -221,7 +221,8 @@ class BundleTest(unittest.TestCase):
         for name in ('PX.pages.junk', 'PX.pages.space', 'PX.deleteFlow', 'PX.treemap', 'PX.pages.home', 'PX.pages.mine',
                      'PX.pages.apps', 'PX.ask'):
             self.assertIn(name, html)
-        self.assertEqual(len(re.findall(r'<script>', html)), 13)
+        self.assertEqual(len(re.findall(r'<script>', html)), 14)
+        self.assertIn('PX.startActivity', html)
 
 
 if __name__ == '__main__':

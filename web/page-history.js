@@ -7,6 +7,12 @@
   let root = null;
   let rows = null;
   const open = new Set();
+  let sort = { key: 'time', dir: 'desc' };
+  const SORT = {
+    time: { label: '时间', kind: 'date', dir: 'desc', get: (e) => e.time },
+    freed: { label: '释放的空间', kind: 'num', get: (e) => e.freed || null },
+    kind: { label: '类型', kind: 'text', get: (e) => (KIND[e.kind] || [e.kind])[0] },
+  };
 
   async function load() {
     try { rows = await PX.api.call('history', { limit: 300 }); } catch (e) { PX.fail(e); rows = []; }
@@ -64,8 +70,9 @@
     if (rows === null) { c.appendChild(PX.progressBar(null)); return; }
     if (!rows.length) { c.appendChild(PX.empty('还没有任何操作', '清理、删除或修改开机项目后，会在这里留下记录。')); return; }
     overview(c);
+    if (rows.length > 1) c.appendChild(PX.sortBar(SORT, sort, (s) => { sort = s; draw(); }));
     const list = c.appendChild(h('div.list'));
-    for (const e of rows) {
+    for (const e of PX.sortRows(rows, SORT, sort, 'time')) {
       const [label, kind] = KIND[e.kind] || [e.kind, ''];
       const reverted = e.followup && e.followup.reverted;
       const action = e.revert && !reverted ? h('button.btn.small', { type: 'button', onclick: (ev) => { ev.stopPropagation(); revert(e); } }, '撤销')

@@ -44,7 +44,7 @@
         note='')                                               # 不可撤销或有明显影响时写在这里
    ```
    - 目标尽量具体，用 `pattern`、`min_age_hours`、`skip_dirs` 收窄范围；需要管理员权限的目标加 `admin=True`。
-   - 默认不勾的规则得 7 分，在默认的勾选门槛（5 分）下会被自动勾选；删除后不能撤销，或者可能含用户自己的东西时，加进 `checkup.NEVER_AUTO_RULES`（任何门槛下都不自动勾）。
+   - `checkup.rule_assessment` 按用途、重建成本和近期活动评分，不直接用 `default` 决定勾选；`eligible` 且达到门槛才自动勾。可能含用户自己的东西、移除恢复机会或不能合理预估影响时，加进 `checkup.NEVER_AUTO_RULES`（任何门槛下都不自动勾）。
 3. **在演练电脑里放样例。** 在 `panxu/sandbox.py` 的 `_layout()` 里加几个对应的假文件：要清理的，以及必须保留的（比如旁边的配置文件），让以后的测试和演示都能覆盖到。
 4. **补测试并跑全部检查。**
    ```powershell
@@ -80,3 +80,26 @@
 常用参数：`--ai`（同时让设置里的模型复核，会发送匿名化后的文件夹和文件名），`--threshold 8`（换一个勾选门槛看看，默认 5），`--save real-check-base.json` / `--compare real-check-base.json`（和上次比较），`--out real-check-report.txt`，`--full-paths`（不替换用户名）。报告和基线里有你的文件路径；以 `real-check-` 开头的文件已在 .gitignore 里，不会被提交。
 
 建议在 Windows 大版本更新后、换电脑后、装了一批新软件后各跑一次。
+
+## 2026-11-06：新增缓存与评分依据
+
+新增规则只扩展到明确的产品目录，不把任意名为 Cache 的文件夹变成清理目标：
+
+| 规则 | 位置与依据 | 保留内容 |
+|---|---|---|
+| Chrome Beta / Dev / Canary | [Chromium 用户目录文档](https://chromium.googlesource.com/chromium/src/+/HEAD/docs/user_data_dir.md)列出了 Windows 的 `Chrome Beta`、`Chrome Dev`、`Chrome SxS` 用户目录；复用现有 Chrome 的缓存子目录白名单 | 书签、Cookies、密码、历史、IndexedDB、Local Storage、Service Worker |
+| VS Code Insiders | 独立的 `Code - Insiders` 用户目录（[微软仓库记录](https://github.com/microsoft/vscode/issues/112846)），只取 Cache / Code Cache / GPUCache | User、History、工作区资料、设置和扩展 |
+| Obsidian 界面缓存 | [Obsidian 数据存放说明](https://obsidian.md/help/Files%2Band%2Bfolders/How%2BObsidian%2Bstores%2Bdata)确认 `%APPDATA%\Obsidian`；只取 Electron/Chromium 的三个渲染缓存子目录 | 笔记库、配置、IndexedDB 和元数据索引 |
+
+渲染缓存名称依据 [Electron 的 app.getPath 文档](https://www.electronjs.org/docs/latest/api/app#appgetpathname)。这些规则要求先关闭对应程序；重新运行会重建缓存。沙箱包含对应缓存和必须保留的相邻资料。
+
+规则评分由 `checkup.rule_assessment` 集中生成：符合期限的临时数据基础 95 分，浏览器/界面缓存 85，下载缓存 70，重建成本较高的着色器/媒体/构建缓存 60。最近 7 天新增/修改的占用超过一半减 10；至少八成超过 90 天未变加 5。不可还原的操作仍单独确认，Maven 本地仓库可能有用户自产包，降到 30 且永不自动勾选。文件大小只影响排序和释放量，不提高可丢弃的把握。
+
+新实现保留 `eligible + 分数门槛` 的单一自动勾选规则。扫描和清理都遵守用户排除目录；整目录建议不能再覆盖已由规则计入的位置。老版本目录含规则日志时只继续建议未覆盖的子目录，不删除父目录来绕过日志保留期限。
+
+## 2026-11-06：软件残留及系统缓存补充
+
+- 新版 Teams：微软的[缓存维护说明](https://learn.microsoft.com/en-us/troubleshoot/microsoftteams/teams-administration/clear-teams-cache)确认新版独立包的 LocalCache 路径。本规则进一步仅取 EBWebView/Default 下 Cache、Code Cache、GPUCache，保留 Cookies、Local Storage 和其他应用资料；进程 ms-teams.exe 存在时不执行。目录子项白名单依据 WebView/Chromium 的缓存用途，不能扩大为整个 LocalCache 或应用重置。
+- NVIDIA：[官方着色器缓存说明](https://nvidia.custhelp.com/app/answers/detail/a_id/5735)列出 Local/NVIDIA Corporation/NV_Cache，补入现有着色器缓存规则。重新编译可能使首次游戏运行变慢，继续按较高重建成本评分。
+- DISM：[官方日志说明](https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/deployment-image-servicing-and-management--dism--best-practices)区分当前 dism.log 与轮换的 .bak。仅匹配 dism.log.bak、保留 7 天并检查维护进程；诊断历史不可重建，列为手动确认且永不自动勾选。不会清理当前日志、其他备份或系统事件日志。
+- 失效登记仅供核实，不把全注册表里陌生、空或过时的键批量当成垃圾。软件的修复、卸载元数据仍受保护；Windows 维护组件、Installer、DriverStore 等继续通过系统工具或说明入口处理。

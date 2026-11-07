@@ -10,7 +10,9 @@ system changes (registry, services, DISM, cleanmgr, uninstallers) are applied
 to the fake state only.
 
 Large files are *sparse*: they report their full size (so the numbers look
-real) but use almost no disk space.
+real) but use almost no disk space. While this simulation is active, allocation
+queries also return their simulated size; leftover files scanned outside the
+simulation are measured by their real allocation.
 """
 from __future__ import annotations
 
@@ -26,7 +28,7 @@ import zipfile
 
 from . import paths, winapi
 
-MARKER = '.panxu-sandbox'
+MARKER = paths.SANDBOX_MARKER  # also how the scans recognise a kept 演练环境
 USER = 'demo'
 KB, MB, GB = 1024, 1024 ** 2, 1024 ** 3
 DAY = 86400.0
@@ -232,6 +234,16 @@ def _layout() -> tuple[list[_Spec], list[tuple[str, float]]]:
     add(F(f'{L}/CrashDumps/FooSoft.exe.13456.dmp', 212 * MB, age=40))
     add(F(f'{L}/D3DSCache/a1b2c3/shader.idx', 93 * MB, age=7))
     add(F(f'{L}/NVIDIA/DXCache/dx_0001.bin', 151 * MB, age=7))
+    add(F(f'{L}/NVIDIA Corporation/NV_Cache/old-shader.bin', 68 * MB, age=45))
+    add(F('C/Windows/Logs/DISM/dism.log.bak', 12 * MB, age=60))
+    add(F('C/Windows/Logs/DISM/dism.log', 1 * MB, age=1))
+    teams = f'{L}/Packages/MSTeams_8wekyb3d8bbwe/LocalCache/Microsoft/MSTeams/EBWebView/Default'
+    add(F(f'{teams}/Cache/Cache_Data/data_0', 45 * MB, age=30))
+    add(F(f'{teams}/Code Cache/js/index', 12 * MB, age=30))
+    add(F(f'{teams}/GPUCache/data_1', 4 * MB, age=30))
+    add(F(f'{teams}/Cookies', data=b'fake account data to preserve', age=1))
+    add(F(f'{teams}/Local Storage/leveldb/000001.log', data=b'fake settings to preserve', age=1))
+    add(F(f'{L}/OldSmallEditor/settings.bin', 18 * MB, age=300))
     add(F(f'{L}/npm-cache/_cacache/content-v2/sha512/ab/cd/0123456789', 655 * MB, age=30))
     add(F(f'{L}/pip/cache/http-v2/a/b/c/wheel.body', 233 * MB, age=60))
     add(F(f'{L}/uv/cache/archive-v0/torch-2.5.1/torch_cpu.dll', 305 * MB, age=45))
@@ -239,6 +251,12 @@ def _layout() -> tuple[list[_Spec], list[tuple[str, float]]]:
     add(F(f'{R}/Code/CachedData/a1b2c3/chrome/js/index.js', 122 * MB, age=3))
     add(F(f'{R}/Code/logs/20260801T101010/main.log', 11 * MB, age=90))
     add(F(f'{R}/Code/User/settings.json', data=b'{"editor.fontSize": 14}', age=30))
+    for channel in ('Chrome Beta', 'Chrome Dev', 'Chrome SxS'):
+        add(F(f'{L}/Google/{channel}/User Data/Default/Cache/Cache_Data/demo', 1 * MB, age=40))
+        add(F(f'{L}/Google/{channel}/User Data/Default/Bookmarks', data=b'{"roots": {}}', age=40))
+    for app in ('Code - Insiders', 'obsidian'):
+        add(F(f'{R}/{app}/Code Cache/js/demo', 1 * MB, age=40))
+        add(F(f'{R}/{app}/IndexedDB/keep-data', data=b'KEEP USER DATA', age=40))
     add(F(f'{R}/Adobe/Common/Media Cache Files/clip_0001.cfa', 705 * MB, age=60))
     add(F(f'{R}/Slack/Cache/Cache_Data/data_3', 124 * MB, age=12))
     add(F(f'{u}/AppData/LocalLow/Intel/ShaderCache/cache.bin', 21 * MB, age=12))
@@ -384,6 +402,8 @@ def _state(native) -> dict:
     put(HKCU, APPROVED + '\\Run', 'Steam', {'__bin__': '03000000' + '00' * 8})
 
     apps = [
+        (HKCU, UNINSTALL, 'OldPhotoDemo', '旧相册工具（失效登记示例）', '1.0', 'Demo Studio', '20200101',
+         f'{PF}/OldPhotoDemo', q(f'{PF}/OldPhotoDemo/uninstall.exe')),
         (HKLM, UNINSTALL, 'Google Chrome', 'Google Chrome', '130.0.6723.92', 'Google LLC', '20240105',
          f'{PF}/Google/Chrome/Application', q(f'{PF}/Google/Chrome/Application/130.0.6723.92/Installer/setup.exe') +
          ' --uninstall --channel=stable --system-level'),
@@ -678,23 +698,25 @@ class Sandbox:
         """Full paths of the simulated running programs (itemfacts.running_programs)."""
         return list(self.state.get('process_paths', []))
 
-    def recycle_dir(self) -> str:
-        return self.native('C/$Recycle.Bin/S-1-5-21-1000')
+    def recycle_dir(self, drive: str = 'C') -> str:
+        if drive not in DRIVES:
+            raise ValueError('不是演练磁盘')
+        return self.native(f'{drive}/$Recycle.Bin/S-1-5-21-1000')
 
     # like a real Recycle Bin that is too small for an item, and a user who answers Windows' 「直接删除?」 with yes:
     # anything larger than this many bytes is deleted for good (None: everything fits)
     recycle_limit: int | None = None
 
     def recycle_paths(self, items: list[str]) -> tuple[int, bool]:
-        bin_dir = self.recycle_dir()
-        os.makedirs(bin_dir, exist_ok=True)
         with self.lock:
             for path in items:
                 if not os.path.lexists(path):
                     continue
-                inside = any(paths.is_within(path, r) for r in self.drive_roots)
-                if not inside:
+                drive = next((d for d in DRIVES if paths.is_within(path, self.native(d))), None)
+                if drive is None:
                     continue  # never move anything from outside the simulation
+                bin_dir = self.recycle_dir(drive)
+                os.makedirs(bin_dir, exist_ok=True)
                 size = _tree_size(path)
                 if self.recycle_limit is not None and size > self.recycle_limit:
                     shutil.rmtree(path) if os.path.isdir(path) and not os.path.islink(path) else os.remove(path)
@@ -735,10 +757,12 @@ class Sandbox:
             return row['original']
 
     def empty_recycle_bin(self) -> bool:
+        from . import fsops
         with self.lock:
-            bin_dir = self.recycle_dir()
-            if os.path.isdir(bin_dir):
-                shutil.rmtree(bin_dir, onerror=_force_remove)
+            for drive in DRIVES:
+                bin_dir = self.recycle_dir(drive)
+                if os.path.isdir(bin_dir):
+                    fsops.delete_path(bin_dir)
             self.state['recycle'] = []
             self.save()
             return True
@@ -759,8 +783,26 @@ class Sandbox:
             root = self.native(letter)
             u = self.disk_usage(root)
             out.append({'root': root + os.sep, 'label': label, 'fstype': 'NTFS', 'total': u.total, 'used': u.used,
-                        'free': u.free, 'system': letter == 'C', 'removable': False, 'letter': letter + ':'})
+                        'free': u.free, 'system': letter == 'C', 'removable': False, 'fixed': True, 'letter': letter + ':'})
         return out
+
+    def file_allocation_size(self, path: str) -> int:
+        """Pretend sparse fixtures occupy their logical size on the fake PC.
+
+        Never query a path outside the simulation, including a link's target.
+        """
+        def comparison_path(value):
+            if value.startswith('\\\\?\\UNC\\'):
+                return '\\\\' + value[8:]
+            return value[4:] if value.startswith('\\\\?\\') else value
+
+        if not paths.is_within(comparison_path(path), self.root) \
+                or not paths.is_within(comparison_path(os.path.realpath(path)), self.root):
+            return 0
+        try:
+            return os.lstat(path).st_size
+        except OSError:
+            return 0
 
     # -- system changes ---------------------------------------------------------------
     def services(self) -> list[dict]:

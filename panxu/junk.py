@@ -71,6 +71,14 @@ def _chromium(rule_id, name, user_data, exe, default=True):
                 targets, default=default, processes=(exe,))
 
 
+def _electron_cache(rule_id, name, folder, exe):
+    # Only Chromium's disposable rendering caches, never User/History, IndexedDB,
+    # Local Storage, Service Worker, vaults or app-specific data in the same profile.
+    return Rule(rule_id, name, 'app', f'{name} 的网页、代码和图形缓存，关闭程序后可清理，下次启动会重新生成。',
+                tuple(Target(f'%APPDATA%\\{folder}\\{d}') for d in ('Cache', 'Code Cache', 'GPUCache')),
+                processes=(exe,))
+
+
 RULES: list[Rule] = [
     # -- system --------------------------------------------------------------
     Rule('user_temp', '用户临时文件', 'system',
@@ -105,6 +113,11 @@ RULES: list[Rule] = [
          'Windows 组件服务轮换下来的旧日志（CbsPersist），只删除 7 天前的。',
          (Target('%SystemRoot%\\Logs\\CBS', pattern='CbsPersist_*', min_age_hours=7 * 24, recursive=False, admin=True),),
          admin=True),
+    Rule('dism_logs', 'DISM 旧维护日志', 'system',
+         '系统映像维护工具轮换下来的旧日志，只列出 7 天前的 dism.log.bak。当前日志保留。',
+         (Target('%SystemRoot%\\Logs\\DISM', pattern='dism.log.bak', min_age_hours=7 * 24, recursive=False, admin=True),),
+         admin=True, default=False, processes=('dism.exe', 'dismhost.exe'),
+         note='删除后不能再用这份旧日志排查系统维护或更新故障'),
     Rule('inetcache', 'Windows 网页缓存', 'system',
          '系统网络组件和部分旧程序使用的网页缓存。只删除 24 小时前的文件；Outlook 附件和 Office 的临时副本不会动。',
          (Target('%LOCALAPPDATA%\\Microsoft\\Windows\\INetCache', min_age_hours=24,
@@ -122,6 +135,9 @@ RULES: list[Rule] = [
 
     # -- browsers -------------------------------------------------------------
     _chromium('chrome', 'Google Chrome', '%LOCALAPPDATA%\\Google\\Chrome\\User Data', 'chrome.exe'),
+    _chromium('chrome_beta', 'Google Chrome Beta', '%LOCALAPPDATA%\\Google\\Chrome Beta\\User Data', 'chrome.exe'),
+    _chromium('chrome_dev', 'Google Chrome Dev', '%LOCALAPPDATA%\\Google\\Chrome Dev\\User Data', 'chrome.exe'),
+    _chromium('chrome_canary', 'Google Chrome Canary', '%LOCALAPPDATA%\\Google\\Chrome SxS\\User Data', 'chrome.exe'),
     _chromium('edge', 'Microsoft Edge', '%LOCALAPPDATA%\\Microsoft\\Edge\\User Data', 'msedge.exe'),
     _chromium('brave', 'Brave', '%LOCALAPPDATA%\\BraveSoftware\\Brave-Browser\\User Data', 'brave.exe'),
     _chromium('chrome360', '360 极速浏览器', '%LOCALAPPDATA%\\360Chrome\\Chrome\\User Data', '360chrome.exe'),
@@ -134,6 +150,8 @@ RULES: list[Rule] = [
          processes=('firefox.exe',)),
 
     # -- apps -----------------------------------------------------------------
+    _electron_cache('vscode_insiders', 'VS Code Insiders', 'Code - Insiders', 'code - insiders.exe'),
+    _electron_cache('obsidian', 'Obsidian 界面缓存', 'obsidian', 'obsidian.exe'),
     Rule('vscode', 'Visual Studio Code', 'app', 'VS Code 的界面缓存、扩展安装包缓存和旧日志。不影响设置和扩展。',
          (Target('%APPDATA%\\Code\\Cache'), Target('%APPDATA%\\Code\\CachedData'),
           Target('%APPDATA%\\Code\\Code Cache'), Target('%APPDATA%\\Code\\GPUCache'),
@@ -149,6 +167,10 @@ RULES: list[Rule] = [
     Rule('slack', 'Slack', 'app', 'Slack 的图片和网页缓存。不影响聊天记录和登录状态。',
          (Target('%APPDATA%\\Slack\\Cache'), Target('%APPDATA%\\Slack\\Code Cache'),
           Target('%APPDATA%\\Slack\\GPUCache')), processes=('slack.exe',)),
+    Rule('teams_new', 'Microsoft Teams（新版）界面缓存', 'app',
+         '新版 Teams 内嵌浏览器的网页、代码和图形缓存。下次启动会重新生成，不清空应用设置或账号资料。',
+         tuple(Target('%LOCALAPPDATA%\\Packages\\MSTeams_8wekyb3d8bbwe\\LocalCache\\Microsoft\\MSTeams\\EBWebView\\Default\\' + name)
+               for name in ('Cache', 'Code Cache', 'GPUCache')), processes=('ms-teams.exe',)),
     Rule('adobe_media_cache', 'Adobe 媒体缓存', 'app',
          'Premiere Pro、After Effects 等为导入的音视频生成的缓存（.cfa/.pek 等）。删除后打开工程时会重新生成，期间较慢。',
          (Target('%APPDATA%\\Adobe\\Common\\Media Cache Files'), Target('%APPDATA%\\Adobe\\Common\\Media Cache')),
@@ -156,7 +178,7 @@ RULES: list[Rule] = [
     Rule('shader_cache', '显卡着色器缓存', 'app',
          'DirectX 和显卡驱动编译的着色器缓存。删除后游戏首次运行会重新编译，可能短暂卡顿。',
          (Target('%LOCALAPPDATA%\\D3DSCache'), Target('%LOCALAPPDATA%\\NVIDIA\\DXCache'),
-          Target('%LOCALAPPDATA%\\NVIDIA\\GLCache'), Target('%LOCALAPPDATA%\\AMD\\DxCache'),
+          Target('%LOCALAPPDATA%\\NVIDIA\\GLCache'), Target('%LOCALAPPDATA%\\NVIDIA Corporation\\NV_Cache'), Target('%LOCALAPPDATA%\\AMD\\DxCache'),
           Target('%LOCALAPPDATA%\\AMD\\DxcCache'), Target('%LOCALAPPDATA%\\AMD\\GLCache'),
           Target('%LOCALAPPDATA%\\AMD\\VkCache'), Target('%LOCALLOW%\\Intel\\ShaderCache')),
          default=False),
@@ -257,7 +279,8 @@ def resolve_target(target: Target, env: dict) -> list[str]:
     else:
         found = [local] if os.path.isdir(local) and not fsops.path_is_link(local) else []
     temp_like = target.path.upper().startswith('%TEMP%')
-    return [p for p in found if unsafe_root_reason(p, env, temp_like) is None]
+    return [p for p in found if unsafe_root_reason(p, env, temp_like) is None
+            and paths.key(os.path.realpath(p)) == paths.key(p)]
 
 
 def running_process_names() -> set[str]:
@@ -283,6 +306,37 @@ def disk_free(env: dict) -> int:
         return 0
 
 
+def free_by_drive(roots: list[str] | None = None) -> dict[str, int]:
+    """Free-byte snapshot; explicit roots keep before/after on the same drives.
+
+    Discovery and disk usage can both be injected in tests. In sandbox mode,
+    never enumerate the host's partitions. An unreadable drive is omitted;
+    callers must not replace missing measurements with logical file sizes.
+    """
+    if roots is None:
+        try:
+            sim = winapi.simulation()
+            if sim is not None:
+                roots = [d['root'] for d in sim.drives()]
+            else:
+                import psutil
+                roots = [p.mountpoint for p in psutil.disk_partitions(all=False)
+                         if p.fstype and 'cdrom' not in (p.opts or '')]
+        except Exception:  # noqa: BLE001 - an unavailable snapshot must never prevent cleanup
+            return {}
+    out, seen = {}, set()
+    for root in roots:
+        key = paths.key(root)
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            out[root] = winapi.disk_usage(root).free
+        except OSError:
+            continue
+    return out
+
+
 @dataclass
 class RuleScan:
     id: str
@@ -292,16 +346,39 @@ class RuleScan:
     needs_admin: bool = False      # rule (or part of it) skipped for lack of elevation
     running: list = field(default_factory=list)
     error: str = ''
+    logical_size: int | None = 0
+    size_note: str = ''
+    recent_bytes: int = 0  # occupied bytes changed/created within 7 days
+    stale_bytes: int = 0   # occupied bytes unchanged for at least 90 days
+    unreadable: int = 0
+    scope_blocked: bool = False
 
 
 class JunkEngine:
-    def __init__(self, env: dict | None = None, admin: bool | None = None, processes=None, oplog=None):
+    def __init__(self, env: dict | None = None, admin: bool | None = None, processes=None, oplog=None, excluded=None):
         self.env = env or paths.environment()
         self.admin = winapi.is_admin() if admin is None else admin
         self._processes = processes  # injectable for tests
         self.oplog = oplog
+        self._excluded = excluded  # list or supplier: fresh settings are rechecked before cleaning
         self.last_scan: dict[str, RuleScan] = {}
         self._lock = threading.Lock()
+
+    def _skip(self):
+        values = self._excluded() if callable(self._excluded) else self._excluded
+        roots = {paths.key(form) for p in values or [] for form in (p, os.path.realpath(p))}
+        return lambda p: paths.within_any(p, roots)
+
+    def _command_excluded(self, rule):
+        if rule.mode not in ('command', 'cleanmgr'):
+            return False
+        values = self._excluded() if callable(self._excluded) else self._excluded
+        targets = rule.targets or ((Target('%SystemRoot%\\WinSxS'),) if rule.id == 'component_store' else ())
+        for target in targets:
+            for root in resolve_target(target, self.env):
+                if any(paths.is_within(p, root) or paths.is_within(root, p) for p in values or []):
+                    return True
+        return False
 
     def processes(self) -> set[str]:
         return set(self._processes) if self._processes is not None else running_process_names()
@@ -342,26 +419,50 @@ class JunkEngine:
 
     def _public(self, result: RuleScan) -> dict:
         rule = RULES_BY_ID[result.id]
-        return {'id': rule.id, 'size': result.size, 'count': result.count, 'locations': result.locations[:20],
+        return {'id': rule.id, 'size': result.size, 'logical_size': result.logical_size,
+                'size_note': result.size_note,
+                'count': result.count, 'locations': result.locations[:20],
+                'recent_bytes': result.recent_bytes, 'stale_bytes': result.stale_bytes, 'unreadable': result.unreadable,
                 'needs_admin': result.needs_admin, 'running': result.running, 'error': result.error,
-                'available': result.size is None or result.size > 0 or rule.mode in ('command',)}
+                'scope_blocked': result.scope_blocked,
+                'available': not result.scope_blocked and (result.size is None or result.size > 0 or result.count > 0 or rule.mode in ('command',))}
 
     def _scan_rule(self, rule: Rule, cancel) -> RuleScan:
         result = RuleScan(rule.id)
+        if self._command_excluded(rule):
+            result.error = '系统清理工具不能只跳过部分文件，本项与排除目录重叠，已跳过'
+            result.scope_blocked = True
+            return result
         if rule.mode == 'recycle_bin':
             result.size, result.count = winapi.recycle_bin_info(None)
+            result.logical_size = result.size
+            result.size_note = ('Windows 提供的估算大小，可能包含稀疏或压缩文件的标称大小；'
+                                '清空后的已释放按磁盘可用空间变化计算。')
             return result
         if rule.admin and not self.admin:
             result.needs_admin = True
         now = time.time()
+        skip = self._skip()
+
+        def unreadable(path, exc):
+            result.unreadable += 1
+            result.error = '部分位置无法读取，显示的是已检查到的大小'
+
+        seen = set()
         for target in rule.targets:
             if target.admin and not self.admin:
                 result.needs_admin = True
             for root in resolve_target(target, self.env):
+                if skip(root):
+                    continue
                 result.locations.append(root)
                 if target.single_file:
                     try:
-                        result.size += os.stat(root).st_size
+                        st = os.lstat(fsops.long_path(root))
+                        if fsops.st_is_link(st) or getattr(st, 'st_file_attributes', 0) & winapi.CLOUD_ATTRIBUTES:
+                            continue
+                        result.size += fsops.file_size(root, st)
+                        result.logical_size += st.st_size
                         result.count += 1
                     except OSError:
                         pass
@@ -369,22 +470,37 @@ class JunkEngine:
                 min_age = target.min_age_hours * HOUR
                 try:
                     for _, files, _ in fsops.walk_files(root, cancel, recursive=target.recursive,
-                                                        skip_dirs=frozenset(target.skip_dirs)):
+                                                        skip_dirs=frozenset(target.skip_dirs), skip=skip, on_error=unreadable):
                         for entry in files:
                             if not target.accepts(entry.name):
                                 continue
                             try:
                                 st = entry.stat(follow_symlinks=False)
                             except OSError:
+                                unreadable(entry.path, None)
+                                continue
+                            if getattr(st, 'st_file_attributes', 0) & winapi.CLOUD_ATTRIBUTES:
                                 continue
                             if min_age and now - fsops.age_time(st) < min_age:
                                 continue
-                            result.size += st.st_size
+                            key = paths.key(entry.path)
+                            if key in seen:
+                                continue
+                            seen.add(key)
+                            used = fsops.file_size(entry.path, st)
+                            result.size += used
+                            result.logical_size += st.st_size
                             result.count += 1
+                            age = now - fsops.age_time(st)
+                            if age < 7 * DAY:
+                                result.recent_bytes += used
+                            elif age >= 90 * DAY:
+                                result.stale_bytes += used
                 except PermissionError:
                     result.needs_admin = True
         if rule.id == 'component_store':
             result.size = None  # cannot be estimated cheaply
+            result.logical_size = None
         return result
 
     # -- cleaning ------------------------------------------------------------
@@ -443,10 +559,14 @@ class JunkEngine:
         return {'rules': outcome, 'freed': total_freed}
 
     def _clean_rule(self, rule: Rule, row: dict, cancel, progress):
+        if self._command_excluded(rule):
+            row['skipped'] = '与排除目录重叠，未运行系统清理工具'
+            return
         if rule.mode == 'recycle_bin':
-            before, _ = winapi.recycle_bin_info(None)
+            before = free_by_drive()
             if winapi.empty_recycle_bin(None):
-                row['freed'] = before
+                after = free_by_drive(list(before))
+                row['freed'] = max(0, sum(after[root] - free for root, free in before.items() if root in after))
             return
         if rule.mode in ('cleanmgr', 'command'):
             before = disk_free(self.env)
@@ -457,22 +577,28 @@ class JunkEngine:
             row['freed'] = max(0, disk_free(self.env) - before)
             return
         stats = fsops.DeleteStats()
+        skip = self._skip()
         try:
             for target in rule.targets:
                 if target.admin and not self.admin:
                     row['skipped'] = '部分位置需要管理员权限，已跳过'
                     continue
                 for root in resolve_target(target, self.env):
+                    if skip(root):
+                        continue
                     if target.single_file:
                         try:
-                            size = os.stat(root).st_size
+                            st = os.lstat(fsops.long_path(root))
+                            if fsops.st_is_link(st) or getattr(st, 'st_file_attributes', 0) & winapi.CLOUD_ATTRIBUTES:
+                                continue
+                            size = fsops.file_size(root, st)
                         except OSError:
                             continue
                         fsops.remove_file(root, stats, size)
                         continue
                     fsops.delete_matching(root, target.accepts, min_age_seconds=target.min_age_hours * HOUR,
                                           recursive=target.recursive, skip_dirs=frozenset(target.skip_dirs),
-                                          cancel=cancel, stats=stats, progress=lambda s: progress(s.bytes))
+                                          cancel=cancel, stats=stats, progress=lambda s: progress(s.bytes), skip=skip)
                     progress(stats.bytes)
         finally:  # partial results survive a cancel
             row.update(freed=stats.bytes, files=stats.files, failed=stats.failed, in_use=stats.in_use,

@@ -43,15 +43,15 @@ class ScoreTest(unittest.TestCase):
         self.assertEqual(insights.file_score('name_versions', {'note': '最新的一份', 'remove': False}), 5)
         self.assertEqual(insights.file_score('name_versions', {'note': '较旧的版本', 'remove': False}), 35)
         self.assertEqual(insights.file_score('name_versions', {'note': '和「x」内容完全相同', 'remove': True}), 85)
-        self.assertEqual(insights.with_ai(30, {'verdict': 'delete'}), 60)
-        self.assertEqual(insights.with_ai(80, {'verdict': 'delete'}), 85, 'the model can raise a score only so far')
+        self.assertEqual(insights.with_ai(30, {'verdict': 'delete'}), 40)
+        self.assertEqual(insights.with_ai(80, {'verdict': 'delete'}), 80, 'strong existing evidence is not boosted by names alone')
         self.assertEqual(insights.with_ai(90, {'verdict': 'keep'}), 15)
         self.assertEqual(insights.with_ai(90, {'verdict': 'archive'}), 40)
         self.assertEqual(insights.with_ai(30, None), 30)
         # an older version that differs from the newer one: only its content tells whether it is still needed
         older = {'verdict': 'delete'}
         self.assertEqual(insights.with_ai(35, older, needs_content=True), 35, 'a name alone raises nothing')
-        self.assertEqual(insights.with_ai(35, {**older, 'with_content': True}, needs_content=True), 65)
+        self.assertEqual(insights.with_ai(35, {**older, 'with_content': True}, needs_content=True), 55)
         self.assertEqual(insights.with_ai(35, {'verdict': 'keep'}, needs_content=True), 15, 'lowering needs no content')
         # what only the content (or a file-by-file check) answers; the model, seeing names, cannot answer it either
         self.assertTrue(insights.content_question('name_versions', {'remove': False}))

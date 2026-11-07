@@ -2,6 +2,7 @@ import json
 import os
 import time
 import unittest
+from unittest.mock import patch
 
 from helpers import TempDirTest
 
@@ -85,8 +86,7 @@ class CheckupTest(TempDirTest):
             self.assertIsNone(item['blocked'], item['title'])
             self.assertFalse(item.get('personal'), 'personal files are never pre-selected: ' + item['title'])
             if item['source'] == 'rule':
-                from panxu.junk import RULES_BY_ID
-                self.assertTrue(RULES_BY_ID[item['rule']].default, item['title'])
+                self.assertGreaterEqual(int(item['score'] / 10 + 0.5), 8, item['title'])
             else:
                 self.assertEqual(item['source'], 'ai')
                 self.assertGreaterEqual(item['confidence'], 0.8)
@@ -97,6 +97,150 @@ class CheckupTest(TempDirTest):
         edge = next(i for i in plan['items'] if i['title'] == 'Microsoft Edge')
         self.assertIn('msedge.exe', edge['blocked'], 'a running browser blocks its rule')
         self.assertTrue(any(i['group'] == 'info' and i['title'] == '休眠文件' for i in plan['items']))
+
+    def test_checkup_scans_both_disks_and_never_reuses_space_when_disabled(self):
+        plan = self.checkup(use_ai=False)
+        scan = self.backend.scan
+        self.assertEqual({paths.key(r) for r in plan['coverage']['space']['roots']},
+                         {paths.key(r) for r in self.sb.drive_roots})
+        for root in self.sb.drive_roots:
+            self.assertIsNotNone(scan.find(root))
+        self.assertEqual(self.call('space_node', node_id=0)['node']['name'], '本机磁盘')
+        self.assertEqual(self.call('space_node', node_id=0)['files'], [])
+        result = self.call('space_result')
+        self.assertTrue(result['root']['virtual'])
+        self.assertEqual(result['scanned_at'], scan.finished_at)
+        self.assertEqual(result['stats']['roots'], scan.roots)
+        known = [s for s in self.call('ai_results') if s.get('source') == 'knowledge']
+        self.assertEqual(len(known), 2)
+        self.assertTrue(all(s['score'] == 40 and not s['selected'] for s in known))
+        self.assertTrue(self.call('dup_result')['stats']['roots'])
+        self.model.requests.clear()
+        second = self.checkup(space_scan=False, duplicates=False)
+        self.assertIsNone(second['coverage']['space'])
+        self.assertIsNone(second['coverage']['duplicates'])
+        self.assertFalse([row for req in self.model.requests if isinstance(req, list) for row in req if 'subdirs' in row])
+
+    def test_junk_tool_uses_the_same_rule_scores_and_threshold_as_home(self):
+        plan = self.checkup(use_ai=False, auto_threshold=5)
+        rows = {r['id']: r for r in self.wait(self.call('junk_scan'))}
+        for item in plan['items']:
+            if item['kind'] == 'rule':
+                self.assertEqual((item['score'], item['selected']),
+                                 (rows[item['rule']]['score'], rows[item['rule']]['selected']))
+
+    def test_home_options_scope_all_scan_stages_and_do_not_reuse_previous_ai(self):
+        self.call('settings_save', changes={'checkup': {'other_drives': False, 'use_ai': False}})
+        self.backend.dup_ai = {'old-path': {'verdict': 'delete', 'reason': 'previous run'}}
+        plan = self.checkup()
+        c, d = self.sb.drive_roots
+        self.assertEqual([paths.key(p) for p in plan['coverage']['space']['roots']], [paths.key(c)])
+        self.assertNotIn(paths.key(d), {paths.key(p) for p in plan['coverage']['personal_roots']})
+        self.assertNotIn(paths.key(d), {paths.key(p) for p in plan['coverage']['duplicates']['roots']})
+        self.assertIsNone(self.backend.scan.find(d))
+        self.assertFalse(plan['ai']['used'])
+        self.assertEqual(self.model.requests, [])
+        self.assertEqual(self.backend.dup_ai, {})
+        # A home choice must not narrow the standalone personal-file tool.
+        self.assertIn(paths.key(d), {paths.key(p) for p in self.call('insights_roots')})
+        broad = self.checkup(other_drives=True, duplicates=False)
+        self.assertEqual({paths.key(p) for p in broad['coverage']['space']['roots']},
+                         {paths.key(c), paths.key(d)})
+        self.assertIsNone(broad['coverage']['duplicates'])
+        self.assertFalse(self.backend.settings.get()['checkup']['other_drives'], 'per-run overrides do not overwrite saved choices')
+
+    def test_drive_choices_are_per_checkup_and_personal_locations_stay_in_scope(self):
+        c, d = self.sb.drive_roots
+        for selected in ([d], []):
+            with self.subTest(selected=selected):
+                plan = self.checkup(selected_drives=selected, use_ai=False)
+                self.assertEqual([paths.key(r) for r in plan['coverage']['whole_drives']], [paths.key(r) for r in selected])
+                self.assertNotIn(paths.key(c), {paths.key(r) for r in plan['coverage']['space']['roots']})
+                self.assertIsNotNone(self.backend.scan.find(self.backend.env['USERPROFILE']))
+                for name in ('personal_roots',):
+                    self.assertEqual(paths.key(d) in {paths.key(r) for r in plan['coverage'][name]}, bool(selected))
+                self.assertEqual(paths.key(d) in {paths.key(r) for r in plan['coverage']['duplicates']['roots']}, bool(selected))
+        self.assertIn(paths.key(d), {paths.key(r) for r in self.call('insights_roots')})
+        self.assertIsNone(self.backend.settings.get()['checkup']['selected_drives'])
+
+    def test_ai_subscopes_only_call_the_chosen_analysis(self):
+        # startup items, programs and services all go through explain_items: told apart by what is sent
+        methods = {'space': 'analyze_space', 'files': 'review_files', 'duplicates': 'review_duplicates', 'startup': 'explain_items',
+                   'apps': 'explain_items', 'services': 'explain_items'}
+        kinds = {'startup': 'startup', 'apps': 'app', 'services': 'service'}
+        from contextlib import ExitStack
+        for chosen in methods:
+            with self.subTest(chosen=chosen), ExitStack() as stack:
+                spies = {method: stack.enter_context(patch.object(self.backend.analyst, method, wraps=getattr(self.backend.analyst, method)))
+                         for method in set(methods.values())}
+                plan = self.checkup(ai_scopes={key: key == chosen for key in methods})
+                for method, spy in spies.items():
+                    self.assertEqual(bool(spy.call_count), methods[chosen] == method, method)
+                if chosen in kinds:
+                    sent = {item['kind'] for call in spies['explain_items'].call_args_list for item in call.args[0]}
+                    self.assertEqual(sent, {kinds[chosen]})
+                self.assertEqual(plan['ai']['scopes'], ['dups' if chosen == 'duplicates' else chosen])
+                if chosen == 'files':
+                    self.assertTrue(all('excerpt' not in file for file in spies['review_files'].call_args.args[0]))
+
+    def test_all_ai_subscopes_off_never_creates_client_but_manual_ai_still_works(self):
+        off = dict.fromkeys(('space', 'files', 'duplicates', 'startup', 'apps', 'services'), False)
+        self.call('settings_save', changes={'checkup': {'ai_scopes': off}})
+        with patch.object(self.backend, 'client_or_none', side_effect=AssertionError('AI is off')):
+            plan = self.checkup()
+        self.assertFalse(plan['ai']['enabled'])
+        self.assertFalse(plan['ai']['used'])
+        self.assertEqual(self.model.requests, [])
+        result = self.wait(self.call('ai_explain', kind='startup'))
+        self.assertTrue(result['items'])
+        self.assertTrue(self.model.requests)
+        self.assertTrue(any(item['ai'] for item in self.call('startup_list')))
+
+    def test_checkup_results_are_reused_by_junk_and_startup_tools(self):
+        plan = self.checkup()
+        with patch.object(self.backend.junk, 'scan', side_effect=AssertionError('must reuse scan')):
+            rows = {row['id']: row for row in self.call('junk_result')}
+        for item in plan['items']:
+            if item['kind'] == 'rule':
+                self.assertEqual((item['score'], item['selected']), (rows[item['rule']]['score'], rows[item['rule']]['selected']))
+        item = next(i for i in plan['items'] if i['kind'] == 'startup' and not i['blocked'])
+        row = next(i for i in self.call('startup_list') if i['id'] == item['startup_id'])
+        self.assertEqual(row['ai']['suggestion'], 'disable')
+        self.call('startup_set', item_id=row['id'], enabled=False)
+        self.assertEqual(item['status'], 'done')
+        self.call('startup_set', item_id=row['id'], enabled=True)
+        self.assertEqual(item['status'], 'pending')
+        self.assertFalse(item['selected'])
+        self.assertTrue(plan['coverage']['startup']['count'])
+        self.checkup(use_ai=False)
+        self.assertFalse(any(i['ai'] for i in self.call('startup_list')))
+        self.assertFalse(any(file.get('ai') for f in self.call('insights_result')['findings'] for file in f['files']))
+
+    def test_residue_and_registration_results_sync_without_claiming_missing_apps_are_junk(self):
+        plan = self.checkup(use_ai=False)
+        report = self.call('app_residues_result')
+        small = next(i for i in report['items'] if i['title'] == 'OldSmallEditor')
+        self.assertLess(small['size'], 500 * 1024 ** 2, 'small residual candidates are now discoverable')
+        self.assertFalse(small['eligible'])
+        self.assertFalse(small['selected'])
+        self.assertTrue(any(i['id'] == small['id'] for i in plan['items']))
+        issue = next(r for r in report['registry'] if '失效登记' in r['title'])
+        context = self.backend._ask_context(issue['ask'], 'apps', False)
+        self.assertIn('registration_check', context['about'])
+        self.assertTrue(self.call('app_installed', app_ids=[issue['id']])[issue['id']], 'detection never deletes a key')
+        self.assertTrue(plan['coverage']['apps']['residues'])
+        self.assertTrue(plan['coverage']['apps']['registry'])
+
+    def test_independent_residue_scan_obeys_exclusions_and_ignores_home_switches(self):
+        excluded = os.path.join(self.backend.env['LOCALAPPDATA'], 'OldSmallEditor')
+        self.call('settings_save', changes={'checkup': {'selected_drives': [], 'space_scan': False, 'use_ai': False},
+                                            'excluded_paths': [excluded]})
+        with patch.object(self.backend, '_client', side_effect=AssertionError('local scan must not call AI')):
+            report = self.wait(self.call('app_residues_scan'))
+        self.assertTrue(report['stats']['roots'])
+        self.assertNotIn('OldSmallEditor', [i['title'] for i in report['items']])
+        self.assertIsNone(self.backend.scan, 'standalone residue scan does not replace the space tool scan')
+        self.assertTrue(os.path.isdir(excluded))
 
     def test_every_item_explains_its_score_and_selection(self):
         plan = self.checkup()
@@ -194,8 +338,8 @@ class CheckupTest(TempDirTest):
         sent = [row['path'] for req in self.model.requests if isinstance(req, list) for row in req if 'subdirs' in row]
         result = self.wait(self.call('ai_analyze', use_cache=False))
         temp = [s for s in result['suggestions'] if s['source'] == 'knowledge']
-        self.assertEqual([os.path.basename(s['path']) for s in temp], ['Temp'])
-        self.assertEqual((temp[0]['app'], temp[0]['verdict'], temp[0]['selected'], temp[0]['score']), ('临时文件夹', 'clean', False, 60))
+        self.assertEqual([os.path.basename(s['path']) for s in temp], ['Temp', 'Temp'])
+        self.assertEqual((temp[0]['app'], temp[0]['verdict'], temp[0]['selected'], temp[0]['score']), ('临时文件夹', 'clean', False, 40))
         self.assertIn('没有问 AI', temp[0]['basis'][0])
         self.assertFalse([p for p in sent if p.lower().endswith('\\temp')], 'the model is not asked about it')
         self.assertFalse([i for i in plan['items'] if i['source'] == 'ai' and i['paths'] and i['paths'][0] == temp[0]['path']])
@@ -293,7 +437,8 @@ class CheckupTest(TempDirTest):
             if 'rule:' + rule in by_id:
                 self.assertFalse(by_id['rule:' + rule]['selected'], rule)
         guessed = {i['title']: i for i in plan['items'] if i['source'] == 'heuristic'}
-        self.assertTrue(guessed['IntelliJIdea2021.1']['selected'], 'an old version next to a newer one')
+        self.assertTrue(guessed['caches']['selected'], 'offer the old cache separately from rule-covered logs')
+        self.assertIn('IntelliJIdea2021.1', guessed['caches']['paths'][0])
         game = guessed['OldGameStudio']
         self.assertFalse(game['selected'], 'it holds SaveGames')
         self.assertIn('存档', game['basis'][-1])
@@ -380,7 +525,7 @@ class CheckupTest(TempDirTest):
         self.assertEqual(by_name['delivery_notes.md']['score'], 35)
         self.assertTrue(any('只看了文件名' in line for line in by_name['delivery_notes.md']['basis']))
         self.assertEqual(by_name['notes - 副本.md']['score'], 85, 'an identical copy needs no content to be judged')
-        self.assertEqual(scores({**said, 'with_content': True})['delivery_notes.md']['score'], 65)
+        self.assertEqual(scores({**said, 'with_content': True})['delivery_notes.md']['score'], 55)
         self.assertNotIn('pack.rar', by_name, 'an archive 盘序 could not check against its folder is not offered')
         self.assertNotIn('plan.md', by_name, 'a 2 KB file frees nothing worth a place in the plan')
 
@@ -470,14 +615,15 @@ class CheckupTest(TempDirTest):
         self.assertFalse(plan['ai']['used'])
         guessed = {i['title']: i for i in plan['items'] if i['source'] == 'heuristic'}
         self.assertIn('OldGameStudio', guessed, 'no installed program and untouched for years')
-        self.assertIn('IntelliJIdea2021.1', guessed, 'a newer IntelliJIdea2025.2 sits next to it')
+        self.assertIn('caches', guessed, 'the old-version cache stays visible without also offering its rule-covered logs')
         self.assertNotIn('FooSoft', guessed, 'FooSoft is still installed')
         for item in guessed.values():
             self.assertFalse(item['selected'])
 
     def test_execute_everything(self):
         plan = self.checkup()
-        ids = [i['id'] for i in plan['items'] if not i['blocked'] and i['action'] != 'none']
+        # a program's uninstaller runs from its own row, never with the rest of the plan
+        ids = [i['id'] for i in plan['items'] if not i['blocked'] and i['action'] not in ('none', 'uninstall')]
         preview = self.call('plan_preview', item_ids=ids)
         self.assertGreater(preview['delete']['count'], 0)
         self.assertGreater(preview['recycle']['count'], 0)
@@ -500,8 +646,9 @@ class CheckupTest(TempDirTest):
             self.assertNotIn('字节', item['result'])
         self.assertEqual(sum(i['freed'] for i in done if i['action'] == 'delete'), report['deleted']['bytes'])
         kinds = [h['kind'] for h in self.call('history')]
-        for kind in ('junk', 'recycle', 'startup', 'ai'):
+        for kind in ('junk', 'recycle', 'startup', 'service', 'ai'):
             self.assertIn(kind, kinds)
+        self.assertTrue(report['services'], 'third-party services the model would not start at boot were changed')
         again = self.bridge.call('plan_execute', {'item_ids': ids})
         self.assertTrue(again['ok'])
         status = self.bridge.call('job', {'job_id': again['data']})

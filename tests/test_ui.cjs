@@ -3,6 +3,69 @@
 const assert = require('assert');
 global.window = global;
 const PX = require('../web/ui.js');
+require('./test_activity_ui.cjs');
+
+// Home-only defaults migrate without changing standalone tools; an empty disk selection stays empty.
+const homeDisks = [{ root: 'C:\\', fixed: true, system: true }, { root: 'D:\\', fixed: true }, { root: 'F:\\', removable: true }];
+assert.deepStrictEqual(PX.checkupDriveRoots(homeDisks), ['C:\\', 'D:\\']);
+assert.deepStrictEqual(PX.checkupDriveRoots(homeDisks, { other_drives: false }), ['C:\\']);
+assert.deepStrictEqual(PX.checkupDriveRoots(homeDisks, { selected_drives: ['d:/', 'F:\\', 'X:\\'] }), ['D:\\', 'F:\\']);
+assert.deepStrictEqual(PX.checkupDriveRoots(homeDisks, { selected_drives: [] }), []);
+const noAIScopes = Object.fromEntries(PX.checkupAIScopes.map(([key]) => [key, false]));
+assert.strictEqual(PX.checkupAIEnabled({ ai_scopes: noAIScopes }), false);
+assert.strictEqual(PX.checkupAIEnabled({ use_ai: false }), false);
+assert.strictEqual(PX.checkupAIEnabled({ duplicates: false, ai_scopes: { ...noAIScopes, duplicates: true } }), false);
+assert.strictEqual(PX.checkupAIEnabled({ ai_scopes: { ...noAIScopes, files: true } }), true);
+// Coverage describes the completed run, with derived large-file results and partial startup coverage.
+const coverage = PX.checkupCoverage({ options: { duplicates: false }, coverage: { space: null, startup: { count: 3 } } });
+assert.strictEqual(coverage.find((r) => r.page === 'space').status, '未检查');
+assert.deepStrictEqual(coverage.find((r) => r.page === 'space').extra, ['large', '大文件']);
+assert.strictEqual(coverage.find((r) => r.page === 'dups').status, '未检查');
+assert.strictEqual(coverage.find((r) => r.page === 'startup').status, '部分覆盖');
+assert.strictEqual(coverage.find((r) => r.page === 'apps').status, '未覆盖');
+const partial = PX.checkupCoverage({ options: { cross_drive_duplicates: false },
+  personal_scan: { truncated: true }, coverage: { space: { incomplete: true }, duplicates: { truncated: true } } });
+assert.strictEqual(partial.find((r) => r.page === 'space').status, '有跳过项');
+assert.strictEqual(partial.find((r) => r.page === 'mine').status, '部分完成');
+assert.strictEqual(partial.find((r) => r.page === 'dups').status, '部分完成');
+assert.match(partial.find((r) => r.page === 'dups').note, /同一磁盘/);
+const residueCoverage = PX.checkupCoverage({ coverage: { apps: { residues: true, folders: 2, registry: 1 } } });
+assert.strictEqual(residueCoverage.find((r) => r.name === '应用').page, 'residues');
+assert.strictEqual(residueCoverage.find((r) => r.name === '应用').status, '部分覆盖');
+// 检查应用与服务: the programs and third-party services count as checked; its AI scopes need the switch
+const full = PX.checkupCoverage({ ai: { scopes: ['startup', 'apps', 'services'] }, coverage: { startup: { count: 6, ai_count: 4 },
+  services: { count: 9, ai_count: 9, suggested: 2 }, apps: { residues: true, folders: 1, registry: 0, listed: 40, ai_count: 31, suggested: 3 } } });
+assert.strictEqual(full.find((r) => r.page === 'startup').status, '已检查');
+assert.match(full.find((r) => r.page === 'startup').note, /第三方服务 9 个，AI 解释了 9 个，2 个建议改为手动/);
+assert.strictEqual(full.find((r) => r.name === '应用').status, '已检查');
+assert.strictEqual(full.find((r) => r.name === '应用').page, 'apps');
+assert.match(full.find((r) => r.name === '应用').note, /40 个程序，AI 解释了 31 个，3 个可以考虑卸载/);
+assert.strictEqual(PX.checkupCoverage({ coverage: { services: { count: 1, error: 'denied' } } }).find((r) => r.page === 'startup').status, '有跳过项');
+assert.strictEqual(PX.checkupAIEnabled({ apps_services: false, ai_scopes: { ...noAIScopes, apps: true, services: true } }), false);
+assert.strictEqual(PX.checkupAIEnabled({ ai_scopes: { ...noAIScopes, services: true } }), true);
+
+// sorting: by a column, either way; missing values last both ways; ties by the next key, then as given
+const S = { size: { label: '大小', kind: 'num', get: (r) => r.size }, name: { label: '名称', kind: 'text', get: (r) => r.name },
+  mtime: { label: '修改时间', kind: 'date', get: (r) => r.mtime } };
+const sortable = [{ name: 'c1', size: 5, mtime: 3 }, { name: 'b10', size: null, mtime: 1 }, { name: 'b9', size: 5, mtime: 2 }, { name: 'A', size: 9 }];
+const names = (rows) => rows.map((r) => r.name);
+assert.deepStrictEqual(names(PX.sortRows(sortable, S, { key: 'size', dir: 'desc' })), ['A', 'c1', 'b9', 'b10']);
+assert.deepStrictEqual(names(PX.sortRows(sortable, S, { key: 'size', dir: 'asc' })), ['c1', 'b9', 'A', 'b10'], 'missing stays last');
+assert.deepStrictEqual(names(PX.sortRows(sortable, S, { key: 'size', dir: 'desc' }, 'name')), ['A', 'b9', 'c1', 'b10'], 'a tie follows the next key');
+assert.deepStrictEqual(names(PX.sortRows(sortable, S, { key: 'name', dir: 'asc' })).slice(0, 3), ['A', 'b9', 'b10'], 'numbers in names count as numbers');
+assert.deepStrictEqual(names(PX.sortRows(sortable, S, { key: 'mtime', dir: 'asc' })), ['b10', 'b9', 'c1', 'A']);
+assert.deepStrictEqual(names(PX.sortRows(sortable, S, { key: 'nope', dir: 'asc' })), names(sortable), 'an unknown key keeps the order');
+assert.deepStrictEqual(PX.sortPick(S, { key: 'size', dir: 'desc' }, 'size'), { key: 'size', dir: 'asc' }, 'the same column turns round');
+assert.deepStrictEqual(PX.sortPick(S, { key: 'size', dir: 'asc' }, 'name'), { key: 'name', dir: 'asc' }, 'names start A→Z');
+assert.deepStrictEqual(PX.sortPick(S, { key: 'name', dir: 'asc' }, 'mtime'), { key: 'mtime', dir: 'asc' }, 'dates start with the oldest');
+assert.deepStrictEqual(PX.sortPick(S, { key: 'name', dir: 'asc' }, 'size'), { key: 'size', dir: 'desc' }, 'sizes start with the largest');
+assert.strictEqual(PX.aiRank({ verdict: 'delete' }) > PX.aiRank({ verdict: 'keep' }), true);
+assert.strictEqual(PX.aiRank({ suggestion: 'uninstall' }) > PX.aiRank({ suggestion: 'optional' }), true);
+assert.strictEqual(PX.aiRank(null), null);
+// the places to look in, without those another one covers
+assert.deepStrictEqual(PX.topRoots([String.raw`C:\Users\me\Documents`, String.raw`C:\Users\me`, String.raw`C:\ `.trim(), String.raw`D:\资料`, String.raw`D:\ `.trim(), String.raw`F:\Docs`]),
+  [String.raw`C:\ `.trim(), String.raw`D:\ `.trim(), String.raw`F:\Docs`]);
+assert.deepStrictEqual(PX.topRoots([String.raw`D:\a`, String.raw`d:\A\ `.trim(), String.raw`D:\ab`]), [String.raw`D:\a`, String.raw`D:\ab`], 'the same folder once; a sibling with a longer name stays');
 
 // treemap: areas proportional, inside bounds, no overlap of total area
 const items = [{ size: 60 }, { size: 25 }, { size: 10 }, { size: 4 }, { size: 1 }, { size: 0 }];
@@ -25,6 +88,16 @@ assert.strictEqual(PX.fmt.bytes(150 * 1024 ** 3), '150 GB');
 assert.strictEqual(PX.fmt.bytes(null), '—');
 assert.deepStrictEqual(PX.fmt.split(1024 ** 4 * 2), ['2.0', 'TB']);
 assert.strictEqual(PX.fmt.seconds(75), '1 分 15 秒');
+// Disk usage is distinct from content length, including a completely sparse (zero allocation) file.
+assert.strictEqual(PX.sizeDifference({ size: 128 * 1024, logical_size: 62.5 * 1024 ** 3 }), '标称 62.5 GB，实际占用 128 KB');
+assert.strictEqual(PX.sizeDifference({ size: 0, logical_size: 1024 ** 3 }), '标称 1.0 GB，实际占用 0 B');
+assert.strictEqual(PX.sizeDifference({ size: 1024, logical_size: 1024 }), '');
+assert.strictEqual(PX.sizeDifference({ size: 1024 }), '');
+assert.strictEqual(PX.sizeDifference({ size: null, logical_size: 1024 }), '');
+assert.strictEqual(PX.copySize({ size: 0 }, 1024 ** 3), 0, 'zero allocation must not fall back to logical size');
+assert.strictEqual(PX.copySize({}, 1024), 1024, 'old records retain their original size');
+assert.strictEqual(PX.duplicateWaste({ size: 1024 ** 3, files: [{ size: 128 * 1024 }, { size: 0 }, { size: 64 * 1024 }] }),
+  64 * 1024, 'remaining duplicate copies count their own allocation');
 // places under the user folder read like Explorer
 const R = String.raw;
 assert.strictEqual(PX.fmt.place(R`C:\Users\me\Documents\项目A`, R`C:\Users\me`), R`文档\项目A`);
@@ -106,4 +179,14 @@ assert.ok(!/min-width: [\d.]+em/.test(rule('.pt-head')), 'no fixed min-width on 
 assert.ok(rule('.pt-tail') && !/max-width: [^;]*%/.test(rule('.pt-tail')), 'no percentage cap on the name');
 // the name's share of the shrink must round to zero in Blink's 1/64 px layout units, or its last letter is cut
 assert.ok(Number((rule('.pt-head').match(/flex: 0 (\d+) auto/) || [])[1]) >= 1e6, 'the head gives way first, by a wide margin');
+// A duplicate group on 首页 and its individual copies on the tool page share one selection.
+const copies = { kind: 'dup', id: 'dup:sample', paths: ['D:\\copy.png', 'E:\\copy.png'] };
+PX.sel.set(copies, true);
+assert.ok(PX.sel.paths.has('D:\\copy.png') && PX.sel.paths.has('E:\\copy.png'));
+PX.sel.paths.delete('D:\\copy.png');
+assert.ok(!PX.sel.has(copies), 'a partial copy selection must not execute the whole home group');
+PX.sel.paths.add('D:\\copy.png');
+assert.ok(PX.sel.has(copies));
+PX.sel.set(copies, false);
+assert.ok(!PX.sel.paths.has('E:\\copy.png'));
 console.log('ui tests passed');

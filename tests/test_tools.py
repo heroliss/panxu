@@ -39,6 +39,17 @@ class CheckPlanTest(unittest.TestCase):
             item(personal=True, paths=[HOME + '\\Documents\\WXWork\\Cache\\data_1'], title='cache')])
         self.assertEqual([lvl for lvl, _ in found], ['severe'] * 4)
 
+    def test_public_files_are_not_another_account_but_sibling_profiles_still_are(self):
+        self.assertEqual(self.levels([item(personal=True, paths=[WIN_ENV['PUBLIC'] + '\\Documents\\report.pdf'])]), [])
+        self.assertEqual([level for level, _ in self.levels([
+            item(personal=True, paths=['C:\\Users\\bob\\Documents\\report.pdf'])])], ['severe'])
+
+    def test_incomplete_personal_scan_is_reported(self):
+        found = self.levels([], insights={'findings': [], 'stats': {'truncated': True, 'limit': 400000}})
+        self.assertEqual(found[0][0], 'warn')
+        self.assertIn('没有全部扫完', found[0][1])
+        self.assertIn('400,000', found[0][1])
+
     def test_warnings(self):
         found = self.levels([item(title='temp', size=130 * 1024 ** 3, kind='rule', paths=[]),
                              item(blocked='这是 Windows 系统目录或其中的内容', paths=['C:\\Windows\\x'])]

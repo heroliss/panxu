@@ -4,13 +4,20 @@
   const { h, fmt } = PX;
 
   const state = { status: 'idle', results: {}, selected: PX.sel.rules, progress: {}, expanded: new Set(),
-    openGroups: new Set(), lastClean: null, jobId: null, touched: false };
+    openGroups: new Set(), lastClean: null, jobId: null, touched: false, sort: { key: 'size', dir: 'desc' } };
 
   const rules = () => PX.state.init.rules;
   const ruleById = (id) => rules().find((r) => r.id === id);
+  const SORT = {
+    size: { label: '大小', kind: 'num', get: (r) => (state.results[r.id] || {}).size ?? null },
+    score: { label: '建议清理度', kind: 'num', get: (r) => (state.results[r.id] || {}).score ?? null },
+    name: { label: '名称', kind: 'text', get: (r) => r.name },
+    order: { label: '规则顺序', kind: 'num', dir: 'asc', words: ['和规则列表一样的顺序', '倒序'], get: (r) => rules().indexOf(r) },
+  };
 
   function blockedReason(rule, res) {
     if (!res) return '';
+    if (res.scope_blocked) return res.error || '已排除';
     if (rule.admin && !PX.state.init.admin) return '需要管理员权限';
     if (res.running && res.running.length) return '请先关闭 ' + rule.name;
     return '';
@@ -18,8 +25,9 @@
   function visible(rule) {
     const res = state.results[rule.id];
     if (!res) return false;
+    if (res.scope_blocked) return true;
     if (rule.admin && !PX.state.init.admin) return true; // show what elevation would unlock
-    return res.available && (res.size === null || res.size > 0 || rule.mode === 'command');
+    return res.available && (res.size === null || res.size > 0 || res.count > 0 || rule.mode === 'command');
   }
   function total() {
     let sum = 0;
@@ -34,7 +42,7 @@
     let sum = 0;
     for (const r of rules()) {
       const res = state.results[r.id];
-      if (res && res.size && r.default && visible(r) && !blockedReason(r, res)) sum += res.size;
+      if (res && res.size && res.selected && visible(r) && !blockedReason(r, res)) sum += res.size;
     }
     return sum;
   }
@@ -44,25 +52,40 @@
     return sum;
   }
 
+  function adopt(rows) {
+    state.results = Object.fromEntries(rows.map((row) => [row.id, row]));
+    if (!state.touched) {
+      PX.sel.replace(state.selected, rules().filter((r) => state.results[r.id]?.selected && visible(r)
+        && !blockedReason(r, state.results[r.id]) && (state.results[r.id].size || 0) > 0).map((r) => r.id));
+    } else {
+      for (const id of [...state.selected]) {
+        const rule = ruleById(id);
+        if (!rule || !visible(rule) || blockedReason(rule, state.results[id])) state.selected.delete(id);
+      }
+    }
+    state.status = 'done';
+    PX.state.junkTotal = recommended();
+    PX.renderRail();
+  }
+
+  async function loadExisting() {
+    if (state.status === 'scanning' || state.status === 'cleaning') return;
+    try {
+      const rows = await PX.api.call('junk_result');
+      if (rows !== null) { adopt(rows); rerender(true); }
+      else if (!PX.home || PX.home.state.status !== 'running') await scan();
+    } catch (e) { PX.fail(e); }
+  }
+
   async function scan() {
     if (state.status === 'scanning' || state.status === 'cleaning') return;
+    if (PX.workBlocked()) return;
     state.status = 'scanning';
     state.progress = {};
     rerender();
     try {
       const rows = await PX.api.run('junk_scan', {}, (p) => { state.progress = p; rerender(true); });
-      state.results = {};
-      for (const row of rows) state.results[row.id] = row;
-      if (!state.touched) {
-        PX.sel.replace(state.selected, rules().filter((r) => r.default && visible(r) && !blockedReason(r, state.results[r.id])
-          && (state.results[r.id].size || 0) > 0).map((r) => r.id));
-      } else {
-        for (const id of [...state.selected]) {
-          const r = ruleById(id);
-          if (!visible(r) || blockedReason(r, state.results[id])) state.selected.delete(id);
-        }
-      }
-      state.status = 'done';
+      adopt(rows);
     } catch (e) {
       state.status = 'idle';
       if (!e.cancelled) PX.fail(e);
@@ -81,7 +104,10 @@
     for (const id of ids) {
       const r = ruleById(id);
       const res = state.results[id];
-      list.appendChild(h('div.row', h('div.name', r.name), h('div.size', res.size === null ? '无法预估' : fmt.bytes(res.size))));
+      list.appendChild(h('div.row', h('div.name', h('div', r.name),
+        PX.sizeDifference(res) ? h('div.small.muted', PX.sizeDifference(res)) : null,
+        res.size_note ? h('div.small.muted', res.size_note) : null),
+      h('div.size', res.size === null ? '无法预估' : fmt.bytes(res.size))));
       if (r.note) warnings.push(r.name + '：' + r.note);
     }
     const body = h('div',
@@ -155,7 +181,12 @@
       const locs = res.locations || [];
       out.push(PX.detailPanel({
         warn: rule.note,
+        action: 'delete',
+        score: { score: res.score, basis: res.basis || [] },
         facts: [['有多少', res.count ? `${fmt.count(res.count)} 个文件，共 ${fmt.bytes(res.size || 0)}` : ''],
+          ['扫描范围', res.error],
+          ['占用空间', PX.sizeDifference(res)],
+          ['大小说明', res.size_note],
           ['怎么清理', rule.mode === 'command' ? '通过系统命令清理' : locs.length ? '' : '没有找到对应的位置']],
         places: { title: '清理这些位置', note: locs.length > 1 ? `${locs.length} 个` : '', rows: locs.map((loc) => PX.placeRow(loc, { folder: true })) },
       }));
@@ -221,9 +252,10 @@
 
     largest = Math.max(1, ...rules().filter(visible).map((r) => state.results[r.id].size || 0));
     if (!busy) overview(container);
+    if (rules().filter(visible).length > 1) container.appendChild(PX.sortBar(SORT, state.sort, (s) => { state.sort = s; rerender(true); }));
     for (const g of init.groups) {
       const inGroup = rules().filter((r) => r.group === g.id);
-      const shown = inGroup.filter(visible);
+      const shown = PX.sortRows(inGroup.filter(visible), SORT, state.sort, 'size');
       const hidden = inGroup.length - shown.length;
       const gsize = shown.reduce((s, r) => s + (state.results[r.id].size || 0), 0);
       const can = shown.filter((r) => !blockedReason(r, state.results[r.id]));
@@ -263,8 +295,9 @@
       res.running = procs;
       changed = true;
       const rule = ruleById(id);
+      res.selected = !!res.eligible && !procs.length && PX.points(res.score) >= (PX.state.init.settings.checkup.auto_threshold ?? 5);
       if (procs.length) state.selected.delete(id);
-      else if (rule.default && !state.touched && visible(rule) && !blockedReason(rule, res) && (res.size || 0) > 0) state.selected.add(id);
+      else if (res.selected && !state.touched && visible(rule) && !blockedReason(rule, res) && (res.size || 0) > 0) state.selected.add(id);
     }
     if (!changed) return;
     PX.state.junkTotal = recommended();
@@ -283,8 +316,8 @@
   PX.pages.junk = {
     render(container) {
       root = container;
-      if (state.status === 'idle' && !Object.keys(state.results).length) scan();
-      else draw(container);
+      draw(container);
+      loadExisting();
     },
   };
 })();

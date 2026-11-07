@@ -21,21 +21,24 @@ FLAG_DENIED = 1     # could not list this directory
 FLAG_LINKS = 2      # contains junctions/symlinks that were not followed
 FLAG_CLOUD = 4      # contains cloud-only (online) files
 FLAG_PROGRAM = 8    # contains program files (.exe / .dll) somewhere below
+FLAG_EXCLUDED = 16  # part of this subtree was intentionally omitted
 PROGRAM_EXTS = ('.exe', '.dll')
-ROLLUP = FLAG_DENIED | FLAG_CLOUD | FLAG_PROGRAM  # flags a folder takes over from its sub-folders
+ROLLUP = FLAG_DENIED | FLAG_LINKS | FLAG_CLOUD | FLAG_PROGRAM | FLAG_EXCLUDED
 
 
 class Node:
-    __slots__ = ('name', 'parent', 'children', 'size', 'files', 'dirs', 'mtime', 'flags', 'id')
+    __slots__ = ('name', 'parent', 'children', 'size', 'logical_size', 'files', 'dirs', 'mtime', 'changed', 'flags', 'id')
 
     def __init__(self, name: str, parent: 'Node | None'):
         self.name = name
         self.parent = parent
         self.children = None
         self.size = 0
+        self.logical_size = 0
         self.files = 0
         self.dirs = 0
         self.mtime = 0.0
+        self.changed = 0.0
         self.flags = 0
         self.id = -1
 
@@ -45,16 +48,27 @@ class _WorkerState:
 
     def __init__(self):
         self.dirs = self.files = self.bytes = self.cloud_bytes = self.cloud_files = self.denied = 0
-        self.top: list = []          # min-heap of (size, path, mtime)
+        self.top: list = []          # min-heap of (occupied bytes, path, mtime, logical bytes)
         self.exts: dict = {}         # ext -> [count, bytes]
 
 
 class SpaceScan:
-    def __init__(self, root: str, threads: int = 6):
-        self.root_path = os.path.abspath(root)
+    def __init__(self, root: str | list[str], threads: int = 6, skip=None):
+        self.multiple = isinstance(root, list)
+        # Keep non-overlapping absolute roots. A virtual overview has no filesystem path.
+        self.roots = []
+        for p in sorted(root if self.multiple else [root], key=len):
+            p = os.path.abspath(p)
+            if not any(paths.is_within(p, old) for old in self.roots):
+                self.roots.append(p)
+        self.root_path = '' if self.multiple else self.roots[0]
+        self.skip = skip
         self.threads = max(1, threads)
-        self.root = Node(self.root_path, None)
+        self.root = Node('本机磁盘' if self.multiple else self.root_path, None)
         self.nodes: list[Node] = [self.root]
+        if self.multiple:
+            self.root.children = [Node(p, self.root) for p in self.roots]
+            self.nodes.extend(self.root.children)
         self.top_files: list[dict] = []
         self.exts: dict = {}
         self.stats: dict = {}
@@ -65,7 +79,8 @@ class SpaceScan:
     def run(self, cancel: threading.Event | None = None, progress=None) -> 'SpaceScan':
         started = time.time()
         work: queue.Queue = queue.Queue()
-        work.put((self.root, self.root_path))
+        for node in (self.root.children or ()) if self.multiple else [self.root]:
+            work.put((node, self.path_of(node)))
         states = [_WorkerState() for _ in range(self.threads)]
 
         def worker(state: _WorkerState):
@@ -79,6 +94,7 @@ class SpaceScan:
                         self._scan_dir(item[0], item[1], work, state)
                 except Exception:  # noqa: BLE001 - one bad directory must not stop the scan
                     item[0].flags |= FLAG_DENIED
+                    state.denied += 1
                 finally:
                     work.task_done()
 
@@ -102,19 +118,33 @@ class SpaceScan:
     def _scan_dir(self, node: Node, path: str, work: queue.Queue, state: _WorkerState):
         state.dirs += 1
         try:
+            if self.skip and self.skip(path):
+                node.flags |= FLAG_EXCLUDED
+                return
+            root_stat = os.lstat(fsops.long_path(path))
+            if fsops.st_is_link(root_stat):
+                node.flags |= FLAG_LINKS
+                return
+            if getattr(root_stat, 'st_file_attributes', 0) & winapi.CLOUD_ATTRIBUTES:
+                node.flags |= FLAG_CLOUD
+                return
             it = os.scandir(fsops.long_path(path))
         except OSError:
             node.flags |= FLAG_DENIED
             state.denied += 1
             return
         children = []
-        size = files = 0
-        newest = 0.0
+        size = logical_size = files = 0
+        newest = changed = 0.0
         with it:
             for entry in it:
                 try:
                     st = entry.stat(follow_symlinks=False)
                 except OSError:
+                    node.flags |= FLAG_DENIED
+                    continue
+                if self.skip and self.skip(entry.path):
+                    node.flags |= FLAG_EXCLUDED
                     continue
                 if fsops.st_is_link(st):
                     node.flags |= FLAG_LINKS
@@ -126,16 +156,19 @@ class SpaceScan:
                     work.put((child, os.path.join(path, entry.name)))
                     continue
                 attrs = getattr(st, 'st_file_attributes', 0)
-                fsize = st.st_size
+                logical_size += st.st_size
                 files += 1
                 if attrs & winapi.CLOUD_ATTRIBUTES:
                     node.flags |= FLAG_CLOUD
-                    state.cloud_bytes += fsize
+                    state.cloud_bytes += st.st_size
                     state.cloud_files += 1
                     continue  # online-only: occupies no local space
+                file_path = os.path.join(path, entry.name)
+                fsize = fsops.file_size(file_path, st)
                 size += fsize
                 if st.st_mtime > newest:
                     newest = st.st_mtime
+                changed = max(changed, fsops.age_time(st))
                 ext = os.path.splitext(entry.name)[1].lower()
                 if ext in PROGRAM_EXTS:
                     node.flags |= FLAG_PROGRAM
@@ -146,13 +179,15 @@ class SpaceScan:
                     slot[0] += 1
                     slot[1] += fsize
                 if len(state.top) < TOP_FILES:
-                    heapq.heappush(state.top, (fsize, os.path.join(path, entry.name), st.st_mtime))
+                    heapq.heappush(state.top, (fsize, file_path, st.st_mtime, st.st_size))
                 elif fsize > state.top[0][0]:
-                    heapq.heapreplace(state.top, (fsize, os.path.join(path, entry.name), st.st_mtime))
+                    heapq.heapreplace(state.top, (fsize, file_path, st.st_mtime, st.st_size))
         node.children = children or None
         node.size = size
+        node.logical_size = logical_size
         node.files = files
         node.mtime = newest
+        node.changed = changed
         state.files += files
         state.bytes += size
 
@@ -164,10 +199,12 @@ class SpaceScan:
             parent = node.parent
             if parent is not None:
                 parent.size += node.size
+                parent.logical_size += node.logical_size
                 parent.files += node.files
                 parent.dirs += 1 + node.dirs
                 if node.mtime > parent.mtime:
                     parent.mtime = node.mtime
+                parent.changed = max(parent.changed, node.changed)
                 parent.flags |= node.flags & ROLLUP
         for node in nodes:
             if node.children:
@@ -182,12 +219,16 @@ class SpaceScan:
                 slot[0] += count
                 slot[1] += size
         merged = heapq.nlargest(TOP_FILES, merged)
-        self.top_files = [{'path': p, 'size': size, 'mtime': mtime} for size, p, mtime in merged]
+        self.top_files = [{'path': p, 'size': size, 'logical_size': logical, 'mtime': mtime}
+                          for size, p, mtime, logical in merged]
         self.exts = exts
         self.stats = {
             'dirs': len(nodes), 'files': self.root.files, 'bytes': self.root.size,
+            'logical_bytes': self.root.logical_size,
             'cloud_files': sum(s.cloud_files for s in states), 'cloud_bytes': sum(s.cloud_bytes for s in states),
             'denied': sum(s.denied for s in states), 'seconds': round(time.time() - started, 1),
+            'roots': list(self.roots),
+            'incomplete': bool(self.root.flags & (FLAG_DENIED | FLAG_LINKS | FLAG_CLOUD | FLAG_EXCLUDED)),
         }
         self.finished_at = time.time()
         self.complete = True
@@ -199,23 +240,32 @@ class SpaceScan:
         return self.nodes[node_id]
 
     def path_of(self, node: Node) -> str:
+        if self.multiple and node is self.root:
+            return ''
         parts = []
-        while node.parent is not None:
+        while node.parent is not None and not (self.multiple and node.parent is self.root):
             parts.append(node.name)
             node = node.parent
         return os.path.join(node.name, *reversed(parts)) if parts else node.name
 
     def find(self, path: str) -> Node | None:
         """Locate the node for an absolute path inside this scan (case-insensitive)."""
+        if not path:
+            return None
+        root = self.root
+        if self.multiple:
+            root = next((n for n in self.root.children or () if paths.is_within(path, n.name)), None)
+            if root is None:
+                return None
         try:
-            rel = os.path.relpath(os.path.abspath(path), self.root_path)
+            rel = os.path.relpath(os.path.abspath(path), self.path_of(root))
         except ValueError:  # different drive / UNC share
             return None
         if rel == '.':
-            return self.root
-        if rel.startswith('..'):
+            return root
+        if rel == '..' or rel.startswith('..' + os.sep):
             return None
-        node = self.root
+        node = root
         for part in rel.split(os.sep):
             low = part.lower()
             node = next((c for c in node.children or () if c.name.lower() == low), None)
@@ -233,10 +283,14 @@ class SpaceScan:
     def own_files(self, node: Node, limit: int = 300) -> tuple[list[dict], int, int]:
         """List a directory's files live: (largest ``limit`` files, total count, rest bytes)."""
         path = self.path_of(node)
+        if not path:
+            return [], 0, 0
         rows = []
         try:
             with os.scandir(fsops.long_path(path)) as it:
                 for entry in it:
+                    if self.skip and self.skip(entry.path):
+                        continue
                     try:
                         st = entry.stat(follow_symlinks=False)
                     except OSError:
@@ -244,8 +298,10 @@ class SpaceScan:
                     if stat.S_ISDIR(st.st_mode) or fsops.st_is_link(st):
                         continue
                     attrs = getattr(st, 'st_file_attributes', 0)
-                    rows.append({'name': entry.name, 'path': os.path.join(path, entry.name),
-                                 'size': 0 if attrs & winapi.CLOUD_ATTRIBUTES else st.st_size,
+                    file_path = os.path.join(path, entry.name)
+                    rows.append({'name': entry.name, 'path': file_path,
+                                 'size': 0 if attrs & winapi.CLOUD_ATTRIBUTES else fsops.file_size(file_path, st),
+                                 'logical_size': st.st_size,
                                  'mtime': st.st_mtime, 'cloud': bool(attrs & winapi.CLOUD_ATTRIBUTES)})
         except OSError:
             return [], 0, 0
@@ -267,21 +323,31 @@ class SpaceScan:
             c['top_exts'] = [e for _, e in sorted(c['top_exts'], reverse=True)[:6]]
         return out
 
-    def remove_path(self, path: str, removed_bytes: int, removed_files: int):
-        """Reflect a deletion in the tree without rescanning."""
+    def remove_path(self, path: str, removed_bytes: int, removed_files: int, logical_size: int | None = None):
+        """Reflect a deletion in the tree without rescanning.
+
+        Callers retain a file's logical size before deleting it. Legacy callers
+        can omit it for ordinary files; large files also retain it in the scan.
+        """
         node = self.find(path)
         target_parent = None
         if node is not None and node is not self.root:
             target_parent = node.parent
             target_parent.children = tuple(c for c in target_parent.children or () if c is not node) or None
             removed_bytes, removed_files = node.size, node.files
+            logical_size = node.logical_size
         else:
             target_parent = self.find(os.path.dirname(path))
+        key = path.lower()
+        if logical_size is None:
+            logical_size = next((f['logical_size'] for f in self.top_files if f['path'].lower() == key), removed_bytes)
         n = target_parent
         while n is not None:
             n.size = max(0, n.size - removed_bytes)
+            n.logical_size = max(0, n.logical_size - logical_size)
             n.files = max(0, n.files - removed_files)
             n = n.parent
-        key = path.lower()
+        if self.stats:
+            self.stats.update(bytes=self.root.size, logical_bytes=self.root.logical_size, files=self.root.files)
         self.top_files = [f for f in self.top_files
                           if f['path'].lower() != key and not f['path'].lower().startswith(key + os.sep)]

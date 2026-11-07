@@ -18,11 +18,13 @@ Nothing here deletes anything; findings feed the cleanup plan and the
 from __future__ import annotations
 
 import hashlib
+import ntpath
 import os
 import re
 import stat
 import time
 import zipfile
+import zlib
 from dataclasses import dataclass, field
 
 from . import fsops, paths, winapi
@@ -46,6 +48,14 @@ VERSION_CATEGORIES = {'document', 'image', 'video', 'audio', 'archive'}
 MAX_FILES = 400_000
 # sub-folders programs bring along (Qt, Chromium / Electron, Java): next to an .exe they mark a program's folder
 RUNTIME_DIRS = {'platforms', 'plugins', 'imageformats', 'locales', 'swiftshader', 'jre', 'runtime'}
+# Even a bad installer registration must not hide a general storage container.
+# Only AppManager's resolved app-owned folder is considered, never InstallLocation.
+GENERIC_PROGRAM_ROOTS = {'app', 'apps', 'application', 'applications', 'programs', 'program files',
+                         'program files (x86)', 'common files', 'programdata', 'appdata', 'windows',
+                         'system32', 'syswow64', 'data', 'users', 'user', 'public', 'shared', 'storage',
+                         'files', 'documents', 'downloads', 'desktop', 'pictures', 'videos', 'music',
+                         'tools', 'software', 'games', 'projects', '资料', '文件', '文档', '下载', '桌面',
+                         '图片', '视频', '音乐', '用户', '公共', '共享', '应用', '应用程序', '软件', '工具', '游戏', '项目'}
 
 KIND_INFO = {
     # kind: (label, what to do, removable by default rule)
@@ -63,10 +73,16 @@ KIND_ORDER = list(KIND_INFO)
 # 建议清理度 (0-100): how strongly PanXu suggests removing a file, shown on every row so the decision can
 # be read at a glance. It only explains and sorts; personal files are never pre-selected, whatever the score.
 KIND_SCORE = {'incomplete_download': 90, 'installer_installed': 85, 'installer_old': 55, 'archive_extracted': 50,
-              'name_versions': 35, 'stale_large': 30, 'old_downloads': 25, 'empty_folders': 90}
+              'name_versions': 35, 'stale_large': 30, 'old_downloads': 25, 'empty_folders': 30}
 
 
 def file_score(kind: str, f: dict) -> int:
+    if kind == 'incomplete_download':
+        return 70 if f.get('age_days', 30) < 30 else 90
+    if kind == 'installer_installed':
+        version = f.get('installed_version_comparison')
+        score = 45 if version == 'newer' else 70 if version == 'unknown' else 85
+        return min(score, 50) if f.get('age_days', 7) < 7 else score
     if kind == 'name_versions':
         if f['note'].startswith('最新') or f['note'].startswith('与其他副本内容相同'):
             return 5   # the copy to keep
@@ -83,6 +99,12 @@ def content_question(kind: str, f: dict) -> str | None:
     note), so without the content its 「可以删除」 would only repeat 盘序's guess (see with_ai)."""
     if kind == 'name_versions' and not f.get('remove'):
         return '旧版本里有没有新版本缺少的东西，要看内容才知道'
+    if kind == 'archive_extracted' and not f.get('remove'):
+        return '同名文件夹不能证明压缩包已完整解压，需要核对内容'
+    if kind in ('stale_large', 'old_downloads'):
+        return '很久没有修改不代表不再需要，文件名不能证明内容没有保留价值'
+    if kind == 'installer_installed' and f.get('installed_version_comparison') in ('newer', 'unknown'):
+        return '未确认安装包已被当前版本替代，不能仅凭程序已安装建议丢弃'
     return None
 
 
@@ -97,7 +119,7 @@ def with_ai(score: int, ai: dict | None, needs_content: bool = False) -> int:
     if verdict == 'delete':
         if needs_content and not ai.get('with_content'):
             return score
-        return max(score, min(85, score + 30))
+        return max(score, min(75, score + (20 if ai.get('with_content') else 10)))
     if verdict == 'keep':
         return min(score, 15)
     if verdict == 'archive':
@@ -284,6 +306,11 @@ class FileRec:
     atime: float
     category: str
     root: str           # which personal folder it was found under
+    allocated_size: int | None = None
+
+    @property
+    def disk_size(self) -> int:
+        return self.size if self.allocated_size is None else self.allocated_size
 
 
 @dataclass
@@ -302,21 +329,25 @@ class Finding:
         removable = [f for f in self.files if f.get('remove')]
         return {'id': self.id, 'kind': self.kind, 'kind_label': label, 'advice': advice, 'title': self.title,
                 'files': self.files, 'count': len(self.files), 'size': self.size,
+                'logical_size': sum(f.get('logical_size', f['size']) for f in self.files),
                 'removable_size': sum(f['size'] for f in removable), 'removable_count': len(removable),
                 'reason': self.reason, 'confidence': round(self.confidence, 2), **self.extra}
 
 
-def _hash(path: str, limit: int = 64 * 1024 * 1024) -> str | None:
+def _hash(path: str, limit: int = 64 * 1024 * 1024, cancel=None) -> str | None:
     h = hashlib.blake2b(digest_size=16)
     try:
         with open(fsops.long_path(path), 'rb') as fh:
             read = 0
             while read < limit:
-                block = fh.read(1024 * 1024)
+                fsops.check_cancel(cancel)
+                block = fh.read(min(1024 * 1024, limit - read))
                 if not block:
                     break
                 h.update(block)
                 read += len(block)
+            if read >= limit and fh.read(1):
+                return None  # a prefix match must never be described as identical content
     except OSError:
         return None
     return h.hexdigest()
@@ -360,43 +391,175 @@ class Insights:
         # code projects (see is_project_dir): no versions are guessed and no empty folders offered inside
         self.project_dirs: list[str] = []
         self.stats: dict = {}
+        self.cancel = None
 
     # -- collection ------------------------------------------------------------------
-    def collect(self, roots: list[str], skip=None, cancel=None, progress=None) -> 'Insights':
+    def collect(self, roots: list[str], skip=None, cancel=None, progress=None,
+                container_roots: list[str] | tuple = ()) -> 'Insights':
         started = time.time()
+        self.cancel = cancel
+        self.files = []
+        self.bundle_dirs = []
+        self.program_dirs = []
         self.roots = []
-        seen = set()
+        requested, root_details, requested_keys = [], [], set()
+        for root in roots:
+            if not isinstance(root, str) or not root:
+                continue
+            root = os.path.abspath(root)
+            k = paths.key(root)
+            if k in requested_keys:
+                continue
+            requested_keys.add(k)
+            requested.append(root)
+            root_details.append({'path': root, 'status': 'not_started'})
+        # A Desktop/home/drive may hold a stray executable next to personal
+        # files. An explicitly chosen ordinary program folder gets no exemption.
+        containers = {paths.key(p) for p in container_roots if p}
+        containers.update(paths.key(self.env[n]) for n in ('USERPROFILE', 'PUBLIC', 'SystemDrive') if self.env.get(n))
+        home = self.env.get('USERPROFILE')
+        if home:
+            containers.update(paths.key(os.path.join(home, n))
+                              for n in ('Desktop', 'Documents', 'Downloads', 'Pictures', 'Videos', 'Music'))
+
+        def container(path):
+            return paths.key(path) in containers or os.path.dirname(path) == path
+
+        program_keys = set()
+        installed_program_dirs = 0
+        app_list = getattr(self.apps, 'list', None)
+        if callable(app_list):
+            try:
+                app_rows = list(app_list())
+            except Exception:  # noqa: BLE001 - unavailable app registration leaves the existing heuristics in place
+                app_rows = []
+            for app in app_rows:
+                if not isinstance(app, dict):
+                    continue
+                own = app.get('own_location')
+                if not isinstance(own, str) or not own or not os.path.isabs(own):
+                    continue
+                own = os.path.abspath(own)
+                k = paths.key(own)
+                if k in program_keys or container(own) or any(paths.is_within(c, own) for c in containers):
+                    continue
+                if os.path.basename(own).casefold() in GENERIC_PROGRAM_ROOTS:
+                    continue
+                try:
+                    st = os.lstat(fsops.long_path(own))
+                except OSError:
+                    continue
+                if not stat.S_ISDIR(st.st_mode) or fsops.st_is_link(st):
+                    continue
+                self.program_dirs.append(own)
+                program_keys.add(k)
+            installed_program_dirs = len(self.program_dirs)
+
+        visited = set()
         dir_children: dict[str, list[str]] = {}
         dir_has_files: dict[str, bool] = {}
         self.project_dirs = projects = []
-        cloud = 0
-        for root in roots:
-            k = paths.key(root)
-            if k in seen or not os.path.isdir(root) or any(paths.is_within(root, r) for r in self.roots):
+        cloud = directories = sandboxes = 0
+        truncated = False
+        last_report = float('-inf')
+        current = ''
+
+        def report(path, force=False):
+            nonlocal last_report, current
+            current = path
+            now = time.monotonic()
+            if progress and (force or now - last_report >= 0.2):
+                progress({'files': len(self.files), 'dirs': directories, 'current': path,
+                          'truncated': truncated, 'limit': MAX_FILES, 'program_dirs': len(self.program_dirs)})
+                last_report = now
+
+        for detail in root_details:
+            root = detail['path']
+            fsops.check_cancel(cancel)
+            if not os.path.isdir(root):
+                detail['status'] = 'missing'
                 continue
-            seen.add(k)
             self.roots.append(root)
+        for detail in root_details:
+            root = detail['path']
+            if detail['status'] == 'missing':
+                continue
+            fsops.check_cancel(cancel)
+            report(root)
+            if fsops.path_is_link(root):
+                detail['status'] = 'link'
+                continue
+            if skip and skip(root):
+                detail['status'] = 'excluded'
+                continue
+            if paths.within_any(root, program_keys):
+                detail['status'] = 'program'
+                continue
+            if paths.key(root) in visited:
+                detail['status'] = 'covered'
+                continue
+            detail['status'] = 'scanned'
             for dirpath, files, dirs in fsops.walk_files(root, cancel):
-                if skip and dirpath != root and skip(dirpath):
+                k = paths.key(dirpath)
+                if k in visited:
                     dirs.clear()
                     continue
-                if dirpath != root and is_program_dir(files, dirs):
+                visited.add(k)
+                directories += 1
+                report(dirpath)
+                if skip and skip(dirpath):
+                    dir_has_files[dirpath] = True
+                    dirs.clear()
+                    continue
+                if paths.within_any(dirpath, program_keys):
+                    dir_has_files[dirpath] = True
+                    dirs.clear()
+                    continue
+                if paths.sandbox_layout([e.name for e in files], [d.name for d in dirs]):
+                    # a 演练环境: 盘序's own made-up files, not the user's (not walked, not offered, not empty)
+                    sandboxes += 1
+                    dir_has_files[dirpath] = True
+                    dirs.clear()
+                    continue
+                if not container(dirpath) and is_program_dir(files, dirs):
                     self.program_dirs.append(dirpath)
+                    program_keys.add(k)
+                    if any(paths.key(r) != k and paths.key(r) in visited and paths.is_within(r, dirpath)
+                           for r in self.roots):
+                        # A narrow extra root may have been read before its
+                        # parent was discovered to be a portable application.
+                        self.files[:] = [f for f in self.files if not paths.is_within(f.path, dirpath)]
+                        for prior in root_details:
+                            if prior['status'] in ('scanned', 'covered') and paths.is_within(prior['path'], dirpath):
+                                prior['status'] = 'program'
+                    if dirpath == root:
+                        detail['status'] = 'program'
                     dir_has_files[dirpath] = True  # not walked further: not empty, nothing inside is offered
                     dirs.clear()
                     continue
-                kept = [d for d in dirs if not managed_dir(d.name)]
-                has = len(kept) != len(dirs)  # holds a program-managed folder (node_modules, .git...): not empty
-                if dirpath != root and is_project_dir(files, dirs):  # a stray package.json on the Desktop is no project
+                kept = [d for d in dirs if not managed_dir(d.name)
+                        and paths.key(os.path.join(dirpath, d.name)) not in visited
+                        and not paths.within_any(os.path.join(dirpath, d.name), program_keys)
+                        and not (skip and skip(os.path.join(dirpath, d.name)))]
+                # A pruned branch is not empty: it may have been scanned through
+                # an earlier personal root, or may be a protected/managed folder.
+                has = len(kept) != len(dirs)
+                if not container(dirpath) and is_project_dir(files, dirs):
                     projects.append(dirpath)
                 dirs[:] = kept
                 dir_children[dirpath] = [os.path.join(dirpath, d.name) for d in dirs]
                 program = False
-                for entry in files:
+                for index, entry in enumerate(files):
+                    fsops.check_cancel(cancel)
+                    if index % 256 == 0:
+                        report(dirpath)
+                    has = True
                     if entry.name.lower() in IGNORED_FILES:
                         continue
+                    file_path = os.path.join(dirpath, entry.name)
+                    if skip and skip(file_path):
+                        continue
                     program = program or entry.name.lower().endswith(('.exe', '.dll'))
-                    has = True
                     try:
                         st = entry.stat(follow_symlinks=False)
                     except OSError:
@@ -406,17 +569,25 @@ class Insights:
                     if getattr(st, 'st_file_attributes', 0) & winapi.CLOUD_ATTRIBUTES:
                         cloud += 1
                         continue
-                    self.files.append(FileRec(os.path.join(dirpath, entry.name), entry.name, dirpath, st.st_size,
+                    if len(self.files) >= MAX_FILES:
+                        truncated = True
+                        dirs.clear()
+                        break
+                    self.files.append(FileRec(file_path, entry.name, dirpath, st.st_size,
                                               st.st_mtime, fsops.age_time(st), st.st_atime,
-                                              paths.category_of(entry.name), root))
+                                              paths.category_of(entry.name), root, fsops.file_size(entry.path, st)))
+                    if len(self.files) >= MAX_FILES:
+                        truncated = True
+                        dirs.clear()
+                        break
                 dir_has_files[dirpath] = has
-                if program and dirpath != root:
+                if program and not container(dirpath):
                     # a program's folder (portable tool, unpacked package): its documents belong to the program
                     self.bundle_dirs.append(dirpath)
-                if progress and len(self.files) % 2000 == 0:
-                    progress({'files': len(self.files), 'current': dirpath})
-                if len(self.files) >= MAX_FILES:
+                if truncated:
                     break
+            if truncated:
+                break
         # topmost folders with nothing in them at any depth
         empty: dict[str, bool] = {}
 
@@ -424,6 +595,16 @@ class Insights:
             if d in empty:
                 return empty[d]
             value = not dir_has_files.get(d, True) and all(is_empty(c) for c in dir_children.get(d, []))
+            if value:
+                # walk_files omits links, and an inaccessible/new entry must not
+                # turn a folder into an "empty folder" recommendation.
+                known = {paths.key(c) for c in dir_children.get(d, [])}
+                try:
+                    with os.scandir(fsops.long_path(d)) as entries:
+                        value = all(not fsops.is_link(e) and e.is_dir(follow_symlinks=False)
+                                    and paths.key(os.path.join(d, e.name)) in known for e in entries)
+                except OSError:
+                    value = False
             empty[d] = value
             return value
         for d in sorted(dir_children, key=len, reverse=True):
@@ -434,10 +615,14 @@ class Insights:
             parent = os.path.dirname(d)
             return paths.key(parent) in root_keys or not empty.get(parent, False)
         self.empty_dirs = sorted(d for d, e in empty.items() if e and paths.key(d) not in root_keys and topmost(d)
-                                 and not any(paths.is_within(d, p) for p in projects))
-        self.stats = {'files': len(self.files), 'cloud_skipped': cloud, 'bytes': sum(f.size for f in self.files),
+                                 and not any(paths.is_within(d, p) for p in projects + self.program_dirs))
+        self.stats = {'files': len(self.files), 'cloud_skipped': cloud, 'bytes': sum(f.disk_size for f in self.files),
                       'seconds': round(time.time() - started, 1), 'roots': self.roots,
-                      'program_dirs': len(self.program_dirs)}
+                      'root_details': root_details, 'requested_roots': requested, 'dirs': directories,
+                      'program_dirs': len(self.program_dirs), 'installed_program_dirs': installed_program_dirs,
+                      'sandbox_dirs': sandboxes,
+                      'truncated': truncated, 'limit': MAX_FILES}
+        report(current, force=True)
         return self
 
     # -- analysis --------------------------------------------------------------------
@@ -445,6 +630,7 @@ class Insights:
         claimed: set[str] = set()
         out: list[Finding] = []
         for fn in (self._incomplete, self._installers, self._archives, self._versions, self._stale, self._downloads):
+            fsops.check_cancel(self.cancel)
             for f in fn(claimed):
                 out.append(f)
                 claimed.update(paths.key(x['path']) for x in f.files)
@@ -459,7 +645,9 @@ class Insights:
         return (self.now - rec.changed) / DAY
 
     def _file(self, rec: FileRec, note: str = '', remove: bool = False) -> dict:
-        return {'path': rec.path, 'name': rec.name, 'size': rec.size, 'mtime': rec.mtime, 'note': note, 'remove': remove,
+        return {'path': rec.path, 'name': rec.name, 'size': rec.disk_size, 'logical_size': rec.size,
+                'mtime': rec.mtime, 'note': note, 'remove': remove,
+                'age_days': max(0, self._age_days(rec)),
                 'category': rec.category}
 
     def _incomplete(self, claimed):
@@ -469,7 +657,7 @@ class Insights:
             return []
         files = [self._file(r, f'{int(self._age_days(r))} 天前中断', remove=True) for r in rows]
         return [Finding('incomplete', 'incomplete_download', f'{len(rows)} 个没有下载完的文件', files,
-                        sum(r.size for r in rows), '扩展名表明下载没有完成，而且已经超过 3 天没有继续。', 0.9)]
+                        sum(r.disk_size for r in rows), '扩展名表明下载没有完成，而且已经超过 3 天没有继续。', 0.9)]
 
     def _installed_index(self):
         if self.apps is None:
@@ -487,7 +675,12 @@ class Insights:
             if ext not in INSTALLER_EXTS or r.size < 400 * 1024 or paths.key(r.path) in claimed:
                 continue
             depth = len(paths.key(r.path)[len(paths.key(r.root)):].strip('\\').split('\\'))
-            if depth > 2:  # only installers lying around, not programs inside a portable app folder
+            # A disk root is now a default scan root: depth alone cannot hide
+            # packages in a user's nested archive/download folders. For .exe,
+            # require an installer name when it is far from a personal root.
+            named_installer = re.search(r'setup|install|安装', r.name, re.I) \
+                and not re.search(r'uninstall|卸载', r.name, re.I)
+            if depth > 2 and ext == '.exe' and not named_installer:
                 continue
             name = compact(os.path.splitext(r.name)[0])
             app = _best_app(name, index) if len(name) >= 2 else None
@@ -497,7 +690,16 @@ class Insights:
                 iv, av = version_of(r.name), version_of(app.get('version') or '')
                 if iv and av and iv < av:
                     note += f'（已装 {app["version"]}，比这个安装包新）'
-                installed.append(self._file(r, note, remove=True))
+                elif iv and av and iv > av:
+                    note += '（这个安装包更新，可能正准备升级，请先保留）'
+                elif not (iv and av):
+                    note += '（尚未确认安装包与已装程序的版本关系）'
+                if age < 7:
+                    note += '；最近 7 天内刚下载或修改'
+                item = self._file(r, note, remove=not (iv and av and iv > av))
+                item['installed_version_comparison'] = ('newer' if iv > av else 'older' if iv < av else 'same') \
+                    if iv and av else 'unknown'
+                installed.append(item)
             elif age >= 90:
                 old.append(self._file(r, f'{int(age)} 天前下载，没有找到对应的已安装程序', remove=False))
         out = []
@@ -530,12 +732,12 @@ class Insights:
             folder = siblings.get(base_name(stem))
             if not folder:
                 continue
-            verified, total = _verify_zip(r.path, folder) if ext == '.zip' else (None, 0)
+            verified, total = _verify_zip(r.path, folder, self.cancel) if ext == '.zip' else (None, 0)
             if verified is False:
                 continue
             self.bundle_dirs.append(folder)
-            note = (f'其中 {total} 个文件都已在「{os.path.basename(folder)}」文件夹里，大小一致' if verified
-                    else f'旁边有同名文件夹「{os.path.basename(folder)}」，可能已经解压过（这种格式无法自动核对内容）')
+            note = (f'其中全部 {total} 个文件都已在「{os.path.basename(folder)}」文件夹里，大小和 CRC 校验一致' if verified
+                    else f'旁边有同名文件夹「{os.path.basename(folder)}」，可能已经解压过（尚未完整核对内容）')
             out_files.append((self._file(r, note, remove=bool(verified)), verified))
         if not out_files:
             return []
@@ -576,8 +778,8 @@ class Insights:
                                         not is_copy_name(os.path.splitext(m.name)[0])))
             digests = {}
             for m in members:
-                if m.size <= 512 * 1024 * 1024:
-                    digests[m.path] = _hash(m.path)
+                if m.size <= 64 * 1024 * 1024:
+                    digests[m.path] = _hash(m.path, cancel=self.cancel)
             by_digest: dict[str, list[FileRec]] = {}
             for m in members:
                 d = digests.get(m.path)
@@ -623,7 +825,7 @@ class Insights:
                 reason = f'{len(members)} 个文件名字相近，像是「{base}」的不同版本'
             reason += (f'，其中 {identical} 个与另一份内容完全相同' if identical else '') + '。'
             title = f'「{os.path.splitext(newest.name)[0]}」等 {len(members)} 个版本'
-            out.append(Finding(ident, 'name_versions', title, files, sum(m.size for m in members), reason,
+            out.append(Finding(ident, 'name_versions', title, files, sum(m.disk_size for m in members), reason,
                                0.85 if identical else 0.45,
                                {'group_base': base, 'folder': members[0].folder}))
         return out
@@ -633,7 +835,7 @@ class Insights:
         days = float(self.settings.get('stale_days', 365))
         rows = []
         for r in self.files:
-            if r.size < min_size or paths.key(r.path) in claimed:
+            if r.disk_size < min_size or paths.key(r.path) in claimed:
                 continue
             age = self._age_days(r)
             opened = (self.now - r.atime) / DAY
@@ -647,7 +849,7 @@ class Insights:
             return []
         files = [self._file(r, f'{_years(self._age_days(r))}没有修改过' + _category_hint(r.category)) for r in rows]
         files.sort(key=lambda f: -f['size'])
-        return [Finding('stale', 'stale_large', f'{len(rows)} 个很久没动过的大文件', files, sum(r.size for r in rows),
+        return [Finding('stale', 'stale_large', f'{len(rows)} 个很久没动过的大文件', files, sum(r.disk_size for r in rows),
                         f'大于 {int(min_size / 1024 / 1024)} MB，且超过 {int(days)} 天没有修改。', 0.4)]
 
     def _downloads(self, claimed):
@@ -657,12 +859,12 @@ class Insights:
             return []
         days = float(self.settings.get('download_days', 180))
         rows = [r for r in self.files if paths.is_within(r.path, downloads) and paths.key(r.path) not in claimed
-                and self._age_days(r) >= days and r.size >= 1024 * 1024]
+                and self._age_days(r) >= days and r.disk_size >= 1024 * 1024]
         if not rows:
             return []
-        files = [self._file(r, f'{int(self._age_days(r))} 天前下载') for r in sorted(rows, key=lambda r: -r.size)]
+        files = [self._file(r, f'{int(self._age_days(r))} 天前下载') for r in sorted(rows, key=lambda r: -r.disk_size)]
         return [Finding('downloads', 'old_downloads', f'下载文件夹里 {len(rows)} 个放了很久的文件', files,
-                        sum(r.size for r in rows), f'在下载文件夹里超过 {int(days)} 天。', 0.3)]
+                        sum(r.disk_size for r in rows), f'在下载文件夹里超过 {int(days)} 天。', 0.3)]
 
     def _empty(self):
         if not self.empty_dirs:
@@ -672,14 +874,14 @@ class Insights:
         return [Finding('empty', 'empty_folders', f'{len(files)} 个空文件夹', files, 0, '里面没有任何文件（包括子文件夹）。', 0.95)]
 
 
-def _verify_zip(path: str, folder: str) -> tuple[bool | None, int]:
-    """True if (nearly) every file in the zip exists in ``folder`` with the same size."""
+def _verify_zip(path: str, folder: str, cancel=None) -> tuple[bool | None, int]:
+    """True only if every entry's size AND CRC match; bounded, no extraction or cloud reads."""
     try:
         with zipfile.ZipFile(fsops.long_path(path)) as zf:
-            infos = [i for i in zf.infolist() if not i.is_dir()][:5000]
+            infos = [i for i in zf.infolist() if not i.is_dir()]
     except (OSError, zipfile.BadZipFile, ValueError, RuntimeError):
         return None, 0
-    if not infos:
+    if not infos or len(infos) > 5000 or sum(i.file_size for i in infos) > 128 * 1024 * 1024:
         return None, 0
     names = [i.filename.replace('\\', '/') for i in infos]
     prefixes = {n.split('/', 1)[0] for n in names}
@@ -687,19 +889,49 @@ def _verify_zip(path: str, folder: str) -> tuple[bool | None, int]:
 
     def found(info):
         rel = info.filename.replace('\\', '/')
+        if rel.startswith('/') or ntpath.splitdrive(rel)[0] or any(p in ('', '.', '..') or ':' in p for p in rel.split('/')):
+            return False
         candidates = [rel] + ([rel.split('/', 1)[1]] if strip else [])
         for c in candidates:
             p = os.path.join(folder, *c.split('/'))
             try:
-                if os.path.getsize(fsops.long_path(p)) == info.file_size:
+                # Check every ancestor: a directory junction inside the extracted folder
+                # must not make this verification read outside the chosen scope.
+                ancestor = p
+                safe = True
+                while paths.is_within(ancestor, folder):
+                    st = os.lstat(fsops.long_path(ancestor))
+                    if fsops.st_is_link(st) or getattr(st, 'st_file_attributes', 0) & winapi.CLOUD_ATTRIBUTES:
+                        safe = False
+                        break
+                    if paths.key(ancestor) == paths.key(folder):
+                        break
+                    ancestor = os.path.dirname(ancestor)
+                if not safe:
+                    return None
+                before = os.lstat(fsops.long_path(p))
+                if not stat.S_ISREG(before.st_mode) or before.st_size != info.file_size:
+                    continue
+                crc, size = 0, 0
+                with open(fsops.long_path(p), 'rb') as fh:
+                    while block := fh.read(min(1024 * 1024, info.file_size - size + 1)):
+                        fsops.check_cancel(cancel)
+                        size += len(block)
+                        if size > info.file_size:
+                            return False
+                        crc = zlib.crc32(block, crc)
+                after = os.lstat(fsops.long_path(p))
+                if size == info.file_size and crc == info.CRC and before.st_mtime_ns == after.st_mtime_ns:
                     return True
             except OSError:
                 continue
         return False
-    hits = sum(1 for i in infos if found(i))
-    if hits >= 0.9 * len(infos):
-        return True, len(infos)
-    return (False if hits < 0.5 * len(infos) else None), len(infos)
+    for info in infos:
+        fsops.check_cancel(cancel)
+        verified = found(info)
+        if verified is not True:
+            return verified, len(infos)
+    return True, len(infos)
 
 
 def _best_app(name: str, index: list[dict]) -> dict | None:

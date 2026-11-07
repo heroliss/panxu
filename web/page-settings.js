@@ -98,7 +98,9 @@
     // ---- one-click check-up
     const ck = s.checkup || {};
     const secCk = form.appendChild(h('section', h('h2', '一键体检')));
-    for (const [key, label, help] of [['space_scan', '分析系统盘空间', '找出陌生的大文件夹，需要几十秒到几分钟'],
+    secCk.appendChild(h('p.small.muted', '体检磁盘、重复比对方式和 AI 分析内容在首页选择；只影响一键体检。',
+      h('button.btn.quiet.small', { type: 'button', onclick: () => PX.go('home') }, '去首页选择')));
+    for (const [key, label, help] of [['space_scan', '分析磁盘空间', '统计体检范围内的磁盘占用，文件越多耗时越长；可随时停止'],
       ['duplicates', '查找重复文件', '在个人文件夹中比较文件内容'], ['use_ai', '使用 AI 复核', '配置了模型时，让 AI 判断文件夹、文件名和开机启动项']]) {
       secCk.appendChild(field(label, h('label.inline', PX.switchEl(ck[key] !== false, (e) => save({ checkup: { [key]: e.target.checked } })),
         h('span.small.muted', help))));
@@ -114,7 +116,10 @@
     // ---- 我的文件
     const ins = s.insights || {};
     const secMine = form.appendChild(h('section', h('h2', '我的文件')));
-    secMine.appendChild(h('div.small.muted', { style: { marginBottom: '10px' } }, '除了桌面、文档、下载、图片、视频和音乐，也整理这些文件夹（例如 D:\\资料）：'));
+    secMine.appendChild(h('div.small.muted', { style: { marginBottom: '10px' } },
+      '默认会查看桌面等常用位置、你的用户目录、公共文件夹，以及 C/D/E 等本地固定磁盘上的其他文件；系统、程序、缓存和其他账户等位置会跳过。只看不删，文件由你勾选。'));
+    secMine.appendChild(h('div.small.muted', { style: { marginBottom: '10px' } },
+      '这里可以补充其他位置，例如可移动磁盘或网络文件夹。可移动磁盘和网络位置不默认整盘查看；已重定向到这些位置的桌面、文档等常用文件夹仍会查看。'));
     const extra = s.extra_personal_paths || [];
     const exList = secMine.appendChild(h('div.folder-list'));
     for (const p of extra) {
@@ -136,7 +141,7 @@
 
     // ---- protected folders
     const sec3 = form.appendChild(h('section', h('h2', '排除的文件夹')));
-    sec3.appendChild(h('div.small.muted', { style: { marginBottom: '10px' } }, '这些文件夹里的内容不会被删除，也不会出现在重复文件结果中（垃圾清理的固定项目不受影响）。'));
+    sec3.appendChild(h('div.small.muted', { style: { marginBottom: '10px' } }, '这些位置会从扫描和清理中排除，也不能通过选择上级目录来处理。'));
     const ex = sec3.appendChild(h('div.folder-list'));
     for (const p of s.excluded_paths) {
       ex.appendChild(h('div.row', PX.fileIcon(p, true), h('div.name', PX.pathText(p)), h('div.row-actions', PX.revealButton(p),

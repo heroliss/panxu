@@ -131,6 +131,14 @@
       return parts.join('\\');
     },
   };
+  // The main figure is disk usage. Explain a sparse/compressed file's declared length only when it differs.
+  PX.sizeDifference = function (row) {
+    if (!row || !Number.isFinite(row.size) || !Number.isFinite(row.logical_size) || row.size === row.logical_size) return '';
+    return `标称 ${PX.fmt.bytes(row.logical_size)}，实际占用 ${PX.fmt.bytes(row.size)}`;
+  };
+  // Duplicate groups match by content length; individual copies can occupy different amounts of disk space.
+  PX.copySize = (file, groupSize) => (Number.isFinite(file.size) ? file.size : groupSize);
+  PX.duplicateWaste = (group) => group.files.slice(1).reduce((sum, file) => sum + PX.copySize(file, group.size), 0);
   // a program's icon, or its initial on a colour derived from the name
   PX.avatar = function (name, icon) {
     if (icon) return h('img.app-icon', { src: icon, alt: '' });
@@ -195,8 +203,63 @@
   };
 
   // One selection for the whole app: ticking a junk rule or a file is the same tick on 首页 and on its
-  // own page. Junk rules by id, files and folders by path, anything else (duplicate groups, startup
-  // items) by plan item id.
+  // own page. Junk rules by id, files/folders/duplicate copies by path, startup items by plan id.
+  PX.checkupDriveRoots = (drives, options = {}) => {
+    const key = (p) => String(p).replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+    const chosen = Array.isArray(options.selected_drives) ? new Set(options.selected_drives.map(key)) : null;
+    return drives.filter((d) => chosen ? chosen.has(key(d.root)) : d.fixed === true && (options.other_drives !== false || d.system))
+      .map((d) => d.root);
+  };
+  PX.checkupAIScopes = [['space', '陌生目录与残留'], ['files', '个人文件'], ['duplicates', '重复副本'], ['startup', '开机启动项'],
+    ['apps', '应用卸载建议'], ['services', '第三方服务']];
+  // the home switch an AI scope needs (switched off, the scope has nothing to look at) and what to say then
+  PX.checkupScopeParent = { space: ['space_scan', '空间扫描已关'], duplicates: ['duplicates', '查重已关'],
+    apps: ['apps_services', '应用与服务已关'], services: ['apps_services', '应用与服务已关'] };
+
+  // A check-up's coverage is tied to that run, never to switches changed afterwards.
+  PX.checkupCoverage = (plan) => {
+    const opts = plan.options || {}, cov = plan.coverage || {}, ai = plan.ai?.scopes || [];
+    const space = cov.space, dup = cov.duplicates, startup = cov.startup;
+    const personal = plan.personal_scan || {};
+    return [
+      { page: 'junk', name: '垃圾清理', status: cov.junk?.unavailable ? '有跳过项' : '已检查',
+        note: `按缓存和临时文件规则检查${cov.junk ? ` · ${cov.junk.rules} 条规则` : ''}` },
+      { page: 'space', name: '空间分析 · 大文件', status: !space ? '未检查' : space.incomplete ? '有跳过项' : '已检查',
+        note: space ? '大文件直接复用这次空间扫描，无需重扫' : '本次未启用空间扫描', skipped: !space, extra: ['large', '大文件'] },
+      { page: 'mine', name: '我的文件', status: personal.truncated ? '部分完成' : '已检查',
+        note: `已查看 ${PX.fmt.count(personal.files || plan.stats?.insight_files || 0)} 个文件 · 个人文件由你决定` },
+      { page: 'dups', name: '重复文件', status: opts.duplicates === false ? '未检查' : dup?.truncated ? '部分完成' : '已检查',
+        note: opts.duplicates === false ? '本次未启用查重' : opts.cross_drive_duplicates === false ? '只比较同一磁盘内的副本' : '包括不同磁盘之间的副本',
+        skipped: opts.duplicates === false },
+      startupRow(startup, cov.services, ai),
+      appsRow(cov.apps, ai),
+    ];
+  };
+  // 开机与服务: the startup items always, third-party services when 「检查应用与服务」 was on
+  function startupRow(startup, services, ai) {
+    const first = startup?.error ? '启动项读取失败' : `开机启动项${startup ? ` ${startup.count} 个` : '已读取'}`
+      + (ai.includes('startup') ? `，AI 解释了 ${startup?.ai_count || 0} 个` : '，未进行 AI 复核');
+    const second = !services ? '服务需单独检查' : services.error ? '服务读取失败'
+      : `第三方服务 ${services.count} 个` + (ai.includes('services') ? `，AI 解释了 ${services.ai_count || 0} 个` : '')
+        + (services.suggested ? `，${services.suggested} 个建议改为手动` : '') + (ai.includes('services') ? '' : '，未进行 AI 复核');
+    return { page: 'startup', name: '开机与服务', note: first + '；' + second, action: '查看启动项', extra: ['services', '查看服务'],
+      status: !services ? '部分覆盖' : startup?.error || services.error ? '有跳过项' : '已检查' };
+  }
+  // 应用: residues and registrations come from the space scan; the programs themselves with 「检查应用与服务」
+  function appsRow(apps, ai) {
+    if (!apps) return { page: 'apps', name: '应用', status: '未覆盖', note: '应用占用、使用情况和卸载建议需单独检查', skipped: true };
+    const listed = typeof apps.listed === 'number';
+    const parts = [listed ? `${apps.listed} 个程序` + (ai.includes('apps') ? `，AI 解释了 ${apps.ai_count || 0} 个` : '，未进行 AI 复核')
+      + (apps.suggested ? `，${apps.suggested} 个可以考虑卸载` : '') : null,
+    apps.residues ? `软件残留 ${apps.folders} 项` : '本次未扫描残留目录', `可疑登记 ${apps.registry} 项`].filter(Boolean);
+    return listed
+      ? { page: 'apps', name: '应用', status: apps.error ? '有跳过项' : apps.residues ? '已检查' : '部分覆盖', action: '查看应用', extra: ['residues', '软件残留'], note: parts.join('、') }
+      : { page: 'residues', name: '应用', status: '部分覆盖', action: '查看残留', extra: ['apps', '应用列表'], note: parts.join('、') + '；卸载建议需单独分析' };
+  }
+  PX.checkupAIReady = (init) => !!(init.has_key || init.settings.ai.preset === 'ollama') && !!(init.settings.ai.model || '').trim();
+  PX.checkupAIEnabled = (options = {}) => options.use_ai !== false && PX.checkupAIScopes.some(([key]) =>
+    options.ai_scopes?.[key] !== false && (!PX.checkupScopeParent[key] || options[PX.checkupScopeParent[key][0]] !== false));
+
   PX.sel = {
     rules: new Set(), paths: new Set(), items: new Set(),
     keyOf(it) {
@@ -204,8 +267,17 @@
       if (it.kind === 'paths' && it.paths && it.paths.length === 1) return ['paths', it.paths[0]];
       return ['items', it.id];
     },
-    has(it) { const [s, k] = this.keyOf(it); return this[s].has(k); },
-    set(it, on) { const [s, k] = this.keyOf(it); if (on) this[s].add(k); else this[s].delete(k); },
+    has(it) {
+      if ((it.kind === 'paths' || it.kind === 'dup') && it.paths && it.paths.length) return it.paths.every((p) => this.paths.has(p));
+      const [s, k] = this.keyOf(it); return this[s].has(k);
+    },
+    set(it, on) {
+      if ((it.kind === 'paths' || it.kind === 'dup') && it.paths && it.paths.length) {
+        for (const p of it.paths) { if (on) this.paths.add(p); else this.paths.delete(p); }
+        return;
+      }
+      const [s, k] = this.keyOf(it); if (on) this[s].add(k); else this[s].delete(k);
+    },
     replace(set, values) { set.clear(); for (const v of values) set.add(v); },
   };
 
@@ -427,6 +499,8 @@
   PX.copyFacts = function (f, brief) {
     if (!f) return [];
     const out = [PX.placeTag(f)];
+    const size = PX.sizeDifference(f);
+    if (size) out.push(h('span.small.muted', size));
     const refs = f.refs;
     if (refs && refs.count) {
       out.push(h('span.tag.warn', { title: '提到它的文件：\n' + refs.found.join('\n') },
@@ -448,11 +522,12 @@
   const DECISION = /^(自动勾选|没有自动勾选|没有勾选)/;
   // reasons that hold an item back or ask for care (checkup.py's guards and duplicates.removal_score), as opposed to
   // evidence for cleaning it (「可能是旧版本留下的」 is evidence)
-  const CAUTION = /还有改动|可能是存档|可能是程序本身|仍在使用|只能由你|由你决定|无法恢复|默认不勾|各自引用|出问题|有文件提到|可能引用|素材来源|请你|不能运行|没有经过|拿不准|不到 ?\d/;
+  const CAUTION = /还有改动|可能是存档|可能是程序本身|仍在使用|只能由你|由你决定|无法恢复|默认不勾|各自引用|出问题|有文件提到|可能引用|素材来源|请你|不能运行|没有经过|拿不准|不到 ?\d|没有完整|无法读取|很快重建|成本较高|仍可能需要|不能据此|尚未|不代表/;
   PX.basisKind = (line) => (/^AI/.test(line) ? 'ai' : CAUTION.test(line) ? 'warn' : 'plus');
   // what a cleanup does, in one line: [icon, what, the one thing to know about it]
   PX.ACTIONS = { delete: ['trash', '永久删除', '不经过回收站'], recycle: ['trash', '移到回收站', '需要时可以还原'],
-    disable: ['power', '禁用开机启动', '随时可以重新启用'] };
+    disable: ['power', '禁用开机启动', '随时可以重新启用'], service: ['power', '改为手动启动', '需要它的程序仍能按需启动，随时可以改回'],
+    uninstall: ['apps', '运行它自己的卸载程序', '逐个确认，不会和其他项目一起执行'] };
   PX.detailPanel = function ({ warn, action, facts, score, places, enter }) {
     const panel = h('div.dp' + (enter ? '.enter' : ''));
     const act = PX.ACTIONS[action];
@@ -537,6 +612,65 @@
     }
     return wrap;
   };
+  // ---- sorting a list by one of its columns
+  // keys: { id: { label, get(row) -> value, kind: 'num' | 'date' | 'text' | 'rank', dir: 'asc' | 'desc' (the first
+  // click; text 'asc', otherwise 'desc'), words: [asc, desc] } }; sort: { key, dir }. Missing values (null, undefined,
+  // '') go last whichever way; ties follow ``then`` (another key, in its own first direction), then the given order.
+  const collator = typeof Intl !== 'undefined' ? new Intl.Collator('zh-CN', { numeric: true, sensitivity: 'base' }) : null;
+  const absent = (v) => v === null || v === undefined || v === '' || (typeof v === 'number' && Number.isNaN(v));
+  // names A→Z; dates oldest first (what has not been touched for long is what a cleanup looks for); numbers largest first
+  const firstDir = (k) => k.dir || (k.kind === 'text' || k.kind === 'date' ? 'asc' : 'desc');
+  function compareKey(a, b, sign) {
+    const ma = absent(a), mb = absent(b);
+    if (ma || mb) return ma === mb ? 0 : ma ? 1 : -1;
+    const c = typeof a === 'number' && typeof b === 'number' ? a - b
+      : collator ? collator.compare(String(a), String(b)) : String(a).localeCompare(String(b));
+    return c * sign;
+  }
+  PX.sortRows = function (rows, keys, sort, then) {
+    const key = sort && keys[sort.key];
+    if (!key) return rows.slice();
+    const sign = sort.dir === 'asc' ? 1 : -1;
+    const next = then && then !== sort.key ? keys[then] : null;
+    const nextSign = next && firstDir(next) === 'asc' ? 1 : -1;
+    return rows.map((row, i) => ({ row, i, v: key.get(row), w: next ? next.get(row) : null }))
+      .sort((x, y) => compareKey(x.v, y.v, sign) || (next ? compareKey(x.w, y.w, nextSign) : 0) || x.i - y.i)
+      .map((x) => x.row);
+  };
+  // clicking a column: the same one turns its direction round, another starts in its own first direction
+  PX.sortPick = (keys, sort, id) => (sort && sort.key === id ? { key: id, dir: sort.dir === 'asc' ? 'desc' : 'asc' }
+    : { key: id, dir: firstDir(keys[id]) });
+  const SORT_WORDS = { num: ['从小到大', '从大到小'], date: ['最早的在前', '最近的在前'], text: ['按名称顺序', '倒序'],
+    rank: ['建议保留的在前', 'AI 建议处理的在前'] };
+  PX.sortWords = (k, dir) => (k.words || SORT_WORDS[k.kind] || SORT_WORDS.num)[dir === 'asc' ? 0 : 1];
+  function sortButton(keys, sort, id, onpick, spec, text) {
+    const k = keys[id];
+    const on = !!sort && sort.key === id;
+    const dir = on ? sort.dir : firstDir(k);
+    return h(spec + (on ? '.on' : ''), { type: 'button', 'aria-pressed': on ? 'true' : 'false',
+      title: on ? `按${k.label}排序：${PX.sortWords(k, dir)}。再点一次反过来` : `按${k.label}排序（${PX.sortWords(k, dir)}）`,
+      onclick: (e) => { e.stopPropagation(); onpick(PX.sortPick(keys, sort, id)); } },
+    text || k.label, on ? h('span.sort-dir', { 'aria-hidden': 'true' }, dir === 'asc' ? '↑' : '↓') : null);
+  }
+  // a row of choices above a list without column headings; ``only``: the ids to offer, in this order
+  PX.sortBar = (keys, sort, onpick, only) => h('div.sort-bar', { role: 'group', 'aria-label': '排序方式' },
+    h('span.sort-label', '排序'), (only || Object.keys(keys)).map((id) => sortButton(keys, sort, id, onpick, 'button.sort-opt')));
+  // a column heading that sorts (``cls`` 'r': a right-aligned column)
+  PX.sortHead = (keys, sort, id, onpick, cls, text) => sortButton(keys, sort, id, onpick, 'button.sort-head' + (cls ? '.' + cls : ''), text);
+
+  // 建议保留 / 可以删除 / ... as a rank for sorting: what the model would let go of first
+  PX.AI_RANK = { delete: 3, uninstall: 3, disable: 3, clean: 3, archive: 2, optional: 2, review: 1, careful: 1, keep: 0 };
+  PX.aiRank = (info) => (info && info.verdict !== undefined ? PX.AI_RANK[info.verdict] ?? 1
+    : info && info.suggestion !== undefined ? PX.AI_RANK[info.suggestion] ?? 1 : null);
+
+  // the folders to look in, without those inside another one of them (C:\ covers C:\Users\me\Documents)
+  PX.topRoots = function (list) {
+    const key = (p) => String(p || '').replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase();
+    const keys = list.map(key);
+    const inside = (p, root) => p === root || p.startsWith(root + '\\');
+    return list.filter((p, i) => keys[i] && !keys.some((r, j) => j !== i && r && inside(keys[i], r) && (keys[i] !== r || j < i)));
+  };
+
   PX.empty = (title, text, actions) => h('div.empty', h('h2', title), text ? h('div', text) : null,
     actions ? h('div.actions', actions) : null);
   PX.notice = (text, kind, extra) => h('div.notice' + (kind ? '.' + kind : ''), PX.icon(kind === 'info' ? 'info' : 'warn'),

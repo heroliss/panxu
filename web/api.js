@@ -14,7 +14,12 @@
     await ready;
     const r = await window.pywebview.api.call(method, params || {});
     if (!r) throw new Error('后台没有响应');
-    if (!r.ok) throw new Error(r.error || '操作失败');
+    if (!r.ok) {
+      const error = new Error(r.error || '操作失败');
+      error.busy = r.busy;
+      if (r.busy && PX.trackJob) PX.trackJob(r.busy);
+      throw error;
+    }
     return r.data;
   }
 
@@ -23,11 +28,15 @@
     const started = Date.now();
     const page = PX.currentPage ? PX.currentPage() : null;
     const jobId = await call(method, params);
+    if (PX.trackJob && method !== 'ai_ask') PX.trackJob({ id: jobId, kind: method, progress: {}, status: 'running' });
     if (onStart) onStart(jobId);
     for (;;) {
       await new Promise((r) => setTimeout(r, 300));
       const s = await call('job', { job_id: jobId });
-      if (s.status === 'running') { if (onProgress) onProgress(s.progress || {}, s); continue; }
+      s.kind = s.kind || method;
+      if (s.status === 'running') { if (PX.trackJob) PX.trackJob(s); if (onProgress) onProgress(s.progress || {}, s); continue; }
+      // Let the initiating page adopt the result before another visible page refreshes.
+      if (PX.finishJob) setTimeout(() => PX.finishJob(s));
       if (s.status === 'done') {
         // something that took a while: say it is done (the user may be elsewhere by now)
         if (PX.jobDone) setTimeout(() => PX.jobDone(method, s.result, Date.now() - started, page));

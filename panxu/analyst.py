@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import threading
@@ -246,14 +247,23 @@ class VerdictCache:
     def clear(self):
         with self._lock:
             self.data = {}
-            self.save()
+            self.save(strict=True)
 
-    def save(self):
+    def save(self, strict=False):
         with self._lock:
             tmp = self.path + '.tmp'
-            with open(tmp, 'w', encoding='utf-8') as fh:
-                json.dump(self.data, fh, ensure_ascii=False)
-            os.replace(tmp, self.path)
+            try:
+                with open(tmp, 'w', encoding='utf-8') as fh:
+                    json.dump(self.data, fh, ensure_ascii=False)
+                os.replace(tmp, self.path)
+            except OSError as exc:
+                if strict:
+                    raise
+                # Windows readers/antivirus can briefly deny replacement. Caching is
+                # optional: keep the result in memory and retry at the next save.
+                logging.getLogger(__name__).warning('AI cache could not be saved; keeping results in memory: %s', exc)
+                return False
+            return True
 
 
 class Analyst:
@@ -309,7 +319,8 @@ class Analyst:
             if node.size <= 0 or node.size < min_size:
                 continue
             path = scan.path_of(node)
-            role = 'descend' if node is scan.root else self.knowledge.ai_role(path)
+            role = 'descend' if node is scan.root or (getattr(scan, 'multiple', False) and node.parent is scan.root) \
+                else self.knowledge.ai_role(path)
             if role == 'skip':
                 continue
             if role == 'descend':
@@ -369,7 +380,7 @@ class Analyst:
         """Folders the built-in knowledge recognises as cleanable but no cleanup rule covers (a drive's Temp
         folder): listed with the AI's suggestions, without asking the model."""
         out = []
-        stack = [(scan.root, 0)]
+        stack = [(scan.root, -1 if getattr(scan, 'multiple', False) else 0)]
         while stack:
             node, depth = stack.pop()
             if node.size < min_size:
@@ -401,8 +412,9 @@ class Analyst:
                 except OSError:
                     continue
                 ext = os.path.splitext(entry.name)[1].lower() or '(无)'
-                exts[ext] = exts.get(ext, 0) + st.st_size
-                largest.append((st.st_size, entry.name))
+                used = fsops.file_size(entry.path, st)
+                exts[ext] = exts.get(ext, 0) + used
+                largest.append((used, entry.name))
                 if oldest is None or st.st_mtime < oldest:
                     oldest = st.st_mtime
                 seen += 1
@@ -413,7 +425,8 @@ class Analyst:
         top_exts = sorted(exts.items(), key=lambda kv: kv[1], reverse=True)[:8]
         own = [n for n in sorted(largest, reverse=True)[:6]]
         summary = {
-            'id': ident, 'path': shown, 'size': _fmt_size(node.size), 'files': node.files,
+            'id': ident, 'path': shown, 'size': _fmt_size(node.size),
+            'logical_size': _fmt_size(node.logical_size), 'size_basis': '本机磁盘占用', 'files': node.files,
             'subdir_count': len(node.children or ()), 'newest': _fmt_date(node.mtime), 'oldest': _fmt_date(oldest or 0),
             'subdirs': subdirs, 'types': [[e, _fmt_size(s)] for e, s in top_exts],
             'largest_files': [[name, _fmt_size(size)] for size, name in own],
@@ -545,7 +558,8 @@ class Analyst:
         results[node.id] = self._row(scan, node, verdict, source)
 
     def _row(self, scan, node, verdict: dict, source: str, expanded: bool = False) -> dict:
-        return {'node_id': node.id, 'path': scan.path_of(node), 'size': node.size, 'files': node.files, 'mtime': node.mtime,
+        return {'node_id': node.id, 'path': scan.path_of(node), 'size': node.size,
+                'logical_size': node.logical_size, 'files': node.files, 'mtime': node.mtime,
                 'verdict': verdict['verdict'], 'verdict_label': VERDICT_LABELS[verdict['verdict']],
                 'app': verdict.get('app', ''), 'reason': verdict.get('reason', ''), 'effect': verdict.get('effect', ''),
                 'confidence': verdict.get('confidence', 0), 'source': source, 'expanded': expanded}
@@ -555,9 +569,11 @@ class Analyst:
                                       'confidence': 0}, 'none')
 
     # -- startup items, services and installed programs -----------------------------
-    def explain_items(self, items: list[dict], client, anonymize: bool = True, use_cache: bool = True) -> dict:
+    def explain_items(self, items: list[dict], client, anonymize: bool = True, use_cache: bool = True,
+                      cancel=None, max_requests: int | None = None) -> dict:
         """items: [{'key', 'kind': 'startup'|'service'|'app', 'name', 'command', 'publisher', 'description',
-        'extra': {...}}]. Programs get their own prompt: uninstall advice instead of disable advice."""
+        'extra': {...}}]. Programs get their own prompt: uninstall advice instead of disable advice.
+        ``cancel`` is checked before each request; ``max_requests`` bounds them (the first items go first)."""
         if any(i['kind'] == 'app' for i in items) and not all(i['kind'] == 'app' for i in items):
             raise ValueError('programs are explained separately from startup items and services')
         is_apps = bool(items) and items[0]['kind'] == 'app'
@@ -574,7 +590,11 @@ class Analyst:
             else:
                 pending.append(item)
         errors = []
-        for start in range(0, len(pending), 25):
+        for n, start in enumerate(range(0, len(pending), 25)):
+            fsops.check_cancel(cancel)
+            if max_requests is not None and n >= max_requests:
+                errors.append(f'请求次数到了上限，还有 {len(pending) - start} 项这次没有解释，可以在对应的页面里点「AI 解释」继续')
+                break
             batch = pending[start:start + 25]
             payload = []
             for i, item in enumerate(batch):
@@ -649,6 +669,8 @@ class Analyst:
                        'size': _fmt_size(f.get('size') or 0), 'modified': _fmt_date(f.get('mtime') or 0),
                        'type': paths.category_label(f.get('category') or 'other'), 'group': f.get('group', ''),
                        'group_id': f.get('group_id', ''), 'note': f.get('note', '')}
+                if f.get('logical_size') is not None and f['logical_size'] != f.get('size'):
+                    row.update(logical_size=_fmt_size(f['logical_size']), size_basis='本机磁盘占用')
                 if f.get('excerpt'):
                     row['excerpt'] = f['excerpt']
                 payload.append(row)

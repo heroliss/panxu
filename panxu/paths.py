@@ -153,6 +153,27 @@ def deanonymize(path: str, env: dict[str, str]) -> str | None:
     return expand(path, env) if '%' in path else ntpath.normpath(path)
 
 
+# A 演练环境 (sandbox.Sandbox) kept outside PanXu's data folder (``run.py --sandbox D:\\somewhere``): its
+# marker file next to its simulated drives. Everything in it is 盘序's own made-up test data, so the
+# personal-file tools and the duplicate finder do not offer it, and the space view says what it is.
+SANDBOX_MARKER = '.panxu-sandbox'  # written by sandbox.Sandbox.build next to its simulated C drive
+
+
+def sandbox_layout(file_names, dir_names) -> bool:
+    """Do these names (one folder's files and sub-folders) make up a 演练环境?"""
+    return SANDBOX_MARKER in {n.lower() for n in file_names} and 'c' in {n.lower() for n in dir_names}
+
+
+def is_sandbox_root(path: str) -> bool:
+    """The same as ``sandbox_layout``, for a folder by its path (a few metadata lookups, no listing)."""
+    if not isinstance(path, str) or not path or not os.path.isabs(path):
+        return False  # e.g. the check-up's 「本机磁盘」 node, which has no path
+    try:
+        return os.path.isfile(os.path.join(path, SANDBOX_MARKER)) and os.path.isdir(os.path.join(path, 'C'))
+    except (OSError, ValueError, TypeError):
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Protection policy for user-initiated deletion (large files, duplicates,
 # space-analysis selections, AI suggestions). Rule-based junk cleanup uses its

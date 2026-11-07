@@ -84,6 +84,17 @@ class PolicyTest(SandboxTestCase):
 
 
 class RecycleTest(SandboxTestCase):
+    def test_recycling_on_d_does_not_move_its_usage_to_c(self):
+        target = self.make('sb/D/MyFiles/example.bin', 2048)
+        before = {d['letter']: d['free'] for d in self.sb.drives()}
+        winapi.recycle_paths([target])
+        after = {d['letter']: d['free'] for d in self.sb.drives()}
+        self.assertEqual(before, after)
+        self.assertTrue(paths.is_within(self.sb.recycle_items()[0]['stored'], self.sb.native('D')))
+        self.sb.empty_recycle_bin()
+        self.assertEqual(self.sb.recycle_bin_info(), (0, 0))
+        self.assertEqual(self.sb.disk_usage(self.sb.native('D')).free, before['D:'] + 2048)
+
     def test_recycle_and_restore(self):
         target = self.sb.native('C/Users/demo/Downloads/SteamSetup.exe')
         size = os.path.getsize(target)

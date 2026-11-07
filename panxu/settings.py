@@ -30,9 +30,14 @@ DEFAULTS = {
         'timeout': 120,
     },
     'checkup': {
-        'space_scan': True,      # scan the system drive during the one-click check-up
+        'space_scan': True,      # scan fixed local disks and explicitly added/redirected personal roots
+        'other_drives': True,    # also enumerate other fixed disks; personal locations remain in the base scope
+        'selected_drives': None, # None keeps legacy defaults; [] means personal locations only, no whole disks
         'duplicates': True,
+        'cross_drive_duplicates': True,
         'use_ai': True,          # ask the model when a key is configured
+        'apps_services': True,   # read installed programs and third-party services (nothing is changed by the check-up)
+        'ai_scopes': {'space': True, 'files': True, 'duplicates': True, 'startup': True, 'apps': True, 'services': True},
         'auto_threshold': 5,     # 勾选门槛 0-10: pre-tick eligible items scoring at least this (稳妥 8, 积极 5)
     },
     'insights': {

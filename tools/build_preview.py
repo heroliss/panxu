@@ -36,8 +36,9 @@ def main():
                             '@media (max-width:1100px){.space-grid{grid-template-columns:minmax(0,1.25fr) minmax(300px,1fr)}'
                             '.treemap-wrap{position:sticky;max-width:none}}</style></head>' % (z, z))
     if boot:
+        # after the app opened its first page, or that first page would replace the one asked for
         snippet = ('<script>document.addEventListener("DOMContentLoaded",()=>{const t=setInterval(()=>{'
-                   'if(PX.state.init){clearInterval(t);' + ''.join(boot) + '}},30);});</script>')
+                   'if(PX.state.init&&PX.currentPage()){clearInterval(t);' + ''.join(boot) + '}},30);});</script>')
         html = html.replace('</body>', snippet + '\n</body>')
     with open(args.output, 'w', encoding='utf-8') as fh:
         fh.write(html)

@@ -1,12 +1,23 @@
-/* 我的文件: what is lying around in the personal folders — unfinished downloads, installers of installed
+/* 我的文件: loose files across local fixed disks — unfinished downloads, installers of installed
    programs, extracted archives, several versions of one document, big files nobody touched in years. */
 (function () {
   'use strict';
   const { h, fmt } = PX;
   const VERDICT = { keep: 'warn', delete: 'good', archive: 'info', review: '' };
   const state = { status: 'idle', result: null, selected: PX.sel.paths, open: new Set(), progress: {}, jobId: null,
-    loaded: false, aiBusy: false };
+    loaded: false, aiBusy: false, sort: { key: 'order', dir: 'asc' } };
   let root = null;
+  // inside each kind: 盘序's order (the version to keep heads its group, the rest largest first) or the user's
+  const order = new WeakMap();
+  const SORT = {
+    order: { label: '默认', kind: 'num', dir: 'asc', words: ['盘序的顺序：要保留的版本在最前，其余从大到小', '倒序'], get: (x) => order.get(x) },
+    score: { label: '建议清理度', kind: 'num', get: (x) => x.score },
+    size: { label: '大小', kind: 'num', get: (x) => x.size },
+    mtime: { label: '修改时间', kind: 'date', get: (x) => x.mtime || null },
+    name: { label: '名称', kind: 'text', get: (x) => x.name },
+    path: { label: '位置', kind: 'text', get: (x) => PX.displayPath(x.path) },
+    ai: { label: 'AI 建议', kind: 'rank', words: ['建议保留的在前', '可以删除的在前'], get: (x) => PX.aiRank(x.ai) },
+  };
 
   async function loadExisting() {
     state.loaded = true;
@@ -18,14 +29,15 @@
     draw();
   }
 
-  async function scan() {
+  async function scan(roots) {
     if (state.status === 'scanning') return;
+    if (PX.workBlocked()) return;
     state.status = 'scanning';
     state.progress = {};
     draw();
     try {
-      state.result = await PX.api.run('insights_scan', {}, (p) => { state.progress = p; draw(true); }, (id) => { state.jobId = id; });
-      state.selected.clear();
+      const params = Array.isArray(roots) ? { roots } : {};
+      state.result = await PX.api.run('insights_scan', params, (p) => { state.progress = p; draw(true); }, (id) => { state.jobId = id; });
       state.status = 'done';
     } catch (e) {
       state.status = state.result ? 'done' : 'idle';
@@ -35,9 +47,18 @@
     draw();
   }
 
+  async function chooseFolder() {
+    if (state.status === 'scanning') return;
+    try {
+      const folder = await PX.api.call('pick_folder');
+      if (folder) await scan([folder]);
+    } catch (e) { PX.fail(e); }
+  }
+
   async function reload() {
+    const previous = state.result ? state.result.findings.flatMap((f) => f.files.map((x) => x.path)) : [];
     try { state.result = await PX.api.call('insights_result'); } catch (e) { PX.fail(e); }
-    for (const p of [...state.selected]) {
+    for (const p of previous) {
       if (!state.result || !state.result.findings.some((f) => f.files.some((x) => x.path === p))) state.selected.delete(p);
     }
     draw(true);
@@ -131,10 +152,11 @@
     list.appendChild(h('div.row.mine-row', box,
       h('div.cell-main', h('div.name-line', PX.fileIcon(x.path, x.category === 'folder'), h('span.name-text', { title: x.path }, x.name), tags),
         h('div.sub', PX.pathText(folder, fmt.place(folder, PX.state.init.home))),
+        PX.sizeDifference(x) ? h('div.small.muted', PX.sizeDifference(x)) : null,
         x.note ? h('div.why', x.note) : null,
         x.ai ? h('div.ai-note', h('span', x.ai.what), h('span.muted', x.ai.reason)) : null),
       PX.score(x.score, x.note),
-      h('div.size', x.size ? fmt.bytes(x.size) : ''),
+      h('div.size', x.size || x.logical_size > 0 ? fmt.bytes(x.size) : ''),
       h('div.small.muted', x.mtime ? fmt.date(x.mtime) : ''),
       h('div.row-actions',
         x.category === 'folder' ? null : PX.openButton(x.path),
@@ -177,7 +199,8 @@
     const list = sec.appendChild(h('div.list'));
     const key = 'f:' + f.id;
     const limit = f.files.length > 10 && !state.open.has(key) ? 6 : f.files.length;
-    f.files.slice(0, limit).forEach((x) => fileRow(list, f, x));
+    f.files.forEach((x, i) => order.set(x, i));
+    PX.sortRows(f.files, SORT, state.sort, 'size').slice(0, limit).forEach((x) => fileRow(list, f, x));
     if (limit < f.files.length) list.appendChild(h('button.fold', { type: 'button', onclick: () => { state.open.add(key); draw(true); } }, `显示其余 ${f.files.length - limit} 项`));
   }
 
@@ -192,17 +215,25 @@
     h('div.actions',
       r && r.findings.length ? h('button.btn', { type: 'button', disabled: state.aiBusy, onclick: askAI }, PX.icon('spark'), state.aiBusy ? 'AI 正在看…' : '让 AI 看看这些文件') : null,
       state.status === 'scanning' ? h('button.btn', { type: 'button', onclick: () => state.jobId && PX.api.cancel(state.jobId) }, '停止')
-        : h('button.btn' + (r ? '' : '.primary'), { type: 'button', onclick: scan }, PX.icon('refresh'), r ? '重新整理' : '开始整理'))));
+        : [h('button.btn', { type: 'button', onclick: chooseFolder }, PX.icon('folder'), '选择文件夹整理'),
+          h('button.btn' + (r ? '' : '.primary'), { type: 'button', onclick: () => scan() }, PX.icon('refresh'), r ? '重新整理本机文件' : '整理本机文件')])));
+    c.appendChild(h('div.small.muted', { style: { marginBottom: '16px' } },
+      '默认先看桌面、文档、下载等常用位置，再看你的用户目录、公共文件夹和 C/D/E 等本地固定磁盘。系统、程序、缓存和其他账户等位置会跳过，可移动磁盘和网络位置不默认整盘查看。只看不删，文件由你勾选。'));
     if (state.status === 'scanning') {
       const p = state.progress;
       c.appendChild(h('section.working', h('div.line', h('span.big', fmt.count(p.files || 0)), h('span.muted', '个文件已查看')),
-        PX.progressBar(null), h('div.cur', p.current || '')));
+        h('div.small.muted', `已查看 ${fmt.count(p.dirs || 0)} 个文件夹`),
+        PX.progressBar(null), h('div.cur', PX.displayPath(p.current || ''))));
       return;
     }
     if (!r) {
-      c.appendChild(PX.empty('还没有整理过', '会查看桌面、文档、下载、图片、视频、音乐，以及设置里添加的文件夹。只看不删。',
-        [h('button.btn.primary', { type: 'button', onclick: scan }, '开始整理')]));
+      c.appendChild(PX.empty('还没有整理过', '会找出没下完的下载、旧安装包、多个版本和很久没动过的大文件，供你逐项查看。',
+        [h('button.btn.primary', { type: 'button', onclick: () => scan() }, '整理本机文件')]));
       return;
+    }
+    if (r.stats.truncated) {
+      c.appendChild(PX.notice(`本次未扫完，已到 ${fmt.count(r.stats.limit || r.stats.files)} 个文件上限。已查看的结果仍可整理；可以选择一个文件夹，分批查看。`, 'warn',
+        h('button.btn.small', { type: 'button', onclick: chooseFolder }, '选择文件夹整理')));
     }
     if (PX.home && PX.home.state.plan) {
       c.appendChild(PX.notice('这里的勾选和首页「清理方案」里的是同一份：在哪里勾都一样。', 'info',
@@ -211,15 +242,21 @@
     c.appendChild(h('div.small.muted', { style: { marginBottom: '16px' } },
       `查看了 ${fmt.count(r.stats.files)} 个文件（${fmt.bytes(r.stats.bytes)}），位置：` + r.roots.map((p) => fmt.place(p, PX.state.init.home)).join('、') +
       (r.stats.cloud_skipped ? `。${r.stats.cloud_skipped} 个只在云端的文件没有读取。` : '') +
-      (r.stats.program_dirs ? `。${r.stats.program_dirs} 个程序自己的文件夹（例如解压出来的免安装程序）整个跳过，没有列出里面的文件。` : '')));
-    if (!r.findings.length) c.appendChild(PX.empty('没有发现需要注意的文件', '你的个人文件夹很整洁。'));
-    else overview(c, r);
+      (r.stats.program_dirs ? `。${r.stats.program_dirs} 个程序自己的文件夹（例如解压出来的免安装程序）整个跳过，没有列出里面的文件。` : '') +
+      (r.stats.sandbox_dirs ? `${r.stats.program_dirs ? '' : '。'}${r.stats.sandbox_dirs} 个盘序演练环境里是演练用的假文件，也跳过了。` : '')));
+    if (!r.findings.length) c.appendChild(PX.empty('没有发现需要注意的文件', '已查看的范围里，没有符合整理条件的文件。'));
+    else {
+      overview(c, r);
+      const anyAI = r.findings.some((f) => f.files.some((x) => x.ai));
+      c.appendChild(PX.sortBar(SORT, state.sort, (s) => { state.sort = s; draw(true); },
+        ['order', 'score', 'size', 'mtime', 'name', 'path', ...(anyAI ? ['ai'] : [])]));
+    }
     for (const f of r.findings) finding(c, f);
-    if (state.selected.size) {
-      let size = 0;
-      for (const f of r.findings) for (const x of f.files) if (state.selected.has(x.path)) size += x.size;
-      c.appendChild(h('div.actionbar', h('div.grow', h('span.fig', fmt.bytes(size)), h('span.muted', `  已选 ${state.selected.size} 项`)),
-        h('button.btn', { type: 'button', onclick: () => { state.selected.clear(); draw(true); } }, '清除选择'),
+    const chosen = r.findings.flatMap((f) => f.files).filter((x) => state.selected.has(x.path));
+    if (chosen.length) {
+      const size = chosen.reduce((sum, x) => sum + x.size, 0);
+      c.appendChild(h('div.actionbar', h('div.grow', h('span.fig', fmt.bytes(size)), h('span.muted', `  已选 ${chosen.length} 项`)),
+        h('button.btn', { type: 'button', onclick: () => { for (const x of chosen) state.selected.delete(x.path); draw(true); } }, '清除选择'),
         h('button.btn.primary', { type: 'button', onclick: recycle }, PX.icon('trash'), '移到回收站')));
     }
     if (keepScroll) main.scrollTop = top;

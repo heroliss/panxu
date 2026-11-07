@@ -48,12 +48,21 @@ def check_plan(plan: dict, env: dict, insights: dict | None = None, junk_rows: l
         out.append({'level': level, 'text': text})
 
     app_bases = [env[k] for k in ('LOCALAPPDATA', 'APPDATA', 'LOCALLOW', 'ProgramData') if env.get(k)]
+    coverage = plan.get('coverage') or {}
+    dup_scope = coverage.get('duplicates') or {}
+    if dup_scope.get('truncated'):
+        add('warn', '重复文件没有全部比对：已达到本次体检的文件数、内容读取或比对时间上限，可按文件夹继续查找')
     home = env.get('USERPROFILE', '')
+    public = env.get('PUBLIC', '')
     users = os.path.dirname(home.rstrip('\\/')) if home else ''
     for item in plan.get('items', []):
         if item['action'] == 'none':
             continue
         title = item['title']
+        if item['selected'] and item['kind'] in ('app', 'service', 'startup'):
+            add('severe', f'程序、服务或启动项被自动勾选（这些只能由你决定）：{title}')
+        if item['kind'] == 'app' and item['action'] != 'uninstall':
+            add('severe', f'程序没有交给它自己的卸载程序：{title}')
         if item['selected'] and item.get('personal'):
             add('severe', f'个人文件被自动勾选：{title}')
         elif item['selected'] and item['kind'] == 'paths':
@@ -61,7 +70,8 @@ def check_plan(plan: dict, env: dict, insights: dict | None = None, junk_rows: l
                 if not any(paths.is_within(p, b) for b in app_bases):
                     add('severe', f'自动勾选了应用数据目录以外的文件夹：{title}（{p}）')
         for p in item['paths']:
-            if users and paths.is_within(p, users) and home and not paths.is_within(p, home):
+            if users and paths.is_within(p, users) and home and not paths.is_within(p, home) \
+                    and not (public and paths.is_within(p, public)):
                 add('severe', f'方案里出现了其他账户的文件：{p}')
             if item.get('personal') and home and paths.is_within(p, home):
                 below = p[len(home.rstrip('\\/')):].replace('/', '\\').strip('\\').split('\\')
@@ -82,6 +92,9 @@ def check_plan(plan: dict, env: dict, insights: dict | None = None, junk_rows: l
         if n > MANY_IN_CATEGORY:
             add('warn', f'「{category}」有 {n} 项，可能在误报')
     if insights:
+        stats = insights.get('stats') or {}
+        if stats.get('truncated'):
+            add('warn', f'我的文件没有全部扫完：已到 {stats.get("limit", 0):,} 个文件上限，请按文件夹分批整理')
         groups = sum(1 for f in insights.get('findings', []) if f['kind'] == 'name_versions')
         if groups > MANY_VERSION_GROUPS:
             add('warn', f'「同一文件的多个版本」有 {groups} 组，可能把编号文件当成了版本')
@@ -132,6 +145,15 @@ def render(plan: dict, findings: list[dict], env: dict, seconds: float, full_pat
         lines.append(f'系统盘 {drive["root"]} 可用 {drive["free"] / GB:.1f} GB / {drive["total"] / GB:.1f} GB')
     lines.append(f'用时 {seconds:.0f} 秒；勾选门槛：{plan.get("threshold", DEFAULT_THRESHOLD)} 分；AI：{"使用了" if ai_used else "没有使用"}')
     lines.append('没有删除、移动或修改任何东西。' + ('' if full_paths else '路径里的用户名已替换成 %USERPROFILE% 等。'))
+    coverage = plan.get('coverage') or {}
+    space = coverage.get('space') or {}
+    if space:
+        lines.append('空间扫描：' + '、'.join(show(r) for r in space.get('roots', []))
+                     + f'；{space.get("files", 0):,} 个文件，{space.get("dirs", 0):,} 个目录。')
+    dups = coverage.get('duplicates') or {}
+    if dups:
+        lines.append(f'重复比对：{dups.get("files", 0):,} 个候选文件，读取 {dups.get("hashed_bytes", 0) / GB:.2f} GB；'
+                     + ('已到本次上限，未全部完成。' if dups.get('truncated') else '已完成。'))
     titles = {'safe': '会自动勾选（放心清理）', 'review': '建议你看看', 'info': '仅供了解'}
     for n, (group, title) in enumerate(titles.items(), 1):
         rows = [i for i in plan['items'] if i['group'] == group]
@@ -163,7 +185,8 @@ def main(argv=None) -> int:
     parser.add_argument('--ai', action='store_true', help='also ask the configured model (anonymised names are sent)')
     parser.add_argument('--threshold', type=int, default=DEFAULT_THRESHOLD, help='勾选门槛 0-10 (default %(default)s)')
     parser.add_argument('--careful', action='store_true', help='same as --threshold 8 (稳妥)')
-    parser.add_argument('--no-space', action='store_true', help='skip the system drive scan')
+    parser.add_argument('--no-space', action='store_true', help='skip the local fixed drive scan')
+    parser.add_argument('--no-other-drives', action='store_true', help='skip whole-disk enumeration of other drives; keep personal locations')
     parser.add_argument('--no-dups', action='store_true', help='skip the duplicate search')
     parser.add_argument('--out', help='also write the report to this file')
     parser.add_argument('--save', help='write a summary (JSON) to compare with later')
@@ -196,19 +219,25 @@ def main(argv=None) -> int:
             backend.settings.set_secret('ai_key:' + ai['preset'], key)
         bridge = Bridge(backend)
         options = {'use_ai': bool(args.ai), 'space_scan': not args.no_space, 'duplicates': not args.no_dups,
+                   'other_drives': not args.no_other_drives,
                    'auto_threshold': 8 if args.careful else max(0, min(10, args.threshold))}
         started = time.time()
         r = bridge.call('checkup', {'options': options})
         if not r['ok']:
             print(r['error'], file=sys.stderr)
             return 2
-        last = ''
+        last, last_progress = '', 0.0
         while True:
             s = bridge.call('job', {'job_id': r['data']})['data']
             stage = (s.get('progress') or {}).get('stage_label') or ''
             if stage and stage != last:
                 print('…' + stage, file=sys.stderr, flush=True)
                 last = stage
+            if time.time() - last_progress >= 15:
+                count = (s.get('progress') or {}).get('count')
+                if count:
+                    print('  ' + count, file=sys.stderr, flush=True)
+                last_progress = time.time()
             if s['status'] != 'running':
                 break
             time.sleep(0.3)

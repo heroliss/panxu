@@ -41,6 +41,27 @@ class EngineTest(TempDirTest):
     def engine(self, admin=False, processes=()):
         return junk.JunkEngine(self.env, admin=admin, processes=set(processes), oplog=self.log)
 
+    def test_new_teams_cache_preserves_account_data_and_obeys_running_guard(self):
+        base = 'Users/alice/AppData/Local/Packages/MSTeams_8wekyb3d8bbwe/LocalCache/Microsoft/MSTeams/EBWebView/Default/'
+        cache = self.make(base + 'Cache/Cache_Data/data_0', 80)
+        keep = [self.make(base + 'Cookies', 10), self.make(base + 'Local Storage/db', 20)]
+        self.assertTrue(self.engine(processes={'ms-teams.exe'}).clean(['teams_new'])['rules'][0]['skipped'])
+        self.assertTrue(os.path.exists(cache))
+        self.assertEqual(self.engine().clean(['teams_new'])['freed'], 80)
+        self.assertTrue(all(os.path.exists(p) for p in keep))
+
+    def test_dism_rule_only_removes_old_rotated_log(self):
+        old = self.make('Windows/Logs/DISM/dism.log.bak', 20, age_days=30)
+        keep = [self.make('Windows/Logs/DISM/dism.log', 30, age_days=30),
+                self.make('Windows/Logs/DISM/custom.log.bak', 40, age_days=30)]
+        self.assertTrue(self.engine(admin=True, processes={'dism.exe'}).clean(['dism_logs'])['rules'][0]['skipped'])
+        self.assertEqual(self.engine(admin=True).clean(['dism_logs'])['freed'], 20)
+        self.assertFalse(os.path.exists(old))
+        self.assertTrue(all(os.path.exists(p) for p in keep))
+        fresh = self.make('Windows/Logs/DISM/dism.log.bak', 20)
+        self.assertEqual(self.engine(admin=True).clean(['dism_logs'])['freed'], 0)
+        self.assertTrue(os.path.exists(fresh))
+
     def test_scan_and_clean_user_temp(self):
         old = self.make('Users/alice/AppData/Local/Temp/old/a.tmp', 1000, age_days=2)
         fresh = self.make('Users/alice/AppData/Local/Temp/fresh.tmp', 500)
