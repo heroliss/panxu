@@ -45,7 +45,8 @@
   PX.renderActivity = () => {
     if (statusButton) {
       statusButton.hidden = !job;
-      statusButton.textContent = job ? `${label(job)} · ${job.progress?.stage_label || '进行中'}` : '';
+      statusButton.textContent = job ? `正在${job.progress?.stage_label || (job.kind === 'checkup' ? '体检' : label(job))}…` : '';
+      statusButton.title = job ? `${label(job)}，点击查看进度` : '';
     }
     const el = document.getElementById('work-status');
     if (!el) return;
