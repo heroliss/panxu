@@ -295,7 +295,7 @@
       res.running = procs;
       changed = true;
       const rule = ruleById(id);
-      res.selected = !!res.eligible && !procs.length && PX.points(res.score) >= (PX.state.init.settings.checkup.auto_threshold ?? 5);
+      res.selected = !!res.eligible && !procs.length && PX.points(res.score) >= (PX.state.init.settings.checkup.auto_threshold ?? 7);
       if (procs.length) state.selected.delete(id);
       else if (res.selected && !state.touched && visible(rule) && !blockedReason(rule, res) && (res.size || 0) > 0) state.selected.add(id);
     }

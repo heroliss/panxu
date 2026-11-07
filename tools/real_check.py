@@ -5,7 +5,7 @@
     python tools/real_check.py --save base.json   # keep a summary to compare with later
     python tools/real_check.py --compare base.json
     python tools/real_check.py --out report.txt --full-paths
-    python tools/real_check.py --threshold 8      # report with a stricter 勾选门槛 (default: 5)
+    python tools/real_check.py --threshold 8      # report with a stricter 勾选门槛 (default: 7)
 
 Runs the whole check-up on the real system but executes nothing: no file is deleted or moved, no
 setting is changed, and PanXu's own settings and history are not touched (a throw-away data folder

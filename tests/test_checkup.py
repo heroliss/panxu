@@ -122,7 +122,7 @@ class CheckupTest(TempDirTest):
         self.assertFalse([row for req in self.model.requests if isinstance(req, list) for row in req if 'subdirs' in row])
 
     def test_junk_tool_uses_the_same_rule_scores_and_threshold_as_home(self):
-        plan = self.checkup(use_ai=False, auto_threshold=5)
+        plan = self.checkup(use_ai=False)
         rows = {r['id']: r for r in self.wait(self.call('junk_scan'))}
         for item in plan['items']:
             if item['kind'] == 'rule':
@@ -428,7 +428,7 @@ class CheckupTest(TempDirTest):
         self.assertFalse(any('excerpt' in r for r in sent))
 
     def test_bold_selection(self):
-        plan = self.checkup(use_ai=False)  # 积极 is the default
+        plan = self.checkup(use_ai=False, auto_threshold=5)  # explicit 积极 selection remains supported
         by_id = {i['id']: i for i in plan['items']}
         for rule in ('npm', 'pip', 'uv', 'gradle', 'shader_cache', 'adobe_media_cache', 'thumbcache'):
             self.assertTrue(by_id['rule:' + rule]['selected'], rule)

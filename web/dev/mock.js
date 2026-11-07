@@ -110,7 +110,7 @@
   const settings = { theme: 'system', ai: { preset: 'deepseek', base_url: 'https://api.deepseek.com', model: 'deepseek-flash', protocol: 'openai',
     json_mode: true, thinking: 'off', anonymize_paths: true, send_file_content: false, max_requests: 8, min_dir_mb: 200, timeout: 120 },
   checkup: { space_scan: true, other_drives: true, selected_drives: null, duplicates: true, cross_drive_duplicates: true, apps_services: true,
-    use_ai: true, ai_scopes: { space: true, files: true, duplicates: true, startup: true, apps: true, services: true }, auto_threshold: 5 },
+    use_ai: true, ai_scopes: { space: true, files: true, duplicates: true, startup: true, apps: true, services: true }, auto_threshold: 7 },
   insights: { stale_days: 365, large_mb: 100, download_days: 180 },
   duplicates: { min_size_mb: 1 }, large_files: { min_size_mb: 100 }, excluded_paths: [], extra_personal_paths: ['D:\\资料'] };
   let hasKey = true;
@@ -160,11 +160,11 @@
 
   const suggestions = () => [
     { node_id: 12, path: 'C:\\Users\\demo\\AppData\\Local\\Unity', size: 6.2 * GB, files: 18000, verdict: 'clean', verdict_label: '可清理', app: 'Unity 编辑器', reason: 'Unity 的资源导入与着色器缓存，打开项目时会自动重建', effect: '下次打开项目时重新导入，耗时较长', confidence: 0.86, source: 'ai', expanded: false, mtime: now - 200 * day,
-      score: 86, selected: true, basis: ['AI：可清理（把握 86%）', '自动勾选：AI 判断可清理（把握 86%），不属于仍在使用的程序，最近也没有改动，9 分达到勾选门槛（5 分）'] },
+      score: 86, selected: true, basis: ['AI：可清理（把握 86%）', '自动勾选：AI 判断可清理（把握 86%），不属于仍在使用的程序，最近也没有改动，9 分达到勾选门槛（7 分）'] },
     { node_id: 999, path: 'C:\\Users\\demo\\AppData\\Local\\Adobe', size: 3.4 * GB, files: 7400, verdict: 'clean', verdict_label: '可清理', app: 'Adobe Photoshop', reason: '大部分是媒体缓存和字体缓存', effect: '下次打开时重新生成缓存', confidence: 0.9, source: 'ai', expanded: false, mtime: now - 3 * day,
       score: 70, selected: false, basis: ['AI：可清理（把握 90%）', '属于仍在使用的程序「Adobe Photoshop 2025」：里面可能还有设置或许可证', '没有自动勾选：属于仍在使用的程序「Adobe Photoshop 2025」'] },
     { node_id: 14, path: 'C:\\Users\\demo\\AppData\\Local\\ms-playwright', size: 2.6 * GB, files: 3100, verdict: 'clean', verdict_label: '可清理', app: 'Playwright', reason: '自动化测试下载的浏览器内核，需要时可重新安装', effect: '运行测试前需执行 playwright install', confidence: 0.8, source: 'ai', expanded: false, mtime: now - 420 * day,
-      score: 80, selected: true, basis: ['AI：可清理（把握 80%）', '自动勾选：AI 判断可清理（把握 80%），不属于仍在使用的程序，最近也没有改动，8 分达到勾选门槛（5 分）'] },
+      score: 80, selected: true, basis: ['AI：可清理（把握 80%）', '自动勾选：AI 判断可清理（把握 80%），不属于仍在使用的程序，最近也没有改动，8 分达到勾选门槛（7 分）'] },
     { node_id: 10, path: 'C:\\Users\\demo\\AppData\\Local\\JetBrains\\IntelliJIdea2025.3', size: 7.1 * GB, files: 51000, verdict: 'review', verdict_label: '需要你确认', app: 'IntelliJ IDEA', reason: '含索引缓存和本地历史；若已不用这个版本可整体删除', effect: '重新打开会重建索引', confidence: 0.62, source: 'ai', expanded: false, caution: null, mtime: now - 90 * day,
       score: 50, selected: false, basis: ['AI：需要你确认（把握 62%）', '没有自动勾选：AI 也拿不准'] },
     { node_id: 17, path: 'C:\\Users\\demo\\AppData\\Roaming\\Tencent', size: 6.3 * GB, files: 9200, verdict: 'keep', verdict_label: '建议保留', app: 'QQ / 微信', reason: '聊天记录数据库与账号配置', effect: '', confidence: 0.9, source: 'cache', expanded: false, caution: '位于应用配置目录，可能包含应用设置或账号数据',
@@ -354,7 +354,7 @@
         && (s.id !== 'dups' || opts.duplicates !== false) && (s.id !== 'apps' || opts.apps_services !== false)
         && (s.id !== 'ai' || (PX.checkupAIEnabled(opts) && hasKey)));
       return job(40, () => {
-      const t = settings.checkup.auto_threshold || 5;
+      const t = settings.checkup.auto_threshold ?? 7;
       const scopeOf = (it) => ({ startup: 'startup', app: 'apps', service: 'services' }[it.kind] || 'space');
       const chosen = planItems.filter((it) => (opts.duplicates !== false || it.kind !== 'dup')
         && (opts.apps_services !== false || (it.kind !== 'app' && it.kind !== 'service'))
@@ -498,7 +498,7 @@
     sandbox_restore: ({ item_id }) => { const i = recycled.findIndex((r) => r.id === item_id); const [r] = recycled.splice(i, 1); sandbox.recycle_count -= 1; return r.original; },
     sandbox_reset: () => sandbox,
     drives: () => handlers.init().drives,
-    init: () => ({ version: '2.0.2', admin: !!sandbox, windows: true, settings, has_key: hasKey, sandbox,
+    init: () => ({ version: '2.0.3', admin: !!sandbox, windows: true, settings, has_key: hasKey, sandbox,
       plan_groups: planGroups, checkup_stages: stages,
       presets: [{ id: 'deepseek', name: 'DeepSeek', base_url: 'https://api.deepseek.com', protocol: 'openai', models: ['deepseek-flash', 'deepseek-v4-pro'], json_mode: true, thinking_toggle: true, key_url: 'x' },
         { id: 'kimi', name: 'Kimi（月之暗面）', base_url: 'https://api.moonshot.cn/v1', protocol: 'openai', models: [], json_mode: true },

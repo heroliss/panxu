@@ -77,7 +77,7 @@
 - **严重**（违反了盘序的承诺，退出码 2）：个人文件被自动勾选；自动勾选了应用数据以外的文件夹；方案里出现其他账户的文件；程序管理的文件夹里的文件被当成个人文件。
 - **提醒**（退出码 1）：某一类超过 100 项、「多个版本」超过 30 组、单项超过 20 GB、方案里出现受保护的位置、规则扫描出错、AI 出错。
 
-常用参数：`--ai`（同时让设置里的模型复核，会发送匿名化后的文件夹和文件名），`--threshold 8`（换一个勾选门槛看看，默认 5），`--save real-check-base.json` / `--compare real-check-base.json`（和上次比较），`--out real-check-report.txt`，`--full-paths`（不替换用户名）。报告和基线里有你的文件路径；以 `real-check-` 开头的文件已在 .gitignore 里，不会被提交。
+常用参数：`--ai`（同时让设置里的模型复核，会发送匿名化后的文件夹和文件名），`--threshold 8`（换一个勾选门槛看看，默认 7），`--save real-check-base.json` / `--compare real-check-base.json`（和上次比较），`--out real-check-report.txt`，`--full-paths`（不替换用户名）。报告和基线里有你的文件路径；以 `real-check-` 开头的文件已在 .gitignore 里，不会被提交。
 
 建议在 Windows 大版本更新后、换电脑后、装了一批新软件后各跑一次。
 
