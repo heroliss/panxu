@@ -83,7 +83,7 @@
 
 ## 当前状态
 
-2.0.0 在 Windows 上通过单元测试、前端检查和脚本模型的演练端到端测试，并完成真实电脑的只读体检检查。统一窗口的拖动、缩放和跨页复用经过 Windows 原生窗口验证；打包版在其他电脑上的运行、UAC 提权、真实卸载等行为仍请参照 [Windows 验收清单](docs/ACCEPTANCE.md)。
+2.1.0 在 Windows 上通过单元测试、前端检查和脚本模型的演练端到端测试，AI 状态提示、启动引导和设置入口经过 Windows 原生打包版验证。统一窗口的拖动、缩放和跨页复用已在 Windows 上验证；打包版在其他电脑上的运行、UAC 提权、真实卸载等行为仍请参照 [Windows 验收清单](docs/ACCEPTANCE.md)。
 
 问题和建议请在 [Issues](https://github.com/heroliss/panxu/issues) 中提出。
 
