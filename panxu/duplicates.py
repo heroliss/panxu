@@ -296,6 +296,9 @@ def find_duplicates(roots: list[str], *, min_size: int = 1024 * 1024, skip=None,
             if skip and skip(dirpath):
                 dirs.clear()  # walk_files extends the stack after yield, so this prunes
                 continue
+            if paths.sandbox_layout([e.name for e in files], [d.name for d in dirs]):
+                dirs.clear()  # a 演练环境: its look-alike system files are 盘序's own test data, not the user's copies
+                continue
             if paths.key(dirpath) not in containers:
                 kind = 'program' if is_program_dir(files, dirs) else 'project' if is_project_dir(files, dirs) else None
                 if kind:

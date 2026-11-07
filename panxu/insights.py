@@ -459,7 +459,7 @@ class Insights:
         dir_children: dict[str, list[str]] = {}
         dir_has_files: dict[str, bool] = {}
         self.project_dirs = projects = []
-        cloud = directories = 0
+        cloud = directories = sandboxes = 0
         truncated = False
         last_report = float('-inf')
         current = ''
@@ -512,6 +512,12 @@ class Insights:
                     dirs.clear()
                     continue
                 if paths.within_any(dirpath, program_keys):
+                    dir_has_files[dirpath] = True
+                    dirs.clear()
+                    continue
+                if paths.sandbox_layout([e.name for e in files], [d.name for d in dirs]):
+                    # a 演练环境: 盘序's own made-up files, not the user's (not walked, not offered, not empty)
+                    sandboxes += 1
                     dir_has_files[dirpath] = True
                     dirs.clear()
                     continue
@@ -614,6 +620,7 @@ class Insights:
                       'seconds': round(time.time() - started, 1), 'roots': self.roots,
                       'root_details': root_details, 'requested_roots': requested, 'dirs': directories,
                       'program_dirs': len(self.program_dirs), 'installed_program_dirs': installed_program_dirs,
+                      'sandbox_dirs': sandboxes,
                       'truncated': truncated, 'limit': MAX_FILES}
         report(current, force=True)
         return self

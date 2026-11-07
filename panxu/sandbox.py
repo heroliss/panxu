@@ -28,7 +28,7 @@ import zipfile
 
 from . import paths, winapi
 
-MARKER = '.panxu-sandbox'
+MARKER = paths.SANDBOX_MARKER  # also how the scans recognise a kept 演练环境
 USER = 'demo'
 KB, MB, GB = 1024, 1024 ** 2, 1024 ** 3
 DAY = 86400.0

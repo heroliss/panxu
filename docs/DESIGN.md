@@ -225,6 +225,8 @@ DeepSeek 的思考模式默认开启，分类请求一律关闭（`thinking: dis
 
 大文件是稀疏文件：约 90 GB 的逻辑大小只占几 MB。演练模式启用时，大小查询也由模拟实现返回标称长度，保持模拟磁盘的容量、扫描和清理结果一致；退出演练模式后，这些文件和其他稀疏文件一样按真实占用统计。注意不能用 `truncate()` 扩展文件——Windows 的 C 运行库会真的写入零，即使文件已标记为稀疏。
 
+保留在别处的演练环境（`run.py --sandbox D:\某处`、开发时 `sandbox_e2e.py --keep`）按它写入的标记文件 `.panxu-sandbox` 加旁边的 `C` 文件夹识别（`paths.sandbox_layout` / `is_sandbox_root`）：「我的文件」和重复文件不进入它——它的 C 盘里有模拟的 `pagefile.sys` 等空白稀疏文件，几个演练环境之间内容完全相同，真实电脑上曾被列成「pagefile.sys 等 3 份」；空间分析标成「盘序演练环境」，AI 分析跳过它。默认位置 `%LOCALAPPDATA%\PanXu\sandbox` 本来就在应用数据里，不受影响。
+
 新代码访问系统位置时一律通过 `paths.environment()` / `winapi.known_folder()`，访问注册表、服务、进程、命令时都要能注入假实现并在 `sandbox.py` 里提供模拟，否则会漏出演练环境。演练用的数据目录是 `<演练目录>\data`，第一次创建时从真实数据目录复制模型设置和 Key。
 
 开发工具：`tools/sandbox_e2e.py` 通过 `Bridge.call` 跑完整流程并逐项检查（`--live` 用真实模型）；`tools/ui_harness.py` 在浏览器里把真实界面接到演练环境的真实后端（只绑定 127.0.0.1，带随机令牌，只用于开发，程序本身仍然没有 HTTP 服务）。
