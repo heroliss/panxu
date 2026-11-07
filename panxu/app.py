@@ -111,13 +111,13 @@ def _self_command() -> tuple[str, list[str]]:
 
 def launch_elevated(data_dir, sandbox=None, debug=False, ticket=None):
     """Keep the original user's paths/data directory, including credential-based UAC."""
+    if sandbox is not None:
+        return False  # simulation must never display a real UAC prompt, even through a direct call
     exe, prefix = _self_command()
     user_env = {k: os.environ.get(k, '') for k in paths.USER_ENV_KEYS}
     user_env.update({k: v for k, v in paths.environment().items() if k in paths.USER_ENV_KEYS})
     token = base64.b64encode(json.dumps(user_env).encode('utf-8')).decode('ascii')
     extra = ['--elevated', '--user-env', token, '--data-dir', os.path.abspath(data_dir)]
-    if sandbox is not None:
-        extra += ['--sandbox', sandbox.root]
     if debug:
         extra.append('--debug')
     if ticket:

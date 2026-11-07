@@ -84,6 +84,7 @@ class HandoffTest(TempDirTest):
 
     def test_restart_is_blocked_while_any_scan_or_change_runs_and_decline_keeps_results(self):
         self.b.admin = False
+        self.b.sandbox = None  # managers still use fake sources; this test exercises the real-mode UI guard
         self.b.plan = {'id': 'keep'}
         launches = []
         self.b._relaunch = lambda: launches.append(True) or False
@@ -136,6 +137,10 @@ class HandoffTest(TempDirTest):
 
 
 class ElevationStartupTest(TempDirTest):
+    def test_direct_elevation_in_a_simulation_never_calls_windows(self):
+        with patch.object(app.winapi, 'relaunch_as_admin', side_effect=AssertionError('no real UAC')):
+            self.assertFalse(app.launch_elevated(self.tmp, sandbox=object()))
+
     def test_startup_decline_opens_normal_window_and_acceptance_exits_parent_cleanly(self):
         from types import SimpleNamespace
         from unittest.mock import MagicMock
@@ -168,13 +173,12 @@ class ElevationStartupTest(TempDirTest):
             self.assertFalse(app.auto_elevate(self.tmp), 'decline opens the normal window; no retry')
 
     def test_launch_carries_original_data_folder_env_debug_and_ticket_for_source_and_exe(self):
-        from types import SimpleNamespace
         env = {k: self.tmp for k in app.paths.USER_ENV_KEYS}
         for frozen in (False, True):
             with patch.object(app.sys, 'frozen', frozen, create=True), \
                     patch.object(app.paths, 'environment', return_value=env), \
                     patch.object(app.winapi, 'relaunch_as_admin', return_value=True) as launch:
-                self.assertTrue(app.launch_elevated(self.tmp, SimpleNamespace(root=self.tmp), True, 'ticket'))
+                self.assertTrue(app.launch_elevated(self.tmp, debug=True, ticket='ticket'))
                 exe, params, cwd = launch.call_args.args
                 self.assertEqual(exe, app.sys.executable)
                 import subprocess

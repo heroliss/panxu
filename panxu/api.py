@@ -307,6 +307,8 @@ class Backend:
     def m_restart_as_admin(self, selection=None, page='home'):
         if self.admin:
             return True
+        if self.sandbox is not None:
+            raise UserError('演练环境不会请求真实管理员权限')
         self.jobs._check_busy()
         from .handoff import ui_state
         self.restart_ui = ui_state(selection, page)
