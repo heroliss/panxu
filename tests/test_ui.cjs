@@ -190,3 +190,9 @@ assert.ok(PX.sel.has(copies));
 PX.sel.set(copies, false);
 assert.ok(!PX.sel.paths.has('E:\\copy.png'));
 console.log('ui tests passed');
+// Elevation is another process: explicit shared choices must survive its UI initialization.
+PX.sel.rules.add('user_temp'); PX.sel.paths.add('D:\\keep.txt'); PX.sel.items.add('startup:sample');
+const restartChoice = PX.sel.export();
+PX.sel.rules.clear(); PX.sel.paths.clear(); PX.sel.items.clear();
+PX.sel.restore(restartChoice);
+assert.deepStrictEqual(PX.sel.export(), restartChoice);

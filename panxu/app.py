@@ -109,6 +109,31 @@ def _self_command() -> tuple[str, list[str]]:
     return sys.executable, [script]
 
 
+def launch_elevated(data_dir, sandbox=None, debug=False, ticket=None):
+    """Keep the original user's paths/data directory, including credential-based UAC."""
+    if sandbox is not None:
+        return False  # simulation must never display a real UAC prompt, even through a direct call
+    exe, prefix = _self_command()
+    user_env = {k: os.environ.get(k, '') for k in paths.USER_ENV_KEYS}
+    user_env.update({k: v for k, v in paths.environment().items() if k in paths.USER_ENV_KEYS})
+    token = base64.b64encode(json.dumps(user_env).encode('utf-8')).decode('ascii')
+    extra = ['--elevated', '--user-env', token, '--data-dir', os.path.abspath(data_dir)]
+    if debug:
+        extra.append('--debug')
+    if ticket:
+        extra += ['--resume', ticket]
+    return winapi.relaunch_as_admin(exe, subprocess.list2cmdline(prefix + extra), os.getcwd())
+
+
+def auto_elevate(data_dir, *, attempted=False, sandbox=None, debug=False):
+    from .settings import Settings
+    if sandbox is not None or attempted or not winapi.IS_WINDOWS or winapi.is_admin():
+        return False
+    if not Settings(data_dir).get().get('admin_on_start', True):
+        return False
+    return launch_elevated(data_dir, debug=debug)
+
+
 def create_app_window(backend, title):
     """Shared by the desktop app and the isolated native UI harness."""
     import webview
@@ -126,6 +151,7 @@ def main(argv=None):
     parser.add_argument('--data-dir')
     parser.add_argument('--debug', action='store_true', help='enable WebView developer tools')
     parser.add_argument('--elevated', action='store_true', help=argparse.SUPPRESS)
+    parser.add_argument('--resume', help=argparse.SUPPRESS)
     parser.add_argument('--user-env', help=argparse.SUPPRESS)
     parser.add_argument('--sandbox', nargs='?', const='', metavar='DIR',
                         help=r'演练环境: run against a simulated PC (default %%LOCALAPPDATA%%\PanXu\sandbox)')
@@ -152,6 +178,10 @@ def main(argv=None):
             return 0
         time.sleep(0.3)  # the previous (non-elevated) instance is still closing
 
+    if auto_elevate(data_dir, attempted=args.elevated, sandbox=sb, debug=args.debug):
+        instance.release()
+        return 0
+
     try:
         import webview
     except ImportError:
@@ -161,17 +191,15 @@ def main(argv=None):
     window_ref = {}
 
     def relaunch() -> bool:
-        exe, prefix = _self_command()
-        user_env = {k: os.environ.get(k, '') for k in paths.USER_ENV_KEYS}
-        user_env.update({k: v for k, v in paths.environment().items() if k in paths.USER_ENV_KEYS})
-        token = base64.b64encode(json.dumps(user_env).encode('utf-8')).decode('ascii')
-        extra = ['--elevated', '--user-env', token]
-        if args.data_dir:
-            extra += ['--data-dir', args.data_dir]
-        if args.sandbox is not None:
-            extra += ['--sandbox', sb.root]
-        params = subprocess.list2cmdline(prefix + extra)
-        if not winapi.relaunch_as_admin(exe, params, os.getcwd()):
+        from . import handoff
+        ticket = handoff.save(backend)
+        try:
+            accepted = launch_elevated(data_dir, sb, args.debug, ticket)
+        except Exception:
+            handoff.discard(data_dir, ticket)
+            raise
+        if not accepted:
+            handoff.discard(data_dir, ticket)
             return False
         # The mutex is released only after the window has closed (finally below);
         # the elevated instance waits for it.
@@ -182,6 +210,13 @@ def main(argv=None):
 
     backend = Backend(data_dir, window_provider=lambda: window_ref.get('w'), relaunch=relaunch, sandbox=sb,
                       legacy_key_paths=None if sb else legacy_key_paths(data_dir))
+    if args.resume:
+        from . import handoff
+        try:
+            handoff.consume(backend, args.resume)
+        except (OSError, ValueError, KeyError, TypeError, IndexError):
+            log.exception('could not restore elevated restart results')
+            backend.resume = {'restored': False, 'message': '上次检查结果未能恢复，请重新检查。'}
     title = APP_NAME + ('（演练环境）' if sb else '')
     window = create_app_window(backend, title)
     window_ref['w'] = window

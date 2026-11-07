@@ -48,6 +48,7 @@ def main():
     parser.add_argument('--live', action='store_true', help='use the configured real model')
     parser.add_argument('--native', action='store_true', help='open an isolated native window instead of a browser server')
     parser.add_argument('--stage-delay', type=float, default=0, help='development only: pause at each checkup stage (0-2 seconds)')
+    parser.add_argument('--resume-demo', action='store_true', help='simulate a completed normal checkup handed to an admin process (no UAC)')
     args = parser.parse_args()
 
     # one reusable folder (the server is usually stopped by killing it), inside PanXu's own protected data
@@ -82,6 +83,22 @@ def main():
         backend.client_or_none = lambda purpose='classify': model
         backend._client = lambda purpose='classify': model
         backend.settings.set_secret('ai_key:' + backend.settings.get()['ai']['preset'], 'scripted')
+    if args.resume_demo:
+        from panxu import handoff
+        # All state below belongs to the fake machine. Never request actual Windows elevation.
+        backend.admin = backend.junk.admin = backend.apps.admin = backend.startup.admin = backend.services.admin = False
+        sb.state['admin'] = False
+        job_id = backend.m_checkup({'use_ai': False})
+        while backend.jobs.status(job_id)['status'] == 'running':
+            time.sleep(.05)
+        if backend.jobs.status(job_id)['status'] != 'done':
+            raise RuntimeError('resume demo checkup failed')
+        chosen = next((i['paths'][0] for i in backend.plan['items'] if i.get('personal') and i.get('paths') and not i['blocked']), None)
+        backend.restart_ui = handoff.ui_state({'rules': [], 'paths': [chosen] if chosen else [], 'items': []})
+        ticket = handoff.save(backend)
+        sb.state['admin'] = True
+        backend = Backend(backend.data_dir, sandbox=sb, window_provider=lambda: window_ref.get('w'))
+        handoff.consume(backend, ticket)
     if args.native:
         import webview
         from panxu.app import create_app_window

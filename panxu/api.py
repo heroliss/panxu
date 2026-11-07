@@ -40,7 +40,7 @@ log = logging.getLogger(__name__)
 SERIAL_METHODS = frozenset('''checkup junk_scan space_scan insights_scan dup_scan app_residues_scan
     ai_analyze large_ai_review ai_review_files dup_ai_review ai_explain apps_measure_all app_measure app_leftovers
     junk_clean delete_paths dup_delete insights_delete plan_execute plan_dup_choose app_uninstall startup_set
-    service_set hibernate_set revert sandbox_reset sandbox_restore ai_clear_cache'''.split())
+    service_set hibernate_set revert sandbox_reset sandbox_restore ai_clear_cache restart_as_admin admin_refresh'''.split())
 
 SETTINGS_URIS = {
     'storage': 'ms-settings:storagesense',
@@ -114,6 +114,8 @@ class Backend:
         self._window = window_provider
         self.window_controls = WindowControls(window_provider)
         self._relaunch = relaunch
+        self.restart_ui = {}
+        self.resume = None
         self.app_dirs = [os.path.dirname(os.path.abspath(__file__)), data_dir]
         if getattr(sys, 'frozen', False):
             self.app_dirs.append(os.path.dirname(sys.executable))
@@ -242,7 +244,7 @@ class Backend:
     def m_init(self):
         s = self.settings.get()
         return {
-            'version': __version__, 'admin': self.admin, 'windows': winapi.IS_WINDOWS,
+            'version': __version__, 'admin': self.admin, 'windows': winapi.IS_WINDOWS, 'resume': self.resume,
             'settings': s, 'has_key': self.settings.has_secret('ai_key:' + s['ai']['preset']),
             'presets': ai_client.PRESETS, 'drives': self.m_drives(), 'rules': self.junk.catalogue(),
             'groups': [{'id': g, 'name': n} for g, n in GROUPS], 'start_types': START_TYPES,
@@ -302,14 +304,76 @@ class Backend:
     def m_cancel_job(self, job_id: str):
         return self.jobs.cancel(job_id)
 
-    def m_restart_as_admin(self):
+    def m_restart_as_admin(self, selection=None, page='home'):
         if self.admin:
             return True
-        if any(j['kind'] in ('junk_clean', 'delete', 'dup_delete') for j in self.jobs.running()):
-            raise UserError('清理正在进行，完成后再重启')
+        if self.sandbox is not None:
+            raise UserError('演练环境不会请求真实管理员权限')
+        self.jobs._check_busy()
+        from .handoff import ui_state
+        self.restart_ui = ui_state(selection, page)
         if self._relaunch is None or not self._relaunch():
             raise UserError('没有获得管理员权限（可能在系统提示中选择了「否」）')
         return True
+
+    def m_admin_refresh(self):
+        """After the one-use hand-off, supplement privileged rules without repeating disk/hash/AI work."""
+        if not self.admin or not self.resume or not self.resume.get('refresh_pending'):
+            raise UserError('没有需要补查的管理员项目')
+
+        def run(job):
+            ids = [r['id'] for r in self.junk_rows or [] if r.get('needs_admin') or r.get('unreadable')]
+            rows = self.junk.scan(rule_ids=ids, cancel=job.cancel,
+                                  progress=lambda i, n, name: job.update(current=name, index=i, total=n)) if ids else []
+            builder = checkup.PlanBuilder(self.policy(), threshold=self.settings.get()['checkup']['auto_threshold'])
+            builder.add_junk(rows)
+            # Preserve explicit choices. Newly discovered or previously blocked rules remain unticked.
+            chosen = set(self.resume['selection']['rules'])
+            for item in builder.items:
+                item['selected'] = item['rule'] in chosen and not item['blocked']
+                if not item['selected']:
+                    item['basis'] = [b for b in item['basis'] if not b.startswith(('自动勾选', '没有自动勾选', '没有勾选'))]
+                    item['basis'].append('提权补查：保留原有选择，新发现的项目请手动勾选')
+            assessed = {i['rule']: i for i in builder.items}
+            for row in rows:
+                item = assessed.get(row['id'])
+                if item:
+                    row.update({k: item[k] for k in ('score', 'basis', 'eligible', 'selected', 'blocked')})
+            merged = {r['id']: r for r in self.junk_rows or []}
+            merged.update({r['id']: r for r in rows})
+            if self.junk_rows is not None:
+                self.junk_rows = list(merged.values())
+            if self.plan:
+                old = {i['rule']: i for i in self.plan['items'] if i['kind'] == 'rule'}
+                for item in builder.items:
+                    previous = old.get(item['rule'])
+                    if previous and previous['status'] != 'pending':
+                        item.update({k: previous[k] for k in ('status', 'result', 'freed') if k in previous})
+                        item['selected'] = False
+                refreshed = {i['rule'] for i in builder.items}
+                handled_rules = [i for rid, i in old.items() if rid in ids and rid not in refreshed and i['status'] != 'pending']
+                self.plan['items'] = [i for i in self.plan['items'] if i.get('rule') not in ids] + builder.items + handled_rules
+                for item in self.plan['items']:
+                    if item['blocked'] == '需要管理员权限' and item['kind'] == 'service':
+                        item['blocked'] = None
+                coverage = self.plan.get('coverage', {})
+                coverage['junk'] = {'rules': len(merged), 'unavailable': sum(bool(r.get('error') or r.get('scope_blocked')) for r in merged.values())}
+                # Only supplement an app check the user actually enabled. No new model request.
+                if coverage.get('apps', {}).get('listed') is not None:
+                    try:
+                        apps = self.apps.list(fresh=True)
+                        programs = checkup.PlanBuilder(self.policy())
+                        suggested = programs.add_apps(apps, self.app_ai, self.scan)
+                        old_apps = [i for i in self.plan['items'] if i['kind'] == 'app' and i['status'] != 'pending']
+                        handled = {i['id'] for i in old_apps}
+                        self.plan['items'] = [i for i in self.plan['items'] if i['kind'] != 'app'] + old_apps + [i for i in programs.items if i['id'] not in handled]
+                        coverage['apps'].update(listed=len(apps), suggested=suggested)
+                    except OSError:
+                        log.exception('could not refresh application usage after elevation')
+                self.plan['summary'] = checkup.summarize(self.plan)
+            self.resume['refresh_pending'] = False
+            return self.plan
+        return self.jobs.start('admin_refresh', run)
 
     def m_reveal(self, path: str):
         """Show a path in Explorer (a file selected in its folder, a folder opened). A path that is gone --

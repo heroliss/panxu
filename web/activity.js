@@ -2,12 +2,12 @@
 (function () {
   'use strict';
   const { h } = PX;
-  const LABELS = { checkup: ['一键体检', 'home'], junk_scan: ['垃圾检查', 'junk'], space_scan: ['空间分析', 'space'],
+  const LABELS = { admin_refresh: ['补查管理员项目', 'home'], checkup: ['一键体检', 'home'], junk_scan: ['垃圾检查', 'junk'], space_scan: ['空间分析', 'space'],
     insights_scan: ['整理我的文件', 'mine'], dup_scan: ['查找重复文件', 'dups'], app_residues_scan: ['查找软件残留', 'apps'],
     ai_analyze: ['AI 分析目录', 'space'], ai_review: ['AI 复核文件', 'mine'], dup_ai_review: ['AI 复核副本', 'dups'],
     ai_explain: ['AI 分析', 'startup'], apps_measure: ['统计应用占用', 'apps'], app_leftovers: ['查找卸载残留', 'apps'],
     junk_clean: ['垃圾清理', 'junk'], delete: ['处理文件', null], plan_execute: ['执行清理方案', 'home'] };
-  const PAGES = { checkup: ['home', 'junk', 'space', 'large', 'mine', 'dups', 'apps', 'startup'],
+  const PAGES = { admin_refresh: ['home', 'junk', 'apps', 'startup'], checkup: ['home', 'junk', 'space', 'large', 'mine', 'dups', 'apps', 'startup'],
     junk_scan: ['junk'], space_scan: ['space', 'large'], insights_scan: ['mine'], dup_scan: ['dups'],
     app_residues_scan: ['apps'], ai_analyze: ['space'], ai_review: ['mine', 'large'], dup_ai_review: ['dups'], ai_explain: ['startup', 'apps'] };
   const finished = new Set();
