@@ -59,6 +59,10 @@ def check_plan(plan: dict, env: dict, insights: dict | None = None, junk_rows: l
         if item['action'] == 'none':
             continue
         title = item['title']
+        if item['selected'] and item['kind'] in ('app', 'service', 'startup'):
+            add('severe', f'程序、服务或启动项被自动勾选（这些只能由你决定）：{title}')
+        if item['kind'] == 'app' and item['action'] != 'uninstall':
+            add('severe', f'程序没有交给它自己的卸载程序：{title}')
         if item['selected'] and item.get('personal'):
             add('severe', f'个人文件被自动勾选：{title}')
         elif item['selected'] and item['kind'] == 'paths':

@@ -5,8 +5,19 @@
   const { h, fmt } = PX;
   const VERDICT = { keep: 'warn', delete: 'good', archive: 'info', review: '' };
   const state = { status: 'idle', result: null, selected: PX.sel.paths, open: new Set(), progress: {}, jobId: null,
-    loaded: false, aiBusy: false };
+    loaded: false, aiBusy: false, sort: { key: 'order', dir: 'asc' } };
   let root = null;
+  // inside each kind: 盘序's order (the version to keep heads its group, the rest largest first) or the user's
+  const order = new WeakMap();
+  const SORT = {
+    order: { label: '默认', kind: 'num', dir: 'asc', words: ['盘序的顺序：要保留的版本在最前，其余从大到小', '倒序'], get: (x) => order.get(x) },
+    score: { label: '建议清理度', kind: 'num', get: (x) => x.score },
+    size: { label: '大小', kind: 'num', get: (x) => x.size },
+    mtime: { label: '修改时间', kind: 'date', get: (x) => x.mtime || null },
+    name: { label: '名称', kind: 'text', get: (x) => x.name },
+    path: { label: '位置', kind: 'text', get: (x) => PX.displayPath(x.path) },
+    ai: { label: 'AI 建议', kind: 'rank', words: ['建议保留的在前', '可以删除的在前'], get: (x) => PX.aiRank(x.ai) },
+  };
 
   async function loadExisting() {
     state.loaded = true;
@@ -188,7 +199,8 @@
     const list = sec.appendChild(h('div.list'));
     const key = 'f:' + f.id;
     const limit = f.files.length > 10 && !state.open.has(key) ? 6 : f.files.length;
-    f.files.slice(0, limit).forEach((x) => fileRow(list, f, x));
+    f.files.forEach((x, i) => order.set(x, i));
+    PX.sortRows(f.files, SORT, state.sort, 'size').slice(0, limit).forEach((x) => fileRow(list, f, x));
     if (limit < f.files.length) list.appendChild(h('button.fold', { type: 'button', onclick: () => { state.open.add(key); draw(true); } }, `显示其余 ${f.files.length - limit} 项`));
   }
 
@@ -232,7 +244,12 @@
       (r.stats.cloud_skipped ? `。${r.stats.cloud_skipped} 个只在云端的文件没有读取。` : '') +
       (r.stats.program_dirs ? `。${r.stats.program_dirs} 个程序自己的文件夹（例如解压出来的免安装程序）整个跳过，没有列出里面的文件。` : '')));
     if (!r.findings.length) c.appendChild(PX.empty('没有发现需要注意的文件', '已查看的范围里，没有符合整理条件的文件。'));
-    else overview(c, r);
+    else {
+      overview(c, r);
+      const anyAI = r.findings.some((f) => f.files.some((x) => x.ai));
+      c.appendChild(PX.sortBar(SORT, state.sort, (s) => { state.sort = s; draw(true); },
+        ['order', 'score', 'size', 'mtime', 'name', 'path', ...(anyAI ? ['ai'] : [])]));
+    }
     for (const f of r.findings) finding(c, f);
     const chosen = r.findings.flatMap((f) => f.files).filter((x) => state.selected.has(x.path));
     if (chosen.length) {

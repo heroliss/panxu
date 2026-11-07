@@ -52,6 +52,12 @@ class ScriptedModel:
                 out.append({'id': row['id'], 'copies': [
                     {'n': c['n'], 'verdict': 'keep' if c['n'] == 1 else 'careful' if c.get('place') else 'delete',
                      'reason': 'scripted'} for c in row['copies']]})
+            elif row.get('type') == '系统服务':  # updaters need not start at boot
+                out.append({'id': row['id'], 'what': '', 'reason': 'scripted',
+                            'suggestion': 'disable' if 'update' in row['name'].lower() or '更新' in row['name'] else 'keep'})
+            elif row.get('type') == '已安装的程序':  # the ad-ridden viewer may go
+                out.append({'id': row['id'], 'what': '', 'reason': 'scripted',
+                            'suggestion': 'uninstall' if row['name'] == '快看图大师' else 'keep'})
             else:
                 out.append({'id': row['id'], 'what': '', 'suggestion': 'optional', 'reason': 'scripted'})
         return {'results': out}
@@ -178,8 +184,14 @@ def main():
             run.check(all((f.get('ai') or {}).get('verdict') != 'delete' for f in mentioned), '被引用的副本不会是「更推荐删除」')
         offered = [paths.key(p) for i in plan['items'] for p in i['paths']]
         run.check(len(offered) == len(set(offered)), '每个路径只出现在一项里')
+        services_offered = [i for i in plan['items'] if i['kind'] == 'service']
+        apps_offered = [i for i in plan['items'] if i['kind'] == 'app']
+        run.check(bool(services_offered) and not any(i['selected'] for i in services_offered), '第三方服务列在方案里，不自动勾选')
+        run.check(bool(apps_offered) and all(i['action'] == 'uninstall' and not i['selected'] for i in apps_offered),
+                  '可以卸载的程序列在方案里，只能逐个卸载')
 
-        ids = [i['id'] for i in plan['items'] if not i['blocked'] and i['action'] != 'none']
+        # a program's uninstaller runs from its own row (tested below), never with the rest of the plan
+        ids = [i['id'] for i in plan['items'] if not i['blocked'] and i['action'] not in ('none', 'uninstall')]
         recycle = [p for i in plan['items'] if i['id'] in ids and i['action'] == 'recycle' for p in i['paths']]
         report = run.wait('plan_execute', item_ids=ids)
         run.note(f'\n执行全部 {len(ids)} 项：永久删除 {gb(report["deleted"]["bytes"])}，回收站 {report["recycled"]["count"]} 项 '

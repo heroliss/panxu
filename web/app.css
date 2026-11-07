@@ -279,9 +279,23 @@ input[type=checkbox]:disabled { cursor: not-allowed; }
 .row .size { font-family: var(--font-num); text-align: right; white-space: nowrap; }
 .row .cell-main { min-width: 0; }
 .thead { display: grid; gap: 12px; padding: 6px 6px; font-size: 12.5px; color: var(--ink-3); border-bottom: 1px solid var(--rule); }
-.thead button { border: 0; background: none; padding: 0; color: inherit; cursor: pointer; text-align: inherit; }
+.thead button { border: 0; background: none; padding: 0; color: inherit; cursor: pointer; text-align: inherit; font: inherit; }
+.thead button:hover { color: var(--ink); }
 .thead button.on { color: var(--ink); font-weight: 600; }
 .thead .r { text-align: right; }
+/* sorting: column headings that sort, or a row of choices above a list without headings (PX.sortHead / PX.sortBar) */
+.thead .sort-head { display: inline-flex; align-items: center; gap: 3px; min-width: 0; white-space: nowrap; justify-self: start; }
+.thead .sort-head.r { justify-content: flex-end; justify-self: end; }
+.thead .sort-pair { display: flex; gap: 12px; min-width: 0; }
+.sort-dir { font-family: var(--font-num); font-size: 11px; line-height: 1; color: var(--cobalt); }
+.sort-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 2px; margin: 0 0 10px; font-size: 12.5px; color: var(--ink-3); }
+.sort-label { margin-right: 6px; }
+.sort-opt { display: inline-flex; align-items: center; gap: 3px; height: 26px; padding: 0 9px; border: 0; border-radius: var(--r-s);
+  background: none; color: var(--ink-2); font: inherit; cursor: pointer; white-space: nowrap; }
+.sort-opt:hover { background: var(--tint); color: var(--ink); }
+.sort-opt.on { background: var(--cobalt-tint); color: var(--cobalt); font-weight: 600; }
+.sort-opt:focus-visible, .thead .sort-head:focus-visible { outline: 2px solid var(--cobalt); outline-offset: 1px; }
+.page-head + .sort-bar, .filters + .sort-bar { margin-top: -4px; }
 
 .group { margin-bottom: 26px; }
 .group-head { display: flex; align-items: baseline; gap: 12px; padding: 0 6px 8px; }
@@ -359,7 +373,8 @@ input[type=checkbox]:disabled { cursor: not-allowed; }
 .space-row:focus-visible { outline: 2px solid var(--cobalt); outline-offset: -2px; }
 .space-row .nm { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .space-row .nm svg { width: 16px; height: 16px; flex: none; color: var(--ink-3); }
-.space-row .label { display: flex; gap: 6px; margin-top: 3px; flex-wrap: wrap; }
+.space-row .label { display: flex; gap: 6px; margin-top: 3px; flex-wrap: wrap; min-width: 0; }
+.space-row .label .tag { max-width: 100%; overflow: hidden; }
 .share { height: 4px; border-radius: 2px; background: var(--rule-2); margin-top: 5px; }
 .share > i { display: block; height: 100%; border-radius: 2px; background: var(--ink-3); }
 .space-head { grid-template-columns: 22px minmax(0, 1fr) 90px 84px 84px 64px; }
@@ -367,17 +382,23 @@ input[type=checkbox]:disabled { cursor: not-allowed; }
 .treemap { position: relative; width: 100%; aspect-ratio: 4 / 3; max-height: calc(100vh - 380px); min-height: 240px;
   border-radius: var(--r-m); overflow: hidden; background: var(--rule-2); user-select: none; }
 .treemap .tm.focus { box-shadow: inset 0 0 0 3px var(--sheet), inset 0 0 0 5px var(--cobalt); z-index: 1; }
-/* what is selected in 空间分析 (fixed height, so the map below does not jump) */
+/* what is selected in 空间分析: one fixed height, so the map below does not jump, and no scrolling inside it --
+   the head, the path, the facts and the buttons always fit; the text takes the rest, cut at a whole line */
 .space-detail { border: 1px solid var(--rule); border-radius: var(--r-l); background: var(--raise); padding: 12px 14px;
-  margin-bottom: 12px; height: 196px; overflow: auto; display: flex; flex-direction: column; gap: 5px; }
-.sd-kicker { font-size: 11.5px; color: var(--ink-3); letter-spacing: .04em; }
-.sd-name { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 14.5px; }
-.sd-name b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sd-path { font-size: 12px; color: var(--ink-2); }
-.sd-facts { font-family: var(--font-num); font-size: 12.5px; color: var(--ink-2); }
-.sd-text { font-size: 12.5px; color: var(--ink-2); }
-.sd-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: auto; padding-top: 4px; }
-.sd-hint { font-size: 11.5px; color: var(--ink-3); }
+  margin-bottom: 12px; height: 200px; overflow: hidden; display: flex; flex-direction: column; gap: 6px; }
+.space-detail > * { flex: none; min-width: 0; }
+.sd-head { display: flex; align-items: center; gap: 8px; font-size: 14.5px; line-height: 22px; }
+.sd-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sd-kicker { flex: none; font-size: 11.5px; color: var(--ink-3); letter-spacing: .04em; }
+.sd-path { display: flex; font-size: 12px; line-height: 18px; color: var(--ink-2); }
+.sd-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; max-height: 46px; overflow: hidden; }
+.sd-facts { font-family: var(--font-num); font-size: 12.5px; line-height: 21px; color: var(--ink-2); }
+.space-detail > .sd-text { flex: 1 1 auto; min-height: 18px; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical;
+  font-size: 12.5px; line-height: 18px; color: var(--ink-2); }
+.sd-hint { color: var(--ink-3); }
+.sd-actions { display: flex; flex-wrap: nowrap; gap: 6px; margin-top: auto; }
+.space-detail { container-type: inline-size; }
+@container (max-width: 330px) { .sd-actions .sd-btn-text { display: none; } }
 .treemap .tm { position: absolute; border: 1px solid var(--sheet); overflow: hidden; cursor: pointer;
   font-size: 11.5px; line-height: 1.25; padding: 3px 5px; color: #fff; }
 .treemap .tm:hover { filter: brightness(1.1); }
@@ -407,6 +428,7 @@ input[type=checkbox]:disabled { cursor: not-allowed; }
 .chip.on { border-color: var(--cobalt); background: var(--cobalt-tint); color: var(--cobalt); }
 .file-row { grid-template-columns: 22px minmax(0, 1fr) 80px 92px 96px 64px; }
 .folder-list { border: 1px solid var(--rule); border-radius: var(--r-m); margin-bottom: 14px; }
+.dup-scope { margin: -4px 0 10px; line-height: 1.6; }
 .folder-list .row { grid-template-columns: 18px 1fr auto; border-bottom: 1px solid var(--rule-2); }
 .folder-list .row:last-child { border-bottom: 0; }
 .dup-group { border-bottom: 1px solid var(--rule); padding: 10px 0; }
@@ -690,6 +712,7 @@ svg.file-ic { color: var(--ink-3); padding: 1px; }
   background: var(--tint); scroll-margin-top: 60px; }
 /* the group's own checkbox sits in the rows' checkbox column (22px wide + 12px gap), so its title lines up with theirs */
 .group-box { flex: none; margin: 0 6px 0 0; }
+.group-box-gap { flex: none; width: 16px; margin-right: 8px; }
 .cat-head .group-box { margin-right: 8px; }
 .group-head.with-box { align-items: center; }
 .cat-head b { font-size: 13.5px; }

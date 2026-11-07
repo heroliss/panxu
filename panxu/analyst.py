@@ -569,9 +569,11 @@ class Analyst:
                                       'confidence': 0}, 'none')
 
     # -- startup items, services and installed programs -----------------------------
-    def explain_items(self, items: list[dict], client, anonymize: bool = True, use_cache: bool = True) -> dict:
+    def explain_items(self, items: list[dict], client, anonymize: bool = True, use_cache: bool = True,
+                      cancel=None, max_requests: int | None = None) -> dict:
         """items: [{'key', 'kind': 'startup'|'service'|'app', 'name', 'command', 'publisher', 'description',
-        'extra': {...}}]. Programs get their own prompt: uninstall advice instead of disable advice."""
+        'extra': {...}}]. Programs get their own prompt: uninstall advice instead of disable advice.
+        ``cancel`` is checked before each request; ``max_requests`` bounds them (the first items go first)."""
         if any(i['kind'] == 'app' for i in items) and not all(i['kind'] == 'app' for i in items):
             raise ValueError('programs are explained separately from startup items and services')
         is_apps = bool(items) and items[0]['kind'] == 'app'
@@ -588,7 +590,11 @@ class Analyst:
             else:
                 pending.append(item)
         errors = []
-        for start in range(0, len(pending), 25):
+        for n, start in enumerate(range(0, len(pending), 25)):
+            fsops.check_cancel(cancel)
+            if max_requests is not None and n >= max_requests:
+                errors.append(f'请求次数到了上限，还有 {len(pending) - start} 项这次没有解释，可以在对应的页面里点「AI 解释」继续')
+                break
             batch = pending[start:start + 25]
             payload = []
             for i, item in enumerate(batch):

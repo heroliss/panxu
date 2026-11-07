@@ -14,13 +14,25 @@
   };
   // where each category is handled in detail
   const CAT_PAGE = { 垃圾文件: ['junk', '垃圾清理'], 应用数据: ['space', '空间分析'], 重复文件: ['dups', '重复文件'],
-    开机启动: ['startup', '开机与服务'], 软件残留: ['residues', '应用·软件残留'], 旧版本数据: ['residues', '应用·软件残留'] };
+    开机启动: ['startup', '开机与服务'], 软件残留: ['residues', '应用·软件残留'], 旧版本数据: ['residues', '应用·软件残留'],
+    可以卸载的程序: ['apps', '应用'], 服务: ['services', '开机与服务·服务'] };
+  // inside each category of the plan (the categories keep their place)
+  const PLAN_SORT = {
+    score: { label: '建议清理度', kind: 'num', get: (it) => it.score },
+    size: { label: '大小', kind: 'num', get: (it) => it.size || null },
+    title: { label: '名称', kind: 'text', get: (it) => it.title },
+    path: { label: '位置', kind: 'text', get: (it) => {
+      const p = (it.paths && it.paths[0]) || it.location || (it.locations || [])[0];
+      return p ? PX.displayPath(p) : null;
+    } },
+  };
   const openTool = (page) => page === 'residues' ? PX.apps.open('residues') : page === 'apps' ? PX.apps.open()
     : page === 'startup' || page === 'services' ? PX.startup.open(page) : PX.go(page);
   const THRESHOLDS = [9, 8, 7, 6, 5].map((t) => [t, `≥ ${t} 分`]);
   const state = { status: 'idle', plan: null, planId: null, open: new Set(), progress: {}, report: null, jobId: null,
     withMine: false, picked: null, run: { started: Date.now(), stage: null, stageAt: Date.now(), shown: 0, left: null },
-    executing: 0, entering: null, freeBefore: null, savingOption: null, activeOptions: null, optionsOpen: new Set(), planOpen: false };
+    executing: 0, entering: null, freeBefore: null, savingOption: null, activeOptions: null, optionsOpen: new Set(), planOpen: false,
+    sort: { key: 'score', dir: 'desc' } };
   let root = null;
 
   function strata(drive, reclaim, cls) {
@@ -35,7 +47,8 @@
   PX.strata = strata;
 
   const items = () => (state.plan ? state.plan.items : []);
-  const selectable = (it) => it.status === 'pending' && it.action !== 'none' && !it.blocked;
+  // a program is uninstalled by its own uninstaller, one at a time: it has a button, not a tick
+  const selectable = (it) => it.status === 'pending' && it.action !== 'none' && it.action !== 'uninstall' && !it.blocked;
   const isSel = (it) => selectable(it) && PX.sel.has(it);
   function setSel(it, on) {
     PX.sel.set(it, on);
@@ -67,6 +80,15 @@
     } catch (e) { /* no plan yet */ }
     draw(true);
   }
+  // something in the plan was handled elsewhere (a program uninstalled from its row): take the current statuses
+  async function reload() {
+    if (!state.plan || state.status === 'running' || state.status === 'executing') return;
+    try {
+      const plan = await PX.api.call('plan');
+      if (plan && plan.id === state.planId) state.plan = plan;
+    } catch (e) { return; }
+    draw(true);
+  }
 
   async function checkup() {
     if (state.status === 'running' || state.status === 'executing' || state.savingOption) return;
@@ -77,7 +99,7 @@
     const aiReady = PX.checkupAIReady(PX.state.init);
     state.progress = { stages: (PX.state.init.checkup_stages || []).filter((s) =>
       (s.id !== 'space' || opts.space_scan !== false) && (s.id !== 'dups' || opts.duplicates !== false)
-      && (s.id !== 'ai' || (PX.checkupAIEnabled(opts) && aiReady))) };
+      && (s.id !== 'apps' || opts.apps_services !== false) && (s.id !== 'ai' || (PX.checkupAIEnabled(opts) && aiReady))) };
     state.report = null;
     state.run = { started: Date.now(), stage: null, stageAt: Date.now(), shown: 0, left: null };
     draw();
@@ -116,6 +138,10 @@
     if (preview.disable.count) {
       lines.appendChild(h('div.row', h('div', h('b', `禁用 ${preview.disable.count} 个开机启动项`), h('div.small.muted',
         preview.disable.titles.join('、') + '。随时可以在「开机与服务」里重新启用。')), h('span')));
+    }
+    if (preview.service && preview.service.count) {
+      lines.appendChild(h('div.row', h('div', h('b', `把 ${preview.service.count} 个服务改为手动启动`), h('div.small.muted',
+        preview.service.titles.join('、') + '。开机时不再自动运行，需要它的程序仍能按需启动；可以在「开机与服务」或「操作记录」里改回。')), h('span')));
     }
     body.appendChild(lines);
     if ((preview.all_copies || []).length) {
@@ -231,6 +257,7 @@
         if (e.target.open) state.optionsOpen.add(key); else state.optionsOpen.delete(key);
       } }, h('summary', title)));
     }
+    toggle('apps_services', '检查应用与服务', '已安装程序的占用和最近使用、第三方服务的启动方式；只读取，不会卸载或修改');
     const duplicate = toggle('duplicates', '查找重复文件', ck.cross_drive_duplicates !== false ? '校验内容，包含盘内和跨盘重复' : '校验内容，只查同一磁盘内的重复');
     const dupDetails = advanced(duplicate, 'duplicates', '查重选项');
     dupDetails.appendChild(h('label', h('input', { type: 'checkbox', id: 'checkup-cross_drive_duplicates', checked: ck.cross_drive_duplicates !== false,
@@ -242,14 +269,16 @@
     const aiDetails = advanced(ai, 'ai', '选择 AI 分析内容');
     const aiGrid = aiDetails.appendChild(h('div.checkup-ai-scopes'));
     for (const [key, title] of PX.checkupAIScopes) {
-      const parentOff = (key === 'space' && ck.space_scan === false) || (key === 'duplicates' && ck.duplicates === false);
+      const parent = PX.checkupScopeParent[key];
+      const parentOff = !!parent && ck[parent[0]] === false;
       const id = 'checkup-ai-' + key;
       aiGrid.appendChild(h('label', h('input', { type: 'checkbox', id, checked: ck.ai_scopes?.[key] !== false,
         disabled: busy || !aiReady || ck.use_ai === false || parentOff,
         onchange: (e) => saveOption('ai_scopes', { ...ck.ai_scopes, [key]: e.target.checked }, id) }),
-        title + (parentOff ? (key === 'space' ? '（空间扫描已关）' : '（查重已关）') : '')));
+        title + (parentOff ? `（${parent[1]}）` : '')));
     }
-    aiDetails.appendChild(h('p.small.muted', '仅控制首页体检；个人文件只发送名称等信息，不上传文件内容。'));
+    aiDetails.appendChild(h('p.small.muted', '仅控制首页体检；个人文件只发送名称等信息，不上传文件内容。'
+      + '程序和服务发送名称、发布者、版本或说明、程序路径（默认隐藏用户名）和盘序查到的使用情况。'));
     if (ck.use_ai !== false && aiReady && !PX.checkupAIEnabled(ck)) ai.appendChild(h('div.small.muted', '未启用任何 AI 分项，本次只用本地规则检查。'));
   }
 
@@ -286,16 +315,17 @@
         state.savingOption ? '正在保存选择…' : state.plan ? '重新体检' : '一键体检'));
       const init = PX.state.init;
       const ck = init.settings.checkup || {};
-      const parts = ['垃圾缓存', ck.space_scan !== false ? '空间占用' : null, '个人文件整理'].filter(Boolean);
-      cta.appendChild(h('span.muted.small', `基础检查：${parts.join(' · ')}。只分析，不删除文件。`));
+      const parts = ['垃圾缓存', ck.space_scan !== false ? '空间占用' : null, '个人文件整理', '开机启动',
+        ck.apps_services !== false ? '应用与服务' : null].filter(Boolean);
+      cta.appendChild(h('span.muted.small', `基础检查：${parts.join(' · ')}。只分析，不删除文件，也不修改设置。`));
     }
   }
 
   // the check-up as one bar: each stage has its share (how long it took here last time, checkup.load_timings, or a
   // typical split); inside a stage the backend says how far it is (p.part), or the bar creeps on at last time's pace
   // so that it never stands still -- and never goes back
-  const STAGE_SHARE = { junk: 8, space: 35, insights: 22, dups: 15, ai: 18, plan: 2 };
-  const STAGE_SECONDS = { junk: 6, space: 40, insights: 20, dups: 20, ai: 30, plan: 2 };
+  const STAGE_SHARE = { junk: 8, space: 35, insights: 22, dups: 15, apps: 3, ai: 18, plan: 2 };
+  const STAGE_SECONDS = { junk: 6, space: 40, insights: 20, dups: 20, apps: 4, ai: 30, plan: 2 };
   function checkupProgress(p) {
     const run = state.run;
     const now = Date.now();
@@ -358,6 +388,7 @@
     const nuked = r.permanent || {};
     if (nuked.count) figures.push(['warn', fmt.bytes(nuked.bytes), '已直接删除', `${nuked.count} 项回收站放不下，你在 Windows 的提示里选了直接删除，不能还原`]);
     if (r.disabled.length) figures.push(['', String(r.disabled.length), '个开机启动项已禁用', '随时可以在「开机与服务」里重新启用']);
+    if ((r.services || []).length) figures.push(['', String(r.services.length), '个服务改为手动启动', '可以在「开机与服务」或「操作记录」里改回']);
     const problems = r.failures || [];
     const ok = Object.values(r.items || {}).filter((x) => x.status === 'done').length;
     const card = c.appendChild(h('section.result-card' + (problems.length ? '.has-problems' : ''),
@@ -384,6 +415,7 @@
       if (it.action === 'delete') return [`已清理，释放 ${size}`, 'good'];
       if (it.action === 'recycle') return [`已移到回收站（${size}），需要时可以还原`, 'good'];
       if (it.action === 'disable') return ['已禁用开机启动，随时可以重新启用', 'good'];
+      if (it.action === 'service' && !it.result?.startsWith('已在')) return ['已改为手动启动，随时可以改回', 'good'];
       return [it.result || '已完成', 'good'];
     }
     if (it.status === 'partial') return [`只完成了一部分：${it.result}`, 'warn'];
@@ -419,11 +451,14 @@
   function toolCoverage(c) {
     if (!state.plan) {
       const opts = PX.state.init.settings.checkup;
+      const apps = opts.apps_services !== false;
       c.appendChild(h('section.checkup-includes', h('b', '一键体检包含'),
-        h('span', `垃圾清理、我的文件、开机启动项、软件登记${opts.space_scan !== false ? '、空间分析与大文件、软件残留' : ''}${opts.duplicates !== false ? '、重复文件' : ''}。`),
-        h('span.muted', '服务和应用卸载建议需单独检查：'),
-        h('button.btn.quiet.small', { type: 'button', onclick: () => openTool('services') }, '服务'),
-        h('button.btn.quiet.small', { type: 'button', onclick: () => openTool('apps') }, '应用')));
+        h('span', `垃圾清理、我的文件、开机启动项、软件登记${opts.space_scan !== false ? '、空间分析与大文件、软件残留' : ''}`
+          + `${opts.duplicates !== false ? '、重复文件' : ''}${apps ? '、已安装的应用和第三方服务' : ''}。`),
+        apps ? h('span.muted', '体检只读取和分析；卸载程序、修改服务都要你确认。')
+          : [h('span.muted', '应用和服务这次不检查，可以单独查看：'),
+            h('button.btn.quiet.small', { type: 'button', onclick: () => openTool('services') }, '服务'),
+            h('button.btn.quiet.small', { type: 'button', onclick: () => openTool('apps') }, '应用')]));
       return;
     }
     const section = c.appendChild(h('section.checkup-coverage', { 'aria-label': '本次检查情况' },
@@ -534,8 +569,9 @@
 
   // folders: AI and heuristic suggestions (app data), empty folders, explained locations without an extension
   // (Docker, but not hiberfil.sys); everything else offered by path is a file
-  const isFolder = (it) => it.source === 'ai' || it.source === 'heuristic' || it.category === '空文件夹' ||
-    (it.source === 'knowledge' && !/\.[a-z0-9]{2,5}$/i.test(it.location || ''));
+  const isFolder = (it) => it.kind === 'app' || (it.kind !== 'service' && it.kind !== 'startup'
+    && (it.source === 'ai' || it.source === 'heuristic' || it.category === '空文件夹' ||
+    (it.source === 'knowledge' && !/\.[a-z0-9]{2,5}$/i.test(it.location || ''))));
 
   // the line under a row's title: why it is offered; for 仅供了解, what to do about it
   const rowText = (it) => (it.group === 'info' ? it.advice || it.what || it.why : it.why || it.what);
@@ -563,14 +599,21 @@
         draw(true);
         state.entering = null;
       } },
-    it.group === 'info' ? PX.icon('info', 'ic') : box,
+    it.group === 'info' ? PX.icon('info', 'ic') : it.action === 'uninstall' ? PX.icon('apps', 'ic') : box,
     h('div.cell-main',
-      h('div.name-line', one && it.kind !== 'rule' ? PX.fileIcon(one, isFolder(it)) : null,
+      h('div.name-line', one && it.kind !== 'rule' && it.kind !== 'app' ? PX.fileIcon(one, isFolder(it)) : null,
         h('span.name-text', it.title), PX.tag(srcLabel, srcKind), flags),
       h('div.why', rowText(it)),
       it.group === 'info' && it.status === 'pending' && it.actions && it.actions.length
         ? h('div.info-actions', it.actions.map((a) => h('button.btn.small' + (a.kind === 'hibernate' ? '.primary' : ''), {
-          type: 'button', onclick: (e) => { e.stopPropagation(); infoAction(it, a); } }, a.label))) : null),
+          type: 'button', onclick: (e) => { e.stopPropagation(); infoAction(it, a); } }, a.label))) : null,
+      it.action === 'uninstall' && it.status === 'pending' ? h('div.info-actions',
+        PX.apps && PX.apps.uninstalling(it.app_id)
+          ? h('button.btn.small.primary', { type: 'button', title: '卸载程序结束后会自动发现；也可以点这里马上检查',
+            onclick: (e) => { e.stopPropagation(); PX.apps.check(it.app_id); } }, PX.icon('refresh'), '检查是否卸载完成')
+          : h('button.btn.small', { type: 'button', title: '打开它自己的卸载程序，和「设置 > 应用」里卸载一样',
+            onclick: (e) => { e.stopPropagation(); if (PX.apps) PX.apps.uninstall(it.app_id); } }, '卸载…'),
+        h('button.btn.quiet.small', { type: 'button', onclick: (e) => { e.stopPropagation(); openTool('apps'); } }, '在「应用」里查看')) : null),
     PX.score(it.score, (it.basis || []).join('\n')),
     h('div.size', it.size || it.logical_size > 0 ? fmt.bytes(it.size) : ''),
     h('div.row-actions', one && !isFolder(it) ? PX.openButton(one) : null, one ? PX.revealButton(one) : null,
@@ -643,13 +686,17 @@
     const cats = [];
     for (const it of rows) { let cat = cats.find((x) => x.name === it.category); if (!cat) cats.push(cat = { name: it.category, rows: [] }); cat.rows.push(it); }
     for (const cat of cats) {
+      cat.rows = PX.sortRows(cat.rows, PLAN_SORT, state.sort, 'size');
       const can = cat.rows.filter(selectable);
       const personal = cat.rows.some((it) => it.personal) && !CAT_PAGE[cat.name];
       const page = CAT_PAGE[cat.name] || (personal ? ['mine', '我的文件'] : null);
+      // programs are uninstalled one at a time: their category has no box to tick them all
+      const tickable = id !== 'info' && cat.rows.some((it) => it.action !== 'uninstall');
       list.appendChild(h('div.cat-head', { id: catAnchor(id, cat.name) },
-        id !== 'info' ? PX.groupBox(can.length, can.filter(isSel).length, (on) => { for (const it of can) setSel(it, on); draw(true); },
-          '选择「' + cat.name + '」这一组') : null,
-        h('b', cat.name), h('span.muted.small', `${cat.rows.length} 项 · ${fmt.bytes(cat.rows.reduce((s, it) => s + (it.size || 0), 0))}`),
+        tickable ? PX.groupBox(can.length, can.filter(isSel).length, (on) => { for (const it of can) setSel(it, on); draw(true); },
+          '选择「' + cat.name + '」这一组') : id !== 'info' ? h('span.group-box-gap') : null,
+        h('b', cat.name), h('span.muted.small', `${cat.rows.length} 项` + (cat.rows.some((it) => it.size)
+          ? ` · ${fmt.bytes(cat.rows.reduce((s, it) => s + (it.size || 0), 0))}` : '')),
         h('span.grow'),
         page && id !== 'info' ? h('button.btn.quiet.small.go', { type: 'button', title: `在「${page[1]}」里看全部细节`, onclick: () => openTool(page[0]) },
           `去「${page[1]}」`, PX.icon('chev')) : null));
@@ -704,7 +751,10 @@
         h('span.small.muted', `共 ${items().length} 项 · 可逐项查看原因、调整勾选`)));
       const details = c.appendChild(h('section', { id: 'checkup-plan-details', hidden: !state.planOpen }));
       if (state.planOpen) {
-        if (items().some((it) => it.status === 'pending' && it.action !== 'none')) scoreBar(details);
+        if (items().some(selectable)) scoreBar(details);
+        if (items().filter((it) => it.status === 'pending').length > 1) {
+          details.appendChild(PX.sortBar(PLAN_SORT, state.sort, (s) => { state.sort = s; draw(true); }));
+        }
         for (const g of p.groups) group(details, g.id, g.name);
         handled(details);
       }
@@ -734,7 +784,7 @@
   }
   const waitingForPrograms = () => items().some((it) => it.status === 'pending' && it.blocked && it.blocked.startsWith('请先关闭'));
 
-  PX.home = { state, checkup, adopt, applyRunning, waitingForPrograms };
+  PX.home = { state, checkup, adopt, applyRunning, waitingForPrograms, reload };
   // the tool pages may have cleaned something since: always take the plan's current statuses
   PX.pages.home = { render(container) { root = container; draw(); loadExisting(); } };
 })();

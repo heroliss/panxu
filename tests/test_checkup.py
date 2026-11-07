@@ -164,21 +164,27 @@ class CheckupTest(TempDirTest):
         self.assertIsNone(self.backend.settings.get()['checkup']['selected_drives'])
 
     def test_ai_subscopes_only_call_the_chosen_analysis(self):
-        methods = {'space': 'analyze_space', 'files': 'review_files', 'duplicates': 'review_duplicates', 'startup': 'explain_items'}
+        # startup items, programs and services all go through explain_items: told apart by what is sent
+        methods = {'space': 'analyze_space', 'files': 'review_files', 'duplicates': 'review_duplicates', 'startup': 'explain_items',
+                   'apps': 'explain_items', 'services': 'explain_items'}
+        kinds = {'startup': 'startup', 'apps': 'app', 'services': 'service'}
         from contextlib import ExitStack
         for chosen in methods:
             with self.subTest(chosen=chosen), ExitStack() as stack:
-                spies = {key: stack.enter_context(patch.object(self.backend.analyst, method, wraps=getattr(self.backend.analyst, method)))
-                         for key, method in methods.items()}
+                spies = {method: stack.enter_context(patch.object(self.backend.analyst, method, wraps=getattr(self.backend.analyst, method)))
+                         for method in set(methods.values())}
                 plan = self.checkup(ai_scopes={key: key == chosen for key in methods})
-                for key, spy in spies.items():
-                    self.assertEqual(bool(spy.call_count), key == chosen, key)
+                for method, spy in spies.items():
+                    self.assertEqual(bool(spy.call_count), methods[chosen] == method, method)
+                if chosen in kinds:
+                    sent = {item['kind'] for call in spies['explain_items'].call_args_list for item in call.args[0]}
+                    self.assertEqual(sent, {kinds[chosen]})
                 self.assertEqual(plan['ai']['scopes'], ['dups' if chosen == 'duplicates' else chosen])
                 if chosen == 'files':
-                    self.assertTrue(all('excerpt' not in file for file in spies['files'].call_args.args[0]))
+                    self.assertTrue(all('excerpt' not in file for file in spies['review_files'].call_args.args[0]))
 
     def test_all_ai_subscopes_off_never_creates_client_but_manual_ai_still_works(self):
-        off = dict.fromkeys(('space', 'files', 'duplicates', 'startup'), False)
+        off = dict.fromkeys(('space', 'files', 'duplicates', 'startup', 'apps', 'services'), False)
         self.call('settings_save', changes={'checkup': {'ai_scopes': off}})
         with patch.object(self.backend, 'client_or_none', side_effect=AssertionError('AI is off')):
             plan = self.checkup()
@@ -616,7 +622,8 @@ class CheckupTest(TempDirTest):
 
     def test_execute_everything(self):
         plan = self.checkup()
-        ids = [i['id'] for i in plan['items'] if not i['blocked'] and i['action'] != 'none']
+        # a program's uninstaller runs from its own row, never with the rest of the plan
+        ids = [i['id'] for i in plan['items'] if not i['blocked'] and i['action'] not in ('none', 'uninstall')]
         preview = self.call('plan_preview', item_ids=ids)
         self.assertGreater(preview['delete']['count'], 0)
         self.assertGreater(preview['recycle']['count'], 0)
@@ -639,8 +646,9 @@ class CheckupTest(TempDirTest):
             self.assertNotIn('字节', item['result'])
         self.assertEqual(sum(i['freed'] for i in done if i['action'] == 'delete'), report['deleted']['bytes'])
         kinds = [h['kind'] for h in self.call('history')]
-        for kind in ('junk', 'recycle', 'startup', 'ai'):
+        for kind in ('junk', 'recycle', 'startup', 'service', 'ai'):
             self.assertIn(kind, kinds)
+        self.assertTrue(report['services'], 'third-party services the model would not start at boot were changed')
         again = self.bridge.call('plan_execute', {'item_ids': ids})
         self.assertTrue(again['ok'])
         status = self.bridge.call('job', {'job_id': again['data']})

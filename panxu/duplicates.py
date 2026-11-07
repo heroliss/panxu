@@ -378,9 +378,9 @@ def find_duplicates(roots: list[str], *, min_size: int = 1024 * 1024, skip=None,
             if timed_out:
                 break
 
-    # folders that hold a code project (never a folder the user chose to search, nor a drive): what else lies in
-    # them is often the project's material
-    chosen = {paths.key(r) for r in roots}
+    # folders that hold a code project (never a folder the user chose to search, one of the user's own folders such
+    # as Documents, nor a drive): what else lies in them is often the project's material
+    chosen = {paths.key(r) for r in roots} | containers
     near = {}
     for kind, home in homes.values():
         parent = os.path.dirname(home)

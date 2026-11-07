@@ -101,6 +101,8 @@ class Backend:
         self.dups: dict | None = None
         self.junk_rows: list[dict] | None = None
         self.startup_ai: dict = {}
+        self.app_ai: dict = {}       # program id -> the model's advice (the check-up or 「AI 解释这些程序」)
+        self.service_ai: dict = {}   # service name -> the model's advice
         self.app_residues: dict | None = None
         self.insights: dict | None = None
         self.file_ai: dict[str, dict] = {}
@@ -793,28 +795,34 @@ class Backend:
         return self.dups
 
     def m_dup_default_roots(self):
-        out = []
-        for name in ('desktop', 'documents', 'downloads', 'pictures', 'videos', 'music'):
-            try:
-                p = winapi.known_folder(name)
-            except OSError:
-                continue
-            if p and os.path.isdir(p) and p not in out:
-                out.append(p)
-        return out
+        """The same places as 「我的文件」 and the check-up's default: the local fixed disks, the user's folders and
+        the added locations -- shown without the ones another one already covers. System, program and app-data
+        folders are skipped while searching (checkup.system_skip)."""
+        settings, drives = self.settings.get(), self.m_drives()
+        # the disks chosen for the check-up on 首页 (by default every local fixed disk)
+        whole = [d['root'] for d in checkup.selected_drives(drives, settings.get('checkup', {}))]
+        return checkup.space_roots(self.env, settings, drives, whole_drives=whole)
 
     def m_dup_scan(self, roots: list, min_size_mb: float = 1):
         roots = [r for r in roots or [] if isinstance(r, str) and os.path.isdir(r)]
         if not roots:
             raise UserError('请至少选择一个存在的文件夹')
         policy = self.policy()
-        skip = checkup.system_skip(self.env, policy, roots)
-        containers = checkup.personal_roots(self.env, {}) + [d['root'] for d in self.m_drives()] \
+        drives = self.m_drives()
+        # your own folders inside the chosen places go first, as in the check-up: within the bounds they are
+        # searched before the rest of a disk
+        ordered = checkup.ordered_roots(self.env, self.settings.get(), roots)
+        skip = checkup.system_skip(self.env, policy, ordered)
+        containers = checkup.personal_roots(self.env, {}) + [d['root'] for d in drives] \
             + [self.env.get('USERPROFILE'), self.env.get('PUBLIC')]
+        # a whole disk is searched with the check-up's bounds (reads, time); a chosen folder completely
+        drive_keys = {paths.key(d['root']) for d in drives}
+        bounds = checkup.DUP_BOUNDS if any(paths.key(r) in drive_keys or os.path.dirname(r.rstrip('\\/')) == r.rstrip('\\/')
+                                           for r in roots) else {}
 
         def run(job):
-            result = find_duplicates(roots, min_size=int(float(min_size_mb) * 1024 * 1024), skip=skip,
-                                     container_roots=containers,
+            result = find_duplicates(ordered, min_size=int(float(min_size_mb) * 1024 * 1024), skip=skip,
+                                     container_roots=containers, **bounds,
                                      cancel=job.cancel, progress=lambda p: job.update(**p))
             for g in result['groups']:
                 for f in g['files']:
@@ -883,13 +891,22 @@ class Backend:
             raise UserError(str(exc)) from None
 
     def m_services_list(self):
-        return self.services.list()
+        return [{**s, 'ai': self.service_ai.get(s['name'])} for s in self.services.list()]
+
+    def _sync_service_item(self, name: str, start_type: str):
+        """The plan on 首页 shows a service changed on the tool page (or put back from 操作记录) as such."""
+        for item in (self.plan or {}).get('items', []):
+            if item.get('kind') == 'service' and item.get('service_name') == name and item['status'] in ('pending', 'done', 'failed', 'skipped'):
+                off = start_type in ('manual', 'disabled')
+                item.update(status='done' if off else 'pending', result='已在「开机与服务」修改' if off else '', selected=False)
 
     def m_service_set(self, name: str, start_type: str, stop_now: bool = False):
         try:
-            return self.services.set_start_type(str(name), str(start_type), bool(stop_now))
+            result = self.services.set_start_type(str(name), str(start_type), bool(stop_now))
         except (ValueError, PermissionError, RuntimeError) as exc:
             raise UserError(str(exc)) from None
+        self._sync_service_item(result['name'], result['start_type'])
+        return result
 
     def m_ai_explain(self, kind: str, use_cache: bool = True):
         if kind == 'startup':
@@ -910,8 +927,9 @@ class Backend:
             job.update(count=len(items))
             result = self.analyst.explain_items(items, client, s['ai'].get('anonymize_paths', True), use_cache)
             by_id = {i['id']: result['items'].get(i['key']) for i in items}
-            if kind == 'startup':
-                self.startup_ai.update({k: v for k, v in by_id.items() if v})
+            # kept like the check-up's answers, so the page shows them again after switching away
+            shared = {'startup': self.startup_ai, 'apps': self.app_ai, 'services': self.service_ai}[kind]
+            shared.update({k: v for k, v in by_id.items() if v})
             return {'items': {k: v for k, v in by_id.items() if v}, 'usage': result['usage'],
                     'errors': result['errors']}
         return self.jobs.start('ai_explain', run, group='ai')
@@ -941,7 +959,17 @@ class Backend:
 
     def m_apps_list(self, fresh: bool = False):
         apps = self.apps.list(fresh=bool(fresh))
-        return {'apps': apps, 'admin': self.admin, 'usage_known': any(a['usage_known'] for a in apps)}
+        if fresh:
+            self._sync_uninstalled({a['id'] for a in apps})
+        return {'apps': apps, 'admin': self.admin, 'usage_known': any(a['usage_known'] for a in apps),
+                'ai': {k: v for k, v in self.app_ai.items() if v}}
+
+    def _sync_uninstalled(self, installed: set[str], checked: set[str] | None = None):
+        """A program the plan on 首页 suggests uninstalling is gone (its uninstaller finished): say so there."""
+        for item in (self.plan or {}).get('items', []):
+            if item.get('kind') == 'app' and item['status'] == 'pending' and item['app_id'] not in installed \
+                    and (checked is None or item['app_id'] in checked):
+                item.update(status='done', result='已卸载', selected=False)
 
     def m_app_measure(self, app_id: str):
         try:
@@ -1022,7 +1050,9 @@ class Backend:
 
     def m_app_installed(self, app_ids: list):
         """{app id: still registered?} -- polled while an uninstaller runs."""
-        return {str(i): self.apps.installed(str(i)) for i in (app_ids or [])[:20]}
+        out = {str(i): self.apps.installed(str(i)) for i in (app_ids or [])[:20]}
+        self._sync_uninstalled({i for i, still in out.items() if still}, set(out))
+        return out
 
     def m_app_leftovers(self, app_id: str):
         """Folders an uninstalled program left behind (a background job: sizes take a moment)."""
@@ -1037,13 +1067,15 @@ class Backend:
             return rows
         return self.jobs.start('app_leftovers', run, group='apps')
 
-    def _app_for_ai(self, a: dict, running: set[str] | None = None) -> dict:
+    def _app_for_ai(self, a: dict, running: set[str] | None = None, registry: list[dict] | None = None) -> dict:
+        """``registry``: the registrations that look broken (default: the last check's)."""
         extra = {'version': a['version'], 'category': APP_KINDS.get(a['kind'], '应用')}
         if a['size']:
             extra['size'] = fmt_size(a['size'])
         if a['installed']:
             extra['installed'] = fmt_date(a['installed'])
-        issue = next((r for r in (self.app_residues or {}).get('registry', []) if r['id'] == a['id']), None)
+        issues = registry if registry is not None else (self.app_residues or {}).get('registry', [])
+        issue = next((r for r in issues if r['id'] == a['id']), None)
         if issue:
             extra['registration_check'] = issue['why'] + issue['advice']
         if a['usage_known']:
@@ -1174,12 +1206,13 @@ class Backend:
         plan = self._require_plan()
         wanted = {str(i) for i in item_ids or []}
         out = {'delete': {'count': 0, 'size': 0, 'titles': []}, 'recycle': {'count': 0, 'size': 0, 'titles': []},
-               'disable': {'count': 0, 'titles': []}, 'skipped': [], 'all_copies': []}
+               'disable': {'count': 0, 'titles': []}, 'service': {'count': 0, 'titles': []}, 'skipped': [], 'all_copies': []}
         for item in plan['items']:
             if item['id'] not in wanted:
                 continue
-            if item['blocked'] or item['status'] != 'pending' or item['action'] == 'none':
-                out['skipped'].append({'title': item['title'], 'reason': item['blocked'] or '不需要操作'})
+            if item['blocked'] or item['status'] != 'pending' or item['action'] in ('none', 'uninstall'):
+                reason = item['blocked'] or ('要单独运行它自己的卸载程序' if item['action'] == 'uninstall' else '不需要操作')
+                out['skipped'].append({'title': item['title'], 'reason': reason})
                 continue
             if item.get('kind') == 'dup' and not item.get('keep'):
                 out['all_copies'].append(item['title'])  # every copy chosen: the dialog says so
@@ -1318,6 +1351,13 @@ class Backend:
                 detail = (self._file_context(item['paths'][0], False) if item.get('personal')
                           else self._path_context(item['paths'][0]))
                 ctx['about']['detail'] = detail
+            elif item.get('kind') in ('service', 'app'):
+                # the same facts as asking about it on its own page (whether it runs, which program it belongs to)
+                target = {'type': item['kind'], 'id': item.get('service_name') or item.get('app_id')}
+                try:
+                    ctx['about']['detail'] = self._ask_context(target, '', False)['about']
+                except UserError:
+                    pass  # gone meanwhile: the plan item's own words are still there
         else:
             ctx['about'] = {'type': '整台电脑'}
             ctx.update(self._global_context())
@@ -1396,7 +1436,7 @@ class Backend:
         except (RuntimeError, OSError) as exc:
             raise UserError(f'重建失败：{exc}') from None
         self.scan, self.ai_results, self.dups, self.junk_rows = None, {}, None, None
-        self.startup_ai = {}
+        self.startup_ai, self.app_ai, self.service_ai = {}, {}, {}
         self.app_residues = None
         self.insights, self.file_ai, self.plan, self._app_index = None, {}, None, None
         self.apps._cache = None
@@ -1419,6 +1459,7 @@ class Backend:
                 self.startup.set_enabled(revert['id'], revert['enabled'], log=False)
             elif revert['action'] == 'service':
                 self.services.set_start_type(revert['name'], revert['start_type'], log=False)
+                self._sync_service_item(revert['name'], revert['start_type'])
             elif revert['action'] == 'hibernate':
                 self._set_hibernate(bool(revert['enabled']))
             else:

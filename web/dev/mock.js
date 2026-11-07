@@ -78,9 +78,15 @@
     for (const c of n.children) index(c, n, path.replace(/\\$/, '') + '\\' + c.name);
   })(tree, null, 'C:\\');
   const dirs = nodes.filter((n) => n.kind !== 'file');
-  const note = (n) => n.label ? { kind: n.kind, label: n.label, advice: '', rule: '', inherited: false } : null;
+  // a long explanation, as the knowledge base has for system folders (the detail card must not scroll for it)
+  const ADVICE = { Windows: 'Windows 系统目录，包含系统组件、驱动和更新留下的备份。不要手动删除里面的任何东西：更新缓存、临时文件和组件存储'
+    + '可以在「垃圾清理」里用对应的规则安全清理，旧的系统组件用「组件存储清理（WinSxS）」交给 Windows 自己处理。' };
+  const note = (n) => n.label ? { kind: n.kind, label: n.label, advice: ADVICE[n.name] || '', rule: '', inherited: false } : null;
   let aiResults = {};
-  const row = (n) => ({ id: n.id, name: n.parent ? n.name : n.path, path: n.path, type: 'dir', size: n.size, logical_size: n.logical_size, files: Math.round(n.size / (3 * MB)) + 7,
+  // #multi: the check-up's scan of several disks, under a 「本机磁盘」 node that has no path of its own
+  const multi = location.hash.includes('multi');
+  const row = (n) => ({ id: n.id, name: n.parent ? n.name : multi ? '本机磁盘' : n.path, path: !n.parent && multi ? '' : n.path,
+    virtual: !n.parent && multi, type: 'dir', size: n.size, logical_size: n.logical_size, files: Math.round(n.size / (3 * MB)) + 7,
     dirs: n.children.length, mtime: now - (n.id % 9) * 40 * day, has_children: n.children.length > 0, denied: n.name === 'Windows', links: false, cloud: false,
     note: note(n), ai: aiResults[n.id], blocked: n.parent && !n.parent.parent ? '这是 Windows 系统文件或目录' : null });
 
@@ -103,8 +109,8 @@
 
   const settings = { theme: 'system', ai: { preset: 'deepseek', base_url: 'https://api.deepseek.com', model: 'deepseek-flash', protocol: 'openai',
     json_mode: true, thinking: 'off', anonymize_paths: true, send_file_content: false, max_requests: 8, min_dir_mb: 200, timeout: 120 },
-  checkup: { space_scan: true, other_drives: true, selected_drives: null, duplicates: true, cross_drive_duplicates: true,
-    use_ai: true, ai_scopes: { space: true, files: true, duplicates: true, startup: true }, auto_threshold: 5 },
+  checkup: { space_scan: true, other_drives: true, selected_drives: null, duplicates: true, cross_drive_duplicates: true, apps_services: true,
+    use_ai: true, ai_scopes: { space: true, files: true, duplicates: true, startup: true, apps: true, services: true }, auto_threshold: 5 },
   insights: { stale_days: 365, large_mb: 100, download_days: 180 },
   duplicates: { min_size_mb: 1 }, large_files: { min_size_mb: 100 }, excluded_paths: [], extra_personal_paths: ['D:\\资料'] };
   let hasKey = true;
@@ -153,13 +159,13 @@
   largeFiles.find((f) => f.path.endsWith('docker_data.vhdx')).logical_size = 128 * GB;
 
   const suggestions = () => [
-    { node_id: 12, path: 'C:\\Users\\demo\\AppData\\Local\\Unity', size: 6.2 * GB, files: 18000, verdict: 'clean', verdict_label: '可清理', app: 'Unity 编辑器', reason: 'Unity 的资源导入与着色器缓存，打开项目时会自动重建', effect: '下次打开项目时重新导入，耗时较长', confidence: 0.86, source: 'ai', expanded: false,
+    { node_id: 12, path: 'C:\\Users\\demo\\AppData\\Local\\Unity', size: 6.2 * GB, files: 18000, verdict: 'clean', verdict_label: '可清理', app: 'Unity 编辑器', reason: 'Unity 的资源导入与着色器缓存，打开项目时会自动重建', effect: '下次打开项目时重新导入，耗时较长', confidence: 0.86, source: 'ai', expanded: false, mtime: now - 200 * day,
       score: 86, selected: true, basis: ['AI：可清理（把握 86%）', '自动勾选：AI 判断可清理（把握 86%），不属于仍在使用的程序，最近也没有改动，9 分达到勾选门槛（5 分）'] },
-    { node_id: 999, path: 'C:\\Users\\demo\\AppData\\Local\\Adobe', size: 3.4 * GB, files: 7400, verdict: 'clean', verdict_label: '可清理', app: 'Adobe Photoshop', reason: '大部分是媒体缓存和字体缓存', effect: '下次打开时重新生成缓存', confidence: 0.9, source: 'ai', expanded: false,
+    { node_id: 999, path: 'C:\\Users\\demo\\AppData\\Local\\Adobe', size: 3.4 * GB, files: 7400, verdict: 'clean', verdict_label: '可清理', app: 'Adobe Photoshop', reason: '大部分是媒体缓存和字体缓存', effect: '下次打开时重新生成缓存', confidence: 0.9, source: 'ai', expanded: false, mtime: now - 3 * day,
       score: 70, selected: false, basis: ['AI：可清理（把握 90%）', '属于仍在使用的程序「Adobe Photoshop 2025」：里面可能还有设置或许可证', '没有自动勾选：属于仍在使用的程序「Adobe Photoshop 2025」'] },
-    { node_id: 14, path: 'C:\\Users\\demo\\AppData\\Local\\ms-playwright', size: 2.6 * GB, files: 3100, verdict: 'clean', verdict_label: '可清理', app: 'Playwright', reason: '自动化测试下载的浏览器内核，需要时可重新安装', effect: '运行测试前需执行 playwright install', confidence: 0.8, source: 'ai', expanded: false,
+    { node_id: 14, path: 'C:\\Users\\demo\\AppData\\Local\\ms-playwright', size: 2.6 * GB, files: 3100, verdict: 'clean', verdict_label: '可清理', app: 'Playwright', reason: '自动化测试下载的浏览器内核，需要时可重新安装', effect: '运行测试前需执行 playwright install', confidence: 0.8, source: 'ai', expanded: false, mtime: now - 420 * day,
       score: 80, selected: true, basis: ['AI：可清理（把握 80%）', '自动勾选：AI 判断可清理（把握 80%），不属于仍在使用的程序，最近也没有改动，8 分达到勾选门槛（5 分）'] },
-    { node_id: 10, path: 'C:\\Users\\demo\\AppData\\Local\\JetBrains\\IntelliJIdea2025.3', size: 7.1 * GB, files: 51000, verdict: 'review', verdict_label: '需要你确认', app: 'IntelliJ IDEA', reason: '含索引缓存和本地历史；若已不用这个版本可整体删除', effect: '重新打开会重建索引', confidence: 0.62, source: 'ai', expanded: false, caution: null,
+    { node_id: 10, path: 'C:\\Users\\demo\\AppData\\Local\\JetBrains\\IntelliJIdea2025.3', size: 7.1 * GB, files: 51000, verdict: 'review', verdict_label: '需要你确认', app: 'IntelliJ IDEA', reason: '含索引缓存和本地历史；若已不用这个版本可整体删除', effect: '重新打开会重建索引', confidence: 0.62, source: 'ai', expanded: false, caution: null, mtime: now - 90 * day,
       score: 50, selected: false, basis: ['AI：需要你确认（把握 62%）', '没有自动勾选：AI 也拿不准'] },
     { node_id: 17, path: 'C:\\Users\\demo\\AppData\\Roaming\\Tencent', size: 6.3 * GB, files: 9200, verdict: 'keep', verdict_label: '建议保留', app: 'QQ / 微信', reason: '聊天记录数据库与账号配置', effect: '', confidence: 0.9, source: 'cache', expanded: false, caution: '位于应用配置目录，可能包含应用设置或账号数据',
       score: null, selected: false, basis: ['AI：建议保留（把握 90%）'] },
@@ -205,6 +211,14 @@
         { path: U + '\\Downloads\\截图 2026-03-01 101530 (1).png', mtime: now - 20 * day }] }),
     P({ id: 'startup:qv', category: '开机启动', title: '快看图大师 资讯助手', action: 'disable', source: 'ai', confidence: 0.7, what: '看图软件附带的资讯弹窗程序',
       why: 'AI 建议禁用：开机弹出广告和资讯，禁用不影响看图' }),
+    P({ id: 'app:a4', kind: 'app', app_id: 'a4', category: '可以卸载的程序', title: '快看图大师', size: 780 * MB, action: 'uninstall', source: 'ai',
+      what: '看图软件，附带资讯弹窗', why: 'AI 建议卸载：常驻弹出广告资讯，可换用系统自带的照片应用', location: 'C:\\Program Files\\快看图大师',
+      effect: '它的设置、存档或登录信息可能随卸载一起删除，或留在应用数据里。' }),
+    P({ id: 'app:a5', kind: 'app', app_id: 'a5', category: '可以卸载的程序', title: 'Hollow Knight', size: 9.1 * GB, action: 'uninstall', source: 'heuristic',
+      why: '1 年没有运行过，占用 9.1 GB', location: 'C:\\Program Files\\Hollow Knight' }),
+    P({ id: 'service:AdobeARMservice', kind: 'service', service_name: 'AdobeARMservice', category: '服务', title: 'Adobe Acrobat Update Service',
+      action: 'service', source: 'ai', what: 'Adobe 自动更新服务', why: 'AI 建议开机时不再自动运行：设为手动后仍可在应用内更新',
+      effect: '这次不会停止正在运行的服务，下次开机起不再自动启动。', location: 'C:\\Program Files\\AdobeARMservice\\service.exe' }),
     P({ id: 'info:hiber', group: 'info', category: '说明', title: '休眠文件', size: 12.7 * GB, action: 'none', source: 'knowledge', location: 'C:\\hiberfil.sys',
       advice: '用于休眠和快速启动。不需要这两项时，可用管理员命令 powercfg /h off 关闭，文件会自动消失。', why: '体积较大，但不能直接删除。',
       actions: [{ kind: 'hibernate', label: '关闭休眠，删除这个文件' }] }),
@@ -214,12 +228,14 @@
   ];
   const SCORES = { 'rule:user_temp': 95, 'rule:chrome': 75, 'rule:crash_dumps': 70, 'dir:unity': 70, 'rule:edge': 75, 'rule:npm': 70,
     'dir:idea21': 60, 'dir:oldgame': 30, 'file:iso': 30, 'file:wechat': 85, 'file:vscode': 85, 'file:crdl': 90, 'file:thesis': 85,
-    'dup:1': 85, 'startup:qv': 60 };
-  const HOLD = { 'dir:oldgame': '找不到对应的程序，但不确定是不是绿色版', 'startup:qv': '开机启动项由你决定' };
+    'dup:1': 85, 'startup:qv': 60, 'app:a4': 60, 'app:a5': 40, 'service:AdobeARMservice': 60 };
+  const HOLD = { 'dir:oldgame': '找不到对应的程序，但不确定是不是绿色版', 'startup:qv': '开机启动项由你决定',
+    'app:a4': '卸载要运行它自己的卸载程序，请你逐个确认', 'app:a5': '卸载要运行它自己的卸载程序，请你逐个确认',
+    'service:AdobeARMservice': '服务由你决定：改为手动会改变程序的行为' };
   for (const it of planItems) {
     if (it.action === 'none') { it.score = null; it.basis = []; continue; }
     it.score = SCORES[it.id] || 50;
-    it.kind = it.id.startsWith('rule:') ? 'rule' : it.id.startsWith('dup:') ? 'dup' : it.id.startsWith('startup:') ? 'startup' : 'paths';
+    it.kind = it.kind || (it.id.startsWith('rule:') ? 'rule' : it.id.startsWith('dup:') ? 'dup' : it.id.startsWith('startup:') ? 'startup' : 'paths');
     if (it.kind === 'rule') it.rule = it.id.slice(5);
     it.eligible = !it.personal && !HOLD[it.id];
     it.hold_reason = it.personal ? '你的个人文件只由你决定' : HOLD[it.id] || null;
@@ -247,7 +263,7 @@
     const sel = rows.filter((i) => i.selected && i.status === 'pending');
     return [id, { count: rows.length, size: rows.reduce((s, i) => s + (i.size || 0), 0), selected: sel.length, selected_size: sel.reduce((s, i) => s + (i.size || 0), 0) }];
   }));
-  const stages = [['junk', '扫描垃圾文件'], ['space', '分析本机磁盘空间'], ['insights', '整理我的文件'], ['dups', '查找重复文件'], ['ai', 'AI 复核'], ['plan', '生成清理方案']]
+  const stages = [['junk', '扫描垃圾文件'], ['space', '分析本机磁盘空间'], ['insights', '整理我的文件'], ['dups', '查找重复文件'], ['apps', '检查应用与服务'], ['ai', 'AI 复核'], ['plan', '生成清理方案']]
     .map(([id, label]) => ({ id, label }));
 
   const F = (path, size, age, note, remove, extra) => Object.assign({ path, name: path.split('\\').pop(), size, mtime: now - age * day, note, remove,
@@ -335,11 +351,14 @@
       const opts = { ...settings.checkup };
       const roots = PX.checkupDriveRoots(handlers.drives(), opts);
       const activeStages = stages.filter((s) => (s.id !== 'space' || opts.space_scan !== false)
-        && (s.id !== 'dups' || opts.duplicates !== false) && (s.id !== 'ai' || (PX.checkupAIEnabled(opts) && hasKey)));
+        && (s.id !== 'dups' || opts.duplicates !== false) && (s.id !== 'apps' || opts.apps_services !== false)
+        && (s.id !== 'ai' || (PX.checkupAIEnabled(opts) && hasKey)));
       return job(40, () => {
       const t = settings.checkup.auto_threshold || 5;
+      const scopeOf = (it) => ({ startup: 'startup', app: 'apps', service: 'services' }[it.kind] || 'space');
       const chosen = planItems.filter((it) => (opts.duplicates !== false || it.kind !== 'dup')
-        && (it.source !== 'ai' || (hasKey && PX.checkupAIEnabled(opts) && opts.ai_scopes?.[it.id.startsWith('startup:') ? 'startup' : 'space'] !== false))
+        && (opts.apps_services !== false || (it.kind !== 'app' && it.kind !== 'service'))
+        && (it.source !== 'ai' || (hasKey && PX.checkupAIEnabled(opts) && opts.ai_scopes?.[scopeOf(it)] !== false))
         && !(it.paths || []).some((p) => !p.startsWith(U) && !roots.some((r) => p.startsWith(r))));
       plan = { id: 'p' + Date.now(), created: now, threshold: t, options: opts, items: decide(JSON.parse(JSON.stringify(chosen)), t),
         groups: planGroups, ai: { used: hasKey && PX.checkupAIEnabled(opts), enabled: PX.checkupAIEnabled(opts), errors: [], usage: { requests: 3 } } };
@@ -352,7 +371,11 @@
       plan.personal_scan = { truncated: insights.stats.truncated, limit: insights.stats.limit, files: insights.stats.files };
       plan.coverage = { whole_drives: roots,
         junk: { rules: rules.length, unavailable: 1 }, startup: { count: startup.length, error: '', ai_count: Object.keys(startupAI).length },
-        apps: { residues: opts.space_scan !== false, folders: plan.items.filter((i) => ['软件残留', '旧版本数据'].includes(i.category)).length, registry: 0, truncated: false },
+        apps: { residues: opts.space_scan !== false, folders: plan.items.filter((i) => ['软件残留', '旧版本数据'].includes(i.category)).length, registry: 0, truncated: false,
+          listed: opts.apps_services !== false ? apps.length : null, ai_count: plan.ai.scopes.includes('apps') ? 4 : 0,
+          suggested: plan.items.filter((i) => i.kind === 'app').length },
+        services: opts.apps_services !== false ? { count: services.filter((x) => x.kind === 'third_party').length, all: services.length, error: '',
+          ai_count: plan.ai.scopes.includes('services') ? 4 : 0, suggested: plan.items.filter((i) => i.kind === 'service').length } : null,
         space: opts.space_scan !== false ? { roots: roots.includes('C:\\') ? roots : [U, ...roots], files: 1500000, incomplete: true, denied: 12 } : null,
         duplicates: opts.duplicates !== false ? { truncated: true, file_limit: 400000, hash_limit: 16 * GB, cross_drives: opts.cross_drive_duplicates !== false } : null,
         omitted_drives: handlers.drives().map((d) => d.root).filter((r) => !roots.includes(r)) };
@@ -394,31 +417,34 @@
       return it;
     },
     plan_preview: ({ item_ids }) => {
-      const out = { delete: { count: 0, size: 0, titles: [] }, recycle: { count: 0, size: 0, titles: [] }, disable: { count: 0, titles: [] }, skipped: [] };
+      const out = { delete: { count: 0, size: 0, titles: [] }, recycle: { count: 0, size: 0, titles: [] }, disable: { count: 0, titles: [] },
+        service: { count: 0, titles: [] }, skipped: [] };
       for (const it of plan.items) {
         if (!item_ids.includes(it.id)) continue;
+        if (it.action === 'uninstall') { out.skipped.push({ title: it.title, reason: '要单独运行它自己的卸载程序' }); continue; }
         const slot = out[it.action]; slot.count += 1; slot.titles.push(it.title); if ('size' in slot) slot.size += it.size || 0;
       }
       return out;
     },
     plan_execute: ({ item_ids }) => job(6, () => {
       // like checkup.execute: freed sizes as numbers; one item, if chosen, is skipped to show a problem
-      let del = 0, rec = 0, recN = 0; const dis = [], failures = [], items = {};
+      let del = 0, rec = 0, recN = 0; const dis = [], svc = [], failures = [], items = {};
       for (const it of plan.items) {
-        if (!item_ids.includes(it.id)) continue;
+        if (!item_ids.includes(it.id) || it.action === 'uninstall') continue;
         if (it.id === 'dir:idea21') {
           it.status = 'skipped'; it.result = '文件在体检后被修改过，请重新体检';
           failures.push({ title: it.title, reason: '文件在体检后被修改过' });
         } else {
           it.status = 'done'; it.freed = it.size;
-          it.result = it.action === 'delete' ? '已清理' : it.action === 'recycle' ? '已移到回收站' : '已禁用开机启动';
-          if (it.action === 'delete') del += it.size; else if (it.action === 'recycle') { rec += it.size; recN += 1; } else dis.push(it.title);
+          it.result = it.action === 'delete' ? '已清理' : it.action === 'recycle' ? '已移到回收站' : it.action === 'service' ? '已改为手动启动' : '已禁用开机启动';
+          if (it.action === 'delete') del += it.size; else if (it.action === 'recycle') { rec += it.size; recN += 1; }
+          else if (it.action === 'service') svc.push(it.title); else dis.push(it.title);
         }
         items[it.id] = { status: it.status, note: it.result, freed: it.freed };
       }
       plan.summary = summarize();
       freedNow += del;  // only what was deleted: the Recycle Bin still holds the rest
-      return { deleted: { count: 9000, bytes: del }, recycled: { count: recN, bytes: rec }, disabled: dis, failures, items, summary: plan.summary };
+      return { deleted: { count: 9000, bytes: del }, recycled: { count: recN, bytes: rec }, disabled: dis, services: svc, failures, items, summary: plan.summary };
     }, (f) => ({ stage: 'junk', detail: '用户临时文件', freed: f * 4 * GB })),
     insights_roots: () => personalRoots,
     insights_scan: ({ roots }) => job(6, () => { insights = personalResult(roots); return insights; },
@@ -438,7 +464,8 @@
       action: 'recycle', why: '未匹配到安装登记，半年没有新增或修改；可能属于绿色软件。',
       basis: ['未匹配到安装登记不等于已经卸载', '需要你决定是否保留'], effect: '可能包含以前的设置' })], registry: [],
       stats: { roots: [U + '\\AppData\\Local'], checked: 12, truncated: false }, scanned_at: now }),
-    apps_list: () => ({ apps, admin: true, usage_known: true }),
+    apps_list: () => ({ apps, admin: true, usage_known: true, ai: plan && plan.ai.scopes.includes('apps')
+      ? { a4: { what: '看图软件，附带资讯弹窗', suggestion: 'uninstall', reason: '常驻弹出广告资讯' } } : {} }),
     file_icons: () => ({}),
     // stand-ins for the shell's type icons: a yellow folder, a page with the extension on it
     type_icons: ({ kinds }) => Object.fromEntries(kinds.map((k) => [k, 'data:image/svg+xml,' + encodeURIComponent(k === 'folder'
@@ -537,10 +564,11 @@
       const permanent = mode === 'recycle' ? items.filter((p) => /\\Temp$/i.test(p)) : [];
       return { done: items, freed: items.length * 1.5 * GB, failed: 0, failures: [], mode, permanent, permanent_bytes: permanent.length * 1.5 * GB };
     }, (f) => ({ total: items.length, done: Math.floor(f * items.length), current: items[Math.min(items.length - 1, Math.floor(f * items.length))], freed: f * items.length * GB })),
+    ai_results: () => Object.values(aiResults),
     ai_preview: () => ({ candidates: suggestions().map((s) => ({ id: s.node_id, path: s.path, size: s.size, shown_as: s.path.replace('C:\\Users\\demo\\AppData\\Local', '%LOCALAPPDATA%').replace('C:\\Users\\demo\\AppData\\Roaming', '%APPDATA%'), cached: s.source === 'cache' })), fresh: 4, requests_estimate: 1, remaining: { count: 23, size: 1.6 * GB } }),
     ai_analyze: () => job(8, () => { const s = suggestions(); aiResults = {}; s.forEach((x) => { aiResults[x.node_id] = x; }); return { suggestions: s, usage: { requests: 2, input_tokens: 6230, output_tokens: 1520 }, errors: [], requests: 2, budget: 8, remaining: { count: 23, size: 1.6 * GB } }; },
       (f) => ({ stage: f < 0.4 ? 'summarize' : 'ask', requests: f < 0.6 ? 1 : 2, budget: 8, done: Math.round(f * 5), current: 'C:\\Users\\demo\\AppData\\Local\\Unity' })),
-    dup_default_roots: () => ['C:\\Users\\demo\\Desktop', 'C:\\Users\\demo\\Documents', 'C:\\Users\\demo\\Downloads', 'C:\\Users\\demo\\Pictures'],
+    dup_default_roots: () => ['C:\\', 'D:\\', 'E:\\'],
     dup_result: () => null,
     dup_scan: () => job(6, { groups: [
       { id: 0, size: 1.4 * GB, wasted: 1.4 * GB, files: [{ path: 'C:\\Users\\demo\\Downloads\\项目资料-final.zip', mtime: now - 200 * day }, { path: 'C:\\Users\\demo\\Documents\\归档\\项目资料-final (1).zip', mtime: now - 20 * day }] },
@@ -565,7 +593,8 @@
     dup_delete: ({ paths_to_delete }) => job(3, { done: paths_to_delete, freed: 1.4 * GB, failed: 0, failures: [], mode: 'recycle' }),
     startup_list: () => startup.map((item) => ({ ...item, ai: startupAI[item.id] || null })),
     startup_set: ({ item_id, enabled }) => { const it = startup.find((x) => x.id === item_id); it.enabled = enabled; return it; },
-    services_list: () => services,
+    services_list: () => services.map((x) => ({ ...x, ai: plan && plan.ai.scopes.includes('services') && x.name === 'AdobeARMservice'
+      ? { what: 'Adobe 自动更新服务', suggestion: 'disable', reason: '设为手动后仍可在应用内更新' } : null })),
     service_set: ({ name, start_type }) => ({ name, start_type, stopped: false }),
     ai_explain: ({ kind }) => job(4, () => { const result = { items: kind === 'apps' ? {
       a4: { what: '看图软件，附带资讯弹窗', suggestion: 'uninstall', reason: '常驻弹出广告资讯，可换用系统自带的照片应用' },

@@ -26,7 +26,7 @@ import re
 import time
 import uuid
 
-from . import APP_NAME, fsops, paths, winapi
+from . import APP_NAME, fsops, itemfacts, paths, winapi
 from .analyst import FILE_BATCH, newer_sibling
 from .duplicates import (AI_RANK, IN_USE, PLACE_RANK, find_duplicates, must_stay, place_label, removal_score,
                          verify_unchanged)
@@ -35,12 +35,16 @@ from .junk import RULES_BY_ID, resolve_target
 from .scanner import FLAG_CLOUD, FLAG_DENIED, FLAG_EXCLUDED, FLAG_LINKS, FLAG_PROGRAM, SpaceScan
 
 GROUPS = {'safe': '放心清理', 'review': '建议你看看', 'info': '仅供了解'}
-ACTIONS = {'delete': '永久删除', 'recycle': '移到回收站', 'disable': '禁用开机启动', 'none': '不需要操作'}
+ACTIONS = {'delete': '永久删除', 'recycle': '移到回收站', 'disable': '禁用开机启动', 'service': '改为手动启动',
+           'uninstall': '运行它自己的卸载程序', 'none': '不需要操作'}
 SOURCES = {'rule': '规则', 'ai': 'AI', 'insight': '我的文件', 'dup': '重复文件', 'heuristic': '盘序判断',
            'knowledge': '说明'}
 
 STAGES = [('junk', '扫描垃圾文件'), ('space', '分析本机磁盘空间'), ('insights', '整理我的文件'),
-          ('dups', '查找重复文件'), ('ai', 'AI 复核'), ('plan', '生成清理方案')]
+          ('dups', '查找重复文件'), ('apps', '检查应用与服务'), ('ai', 'AI 复核'), ('plan', '生成清理方案')]
+# the switch an AI scope needs: without it there is nothing for that scope to look at
+AI_SCOPE_PARENT = {'space': 'space_scan', 'duplicates': 'duplicates', 'apps': 'apps_services', 'services': 'apps_services'}
+AI_SCOPES = ('space', 'files', 'duplicates', 'startup', 'apps', 'services')
 
 # 勾选门槛 (0-10): eligible items whose 建议清理度 reaches it are pre-ticked. 稳妥 8, 积极 5.
 DEFAULT_THRESHOLD = 5
@@ -69,7 +73,13 @@ AI_REVIEW_SCORE = 50
 # every copy of a duplicates group chosen: that is deleting the file itself, not a spare copy (2 points)
 ALL_COPIES_SCORE = 15
 DUP_FILE_LIMIT = 400_000
-DUP_HASH_LIMIT = 16 * 1024 ** 3  # bound automatic full-content reads; explicit duplicate scans have no cap
+DUP_HASH_LIMIT = 16 * 1024 ** 3  # bound full-content reads of whole disks; a chosen folder is searched completely
+# the same bounds for every whole-disk duplicate search (首页 and the tool page): files listed, bytes read, seconds
+DUP_BOUNDS = {'max_files': DUP_FILE_LIMIT, 'max_hash_bytes': DUP_HASH_LIMIT, 'max_reference_bytes': 256 * 1024 ** 2,
+              'max_hash_seconds': 180, 'max_reference_seconds': 30}
+# a program that has not run for this long and takes this much room is worth a look without the model
+APP_IDLE_DAYS = 365
+APP_IDLE_MIN = 200 * 1024 ** 2
 
 # big things worth explaining, in the order they are shown
 INFO_TARGETS = [
@@ -165,6 +175,20 @@ def space_roots(env: dict, settings: dict, drives: list[dict], *, other_drives: 
     return out
 
 
+def ordered_roots(env: dict, settings: dict, chosen: list[str]) -> list[str]:
+    """``chosen`` with the user's own folders inside them put first, in the check-up's order: within a bound on
+    files or reads they are searched before the rest of a disk. The walkers visit an overlap only once."""
+    own = personal_roots(env, settings) + [env.get('USERPROFILE'), env.get('PUBLIC')]
+    inside = [p for p in own if isinstance(p, str) and p and any(paths.is_within(p, c) for c in chosen)]
+    out, seen = [], set()
+    for p in inside + list(chosen):
+        k = paths.key(p)
+        if k not in seen and os.path.isdir(p):
+            out.append(p)
+            seen.add(k)
+    return out
+
+
 def space_skip(env: dict, policy, app_dirs=()):
     """Space totals may include Windows/app data, but never another account or an exclusion."""
     personal = [p for p in (env.get('USERPROFILE'), env.get('PUBLIC')) if p] + personal_roots(env, {})
@@ -236,6 +260,10 @@ def _ident(prefix: str, text: str) -> str:
 def _ago(ts: float, now: float) -> str:
     days = (now - ts) / 86400
     return f'{days / 365:.0f} 年' if days >= 365 else f'{int(days)} 天'
+
+
+def _size_text(n: int) -> str:
+    return f'{n / 1024 ** 3:.1f} GB' if n >= 1024 ** 3 else f'{max(1, round(n / 1024 ** 2))} MB'
 
 
 class _Stub:
@@ -667,6 +695,71 @@ class PlanBuilder:
                 'score': 60, 'basis': ['AI 建议禁用', '随时可以重新启用'],
                 'hold_reason': '开机启动项由你决定：禁用会改变程序的行为'})
 
+    def add_services(self, services: list[dict], explained: dict, admin: bool):
+        """Third-party services the model would not start at boot: offered as 「改为手动启动」 -- not started at boot
+        any more, still started when a program asks for it, logged with the old start type so it can be put back.
+        Never ticked: like a startup item it changes how a program behaves."""
+        for svc in services:
+            info = explained.get(svc['name'])
+            if not svc.get('editable') or not info or info.get('suggestion') != 'disable':
+                continue
+            if svc.get('start_type') not in ('auto', 'delayed'):
+                continue  # already manual or disabled: there is nothing at boot to save
+            running = svc.get('status') == 'running'
+            self.add({
+                'id': 'service:' + svc['name'], 'kind': 'service', 'service_name': svc['name'], 'group': 'review',
+                'category': '服务', 'title': svc['display_name'], 'what': info.get('what', ''),
+                'why': 'AI 建议开机时不再自动运行：' + info.get('reason', ''),
+                'effect': '这次不会停止正在运行的服务，下次开机起不再自动启动。' if running else '',
+                'action': 'service', 'source': 'ai', 'confidence': 0.7, 'location': svc.get('exe') or '',
+                'blocked': None if admin else '需要管理员权限',
+                'score': 60, 'basis': ['AI 建议禁用：' + info.get('reason', '') if info.get('reason') else 'AI 建议禁用',
+                                       f'现在是「{svc.get("start_label") or svc["start_type"]}」' + ('，正在运行' if running else ''),
+                                       '改为手动后，需要它的程序仍能按需启动它',
+                                       '随时可以在「开机与服务」或「操作记录」里改回'],
+                'hold_reason': '服务由你决定：改为手动会改变程序的行为'})
+
+    def add_apps(self, apps: list[dict], explained: dict, scan=None) -> int:
+        """Programs worth uninstalling: the model suggests it (it knows when the program last ran and whether it is
+        open now), or Windows' run history says it has not run for a year while it takes room. A program is removed
+        by its own uninstaller, from its row and one at a time: never ticked, never run with the rest of the plan."""
+        added = 0
+        for a in apps:
+            if a.get('kind') not in ('app', 'game') or not a.get('can_uninstall'):
+                continue
+            info = explained.get(a['id']) or {}
+            ai_says = info.get('suggestion') == 'uninstall'
+            idle = (self.now - a['last_used']) / 86400 if a.get('usage_known') and a.get('last_used') else None
+            size = a.get('size')
+            own = a.get('own_location') or ''
+            node = scan.find(own) if own and scan is not None and scan.complete else None
+            if node is not None and node.size:
+                size = node.size  # what is on the disk, rather than what the installer once registered
+            if not ai_says and not (idle is not None and idle >= APP_IDLE_DAYS and (size or 0) >= APP_IDLE_MIN):
+                continue
+            basis = []
+            if ai_says:
+                basis.append('AI 建议卸载：' + info['reason'] if info.get('reason') else 'AI 建议卸载')
+            if idle is not None:
+                basis.append(f'Windows 的运行记录：{_ago(a["last_used"], self.now)}没有运行过')
+            elif not a.get('usage_known'):
+                basis.append('没有运行记录可查（需要管理员权限），不知道最近是否用过')
+            if size:
+                basis.append('占用约 ' + _size_text(size))
+            basis.append('卸载用它自己的卸载程序；应用数据可能留下，卸载后可以查找残留')
+            score = (60 if idle is not None and idle >= 180 else 50) if ai_says else 40
+            self.add({
+                'id': 'app:' + a['id'], 'kind': 'app', 'app_id': a['id'], 'group': 'review', 'category': '可以卸载的程序',
+                'title': a['name'], 'size': size or 0, 'what': info.get('what', ''),
+                'why': ('AI 建议卸载：' + info.get('reason', '')) if ai_says
+                       else f'{_ago(a["last_used"], self.now)}没有运行过，占用 {_size_text(size)}',
+                'effect': '它的设置、存档或登录信息可能随卸载一起删除，或留在应用数据里。',
+                'action': 'uninstall', 'source': 'ai' if ai_says else 'heuristic', 'confidence': 0.6 if ai_says else 0.4,
+                'location': a['location'] if a.get('location_exists') else '', 'score': score, 'basis': basis,
+                'hold_reason': '卸载要运行它自己的卸载程序，请你逐个确认'})
+            added += 1
+        return added
+
     def add_info(self, scan, env: dict):
         for template in INFO_TARGETS:
             expanded = paths.expand(template, env) if '%' in template else template
@@ -814,10 +907,12 @@ def summarize(plan: dict) -> dict:
 def run(backend, job, options: dict | None = None) -> dict:
     settings = backend.settings.get()
     opts = {**settings.get('checkup', {}), **{k: bool(v) for k, v in (options or {}).items()
-                                            if k in ('space_scan', 'other_drives', 'duplicates', 'cross_drive_duplicates', 'use_ai')}}
+                                            if k in ('space_scan', 'other_drives', 'duplicates', 'cross_drive_duplicates',
+                                                     'use_ai', 'apps_services')}}
     if 'selected_drives' in (options or {}) and (options['selected_drives'] is None or isinstance(options['selected_drives'], list)):
         opts['selected_drives'] = options['selected_drives']
-    scopes = {k: True for k in ('space', 'files', 'duplicates', 'startup')}
+    with_apps = bool(opts.get('apps_services', True))
+    scopes = {k: True for k in AI_SCOPES}
     for source in (opts.get('ai_scopes'), (options or {}).get('ai_scopes')):
         if isinstance(source, dict):
             scopes.update({k: bool(v) for k, v in source.items() if k in scopes})
@@ -828,11 +923,12 @@ def run(backend, job, options: dict | None = None) -> dict:
     if isinstance((options or {}).get('auto_threshold'), int):
         threshold = options['auto_threshold']
     opts['auto_threshold'] = threshold = max(0, min(10, int(threshold)))
-    ai_enabled = opts.get('use_ai', True) and any(on and (key != 'space' or opts.get('space_scan', True))
-                       and (key != 'duplicates' or opts.get('duplicates', True)) for key, on in scopes.items())
+    ai_enabled = opts.get('use_ai', True) and any(on and opts.get(AI_SCOPE_PARENT.get(key, ''), True)
+                                                  for key, on in scopes.items())
     client = backend.client_or_none('classify') if ai_enabled else None
     stages = [s for s in STAGES if (s[0] != 'space' or opts.get('space_scan', True))
-              and (s[0] != 'dups' or opts.get('duplicates', True)) and (s[0] != 'ai' or client is not None)]
+              and (s[0] != 'dups' or opts.get('duplicates', True)) and (s[0] != 'apps' or with_apps)
+              and (s[0] != 'ai' or client is not None)]
     total = len(stages)
     timings = {}
     completed = []
@@ -901,9 +997,7 @@ def run(backend, job, options: dict | None = None) -> dict:
                                skip=system_skip(env, policy, broad_roots), cancel=job.cancel,
                                container_roots=personal_roots(env, {}) + [d['root'] for d in drives]
                                                + [env.get('USERPROFILE'), env.get('PUBLIC')],
-                               max_files=DUP_FILE_LIMIT, max_hash_bytes=DUP_HASH_LIMIT,
-                               max_reference_bytes=256 * 1024 ** 2,
-                               max_hash_seconds=180, max_reference_seconds=30,
+                               **DUP_BOUNDS,
                                progress=lambda p: (lambda f, label, count: part(f, detail=label, count=count))(*dup_progress(p)))
         for g in dups['groups']:
             for f in g['files']:
@@ -912,14 +1006,33 @@ def run(backend, job, options: dict | None = None) -> dict:
         backend.dup_ai = {}  # a new scan must not reuse AI judgments when the user turned review off
         ready('dups')
 
+    # installed programs and services: read only (a program's own uninstaller and a service change both need the user)
+    apps_list, services_list = [], []
+    apps_error = services_error = ''
+    if with_apps:
+        stage('apps')
+        part(0.1, detail='已安装的应用')
+        try:
+            apps_list = backend.apps.list(fresh=True)
+        except OSError as exc:
+            apps_error = str(exc)
+        part(0.5, detail='第三方服务', count=f'{len(apps_list)} 个程序')
+        try:
+            services_list = backend.services.list()
+        except Exception as exc:  # noqa: BLE001 - psutil reports a locked service manager with errors of its own
+            services_error = str(exc) or exc.__class__.__name__
+        part(1.0, count=f'{len(apps_list)} 个程序，{sum(1 for s in services_list if s["kind"] == "third_party")} 个第三方服务')
+
     ai_info = {'used': False, 'enabled': ai_enabled, 'scopes': [], 'errors': [], 'usage': None}
-    file_ai, startup_ai = {}, {}
+    file_ai, startup_ai, app_ai, service_ai = {}, {}, {}, {}
     startup_items = []
     startup_error = ''
     try:
         startup_items = backend.startup.list()
     except OSError as exc:
         startup_error = str(exc)
+    # registrations that look broken: computed before the AI, whose facts about a program mention them
+    registry_issues = backend.apps.registry_issues([d['root'] for d in drives if d.get('fixed')])
     if client is not None:
         stage('ai')
         anonymize = settings['ai'].get('anonymize_paths', True)
@@ -930,9 +1043,16 @@ def run(backend, job, options: dict | None = None) -> dict:
         unclear = [g for g in (backend.dups or {}).get('groups', []) if any(f.get('place') for f in g['files'])] \
             if opts.get('duplicates', True) and scopes['duplicates'] else []
         enabled = [i for i in startup_items if i['enabled']] if scopes['startup'] else []
+        # programs (not runtimes or drivers: those stay) and third-party services, with what 盘序 checked about them
+        app_items = []
+        if with_apps and scopes['apps'] and apps_list:
+            running = itemfacts.running_programs()
+            app_items = [backend._app_for_ai(a, running, registry_issues) for a in apps_list if a['kind'] in ('app', 'game')]
+        service_items = backend.services_for_ai(services_list) if with_apps and scopes['services'] and services_list else []
         # the AI stage in steps, each with its share of the bar: (name, will it run)
         steps = [s for s, on in (('space', scopes['space'] and scan is not None and scan.complete), ('files', bool(files)),
-                                 ('dups', bool(unclear)), ('startup', bool(enabled))) if on]
+                                 ('dups', bool(unclear)), ('startup', bool(enabled)), ('apps', bool(app_items)),
+                                 ('services', bool(service_items))) if on]
         ai_info['used'], ai_info['scopes'] = bool(steps), steps
 
         def ai_part(name, label, fraction=0.0, **extra):
@@ -970,8 +1090,18 @@ def run(backend, job, options: dict | None = None) -> dict:
         if enabled:
             ai_part('startup', '开机启动项')
             items = backend.startup_items_for_ai(enabled)
-            result = backend.analyst.explain_items(items, client, anonymize)
+            result = backend.analyst.explain_items(items, client, anonymize, cancel=job.cancel, max_requests=budget)
             startup_ai = {i['id']: result['items'].get(i['key']) for i in items if result['items'].get(i['key'])}
+            ai_info['errors'] += result['errors']
+        if app_items:
+            ai_part('apps', '已安装的应用（名称、发布者和使用情况）')
+            result = backend.analyst.explain_items(app_items, client, anonymize, cancel=job.cancel, max_requests=budget)
+            app_ai = {i['id']: result['items'][i['key']] for i in app_items if result['items'].get(i['key'])}
+            ai_info['errors'] += result['errors']
+        if service_items:
+            ai_part('services', '第三方服务（名称、程序和盘序查到的情况）')
+            result = backend.analyst.explain_items(service_items, client, anonymize, cancel=job.cancel, max_requests=budget)
+            service_ai = {i['id']: result['items'][i['key']] for i in service_items if result['items'].get(i['key'])}
             ai_info['errors'] += result['errors']
         ai_info['usage'] = client.usage.as_dict()
         ai_info['model'] = client.model
@@ -979,6 +1109,7 @@ def run(backend, job, options: dict | None = None) -> dict:
             backend.oplog.add('ai', f'一键体检：AI 复核（{client.usage.requests} 次请求）',
                               details={'usage': ai_info['usage'], 'model': client.model, 'errors': ai_info['errors'][:5]})
 
+    fsops.check_cancel(job.cancel)  # the AI steps above may have been the last thing running
     stage('plan')
     backend.startup_ai = startup_ai
     builder = PlanBuilder(policy, backend.knowledge, threshold=threshold)
@@ -1000,9 +1131,15 @@ def run(backend, job, options: dict | None = None) -> dict:
     if scan is not None:
         builder.add_known_folders(scan, backend.analyst)
     builder.add_startup(startup_items, startup_ai, env)
+    uninstallable = 0
+    if with_apps:
+        # what this check-up's AI said replaces earlier answers (none when the AI was off), as for startup items
+        backend.app_ai, backend.service_ai = app_ai, service_ai
+        uninstallable = builder.add_apps(apps_list, app_ai, scan)
+        builder.add_services(services_list, service_ai, backend.services.admin)
     builder.add_info(scan, env)
-    registry_issues = backend.apps.registry_issues([d['root'] for d in drives if d.get('fixed')])
     backend.app_residues = residue_result(builder, scan, residue_stats, registry_issues)
+    third_party = [s for s in services_list if s['kind'] == 'third_party']
     plan = builder.plan({'ai': ai_info, 'options': opts,
                          'personal_scan': {'truncated': bool(ins.stats.get('truncated')),
                                            'limit': ins.stats.get('limit'), 'files': ins.stats.get('files', 0)},
@@ -1010,7 +1147,13 @@ def run(backend, job, options: dict | None = None) -> dict:
                                       'junk': {'rules': len(junk_rows), 'unavailable': sum(bool(r.get('error') or r.get('scope_blocked')) for r in junk_rows)},
                                       'startup': {'count': len(startup_items), 'error': startup_error, 'ai_count': len(startup_ai)},
                                       'apps': {'residues': scan is not None, 'folders': len(backend.app_residues['items']),
-                                               'registry': len(registry_issues), 'truncated': residue_stats.get('truncated', False)},
+                                               'registry': len(registry_issues), 'truncated': residue_stats.get('truncated', False),
+                                               'listed': len(apps_list) if with_apps else None, 'error': apps_error,
+                                               'ai_count': len(app_ai), 'suggested': uninstallable},
+                                      'services': {'count': len(third_party), 'all': len(services_list), 'error': services_error,
+                                                   'ai_count': len(service_ai),
+                                                   'suggested': sum(1 for i in builder.items if i.get('kind') == 'service')}
+                                                  if with_apps else None,
                                       'whole_drives': whole_drives,
                                       'personal_roots': broad_roots,
                                       'duplicates': (backend.dups or {}).get('stats') if opts.get('duplicates', True) else None,
@@ -1081,13 +1224,14 @@ def execute(backend, plan: dict, item_ids: list[str], job) -> dict:
     chosen = []
     for item_id in item_ids:
         item = by_id.get(item_id)
-        if item is None or item['status'] != 'pending' or item['action'] == 'none' or item['blocked']:
+        # a program is uninstalled by its own uninstaller from its row, never together with the rest
+        if item is None or item['status'] != 'pending' or item['action'] in ('none', 'uninstall') or item['blocked']:
             continue
         chosen.append(item)
     if not chosen:
         raise ValueError('没有可以执行的项目')
     policy = backend.policy()
-    report = {'deleted': {'count': 0, 'bytes': 0}, 'recycled': {'count': 0, 'bytes': 0}, 'disabled': [],
+    report = {'deleted': {'count': 0, 'bytes': 0}, 'recycled': {'count': 0, 'bytes': 0}, 'disabled': [], 'services': [],
               'permanent': {'count': 0, 'bytes': 0, 'paths': []},
               'failures': [], 'items': {}}
 
@@ -1206,6 +1350,28 @@ def execute(backend, plan: dict, item_ids: list[str], job) -> dict:
             report['disabled'].append(item['title'])
             done(item, 'done', '已禁用开机启动')
         except (ValueError, PermissionError, OSError) as exc:
+            done(item, 'failed', str(exc))
+            report['failures'].append({'title': item['title'], 'reason': str(exc)})
+
+    # 4. services: not started at boot any more (the operation log keeps the old start type, so it can be undone)
+    services = [i for i in chosen if i['kind'] == 'service']
+    current = {}
+    if services:
+        try:
+            current = {s['name']: s['start_type'] for s in backend.services.list()}
+        except Exception:  # noqa: BLE001 - as in run(): then set_start_type reports the problem per service
+            current = {}
+    for item in services:
+        job.update(stage='services', detail=item['title'])
+        if current.get(item['service_name'], 'auto') not in ('auto', 'delayed'):
+            # changed elsewhere since the check-up (to manual, or disabled on purpose): leave it as it is
+            done(item, 'skipped', '启动方式在体检后已经改过，没有再改')
+            continue
+        try:
+            backend.services.set_start_type(item['service_name'], 'manual')
+            report['services'].append(item['title'])
+            done(item, 'done', '已改为手动启动')
+        except (ValueError, PermissionError, RuntimeError, OSError) as exc:
             done(item, 'failed', str(exc))
             report['failures'].append({'title': item['title'], 'reason': str(exc)})
 

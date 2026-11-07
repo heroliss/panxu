@@ -36,7 +36,8 @@ DEFAULTS = {
         'duplicates': True,
         'cross_drive_duplicates': True,
         'use_ai': True,          # ask the model when a key is configured
-        'ai_scopes': {'space': True, 'files': True, 'duplicates': True, 'startup': True},
+        'apps_services': True,   # read installed programs and third-party services (nothing is changed by the check-up)
+        'ai_scopes': {'space': True, 'files': True, 'duplicates': True, 'startup': True, 'apps': True, 'services': True},
         'auto_threshold': 5,     # 勾选门槛 0-10: pre-tick eligible items scoring at least this (稳妥 8, 积极 5)
     },
     'insights': {

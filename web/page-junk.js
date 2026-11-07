@@ -4,10 +4,16 @@
   const { h, fmt } = PX;
 
   const state = { status: 'idle', results: {}, selected: PX.sel.rules, progress: {}, expanded: new Set(),
-    openGroups: new Set(), lastClean: null, jobId: null, touched: false };
+    openGroups: new Set(), lastClean: null, jobId: null, touched: false, sort: { key: 'size', dir: 'desc' } };
 
   const rules = () => PX.state.init.rules;
   const ruleById = (id) => rules().find((r) => r.id === id);
+  const SORT = {
+    size: { label: '大小', kind: 'num', get: (r) => (state.results[r.id] || {}).size ?? null },
+    score: { label: '建议清理度', kind: 'num', get: (r) => (state.results[r.id] || {}).score ?? null },
+    name: { label: '名称', kind: 'text', get: (r) => r.name },
+    order: { label: '规则顺序', kind: 'num', dir: 'asc', words: ['和规则列表一样的顺序', '倒序'], get: (r) => rules().indexOf(r) },
+  };
 
   function blockedReason(rule, res) {
     if (!res) return '';
@@ -246,9 +252,10 @@
 
     largest = Math.max(1, ...rules().filter(visible).map((r) => state.results[r.id].size || 0));
     if (!busy) overview(container);
+    if (rules().filter(visible).length > 1) container.appendChild(PX.sortBar(SORT, state.sort, (s) => { state.sort = s; rerender(true); }));
     for (const g of init.groups) {
       const inGroup = rules().filter((r) => r.group === g.id);
-      const shown = inGroup.filter(visible);
+      const shown = PX.sortRows(inGroup.filter(visible), SORT, state.sort, 'size');
       const hidden = inGroup.length - shown.length;
       const gsize = shown.reduce((s, r) => s + (state.results[r.id].size || 0), 0);
       const can = shown.filter((r) => !blockedReason(r, state.results[r.id]));

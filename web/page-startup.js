@@ -3,18 +3,40 @@
   'use strict';
   const { h } = PX;
   const state = { tab: 'startup', items: null, services: null, ai: { startup: {}, services: {} }, aiBusy: '', scope: 'third', query: '',
-    icons: {} };
+    icons: {}, sort: { key: 'order', dir: 'asc' }, serviceSort: { key: 'name', dir: 'asc' } };
   const SUGGEST = { keep: ['建议保留', ''], optional: ['可以禁用', 'info'], disable: ['建议禁用', 'warn'] };
   let root = null;
+  const order = new WeakMap();  // the order Windows lists them in (registry, then the startup folders)
+  const STARTUP_SORT = {
+    order: { label: '默认', kind: 'num', dir: 'asc', words: ['和任务管理器一样的顺序', '倒序'], get: (it) => order.get(it) },
+    name: { label: '名称', kind: 'text', get: (it) => it.display_name },
+    enabled: { label: '状态', kind: 'rank', words: ['已禁用的在前', '开机运行的在前'], get: (it) => (it.enabled ? 1 : 0) },
+    ai: { label: 'AI 建议', kind: 'rank', words: ['建议保留的在前', '建议禁用的在前'], get: (it) => PX.aiRank(state.ai.startup[it.id]) },
+    publisher: { label: '发布者', kind: 'text', get: (it) => it.publisher || null },
+    source: { label: '来源', kind: 'text', get: (it) => it.source_label },
+  };
+  const START_RANK = { auto: 3, delayed: 2, manual: 1, disabled: 0 };
+  const SERVICE_SORT = {
+    name: { label: '服务', kind: 'text', get: (s) => s.display_name },
+    publisher: { label: '程序', kind: 'text', get: (s) => s.publisher || null },
+    status: { label: '状态', kind: 'rank', words: ['已停止的在前', '正在运行的在前'], get: (s) => (s.status === 'running' ? 1 : 0) },
+    start: { label: '启动方式', kind: 'rank', words: ['禁用的在前', '自动启动的在前'], get: (s) => START_RANK[s.start_type] ?? null },
+    ai: { label: 'AI 建议', kind: 'rank', words: ['建议保留的在前', '建议禁用的在前'], get: (s) => PX.aiRank(state.ai.services[s.name]) },
+  };
 
   async function load(force) {
     if (force) { state.refreshing = true; draw(); }
     try {
       if (state.tab === 'startup' && (force || !state.items)) {
         state.items = await PX.api.call('startup_list');
+        state.items.forEach((item, i) => order.set(item, i));
         state.ai.startup = Object.fromEntries(state.items.filter((item) => item.ai).map((item) => [item.id, item.ai]));
       }
-      if (state.tab === 'services' && (force || !state.services)) state.services = await PX.api.call('services_list');
+      if (state.tab === 'services' && (force || !state.services)) {
+        state.services = await PX.api.call('services_list');
+        // what the check-up's AI said about them (the page's own 「AI 解释」 adds to it)
+        for (const s of state.services) if (s.ai) state.ai.services[s.name] = s.ai;
+      }
       if (force) {
         const n = state.tab === 'startup' ? state.items.length : state.services.length;
         PX.toast(`已刷新：共 ${n} ${state.tab === 'startup' ? '个开机启动项' : '个服务'}`);
@@ -114,9 +136,13 @@
       c.appendChild(PX.notice('「所有用户」的启动项需要管理员权限才能修改。', 'info',
         h('button.btn.small', { type: 'button', onclick: PX.restartAsAdmin }, '以管理员身份重启')));
     }
+    if (state.items.length > 1) {
+      c.appendChild(PX.sortBar(STARTUP_SORT, state.sort, (s) => { state.sort = s; draw(); },
+        ['order', 'name', 'enabled', ...(Object.keys(state.ai.startup).length ? ['ai'] : []), 'publisher', 'source']));
+    }
     const list = c.appendChild(h('div.list'));
     if (!state.items.length) list.appendChild(PX.empty('没有开机启动项', ''));
-    for (const it of state.items) {
+    for (const it of PX.sortRows(state.items, STARTUP_SORT, state.sort, 'order')) {
       const sw = PX.switchEl(it.enabled, (e) => toggle(it, e.target.checked, e.target), it.needs_admin);
       sw.title = it.needs_admin ? '需要管理员权限' : it.enabled ? '点击禁用' : '点击启用';
       list.appendChild(h('div.row.su-row', sw,
@@ -134,8 +160,8 @@
     const init = PX.state.init;
     if (!state.services) { c.appendChild(PX.progressBar(null)); return; }
     const q = state.query.trim().toLowerCase();
-    const rows = state.services.filter((s) => (state.scope === 'all' || s.kind === 'third_party')
-      && (!q || (s.display_name + s.name + s.publisher).toLowerCase().includes(q)));
+    const rows = PX.sortRows(state.services.filter((s) => (state.scope === 'all' || s.kind === 'third_party')
+      && (!q || (s.display_name + s.name + s.publisher).toLowerCase().includes(q))), SERVICE_SORT, state.serviceSort, 'name');
     const third = state.services.filter((s) => s.kind === 'third_party').length;
     c.appendChild(h('div.page-head', { style: { marginBottom: '10px' } },
       h('div.grow', h('div.muted', `${state.services.length} 个服务，其中 ${third} 个来自第三方软件。Windows 和微软的服务只显示，不在这里修改。`)),
@@ -148,7 +174,9 @@
       c.appendChild(PX.notice('修改服务的启动方式需要管理员权限。', 'info',
         h('button.btn.small', { type: 'button', onclick: PX.restartAsAdmin }, '以管理员身份重启')));
     }
-    c.appendChild(h('div.thead.svc-row', h('span', '服务'), h('span', '程序'), h('span', '状态'), h('span', '启动方式'), h('span')));
+    const col = (id, cls) => PX.sortHead(SERVICE_SORT, state.serviceSort, id, (s) => { state.serviceSort = s; draw(); }, cls);
+    c.appendChild(h('div.thead.svc-row', col('name'), col('publisher'), col('status'), col('start'),
+      Object.keys(state.ai.services).length ? col('ai', 'r', 'AI') : h('span')));
     const list = c.appendChild(h('div.list'));
     for (const s of rows) {
       let control;
@@ -186,5 +214,6 @@
   }
 
   PX.startup = { open(tab) { state.tab = tab; PX.go('startup'); } };
-  PX.pages.startup = { render(container) { root = container; state.items = null; draw(); load(); } };
+  // both lists are read again on each visit: the plan on 首页 may have changed them meanwhile
+  PX.pages.startup = { render(container) { root = container; state.items = null; state.services = null; draw(); load(); } };
 })();

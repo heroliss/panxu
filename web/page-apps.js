@@ -3,9 +3,25 @@
   'use strict';
   const { h, fmt } = PX;
   const SUGGEST = { keep: ['建议保留', ''], optional: ['看你是否需要', 'info'], uninstall: ['建议卸载', 'warn'] };
-  const state = { apps: null, admin: false, usageKnown: false, ai: {}, aiBusy: false, query: '', showSystem: false, sort: 'name',
+  const state = { apps: null, admin: false, usageKnown: false, ai: {}, aiBusy: false, query: '', showSystem: false,
+    sort: { key: 'name', dir: 'asc' }, residueSort: { key: 'size', dir: 'desc' },
     icons: {}, refreshing: false, uninstalling: new Map(), removed: null, tab: 'installed', residues: null, residueBusy: false };
   let root = null;
+  const APP_SORT = {
+    name: { label: '程序', kind: 'text', get: (a) => a.name },
+    kind: { label: '类型', kind: 'text', get: (a) => a.kind_label || '应用' },
+    size: { label: '大小', kind: 'num', get: (a) => a.size || null },
+    installed: { label: '安装日期', kind: 'date', get: (a) => a.installed || null },
+    // no run on record counts as the longest unused; without the history (no administrator rights) nothing is known
+    used: { label: '最近运行', kind: 'date', words: ['最久没用的在前', '最近用过的在前'], get: (a) => (a.usage_known ? a.last_used || 0 : null) },
+    ai: { label: 'AI 建议', kind: 'rank', words: ['建议保留的在前', '建议卸载的在前'], get: (a) => PX.aiRank(state.ai[a.id]) },
+  };
+  const RESIDUE_SORT = {
+    size: { label: '大小', kind: 'num', get: (r) => r.size },
+    score: { label: '建议清理度', kind: 'num', get: (r) => r.score },
+    title: { label: '名称', kind: 'text', get: (r) => r.title },
+    path: { label: '位置', kind: 'text', get: (r) => PX.displayPath(r.paths[0] || '') },
+  };
 
   async function loadResidues(scan = false) {
     if (state.residueBusy) return;
@@ -41,8 +57,9 @@
     if (stats.incomplete || stats.truncated || stats.history_truncated) c.appendChild(PX.notice('本次有无法读取、排除或达到数量上限的部分。显示的是已检查到的结果。', 'info'));
     c.appendChild(h('div.small.muted', `检查于 ${fmt.date(result.scanned_at)} · `,
       stats.roots?.length ? stats.roots.map(PX.displayPath).join('、') : '本次只检查软件登记，未扫描文件残留'));
-    const rows = result.items.filter((item) => item.status === 'pending');
+    const rows = PX.sortRows(result.items.filter((item) => item.status === 'pending'), RESIDUE_SORT, state.residueSort, 'size');
     if (!rows.length) c.appendChild(PX.notice('本次范围内没有发现符合条件的软件残留；这不代表所有应用都没有留下数据。'));
+    else if (rows.length > 1) c.appendChild(PX.sortBar(RESIDUE_SORT, state.residueSort, (s) => { state.residueSort = s; draw(); }));
     const list = c.appendChild(h('div.list'));
     for (const item of rows) {
       const path = item.paths[0];
@@ -82,6 +99,8 @@
       state.apps = r.apps;
       state.admin = r.admin;
       state.usageKnown = r.usage_known;
+      // what the check-up's AI said about the programs, shared like everything else it found
+      if (r.ai) state.ai = { ...state.ai, ...r.ai };
       if (fresh && before && !quiet) {
         const now = new Set(state.apps.map((a) => a.id));
         const added = state.apps.filter((a) => !before.has(a.id)).length;
@@ -195,8 +214,9 @@
   function finished(id, name) {
     state.uninstalling.delete(id);
     state.removed = { id, name };
-    PX.toast(`「${name}」已经卸载`);
-    load(true, true);
+    PX.toast(`「${name}」已经卸载`, false, PX.isCurrent('apps') ? null : { label: '查找残留', onClick: () => PX.apps.open() });
+    // the program list (and with it the plan on 首页) knows it is gone
+    load(true, true).then(() => { if (PX.home) PX.home.reload(); });
   }
 
   // folders the uninstaller left behind: shown with what is in them; nothing is ticked that may hold settings or saves
@@ -279,15 +299,7 @@
     rowEls.set(a.id, el);
   }
 
-  function sorted(rows) {
-    const by = {
-      name: (a, b) => a.name.localeCompare(b.name, 'zh-CN'),
-      size: (a, b) => (b.size || 0) - (a.size || 0),
-      used: (a, b) => (a.last_used || 0) - (b.last_used || 0),
-      installed: (a, b) => (a.installed || 0) - (b.installed || 0),
-    };
-    return rows.slice().sort(by[state.sort]);
-  }
+  const sorted = (rows) => PX.sortRows(rows, APP_SORT, state.sort, 'name');
 
   function draw() {
     if (!root || !PX.isCurrent('apps')) return;
@@ -329,10 +341,9 @@
     rowEls.clear();
     largest = Math.max(1, ...state.apps.map((a) => a.size || 0));
     if (!q) overview(c, main_);
-    const head = (cls) => h('div.thead.app-row' + (cls || ''),
-      ...[['name', '程序'], [null, '类型'], ['size', '大小', '.r'], ['installed', '安装日期'], ['used', '最近运行'], [null, '']].map(([key, label, r]) =>
-        key ? h('button' + (state.sort === key ? '.on' : '') + (r || ''), { type: 'button', onclick: () => { state.sort = key; draw(); } }, label) : h('span', label)));
-    c.appendChild(head());
+    const col = (id, cls) => PX.sortHead(APP_SORT, state.sort, id, (s) => { state.sort = s; draw(); }, cls);
+    c.appendChild(h('div.thead.app-row', col('name'), col('kind'), col('size', 'r'), col('installed'), col('used'),
+      Object.keys(state.ai).length ? col('ai', 'r') : h('span')));
     const list = c.appendChild(h('div.list'));
     main_.forEach((a) => appRow(list, a));
     if (!main_.length) list.appendChild(PX.empty(q ? '没有匹配的程序' : '没有找到已安装的程序', ''));
@@ -348,6 +359,23 @@
     main.scrollTop = top;
   }
 
-  PX.apps = { open(tab = 'installed') { state.tab = tab; PX.go('apps'); } };
+  PX.apps = {
+    open(tab = 'installed') { state.tab = tab; PX.go('apps'); },
+    // 「卸载…」 from the plan on 首页: the same confirmation and watching as on this page
+    async uninstall(appId) {
+      let app = (state.apps || []).find((a) => a.id === appId);
+      if (!app) {
+        // the list here may be older than the check-up: read it again (that also tells the plan what is gone)
+        try { state.apps = (await PX.api.call('apps_list', { fresh: true })).apps; } catch (e) { PX.fail(e); return; }
+        app = state.apps.find((a) => a.id === appId);
+      }
+      if (!app) { PX.toast('这个程序已经不在「已安装的应用」里了'); if (PX.home) PX.home.reload(); return; }
+      if (state.uninstalling.has(app.id)) { PX.toast(`「${app.name}」的卸载程序已经打开，按它的提示完成卸载`); return; }
+      await uninstall(app);
+      if (PX.home) PX.home.reload();  // its row now offers 「检查是否卸载完成」
+    },
+    uninstalling: (appId) => state.uninstalling.has(appId),
+    check: (appId) => check(true, appId),
+  };
   PX.pages.apps = { render(container) { root = container; draw(); if (state.tab === 'residues') loadResidues(); else load(); } };
 })();
