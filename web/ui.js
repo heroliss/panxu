@@ -262,6 +262,10 @@
 
   PX.sel = {
     rules: new Set(), paths: new Set(), items: new Set(),
+    export() { return Object.fromEntries(['rules', 'paths', 'items'].map((k) => [k, [...this[k]]])); },
+    restore(value) {
+      for (const k of ['rules', 'paths', 'items']) this.replace(this[k], (value?.[k] || []).filter((v) => typeof v === 'string'));
+    },
     keyOf(it) {
       if (it.kind === 'rule') return ['rules', it.rule];
       if (it.kind === 'paths' && it.paths && it.paths.length === 1) return ['paths', it.paths[0]];

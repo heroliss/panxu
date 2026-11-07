@@ -51,13 +51,14 @@
   };
 
   PX.restartAsAdmin = async function () {
+    if (PX.workBlocked()) return;
     const ok = await PX.confirm({
       title: '以管理员身份重启',
-      body: h('div', '盘序会关闭并重新打开，Windows 会询问是否允许。当前的扫描结果不会保留，需要重新扫描。'),
-      ok: '重启',
+      body: h('div', 'Windows 会询问是否允许。已完成的检查结果、AI 结论和勾选会保留；重启后只补查系统垃圾和应用使用记录，无需重新整盘体检。补查发现的新项目由你勾选。'),
+      ok: '保留结果并重启',
     });
     if (!ok) return;
-    try { await PX.api.call('restart_as_admin'); } catch (e) { PX.fail(e); }
+    try { await PX.api.call('restart_as_admin', { page: PX.currentPage(), selection: PX.sel.export() }); } catch (e) { PX.fail(e); }
   };
 
   // ---- where each page was scrolled to when the user left it: coming back lands there again, like a browser
@@ -269,8 +270,25 @@
       return;
     }
     PX.applyTheme(PX.state.init.settings.theme);
+    const resume = PX.state.init.resume;
+    if (resume?.restored) {
+      try {
+        const plan = await PX.api.call('plan');
+        if (plan) PX.home.adopt(plan);
+      } catch (e) { /* a tool-only session has no home plan */ }
+      PX.sel.restore(resume.selection);
+      PX.junk.state.touched = true;
+    }
     await PX.startActivity();
-    PX.go('home');
+    PX.go(resume?.restored ? resume.page : 'home');
+    if (resume) PX.toast(resume.message, !resume.restored);
+    if (resume?.refresh_pending) {
+      PX.api.run('admin_refresh', {}).then((plan) => {
+        if (plan) PX.home.adopt(plan);
+        PX.refresh(PX.currentPage());
+        PX.toast('管理员项目已补查，新发现的项目请手动勾选。');
+      }).catch(PX.fail);
+    }
   }
   document.addEventListener('DOMContentLoaded', start);
 })();

@@ -56,6 +56,7 @@ node tests/test_ui.cjs                                              # 界面的�
 python tools/build_preview.py preview.html --page home              # 用假数据生成某个页面的预览（加 #sandbox 显示演练提示条）
 python tools/ui_harness.py                                          # 浏览器里把真实界面接到演练环境的真实后端：http://127.0.0.1:8766/
 python tools/ui_harness.py --native --stage-delay 2                  # 同一演练后端的原生窗口；阶段延时便于验证跨页进度
+python tools/ui_harness.py --resume-demo                             # 模拟普通体检后提权交接与补查，不请求真实 UAC
 python tools/sandbox_e2e.py                                         # 在临时演练环境里跑完整流程；--live 连接设置里的真实模型（只发送演练环境里的假文件名）
 python tools/real_check.py                                          # 在真实电脑上只读地跑一遍体检，列出方案和可疑之处，不删除也不修改任何东西
 ```

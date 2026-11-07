@@ -486,7 +486,7 @@
     if (pending.length) {
       head.appendChild(h('div.ov-conclusion',
         h('b', state.report ? `还有 ${pending.length} 项可以处理` + (sel.length ? `，已选 ${sel.length} 项（${fmt.bytes(selectedSize())}）` : '')
-          : sel.length ? `已经替你勾好 ${sel.length} 项，可以释放 ${fmt.bytes(selectedSize())}` : '没有自动勾选的项目'),
+          : sel.length ? `当前已选 ${sel.length} 项（${fmt.bytes(selectedSize())}）` : '当前没有勾选的项目'),
         h('span.muted', !state.report && review ? `　另有 ${review} 项建议你看看，不会自动处理。` : '')));
     } else if (state.report) {
       head.appendChild(h('div.ov-conclusion', h('b', '方案里能处理的都处理完了'), h('span.muted', '　想再找找，可以「重新体检」。')));
@@ -720,6 +720,7 @@
     reportBox(c);
     if (state.plan && state.status !== 'running') {
       const p = state.plan;
+      if (p.resumed) c.appendChild(PX.notice('已保留提权前的检查结果和勾选，只补查管理员项目；新发现的项目请手动勾选。空间分析原有的读取缺口仍保留，可按目录重扫。', 'info'));
       const coverage = p.coverage;
       if (coverage) {
         const space = coverage.space;

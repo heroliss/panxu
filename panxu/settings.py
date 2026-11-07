@@ -16,6 +16,7 @@ SETTINGS_VERSION = 4
 DEFAULTS = {
     'version': SETTINGS_VERSION,
     'theme': 'system',  # system | light | dark
+    'admin_on_start': True,  # request UAC once; a refusal still opens the app normally
     'ai': {
         'preset': 'deepseek',
         'base_url': 'https://api.deepseek.com',

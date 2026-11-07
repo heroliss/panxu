@@ -28,6 +28,14 @@
     c.appendChild(h('div.page-head', h('div.grow', h('h1', '设置'))));
     const form = c.appendChild(h('div.form'));
 
+    const launch = form.appendChild(h('section', h('h2', '启动与权限')));
+    const adminStart = h('input', { type: 'checkbox', checked: s.admin_on_start !== false,
+      'aria-label': '启动时请求管理员权限', onchange: async () => {
+        if (!await save({ admin_on_start: adminStart.checked })) adminStart.checked = !adminStart.checked;
+      } });
+    launch.appendChild(field('管理员模式', h('label.check', adminStart, '启动时请求管理员权限'),
+      '下次启动时由 Windows 询问是否允许；取消后仍可普通运行。演练环境不请求提权。'));
+
     // ---- model
     const sec1 = form.appendChild(h('section', h('h2', 'AI 模型')));
     const presetSel = h('select', { 'aria-label': '模型服务' }, init.presets.map((p) => h('option', { value: p.id }, p.name)));
