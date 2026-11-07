@@ -312,7 +312,9 @@ class SettingsTest(TempDirTest):
         with open(os.path.join(self.tmp, 'settings.json'), 'w', encoding='utf-8') as fh:
             json.dump({'checkup': {'auto_select': 'careful'}}, fh)
         self.assertEqual(Settings(self.tmp).get()['checkup']['auto_threshold'], 8)
-        self.assertEqual(Settings(os.path.join(self.tmp, 'fresh')).get()['checkup']['auto_threshold'], 5)
+        self.assertEqual(Settings(os.path.join(self.tmp, 'fresh')).get()['checkup']['auto_threshold'], 7)
+        Settings(self.tmp).update({'checkup': {'auto_threshold': 5}})
+        self.assertEqual(Settings(self.tmp).get()['checkup']['auto_threshold'], 5, 'an existing explicit choice is kept')
 
     def test_retired_models_are_renamed(self):
         with open(os.path.join(self.tmp, 'settings.json'), 'w', encoding='utf-8') as fh:

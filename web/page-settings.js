@@ -113,7 +113,7 @@
       secCk.appendChild(field(label, h('label.inline', PX.switchEl(ck[key] !== false, (e) => save({ checkup: { [key]: e.target.checked } })),
         h('span.small.muted', help))));
     }
-    const t = ck.auto_threshold === undefined ? 5 : ck.auto_threshold;
+    const t = ck.auto_threshold === undefined ? 7 : ck.auto_threshold;
     secCk.appendChild(field('勾选门槛', PX.seg([[8, '稳妥 ≥ 8 分'], [7, '适中 ≥ 7 分'], [5, '积极 ≥ 5 分']], t,
       async (v) => { await save({ checkup: { auto_threshold: v } }); draw(); }),
     '体检后自动勾选「建议清理度」达到门槛的项目。' + (t >= 8 ? '稳妥：基本只勾默认开启的清理规则和 AI 把握很大的残留。'

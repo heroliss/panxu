@@ -84,9 +84,14 @@ class SandboxRunTest(TempDirTest):
         report = out.getvalue()
         self.assertIn(code, (0, 1), report)
         self.assertNotIn('严重', report)
-        for part in ('会自动勾选', '建议你看看', '仅供了解', '值得注意', '没有删除、移动或修改任何东西', '勾选门槛：5 分', '[10分]'):
+        for part in ('会自动勾选', '建议你看看', '仅供了解', '值得注意', '没有删除、移动或修改任何东西', '勾选门槛：7 分', '[10分]'):
             self.assertIn(part, report)
-        self.assertIn('%LOCALAPPDATA%', report, 'user names are replaced by default')
+        # With the stricter default the summary may contain no app-data paths. Check redaction with
+        # an explicit fixture instead of relying on which folder the current threshold selects.
+        path_report = real_check.render({'items': [item(group='safe', selected=True, paths=[LOCAL + '\\cache'])]},
+                                        [], WIN_ENV, 0, False, None, False)
+        self.assertIn('%LOCALAPPDATA%', path_report)
+        self.assertNotIn(HOME, path_report)
         with open(save, encoding='utf-8') as fh:
             self.assertTrue(json.load(fh)['auto'])
         with redirect_stdout(io.StringIO()) as again, redirect_stderr(io.StringIO()):

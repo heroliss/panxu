@@ -46,8 +46,8 @@ STAGES = [('junk', '扫描垃圾文件'), ('space', '分析本机磁盘空间'),
 AI_SCOPE_PARENT = {'space': 'space_scan', 'duplicates': 'duplicates', 'apps': 'apps_services', 'services': 'apps_services'}
 AI_SCOPES = ('space', 'files', 'duplicates', 'startup', 'apps', 'services')
 
-# 勾选门槛 (0-10): eligible items whose 建议清理度 reaches it are pre-ticked. 稳妥 8, 积极 5.
-DEFAULT_THRESHOLD = 5
+# 勾选门槛 (0-10): eligible items whose 建议清理度 reaches it are pre-ticked. 稳妥 8, 适中 7, 积极 5.
+DEFAULT_THRESHOLD = 7
 THRESHOLDS = {'careful': 8, 'bold': 5}   # older settings / options
 MIN_AI_CONFIDENCE = 0.7      # below this a 「可清理」 verdict is never pre-ticked, whatever the threshold
 ACTIVE_DAYS = 7             # folders changed more recently are left for the user

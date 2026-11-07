@@ -39,7 +39,7 @@ DEFAULTS = {
         'use_ai': True,          # ask the model when a key is configured
         'apps_services': True,   # read installed programs and third-party services (nothing is changed by the check-up)
         'ai_scopes': {'space': True, 'files': True, 'duplicates': True, 'startup': True, 'apps': True, 'services': True},
-        'auto_threshold': 5,     # 勾选门槛 0-10: pre-tick eligible items scoring at least this (稳妥 8, 积极 5)
+        'auto_threshold': 7,     # 勾选门槛 0-10: pre-tick eligible items scoring at least this (稳妥 8, 适中 7, 积极 5)
     },
     'insights': {
         'stale_days': 365,       # "很久没动" threshold for large personal files
