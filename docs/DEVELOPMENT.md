@@ -32,6 +32,7 @@ panxu/
   services.py     服务
   itemfacts.py    交给 AI 之前程序自己查的事实（属于哪个应用、是否正在运行）
   ai_client.py    模型接口（OpenAI 兼容 / Anthropic）
+  ai_health.py    独立后台连接检测、配置失效与提醒冷却，不占用文件任务
   analyst.py      AI 分析流程、文件和重复文件复核、问 AI、缓存
   checkup.py      一键体检、清理方案、评分、执行
   windowing.py    本程序窗口的统一顶栏控制与 Windows 边框兼容
@@ -57,6 +58,7 @@ python tools/build_preview.py preview.html --page home              # 用假数�
 python tools/ui_harness.py                                          # 浏览器里把真实界面接到演练环境的真实后端：http://127.0.0.1:8766/
 python tools/ui_harness.py --native --stage-delay 2                  # 同一演练后端的原生窗口；阶段延时便于验证跨页进度
 python tools/ui_harness.py --resume-demo                             # 模拟普通体检后提权交接与补查，不请求真实 UAC
+python tools/ui_harness.py --ai-status-demo missing                  # 缺配置提示；error/ready 模拟失败/成功，不联网
 python tools/sandbox_e2e.py                                         # 在临时演练环境里跑完整流程；--live 连接设置里的真实模型（只发送演练环境里的假文件名）
 python tools/real_check.py                                          # 在真实电脑上只读地跑一遍体检，列出方案和可疑之处，不删除也不修改任何东西
 ```

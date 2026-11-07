@@ -114,6 +114,7 @@
   insights: { stale_days: 365, large_mb: 100, download_days: 180 },
   duplicates: { min_size_mb: 1 }, large_files: { min_size_mb: 100 }, excluded_paths: [], extra_personal_paths: ['D:\\资料'] };
   let hasKey = true;
+  let mockAIState = 'untested';
 
   const startup = [
     ['hkcu_run:OneDrive', 'Microsoft OneDrive', 'Microsoft Corporation', '注册表（当前用户）', '"C:\\Program Files\\Microsoft OneDrive\\OneDrive.exe" /background', true],
@@ -346,7 +347,12 @@
 
   const handlers = {
     activity: () => ({ jobs: Object.entries(jobs).filter(([, j]) => j.kind !== 'ai_ask' && (!j.snapshot || j.snapshot.status === 'running'))
-      .map(([id, j]) => j.snapshot || { id, kind: j.kind, status: 'running', progress: {} }), window: { available: false } }),
+      .map(([id, j]) => j.snapshot || { id, kind: j.kind, status: 'running', progress: {} }), window: { available: false }, ai_health: handlers.ai_health() }),
+    ai_health: () => ({ state: hasKey ? mockAIState : 'unconfigured', signature: 'mock', model: settings.ai.model,
+      message: !hasKey ? '请填写 API Key' : mockAIState === 'ready' ? '模型连接正常' : '模型设置尚未验证',
+      help: '基础扫描仍可使用；配置并测试模型后，才能使用 AI 分析和问 AI。', notice_due: false }),
+    ai_health_check: () => { mockAIState = 'ready'; return handlers.ai_health(); },
+    ai_health_ack: () => handlers.ai_health(),
     checkup: () => {
       const opts = { ...settings.checkup };
       const roots = PX.checkupDriveRoots(handlers.drives(), opts);
@@ -498,7 +504,7 @@
     sandbox_restore: ({ item_id }) => { const i = recycled.findIndex((r) => r.id === item_id); const [r] = recycled.splice(i, 1); sandbox.recycle_count -= 1; return r.original; },
     sandbox_reset: () => sandbox,
     drives: () => handlers.init().drives,
-    init: () => ({ version: '2.0.3', admin: !!sandbox, windows: true, settings, has_key: hasKey, sandbox,
+    init: () => ({ version: '2.1.0', admin: !!sandbox, windows: true, settings, has_key: hasKey, sandbox,
       plan_groups: planGroups, checkup_stages: stages,
       presets: [{ id: 'deepseek', name: 'DeepSeek', base_url: 'https://api.deepseek.com', protocol: 'openai', models: ['deepseek-flash', 'deepseek-v4-pro'], json_mode: true, thinking_toggle: true, key_url: 'x' },
         { id: 'kimi', name: 'Kimi（月之暗面）', base_url: 'https://api.moonshot.cn/v1', protocol: 'openai', models: [], json_mode: true },
@@ -611,10 +617,11 @@
     history: () => history,
     revert: () => true,
     settings_save: ({ changes }) => {
+      if (changes.ai && ['preset', 'model', 'base_url', 'protocol', 'json_mode'].some((k) => k in changes.ai)) mockAIState = 'untested';
       for (const [k, v] of Object.entries(changes)) settings[k] = v && typeof v === 'object' && !Array.isArray(v) ? Object.assign(settings[k] || {}, v) : v;
       return { settings, has_key: hasKey };
     },
-    set_api_key: ({ key }) => { hasKey = !!key; return hasKey; },
+    set_api_key: ({ key }) => { hasKey = !!key; mockAIState = 'untested'; return hasKey; },
     has_api_key: () => hasKey,
     ai_models: () => ['deepseek-chat', 'deepseek-reasoner'],
     ai_test: () => ({ reply: { ok: true }, model: settings.ai.model }),

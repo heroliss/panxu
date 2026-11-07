@@ -10,6 +10,7 @@
       const r = await PX.api.call('settings_save', { changes });
       PX.state.init.settings = r.settings;
       PX.state.init.has_key = r.has_key;
+      await PX.aiStatus?.refresh();
       return true;
     } catch (e) { PX.fail(e); return false; }
   }
@@ -37,7 +38,11 @@
       '下次启动时由 Windows 询问是否允许；取消后仍可普通运行。演练环境不请求提权。'));
 
     // ---- model
-    const sec1 = form.appendChild(h('section', h('h2', 'AI 模型')));
+    const sec1 = form.appendChild(h('section', { id: 'ai-model-settings' }, h('h2', 'AI 模型')));
+    if (PX.aiStatus) sec1.appendChild(PX.aiStatus.panel());
+    sec1.appendChild(field('启动检测', h('label.inline', PX.switchEl(s.ai_check_on_start !== false,
+      (e) => save({ ai_check_on_start: e.target.checked })), h('span', '启动时检测模型连接并提示问题')),
+    '仅发送固定测试消息，不包含文件名或文件内容，可能消耗少量模型额度。'));
     const presetSel = h('select', { 'aria-label': '模型服务' }, init.presets.map((p) => h('option', { value: p.id }, p.name)));
     presetSel.value = ai.preset;
     presetSel.addEventListener('change', async () => {
@@ -66,6 +71,7 @@
     const keyBtn = h('button.btn', { type: 'button', onclick: async () => {
       try {
         init.has_key = await PX.api.call('set_api_key', { preset: ai.preset, key: key.value });
+        await PX.aiStatus?.refresh();
         PX.toast(init.has_key ? 'API Key 已保存' : 'API Key 已清除');
         draw();
       } catch (e) { PX.fail(e); }
@@ -81,11 +87,19 @@
     sec1.appendChild(field('读取文档内容', h('label.inline', PX.switchEl(ai.send_file_content, (e) => save({ ai: { send_file_content: e.target.checked } })),
       h('span.small.muted', '允许把文档开头约 800 字发给模型，帮你判断文件是什么')),
     '打开后每次发送前仍会单独询问，并列出会读取的文档。一键体检从不发送文件内容。'));
-    const testBtn = h('button.btn', { type: 'button', onclick: async () => {
-      testBtn.disabled = true;
-      try { const r = await PX.api.call('ai_test'); PX.toast(`连接正常：${r.model}`); } catch (e) { PX.fail(e); }
-      testBtn.disabled = false;
-    } }, '测试连接');
+    const testBtn = h('button.btn', { type: 'button', 'data-ai-health-check': '',
+      onclick: async () => {
+        if (!await save({ ai: { base_url: url.value.trim(), model: model.value.trim() } })) return;
+        if (key.value.trim()) {
+          try {
+            init.has_key = await PX.api.call('set_api_key', { preset: ai.preset, key: key.value.trim() });
+            key.value = '';
+            key.placeholder = '已保存（不显示）。输入新的 Key 可替换';
+            keyBtn.textContent = '保存 / 清除';
+          } catch (e) { PX.fail(e); return; }
+        }
+        await PX.aiStatus.check();
+      } }, '测试连接');
     sec1.appendChild(field('', testBtn));
 
     // ---- analysis

@@ -104,6 +104,7 @@
     PX.renderRail();
     PX.clear(main);
     if (PX.state.init && PX.state.init.sandbox) main.appendChild(PX.sandbox.banner());
+    if (PX.aiStatus) { main.appendChild(PX.aiStatus.banner()); PX.aiStatus.render(); }
     main.appendChild(h('div.work-status', { id: 'work-status', hidden: true }));
     if (PX.renderActivity) PX.renderActivity();
     const root = main.appendChild(h('div.page'));
@@ -281,6 +282,7 @@
     }
     await PX.startActivity();
     PX.go(resume?.restored ? resume.page : 'home');
+    PX.aiStatus?.start();
     if (resume) PX.toast(resume.message, !resume.restored);
     if (resume?.refresh_pending) {
       PX.api.run('admin_refresh', {}).then((plan) => {
