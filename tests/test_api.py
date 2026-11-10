@@ -35,6 +35,22 @@ class BridgeTest(TempDirTest):
         self.assertIn('扫描', r['error'])
         self.assertFalse(self.bridge.call('init', {'unexpected': 1})['ok'])
 
+    def test_navigation_summary_only_names_tools_that_have_results(self):
+        self.assertEqual(self.bridge.call('nav_summary')['data'], {})
+        self.make('area/a.bin', 4000)
+        wait(self.bridge, self.bridge.call('space_scan', {'root': os.path.join(self.tmp, 'area')})['data'])
+        nav = self.bridge.call('nav_summary')['data']
+        self.assertEqual(set(nav), {'space', 'large'})
+        self.assertEqual(nav['space']['size'], 4000)
+        self.backend.junk_rows = [{'id': 'a', 'size': 30, 'selected': True}, {'id': 'b', 'size': 12, 'selected': False},
+                                  {'id': 'c', 'size': None}]
+        self.backend.insights = {'findings': [{'files': [{'size': 5}, {'size': 7}]}]}
+        nav = self.bridge.call('nav_summary')['data']
+        self.assertEqual(nav['junk'], {'size': 30, 'found': 42})
+        self.assertEqual(nav['mine'], {'size': 12, 'count': 2})
+        self.assertNotIn('dups', nav)
+        self.assertNotIn('startup', nav)
+
     def test_scan_browse_and_delete_permanently(self):
         self.make('area/old/a.bin', 4000)
         self.make('area/keep/b.bin', 1000)

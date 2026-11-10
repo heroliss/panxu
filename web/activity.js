@@ -27,6 +27,8 @@
     const prior = job;
     job = next;
     PX.renderActivity();
+    // a check-up stage just published its results: the rail marks that tool
+    if (prior?.id !== next.id || (prior.progress?.completed || []).length !== (next.progress?.completed || []).length) PX.refreshNav?.();
     if (next.kind === 'checkup') {
       const page = PX.currentPage?.();
       if (page && page !== 'home' && (next.progress?.completed || []).includes(page)
@@ -39,6 +41,7 @@
     if (job?.id === done.id) job = null;
     if (done.kind === 'checkup' && done.status === 'done' && done.result) PX.home.adopt(done.result);
     PX.renderActivity();
+    PX.refreshNav?.();
     const page = PX.currentPage?.();
     if ((PAGES[done.kind] || []).includes(page)) PX.refresh(page);
   };

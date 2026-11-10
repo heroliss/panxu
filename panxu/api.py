@@ -307,6 +307,35 @@ class Backend:
         rows.sort(key=lambda r: (not r['system'], r['root']))
         return rows
 
+    def m_nav_summary(self):
+        """What the navigation says next to each tool: present when it has results (from its own page or the
+        check-up), with one figure -- what was found, never a promise of what will be freed. Cheap: it only
+        adds up results that are already in memory."""
+        out: dict = {}
+        if self.junk_rows is not None:
+            out['junk'] = {'size': sum(r.get('size') or 0 for r in self.junk_rows if r.get('selected')),
+                           'found': sum(r.get('size') or 0 for r in self.junk_rows)}
+        if self.scan is not None and self.scan.complete:
+            out['space'] = {'size': self.scan.stats.get('bytes') or 0}
+            out['large'] = {}
+        if self.insights:
+            files = [x for f in self.insights['findings'] for x in f['files']]
+            out['mine'] = {'size': sum(x.get('size') or 0 for x in files), 'count': len(files)}
+        if self.dups:
+            out['dups'] = {'size': self.dups['stats'].get('wasted') or 0, 'count': len(self.dups['groups'])}
+        pending = [i for i in (self.plan or {}).get('items', []) if i['status'] == 'pending']
+        if self.plan:
+            coverage = self.plan.get('coverage') or {}
+            residues = [i for i in pending if i['category'] in checkup.RESIDUE_CATEGORIES]
+            if coverage.get('apps'):
+                out['apps'] = {'count': len(residues) + sum(1 for i in pending if i.get('kind') == 'app'),
+                               'size': sum(i.get('size') or 0 for i in residues)}
+            out['startup'] = {'count': sum(1 for i in pending if i.get('kind') in ('startup', 'service'))}
+        elif self.app_residues:
+            rows = [i for i in self.app_residues.get('items', []) if i['status'] == 'pending']
+            out['apps'] = {'count': len(rows), 'size': sum(i.get('size') or 0 for i in rows)}
+        return out
+
     def m_job(self, job_id: str):
         return self.jobs.status(job_id)
 

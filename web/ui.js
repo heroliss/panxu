@@ -258,6 +258,30 @@
       ? { page: 'apps', name: '应用', status: apps.error ? '有跳过项' : apps.residues ? '已检查' : '部分覆盖', action: '查看应用', extra: ['residues', '软件残留'], note: parts.join('、') }
       : { page: 'residues', name: '应用', status: '部分覆盖', action: '查看残留', extra: ['apps', '应用列表'], note: parts.join('、') + '；卸载建议需单独分析' };
   }
+  // What the navigation says next to a tool: [mark, tooltip, kind]. mark: a short figure, true (checked, nothing
+  // to put a number on) or null (no results yet). Only 垃圾清理's figure is space you get back (green); the others
+  // are 「found, worth a look」 and stay quiet. ``junkTicked``: the junk page's own total of what is ticked.
+  PX.navMark = (id, info, junkTicked) => {
+    if (!info) return [null, '', ''];
+    const size = (n) => (n >= 1024 * 1024 ? PX.fmt.bytes(n) : null);
+    const items = (n) => (n ? `${n} 项` : null);
+    if (id === 'junk') {
+      const ticked = junkTicked !== undefined && junkTicked !== null ? junkTicked : info.size;
+      return size(ticked) ? [size(ticked), `已检查 · 建议清理 ${size(ticked)}` + (info.found > ticked ? `，共发现 ${PX.fmt.bytes(info.found)}` : ''), 'gain']
+        : [true, size(info.found) ? `已检查 · 发现 ${size(info.found)}，都需要你确认` : '已检查 · 没有发现可清理的垃圾', ''];
+    }
+    if (id === 'mine') return size(info.size) ? [size(info.size), `已整理 · ${info.count} 个文件值得看看，共 ${size(info.size)}`, '']
+      : [true, info.count ? `已整理 · ${info.count} 项值得看看` : '已整理 · 没有需要注意的文件', ''];
+    if (id === 'dups') return size(info.size) ? [size(info.size), `已查找 · ${info.count} 组重复文件，多余的副本占 ${size(info.size)}`, '']
+      : [true, info.count ? `已查找 · ${info.count} 组重复文件` : '已查找 · 没有发现重复文件', ''];
+    if (id === 'apps') return items(info.count) ? [items(info.count), `已检查 · ${info.count} 项可以考虑卸载或清理残留` + (size(info.size) ? `（残留 ${size(info.size)}）` : ''), '']
+      : [true, '已检查 · 没有卸载或残留方面的建议', ''];
+    if (id === 'startup') return items(info.count) ? [items(info.count), `已检查 · ${info.count} 项建议不必开机自动运行`, '']
+      : [true, '已检查 · 没有需要调整的启动项或服务', ''];
+    if (id === 'space') return [true, '已扫描' + (size(info.size) ? ` · 统计了 ${size(info.size)}` : ''), ''];
+    if (id === 'large') return [true, '已有结果 · 来自空间扫描', ''];
+    return [null, '', ''];
+  };
   PX.checkupAIReady = (init) => !!(init.has_key || init.settings.ai.preset === 'ollama') && !!(init.settings.ai.model || '').trim();
   PX.checkupAIEnabled = (options = {}) => options.use_ai !== false && PX.checkupAIScopes.some(([key]) =>
     options.ai_scopes?.[key] !== false && (!PX.checkupScopeParent[key] || options[PX.checkupScopeParent[key][0]] !== false));

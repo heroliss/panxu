@@ -414,6 +414,24 @@
     });
     },
     plan: () => { if (plan) plan.summary = summarize(); return plan; },
+    // like Backend.m_nav_summary: only what has results
+    nav_summary: () => {
+      const out = {};
+      const pending = plan ? plan.items.filter((i) => i.status === 'pending') : [];
+      if (plan) {
+        const junk = pending.filter((i) => i.kind === 'rule');
+        out.junk = { size: junk.filter((i) => i.selected).reduce((s, i) => s + (i.size || 0), 0), found: junk.reduce((s, i) => s + (i.size || 0), 0) };
+        if (plan.coverage.space) { out.space = { size: 389 * GB }; out.large = {}; }
+        if (plan.coverage.duplicates) out.dups = { size: 3 * MB, count: 1 };
+        out.apps = { count: pending.filter((i) => i.kind === 'app').length, size: 0 };
+        out.startup = { count: pending.filter((i) => i.kind === 'startup' || i.kind === 'service').length };
+      }
+      if (insights) {
+        const files = insights.findings.flatMap((f) => f.files);
+        out.mine = { size: files.reduce((s, x) => s + x.size, 0), count: files.length };
+      }
+      return out;
+    },
     hibernate_set: ({ enabled }) => ({ enabled, freed: enabled ? 0 : 12.7 * GB }),
     // the first re-check finds Edge closed
     running_check: () => {
@@ -519,7 +537,7 @@
     sandbox_restore: ({ item_id }) => { const i = recycled.findIndex((r) => r.id === item_id); const [r] = recycled.splice(i, 1); sandbox.recycle_count -= 1; return r.original; },
     sandbox_reset: () => sandbox,
     drives: () => handlers.init().drives,
-    init: () => ({ version: '2.1.0', admin: !!sandbox || location.hash.includes('admin'), other_accounts: ['家人'], windows: true, settings, has_key: hasKey, sandbox,
+    init: () => ({ version: '2.2.0', admin: !!sandbox || location.hash.includes('admin'), other_accounts: ['家人'], windows: true, settings, has_key: hasKey, sandbox,
       plan_groups: planGroups, checkup_stages: stages,
       presets: [{ id: 'deepseek', name: 'DeepSeek', base_url: 'https://api.deepseek.com', protocol: 'openai', models: ['deepseek-flash', 'deepseek-v4-pro'], json_mode: true, thinking_toggle: true, key_url: 'x' },
         { id: 'kimi', name: 'Kimi（月之暗面）', base_url: 'https://api.moonshot.cn/v1', protocol: 'openai', models: [], json_mode: true },
