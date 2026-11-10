@@ -26,14 +26,16 @@
     for (const [section, entries] of NAV) {
       if (section) rail.appendChild(h('div.nav-section', section));
       for (const [id, label, icon] of entries) {
-        const badge = id === 'junk' && PX.state.junkTotal ? PX.fmt.bytes(PX.state.junkTotal) : null;
+        const [badge, tip, kind] = PX.navMark(id, (PX.state.nav || {})[id], PX.state.junkTotal);
         const since = arrived && arrived.id === id ? Date.now() - arrived.at : null;
         const lit = since !== null && since < ARRIVE_MS;
         // a re-render of the rail (a badge changed) continues the animation instead of restarting it
         rail.appendChild(h('button.nav-item' + (id === current ? '.active' : '') + (lit ? '.arrived' : ''), {
           type: 'button', 'aria-current': id === current ? 'page' : null, onclick: () => PX.go(id, { fromRail: true }),
-          style: lit ? { '--arrive-delay': -since + 'ms' } : null,
-        }, PX.icon(icon), h('span', label), badge ? h('em.nav-badge', badge) : null));
+          style: lit ? { '--arrive-delay': -since + 'ms' } : null, title: tip || null,
+        }, PX.icon(icon), h('span', label),
+        badge === true ? h('em.nav-badge.checked', { 'aria-label': tip }, PX.icon('check'))
+          : badge ? h('em.nav-badge' + (kind ? '.' + kind : ''), { 'aria-label': tip }, badge) : null));
       }
     }
     rail.appendChild(h('button.nav-item.advisor-btn', { type: 'button', onclick: () => PX.advisor.open() }, PX.icon('spark'), h('span', 'AI 顾问')));
@@ -48,6 +50,20 @@
       foot.appendChild(h('button.btn.small', { type: 'button', onclick: PX.restartAsAdmin }, PX.icon('shield'), '以管理员身份重启'));
     }
     rail.appendChild(foot);
+  };
+
+  // which tools have results, and one figure each (Backend.m_nav_summary): asked again whenever a job ends, a
+  // check-up stage completes or the page changes, so the rail never claims more than the backend holds
+  let navAsked = 0;
+  PX.refreshNav = async function () {
+    const mine = ++navAsked;
+    try {
+      const nav = await PX.api.call('nav_summary');
+      if (mine !== navAsked) return;
+      if (JSON.stringify(nav) === JSON.stringify(PX.state.nav || null)) return;
+      PX.state.nav = nav;
+      PX.renderRail();
+    } catch (e) { /* the rail keeps what it showed */ }
   };
 
   PX.restartAsAdmin = async function () {
@@ -102,6 +118,7 @@
     arrived = current && current !== id && !opts.fromRail ? { id, at: Date.now() } : null;
     current = id;
     PX.renderRail();
+    PX.refreshNav();
     PX.clear(main);
     if (PX.state.init && PX.state.init.sandbox) main.appendChild(PX.sandbox.banner());
     if (PX.aiStatus) { main.appendChild(PX.aiStatus.banner()); PX.aiStatus.render(); }

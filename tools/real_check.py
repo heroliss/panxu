@@ -72,7 +72,10 @@ def check_plan(plan: dict, env: dict, insights: dict | None = None, junk_rows: l
         for p in item['paths']:
             if users and paths.is_within(p, users) and home and not paths.is_within(p, home) \
                     and not (public and paths.is_within(p, public)):
-                add('severe', f'方案里出现了其他账户的文件：{p}')
+                # only with 「其他账户的个人文件」 switched on, and then marked, personal and never ticked
+                asked = plan.get('options', {}).get('other_accounts') and item.get('account') and item.get('personal')
+                if not asked or item['selected']:
+                    add('severe', f'方案里出现了其他账户的文件：{p}')
             if item.get('personal') and home and paths.is_within(p, home):
                 below = p[len(home.rstrip('\\/')):].replace('/', '\\').strip('\\').split('\\')
                 if any(managed_dir(x) for x in below[:-1]):

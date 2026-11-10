@@ -218,6 +218,8 @@ class Backend:
             if f['id'] not in wanted or f['kind'] == 'empty_folders':
                 continue
             for x in f['files']:
+                if x.get('account'):
+                    continue  # another account's file: not even its name is ours to send to a model
                 row = {'path': x['path'], 'name': x['name'], 'size': x['size'],
                        'logical_size': x.get('logical_size', x['size']), 'mtime': x['mtime'],
                        'category': x.get('category', 'other'), 'group': f['kind_label'], 'note': x.get('note', ''),
@@ -262,6 +264,7 @@ class Backend:
             'presets': ai_client.PRESETS, 'drives': self.m_drives(), 'rules': self.junk.catalogue(),
             'groups': [{'id': g, 'name': n} for g, n in GROUPS], 'start_types': START_TYPES,
             'home': self.env.get('USERPROFILE', ''), 'system_drive': self._system_drive(),
+            'other_accounts': self.m_other_accounts()['accounts'],
             'data_dir': self.data_dir, 'sandbox': self._sandbox_info(),
             'plan_groups': [{'id': g, 'name': n} for g, n in checkup.GROUPS.items()],
             'checkup_stages': [{'id': s, 'label': lbl} for s, lbl in checkup.STAGES],
@@ -303,6 +306,35 @@ class Backend:
                          'removable': kind == winapi.DRIVE_REMOVABLE, 'fixed': kind == winapi.DRIVE_FIXED})
         rows.sort(key=lambda r: (not r['system'], r['root']))
         return rows
+
+    def m_nav_summary(self):
+        """What the navigation says next to each tool: present when it has results (from its own page or the
+        check-up), with one figure -- what was found, never a promise of what will be freed. Cheap: it only
+        adds up results that are already in memory."""
+        out: dict = {}
+        if self.junk_rows is not None:
+            out['junk'] = {'size': sum(r.get('size') or 0 for r in self.junk_rows if r.get('selected')),
+                           'found': sum(r.get('size') or 0 for r in self.junk_rows)}
+        if self.scan is not None and self.scan.complete:
+            out['space'] = {'size': self.scan.stats.get('bytes') or 0}
+            out['large'] = {}
+        if self.insights:
+            files = [x for f in self.insights['findings'] for x in f['files']]
+            out['mine'] = {'size': sum(x.get('size') or 0 for x in files), 'count': len(files)}
+        if self.dups:
+            out['dups'] = {'size': self.dups['stats'].get('wasted') or 0, 'count': len(self.dups['groups'])}
+        pending = [i for i in (self.plan or {}).get('items', []) if i['status'] == 'pending']
+        if self.plan:
+            coverage = self.plan.get('coverage') or {}
+            residues = [i for i in pending if i['category'] in checkup.RESIDUE_CATEGORIES]
+            if coverage.get('apps'):
+                out['apps'] = {'count': len(residues) + sum(1 for i in pending if i.get('kind') == 'app'),
+                               'size': sum(i.get('size') or 0 for i in residues)}
+            out['startup'] = {'count': sum(1 for i in pending if i.get('kind') in ('startup', 'service'))}
+        elif self.app_residues:
+            rows = [i for i in self.app_residues.get('items', []) if i['status'] == 'pending']
+            out['apps'] = {'count': len(rows), 'size': sum(i.get('size') or 0 for i in rows)}
+        return out
 
     def m_job(self, job_id: str):
         return self.jobs.status(job_id)
@@ -1175,13 +1207,29 @@ class Backend:
                 'publisher': a['publisher'], 'command': '', 'extra': extra}
 
     # ------------------------------------------------------------------ 我的文件
+    def _other_accounts(self, wanted) -> list[str]:
+        """Other accounts' folders, for an administrator who asked to look through them (never otherwise)."""
+        return checkup.other_account_roots(self.env) if wanted and self.admin else []
+
     def m_insights_roots(self):
-        return checkup.insights_roots(self.env, self.settings.get(), self.m_drives())
+        settings = self.settings.get()
+        accounts = self._other_accounts(settings.get('insights', {}).get('other_accounts'))
+        return checkup.insights_roots(self.env, settings, self.m_drives(), accounts=accounts)
+
+    def m_other_accounts(self):
+        """What the 「其他账户」 switch would cover: the account names, and whether this run may read them."""
+        return {'admin': self.admin,
+                'accounts': [os.path.basename(p.rstrip('\\/')) for p in checkup.other_account_roots(self.env)]}
 
     def m_insights_scan(self, roots: list | None = None):
         settings = self.settings.get()
         drives = self.m_drives()
-        chosen = roots if roots is not None else checkup.insights_roots(self.env, settings, drives)
+        # the whole-PC scan may include other accounts; a folder the user picked is looked through as it is
+        accounts = self._other_accounts(settings.get('insights', {}).get('other_accounts'))
+        if roots is not None:
+            accounts = [a for a in accounts if any(isinstance(r, str) and (paths.is_within(r, a) or paths.is_within(a, r))
+                                                   for r in roots)]
+        chosen = roots if roots is not None else checkup.insights_roots(self.env, settings, drives, accounts=accounts)
         roots = [r for r in chosen if isinstance(r, str) and os.path.isdir(r)]
         if not roots:
             raise UserError('请至少选择一个存在的文件夹')
@@ -1189,9 +1237,10 @@ class Backend:
 
         def run(job):
             ins = insights.Insights(self.env, settings, apps=self.apps).collect(
-                roots, skip=checkup.system_skip(self.env, policy, roots), cancel=job.cancel,
-                container_roots=checkup.personal_roots(self.env, {}) + [d['root'] for d in drives],
-                progress=lambda p: job.update(**p))
+                roots, skip=checkup.system_skip(self.env, policy, roots, accounts), cancel=job.cancel,
+                container_roots=checkup.personal_roots(self.env, {}) + [d['root'] for d in drives]
+                                + checkup.account_containers(accounts),
+                accounts=accounts, progress=lambda p: job.update(**p))
             self.insights = {'findings': ins.findings(), 'stats': ins.stats, 'roots': ins.roots, 'time': time.time()}
             return self.m_insights_result()
         return self.jobs.start('insights_scan', run, group='insights')
@@ -1425,6 +1474,8 @@ class Backend:
             item = next((i for i in (self.plan or {}).get('items', []) if i['id'] == target.get('id')), None)
             if item is None:
                 raise UserError('清理方案已更新，请重新打开')
+            if item.get('account'):
+                raise UserError('这是其他账户的文件，盘序不会把它的名字或内容发给 AI')
             ctx['about'] = {'type': '清理方案中的一项', 'title': item['title'], 'group': checkup.GROUPS[item['group']],
                             'action': checkup.ACTIONS[item['action']], 'source': checkup.SOURCES[item['source']],
                             'size': fmt_size(item['size'] or 0), 'what': item['what'], 'why': self._anon_text(item['why']),
@@ -1453,7 +1504,12 @@ class Backend:
         from .analyst import anonymize_text
         return anonymize_text(text, self.env) if self.settings.get()['ai'].get('anonymize_paths', True) else text
 
+    def _other_account_file(self, path: str) -> bool:
+        return any(paths.is_within(path, a) for a in checkup.other_account_roots(self.env))
+
     def _file_context(self, path: str, include_content: bool) -> dict:
+        if self._other_account_file(path):
+            raise UserError('这是其他账户的文件，盘序不会把它的名字或内容发给 AI')
         ctx = {'path': self._anon(path), 'type': paths.category_label(paths.category_of(path))}
         try:
             st = os.lstat(fsops.long_path(path))

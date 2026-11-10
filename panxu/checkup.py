@@ -123,6 +123,40 @@ def personal_roots(env: dict, settings: dict) -> list[str]:
     return out
 
 
+# profiles Windows keeps for itself; nobody's personal files
+SYSTEM_PROFILES = {'default', 'default user', 'all users', 'public', 'defaultuser0', 'defaultapppool',
+                   'defaultaccount', 'wdagutilityaccount'}
+ACCOUNT_FOLDERS = ('Desktop', 'Documents', 'Downloads', 'Pictures', 'Videos', 'Music')
+
+
+def other_account_roots(env: dict) -> list[str]:
+    """The profile folders of the other accounts on this PC (next to the current user's), for an administrator
+    who asked to look through them. Only listed here; reading them still needs the rights to."""
+    home = env.get('USERPROFILE')
+    if not home:
+        return []
+    users = os.path.dirname(home.rstrip('\\/'))
+    mine = {paths.key(p) for p in (home, env.get('PUBLIC')) if p}
+    out = []
+    try:
+        with os.scandir(fsops.long_path(users)) as entries:
+            for e in entries:
+                path = os.path.join(users, e.name)
+                if e.name.lower() in SYSTEM_PROFILES or e.name.startswith('.') or paths.key(path) in mine:
+                    continue
+                if fsops.is_link(e) or not e.is_dir(follow_symlinks=False):
+                    continue
+                out.append(path)
+    except OSError:
+        return []
+    return sorted(out, key=paths.key)
+
+
+def account_containers(accounts: list[str]) -> list[str]:
+    """An account's folder and its Desktop, Documents...: places that hold loose files, never 「a program's folder」."""
+    return [p for a in accounts for p in [a] + [os.path.join(a, n) for n in ACCOUNT_FOLDERS]]
+
+
 def selected_drives(drives: list[dict], options: dict) -> list[dict]:
     """Only enumerated drives can be selected; preserve old all/system defaults until the first choice."""
     chosen = options.get('selected_drives')
@@ -134,7 +168,7 @@ def selected_drives(drives: list[dict], options: dict) -> list[dict]:
 
 
 def insights_roots(env: dict, settings: dict, drives: list[dict], *, other_drives: bool = True,
-                   whole_drives: list[str] | None = None) -> list[str]:
+                   whole_drives: list[str] | None = None, accounts: list[str] | tuple = ()) -> list[str]:
     """Broad personal-file scope, using only an explicitly supplied drive list.
 
     Visit the familiar/picked folders first, then their wider containers. Only
@@ -144,6 +178,7 @@ def insights_roots(env: dict, settings: dict, drives: list[dict], *, other_drive
     """
     candidates = personal_roots(env, settings)
     candidates.extend(env.get(name) for name in ('USERPROFILE', 'PUBLIC'))
+    candidates.extend(accounts)   # other accounts' folders (other_account_roots), only when asked for
     if whole_drives is not None:
         candidates.extend(whole_drives)
     else:
@@ -206,9 +241,12 @@ def space_skip(env: dict, policy, app_dirs=()):
     return skip
 
 
-def system_skip(env: dict, policy, roots: list[str] | None = None):
+def system_skip(env: dict, policy, roots: list[str] | None = None, accounts: list[str] | tuple = ()):
     """Paths the personal-file tools skip: system folders, app data, user exclusions, and
-    folders programs manage themselves (caches, node_modules, chat storage...) below the chosen roots."""
+    folders programs manage themselves (caches, node_modules, chat storage...) below the chosen roots.
+
+    ``accounts``: other accounts' folders to look through as well (other_account_roots); without them every
+    account but the current one is skipped. Their AppData is skipped like the user's own."""
     bases = [env.get(k) for k in ('SystemRoot', 'ProgramFiles', 'ProgramFiles(x86)', 'ProgramData', 'LOCALAPPDATA',
                                   'APPDATA', 'LOCALLOW')]
     home = env.get('USERPROFILE')
@@ -219,7 +257,7 @@ def system_skip(env: dict, policy, roots: list[str] | None = None):
     # their confirmed locations and the ancestors needed to reach them, while
     # keeping sibling accounts outside the scan. Broad drive roots are not a
     # statement of profile ownership, and must never join this list.
-    personal = [p for p in (home, env.get('PUBLIC')) if p] + personal_roots(env, {})
+    personal = [p for p in (home, env.get('PUBLIC')) if p] + personal_roots(env, {}) + list(accounts)
     user_parents = set(policy.users_dirs)
     # Unlike deletion, scanning may enter a container that holds protected
     # children. Block only the forbidden subtree itself, never its ancestors.
@@ -616,11 +654,13 @@ class PlanBuilder:
             if f['kind'] == 'empty_folders':
                 # nothing to free: one item for all of them instead of a row per folder
                 folders = [x['path'] for x in f['files']]
+                owners = sorted({x['account'] for x in f['files'] if x.get('account')})
                 self.add({'id': 'empty:' + f['id'], 'kind': 'paths', 'group': 'review', 'category': f['kind_label'],
                           'finding': f['id'], 'finding_kind': f['kind'], 'title': f'{len(folders)} 个空文件夹', 'size': 0,
                           'count': 0, 'what': '', 'advice': f['advice'], 'why': f['reason'],
                           'effect': '不释放空间，只是更整洁。', 'action': 'recycle',
                           'source': 'insight', 'confidence': f['confidence'], 'paths': folders, 'personal': True,
+                          'account': '、'.join(owners) if owners else None,
                           'score': KIND_SCORE['empty_folders'], 'basis': ['里面没有任何文件（包括子文件夹）']})
                 continue
             files = [x for x in f['files'] if x.get('remove') or f['kind'] in ('stale_large', 'old_downloads',
@@ -646,7 +686,7 @@ class PlanBuilder:
                     'effect': '', 'action': 'recycle', 'source': 'insight',
                     'confidence': f['confidence'] if x.get('remove') else min(f['confidence'], 0.4),
                     'paths': [x['path']], 'ai': ai, 'personal': True, 'score': with_ai(base_score, ai, bool(question)),
-                    'basis': basis})
+                    'account': x.get('account'), 'basis': basis})
 
     def add_duplicates(self, dups: dict | None, dup_ai: dict | None = None):
         """One item per group of identical files: keep what is (or may be) in use, offer the rest. Each copy's
@@ -908,7 +948,7 @@ def run(backend, job, options: dict | None = None) -> dict:
     settings = backend.settings.get()
     opts = {**settings.get('checkup', {}), **{k: bool(v) for k, v in (options or {}).items()
                                             if k in ('space_scan', 'other_drives', 'duplicates', 'cross_drive_duplicates',
-                                                     'use_ai', 'apps_services')}}
+                                                     'use_ai', 'apps_services', 'other_accounts')}}
     if 'selected_drives' in (options or {}) and (options['selected_drives'] is None or isinstance(options['selected_drives'], list)):
         opts['selected_drives'] = options['selected_drives']
     with_apps = bool(opts.get('apps_services', True))
@@ -977,10 +1017,16 @@ def run(backend, job, options: dict | None = None) -> dict:
         ready('space', 'large')
 
     broad_roots = insights_roots(env, settings, drives, whole_drives=whole_drives)
+    # other accounts' personal files: only for an administrator who asked; 「我的文件」 alone looks there (their
+    # files are never auto-ticked, never sent to a model, and the duplicate search and space totals leave them out)
+    accounts = other_account_roots(env) if opts.get('other_accounts') and backend.admin else []
+    opts['other_accounts'] = bool(opts.get('other_accounts'))
+    mine_roots = insights_roots(env, settings, drives, whole_drives=whole_drives, accounts=accounts)
     stage('insights')
     ins = Insights(env, settings, apps=backend.apps).collect(
-        broad_roots, skip=system_skip(env, policy, broad_roots), cancel=job.cancel,
-        container_roots=personal_roots(env, {}) + [d['root'] for d in drives],
+        mine_roots, skip=system_skip(env, policy, mine_roots, accounts), cancel=job.cancel,
+        container_roots=personal_roots(env, {}) + [d['root'] for d in drives] + account_containers(accounts),
+        accounts=accounts,
         progress=lambda p: part(None, detail=p.get('current', ''), count=f'已看过 {p.get("files", 0):,} 个文件'))
     findings = ins.findings()
     backend.insights = {'findings': findings, 'stats': ins.stats, 'roots': ins.roots, 'time': time.time()}
@@ -1142,7 +1188,9 @@ def run(backend, job, options: dict | None = None) -> dict:
     third_party = [s for s in services_list if s['kind'] == 'third_party']
     plan = builder.plan({'ai': ai_info, 'options': opts,
                          'personal_scan': {'truncated': bool(ins.stats.get('truncated')),
-                                           'limit': ins.stats.get('limit'), 'files': ins.stats.get('files', 0)},
+                                           'limit': ins.stats.get('limit'), 'files': ins.stats.get('files', 0),
+                                           'accounts': ins.stats.get('accounts', []),
+                                           'accounts_denied': ins.stats.get('accounts_denied', [])},
                          'coverage': {'space': scan.stats if scan else None,
                                       'junk': {'rules': len(junk_rows), 'unavailable': sum(bool(r.get('error') or r.get('scope_blocked')) for r in junk_rows)},
                                       'startup': {'count': len(startup_items), 'error': startup_error, 'ai_count': len(startup_ai)},

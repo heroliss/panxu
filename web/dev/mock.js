@@ -109,9 +109,9 @@
 
   const settings = { theme: 'system', ai: { preset: 'deepseek', base_url: 'https://api.deepseek.com', model: 'deepseek-flash', protocol: 'openai',
     json_mode: true, thinking: 'off', anonymize_paths: true, send_file_content: false, max_requests: 8, min_dir_mb: 200, timeout: 120 },
-  checkup: { space_scan: true, other_drives: true, selected_drives: null, duplicates: true, cross_drive_duplicates: true, apps_services: true,
+  checkup: { space_scan: true, other_drives: true, selected_drives: null, duplicates: true, cross_drive_duplicates: true, apps_services: true, other_accounts: false,
     use_ai: true, ai_scopes: { space: true, files: true, duplicates: true, startup: true, apps: true, services: true }, auto_threshold: 7 },
-  insights: { stale_days: 365, large_mb: 100, download_days: 180 },
+  insights: { stale_days: 365, large_mb: 100, download_days: 180, other_accounts: false },
   duplicates: { min_size_mb: 1 }, large_files: { min_size_mb: 100 }, excluded_paths: [], extra_personal_paths: ['D:\\资料'] };
   let hasKey = true;
   let mockAIState = 'untested';
@@ -203,6 +203,8 @@
       why: '已安装：Microsoft Visual Studio Code (User)', paths: [U + '\\Downloads\\VSCodeUserSetup-x64-1.95.3.exe'] }),
     P({ id: 'file:crdl', category: '没有下载完的文件', title: '电影.mkv.crdownload', size: 702 * MB, count: 1, source: 'insight', confidence: 0.9, personal: true,
       why: '30 天前中断', paths: [U + '\\Downloads\\电影.mkv.crdownload'] }),
+    P({ id: 'file:other', category: '没有下载完的文件', title: '动画片合集.mp4.crdownload', size: 880 * MB, count: 1, source: 'insight', confidence: 0.9, personal: true,
+      account: '家人', why: '75 天前中断', paths: ['C:\\Users\\家人\\Downloads\\动画片合集.mp4.crdownload'] }),
     P({ id: 'file:thesis', category: '同一文件的多个版本', title: '毕业论文_最终版 - 副本.docx', size: 1.7 * MB, count: 1, source: 'insight', confidence: 0.85, personal: true,
       why: '和「毕业论文_最终版.docx」内容完全相同', paths: [U + '\\Documents\\毕业论文_最终版 - 副本.docx'] }),
     P({ id: 'dup:1', category: '重复文件', title: '截图 2026-03-01 101530.png 等 3 份', size: 3 * MB, count: 1, source: 'dup', confidence: 0.9, personal: true,
@@ -272,7 +274,8 @@
   const findings = [
     { id: 'incomplete', kind: 'incomplete_download', kind_label: '没有下载完的文件', advice: '浏览器或下载工具中断后留下的半成品，无法直接打开。确认不再继续下载后可以删除。',
       title: '2 个没有下载完的文件', reason: '扩展名表明下载没有完成，而且已经超过 3 天没有继续。', confidence: 0.9,
-      files: [F(U + '\\Downloads\\电影.mkv.crdownload', 702 * MB, 30, '30 天前中断', true, { logical_size: 20 * GB }), F(U + '\\Downloads\\年度报告.pdf.part', 12 * MB, 45, '45 天前中断', true)] },
+      files: [F(U + '\\Downloads\\电影.mkv.crdownload', 702 * MB, 30, '30 天前中断', true, { logical_size: 20 * GB }), F(U + '\\Downloads\\年度报告.pdf.part', 12 * MB, 45, '45 天前中断', true),
+        F('C:\\Users\\家人\\Downloads\\动画片合集.mp4.crdownload', 880 * MB, 75, '75 天前中断', true, { account: '家人' })] },
     { id: 'installers', kind: 'installer_installed', kind_label: '已安装程序的安装包', advice: '程序已经装好，安装包一般用不到了。需要重装时可以去官网下载最新版。',
       title: '3 个已安装程序的安装包', reason: '安装包对应的程序在「已安装的应用」中能找到。', confidence: 0.85,
       files: [F(U + '\\Downloads\\WeChatSetup_3.9.12.17.exe', 186 * MB, 200, '已安装：微信', true, { ai: { verdict: 'delete', verdict_label: '可以删除', what: '微信安装包', reason: '微信已安装，安装包不再需要' } }),
@@ -289,12 +292,19 @@
       title: '2 个很久没动过的大文件', reason: '大于 100 MB，且超过 365 天没有修改。', confidence: 0.4,
       files: [F(U + '\\Downloads\\Ubuntu-24.04.1-desktop-amd64.iso', 5.9 * GB, 700, '1.9 年没有修改过，系统镜像可以随时重新下载', false),
         F(U + '\\Videos\\2019 家庭聚会.mp4', 2.4 * GB, 2400, '6.6 年没有修改过，如果是珍贵的视频可以移到移动硬盘', false, { category: 'video' })] },
+    { id: 'ver-resume', kind: 'name_versions', kind_label: '同一文件的多个版本', advice: '名字相近、像是同一份文件的不同版本或副本。通常只需要保留最新、最完整的一份。',
+      title: '「简历_2025」等 2 个版本', reason: '2 个文件名字只差日期：可能是「简历」的不同版本，也可能是不同时期各自的文件，看过内容再决定。', confidence: 0.45,
+      files: [F(U + '\\Documents\\简历_2025.docx', 0.3 * MB, 330, '最新的一份（名字里的日期最晚）', false), F(U + '\\Documents\\简历_2024.docx', 0.3 * MB, 700, '日期较早的一份', false)] },
+    { id: 'downloads', kind: 'old_downloads', kind_label: '下载文件夹里的旧文件', advice: '下载文件夹常被当作临时中转站，这些文件放了很久。看看哪些还需要，需要的移到合适的文件夹。',
+      title: '下载文件夹里 9 个放了很久的文件', reason: '在下载文件夹里超过 180 天。', confidence: 0.3,
+      files: ['会议录像 2024-03.mp4', '培训材料.zip', '产品手册 v2.pdf', '样片素材.mov', '报价单 2023.xlsx', '字体包.7z', '壁纸合集.rar', '驱动备份.zip', '读书笔记.epub']
+        .map((name, i) => F(U + '\\Downloads\\' + name, (900 - i * 95) * MB, 200 + i * 37, `${200 + i * 37} 天前下载`, false)) },
     { id: 'empty', kind: 'empty_folders', kind_label: '空文件夹', advice: '这些文件夹里什么都没有，删除不会丢失任何内容。', title: '2 个空文件夹',
       reason: '里面没有任何文件（包括子文件夹）。', confidence: 0.95,
       files: [F(U + '\\Desktop\\新建文件夹', 0, 0, '空文件夹', true, { mtime: 0, category: 'folder' }), F(U + '\\Desktop\\新建文件夹 (2)', 0, 0, '空文件夹', true, { mtime: 0, category: 'folder' })] },
   ].map((f) => Object.assign(f, { count: f.files.length, size: f.files.reduce((s, x) => s + x.size, 0),
     logical_size: f.files.reduce((s, x) => s + (x.logical_size === undefined ? x.size : x.logical_size), 0) }));
-  const KIND_SCORE = { incomplete_download: 90, installer_installed: 85, name_versions: 35, stale_large: 30, empty_folders: 30 };
+  const KIND_SCORE = { incomplete_download: 90, installer_installed: 85, name_versions: 35, stale_large: 30, old_downloads: 25, empty_folders: 30 };
   for (const f of findings) {
     for (const x of f.files) {
       x.score = f.kind === 'name_versions' ? (x.note.startsWith('最新') || x.note.startsWith('与其他') ? 5 : x.remove ? 85 : 35) : KIND_SCORE[f.kind];
@@ -307,16 +317,20 @@
   let insights = null;
   const personalRoots = [U + '\\Desktop', U + '\\Documents', U + '\\Downloads', U + '\\Pictures', U + '\\Videos', U + '\\Music',
     'D:\\资料', U, 'C:\\Users\\Public', 'C:\\资料', 'D:\\', 'E:\\'];
-  function personalResult(roots, cloudSkipped = 0) {
-    const chosen = Array.isArray(roots) ? roots : personalRoots;
+  function personalResult(roots, cloudSkipped = 0, withAccounts = settings.insights.other_accounts) {
+    const chosen = Array.isArray(roots) ? roots : withAccounts ? [...personalRoots.slice(0, 9), 'C:\\Users\\家人', ...personalRoots.slice(9)] : personalRoots;
     const inScope = (path) => chosen.some((folder) => path.toLowerCase() === folder.toLowerCase()
       || path.toLowerCase().startsWith(folder.replace(/\\$/, '').toLowerCase() + '\\'));
     const rows = Array.isArray(roots) ? findings.map((finding) => {
       const files = finding.files.filter((file) => inScope(file.path));
       return { ...finding, files, count: files.length, size: files.reduce((sum, file) => sum + file.size, 0),
         logical_size: files.reduce((sum, file) => sum + (file.logical_size === undefined ? file.size : file.logical_size), 0) };
-    }).filter((finding) => finding.files.length) : findings;
-    return { findings: rows, stats: { files: Array.isArray(roots) ? 120 : 18233, dirs: Array.isArray(roots) ? 18 : 3061,
+    }).filter((finding) => finding.files.length) : findings.map((finding) => {
+      // other accounts' files only when asked for
+      const files = finding.files.filter((file) => withAccounts || !file.account);
+      return { ...finding, files, count: files.length, size: files.reduce((sum, file) => sum + file.size, 0) };
+    });
+    return { findings: rows, stats: { accounts: withAccounts && !Array.isArray(roots) ? ['家人'] : [], accounts_denied: [], files: Array.isArray(roots) ? 120 : 18233, dirs: Array.isArray(roots) ? 18 : 3061,
       bytes: rows.reduce((sum, finding) => sum + finding.size, 0), cloud_skipped: cloudSkipped,
       seconds: 3, roots: chosen, truncated: false, limit: 400000 }, roots: chosen, time: now };
   }
@@ -362,10 +376,10 @@
       return job(40, () => {
       const t = settings.checkup.auto_threshold ?? 7;
       const scopeOf = (it) => ({ startup: 'startup', app: 'apps', service: 'services' }[it.kind] || 'space');
-      const chosen = planItems.filter((it) => (opts.duplicates !== false || it.kind !== 'dup')
+      const chosen = planItems.filter((it) => (opts.duplicates !== false || it.kind !== 'dup') && (!it.account || opts.other_accounts)
         && (opts.apps_services !== false || (it.kind !== 'app' && it.kind !== 'service'))
         && (it.source !== 'ai' || (hasKey && PX.checkupAIEnabled(opts) && opts.ai_scopes?.[scopeOf(it)] !== false))
-        && !(it.paths || []).some((p) => !p.startsWith(U) && !roots.some((r) => p.startsWith(r))));
+        && !(it.paths || []).some((p) => !it.account && !p.startsWith(U) && !roots.some((r) => p.startsWith(r))));
       plan = { id: 'p' + Date.now(), created: now, threshold: t, options: opts, items: decide(JSON.parse(JSON.stringify(chosen)), t),
         groups: planGroups, ai: { used: hasKey && PX.checkupAIEnabled(opts), enabled: PX.checkupAIEnabled(opts), errors: [], usage: { requests: 3 } } };
       plan.ai.scopes = hasKey && PX.checkupAIEnabled(opts) ? PX.checkupAIScopes.filter(([key]) => opts.ai_scopes?.[key] !== false
@@ -373,8 +387,9 @@
       startupAI = plan.ai.scopes.includes('startup') ? Object.fromEntries(startup.filter((item) => item.enabled).map((item) => [item.id,
         { what: item.display_name, suggestion: 'keep', reason: '需要时可以在这里单独复核' }])) : {};
       plan.summary = summarize();
-      insights = personalResult(null, 12);
-      plan.personal_scan = { truncated: insights.stats.truncated, limit: insights.stats.limit, files: insights.stats.files };
+      insights = personalResult(null, 12, !!opts.other_accounts);
+      plan.personal_scan = { truncated: insights.stats.truncated, limit: insights.stats.limit, files: insights.stats.files,
+        accounts: insights.stats.accounts, accounts_denied: [] };
       plan.coverage = { whole_drives: roots,
         junk: { rules: rules.length, unavailable: 1 }, startup: { count: startup.length, error: '', ai_count: Object.keys(startupAI).length },
         apps: { residues: opts.space_scan !== false, folders: plan.items.filter((i) => ['软件残留', '旧版本数据'].includes(i.category)).length, registry: 0, truncated: false,
@@ -399,6 +414,24 @@
     });
     },
     plan: () => { if (plan) plan.summary = summarize(); return plan; },
+    // like Backend.m_nav_summary: only what has results
+    nav_summary: () => {
+      const out = {};
+      const pending = plan ? plan.items.filter((i) => i.status === 'pending') : [];
+      if (plan) {
+        const junk = pending.filter((i) => i.kind === 'rule');
+        out.junk = { size: junk.filter((i) => i.selected).reduce((s, i) => s + (i.size || 0), 0), found: junk.reduce((s, i) => s + (i.size || 0), 0) };
+        if (plan.coverage.space) { out.space = { size: 389 * GB }; out.large = {}; }
+        if (plan.coverage.duplicates) out.dups = { size: 3 * MB, count: 1 };
+        out.apps = { count: pending.filter((i) => i.kind === 'app').length, size: 0 };
+        out.startup = { count: pending.filter((i) => i.kind === 'startup' || i.kind === 'service').length };
+      }
+      if (insights) {
+        const files = insights.findings.flatMap((f) => f.files);
+        out.mine = { size: files.reduce((s, x) => s + x.size, 0), count: files.length };
+      }
+      return out;
+    },
     hibernate_set: ({ enabled }) => ({ enabled, freed: enabled ? 0 : 12.7 * GB }),
     // the first re-check finds Edge closed
     running_check: () => {
@@ -504,7 +537,7 @@
     sandbox_restore: ({ item_id }) => { const i = recycled.findIndex((r) => r.id === item_id); const [r] = recycled.splice(i, 1); sandbox.recycle_count -= 1; return r.original; },
     sandbox_reset: () => sandbox,
     drives: () => handlers.init().drives,
-    init: () => ({ version: '2.1.0', admin: !!sandbox, windows: true, settings, has_key: hasKey, sandbox,
+    init: () => ({ version: '2.2.0', admin: !!sandbox || location.hash.includes('admin'), other_accounts: ['家人'], windows: true, settings, has_key: hasKey, sandbox,
       plan_groups: planGroups, checkup_stages: stages,
       presets: [{ id: 'deepseek', name: 'DeepSeek', base_url: 'https://api.deepseek.com', protocol: 'openai', models: ['deepseek-flash', 'deepseek-v4-pro'], json_mode: true, thinking_toggle: true, key_url: 'x' },
         { id: 'kimi', name: 'Kimi（月之暗面）', base_url: 'https://api.moonshot.cn/v1', protocol: 'openai', models: [], json_mode: true },

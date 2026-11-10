@@ -197,6 +197,72 @@ class PersonalScopeTest(TempDirTest):
         self.assertIn(extra, roots)
         self.assertTrue(checkup.system_skip(self.env, self.policy(), roots)(extra))
 
+    def test_other_accounts_are_listed_without_system_profiles_or_the_current_user(self):
+        bob = self.directory('C/Users/bob')
+        for name in ('Default', 'All Users', 'defaultuser0', '.NET v4.5'):
+            self.directory('C/Users/' + name)
+        self.make('C/Users/desktop.ini')
+        self.assertEqual(checkup.other_account_roots(self.env), [bob])
+        self.assertEqual(checkup.other_account_roots({}), [])
+        roots = checkup.insights_roots(self.env, {}, self.drives, accounts=[bob])
+        keys = [paths.key(p) for p in roots]
+        self.assertLess(keys.index(paths.key(self.public)), keys.index(paths.key(bob)))
+        self.assertLess(keys.index(paths.key(bob)), keys.index(paths.key(self.c)))
+
+    def test_other_accounts_files_are_looked_at_only_when_asked_and_marked(self):
+        bob = self.directory('C/Users/bob')
+        theirs = self.make('C/Users/bob/Downloads/movie.mkv.crdownload', 2 * 1024 ** 2, age_days=30)
+        app_data = self.make('C/Users/bob/AppData/Local/App/big.part', 2 * 1024 ** 2, age_days=30)
+        mine = self.make('C/Users/alice/Downloads/mine.part', 2 * 1024 ** 2, age_days=30)
+        policy = self.policy()
+        # by default every other account stays out, whole disk or not
+        roots = checkup.insights_roots(self.env, {}, self.drives)
+        plain = Insights(self.env).collect(roots, skip=checkup.system_skip(self.env, policy, roots),
+                                           container_roots=list(self.shell.values()) + [self.c, self.d])
+        self.assertEqual([f.path for f in plain.files], [mine])
+        self.assertEqual(plain.stats['accounts'], [])
+        # asked for: the account's own files, never its AppData
+        roots = checkup.insights_roots(self.env, {}, self.drives, accounts=[bob])
+        asked = Insights(self.env).collect(roots, skip=checkup.system_skip(self.env, policy, roots, [bob]),
+                                           container_roots=list(self.shell.values()) + [self.c, self.d]
+                                           + checkup.account_containers([bob]), accounts=[bob])
+        self.assertEqual(sorted(f.path for f in asked.files), sorted([mine, theirs]))
+        self.assertNotIn(app_data, [f.path for f in asked.files])
+        self.assertEqual(asked.stats['accounts'], ['bob'])
+        rows = {x['path']: x for finding in asked.findings() for x in finding['files']}
+        self.assertEqual(rows[theirs].get('account'), 'bob')
+        self.assertNotIn('account', rows[mine])
+        # in the plan: marked, personal, never ticked whatever the threshold, Recycle Bin only
+        builder = checkup.PlanBuilder(policy, threshold=0)
+        builder.add_insights(asked.findings())
+        item = next(i for i in builder.items if theirs in i['paths'])
+        self.assertEqual(item['account'], 'bob')
+        self.assertTrue(item['personal'])
+        self.assertFalse(item['eligible'])
+        self.assertFalse(item['selected'])
+        self.assertEqual(item['action'], 'recycle')
+        self.assertIsNone(item['blocked'])
+        self.assertTrue(item['caution'])
+
+    def test_any_accounts_shell_folders_cannot_be_removed_themselves(self):
+        policy = self.policy()
+        for folder in ('Music', 'Saved Games', 'Documents', 'AppData'):
+            self.assertTrue(policy.reason(self.directory('C/Users/bob/' + folder)), folder)
+        self.assertTrue(policy.reason(self.directory('C/Users/alice/Contacts')))
+        self.assertTrue(policy.reason(self.directory('C/Users/bob')))
+        self.assertIsNone(policy.reason(self.directory('C/Users/bob/Documents/old')))
+        # an empty Music folder of another account is not offered as 「空文件夹」 to act on
+        bob = os.path.join(self.c, 'Users', 'bob')
+        roots = [bob]
+        result = Insights(self.env).collect(roots, skip=checkup.system_skip(self.env, policy, roots, [bob]),
+                                            container_roots=checkup.account_containers([bob]), accounts=[bob])
+        empties = [x for f in result.findings() if f['kind'] == 'empty_folders' for x in f['files']]
+        self.assertTrue(empties)
+        self.assertTrue(all(x.get('account') == 'bob' for x in empties))
+        blocked = {os.path.basename(x['path']) for x in empties if policy.reason(x['path'])}
+        self.assertIn('Music', blocked)
+        self.assertNotIn('old', blocked)
+
     def test_expanded_disk_files_still_require_user_selection_even_at_zero_threshold(self):
         candidate = self.make('D/Personal/unfinished.part', 2 * 1024 ** 2, age_days=7)
         policy = self.policy()

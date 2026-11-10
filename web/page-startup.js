@@ -150,8 +150,7 @@
           h('div.cell-main', h('div.name', it.display_name), h('div.sub', [it.publisher || '未知发布者', it.source_label].join('，')),
             aiNote(state.ai.startup[it.id]))),
         h('div.sub', { title: PX.displayText(it.command) }, (it.exists ? '' : '文件不存在：') + PX.displayText(it.command)),
-        h('div.row-actions', it.exists ? h('button.btn.quiet.small', { type: 'button', title: '打开位置',
-          onclick: () => PX.reveal(it.location) }, PX.icon('folder')) : PX.tag('文件不存在', 'warn'),
+        h('div.row-actions', it.exists ? PX.revealButton(it.location) : PX.tag('文件不存在', 'warn'),
         h('button.btn.quiet.small', { type: 'button', onclick: () => PX.ask({ type: 'startup', id: it.id }, it.display_name) }, PX.icon('spark'), '问 AI'))));
     }
   }

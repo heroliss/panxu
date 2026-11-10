@@ -70,6 +70,7 @@
     plus: '<path d="M12 5v14M5 12h14"/>',
     search: '<circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/>',
     apps: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
+    user: '<circle cx="12" cy="8" r="4"/><path d="M4 21c0-4.4 3.6-7 8-7s8 2.6 8 7"/>',
     drive: '<rect x="3" y="13" width="18" height="7" rx="2"/><path d="M5 13l2.5-8h9L19 13M16.5 16.5h.01"/>',
   };
   PX.icon = function (name, cls) {
@@ -227,7 +228,8 @@
       { page: 'space', name: '空间分析 · 大文件', status: !space ? '未检查' : space.incomplete ? '有跳过项' : '已检查',
         note: space ? '大文件直接复用这次空间扫描，无需重扫' : '本次未启用空间扫描', skipped: !space, extra: ['large', '大文件'] },
       { page: 'mine', name: '我的文件', status: personal.truncated ? '部分完成' : '已检查',
-        note: `已查看 ${PX.fmt.count(personal.files || plan.stats?.insight_files || 0)} 个文件 · 个人文件由你决定` },
+        note: `已查看 ${PX.fmt.count(personal.files || plan.stats?.insight_files || 0)} 个文件 · 个人文件由你决定`
+          + ((personal.accounts || []).length ? ` · 含其他账户：${personal.accounts.join('、')}` : '') },
       { page: 'dups', name: '重复文件', status: opts.duplicates === false ? '未检查' : dup?.truncated ? '部分完成' : '已检查',
         note: opts.duplicates === false ? '本次未启用查重' : opts.cross_drive_duplicates === false ? '只比较同一磁盘内的副本' : '包括不同磁盘之间的副本',
         skipped: opts.duplicates === false },
@@ -256,6 +258,30 @@
       ? { page: 'apps', name: '应用', status: apps.error ? '有跳过项' : apps.residues ? '已检查' : '部分覆盖', action: '查看应用', extra: ['residues', '软件残留'], note: parts.join('、') }
       : { page: 'residues', name: '应用', status: '部分覆盖', action: '查看残留', extra: ['apps', '应用列表'], note: parts.join('、') + '；卸载建议需单独分析' };
   }
+  // What the navigation says next to a tool: [mark, tooltip, kind]. mark: a short figure, true (checked, nothing
+  // to put a number on) or null (no results yet). Only 垃圾清理's figure is space you get back (green); the others
+  // are 「found, worth a look」 and stay quiet. ``junkTicked``: the junk page's own total of what is ticked.
+  PX.navMark = (id, info, junkTicked) => {
+    if (!info) return [null, '', ''];
+    const size = (n) => (n >= 1024 * 1024 ? PX.fmt.bytes(n) : null);
+    const items = (n) => (n ? `${n} 项` : null);
+    if (id === 'junk') {
+      const ticked = junkTicked !== undefined && junkTicked !== null ? junkTicked : info.size;
+      return size(ticked) ? [size(ticked), `已检查 · 建议清理 ${size(ticked)}` + (info.found > ticked ? `，共发现 ${PX.fmt.bytes(info.found)}` : ''), 'gain']
+        : [true, size(info.found) ? `已检查 · 发现 ${size(info.found)}，都需要你确认` : '已检查 · 没有发现可清理的垃圾', ''];
+    }
+    if (id === 'mine') return size(info.size) ? [size(info.size), `已整理 · ${info.count} 个文件值得看看，共 ${size(info.size)}`, '']
+      : [true, info.count ? `已整理 · ${info.count} 项值得看看` : '已整理 · 没有需要注意的文件', ''];
+    if (id === 'dups') return size(info.size) ? [size(info.size), `已查找 · ${info.count} 组重复文件，多余的副本占 ${size(info.size)}`, '']
+      : [true, info.count ? `已查找 · ${info.count} 组重复文件` : '已查找 · 没有发现重复文件', ''];
+    if (id === 'apps') return items(info.count) ? [items(info.count), `已检查 · ${info.count} 项可以考虑卸载或清理残留` + (size(info.size) ? `（残留 ${size(info.size)}）` : ''), '']
+      : [true, '已检查 · 没有卸载或残留方面的建议', ''];
+    if (id === 'startup') return items(info.count) ? [items(info.count), `已检查 · ${info.count} 项建议不必开机自动运行`, '']
+      : [true, '已检查 · 没有需要调整的启动项或服务', ''];
+    if (id === 'space') return [true, '已扫描' + (size(info.size) ? ` · 统计了 ${size(info.size)}` : ''), ''];
+    if (id === 'large') return [true, '已有结果 · 来自空间扫描', ''];
+    return [null, '', ''];
+  };
   PX.checkupAIReady = (init) => !!(init.has_key || init.settings.ai.preset === 'ollama') && !!(init.settings.ai.model || '').trim();
   PX.checkupAIEnabled = (options = {}) => options.use_ai !== false && PX.checkupAIScopes.some(([key]) =>
     options.ai_scopes?.[key] !== false && (!PX.checkupScopeParent[key] || options[PX.checkupScopeParent[key][0]] !== false));
@@ -578,6 +604,38 @@
       onclick: (e) => e.stopPropagation(), onchange: (e) => onset(e.target.checked) });
     box.indeterminate = ticked > 0 && !all;
     return box;
+  };
+  // ---- long lists fold the same way on every page: up to FOLD_SHOW rows, the rest behind 「显示其余 N 项」 (and
+  // 「收起」 once open). A list only a couple of rows longer is shown whole: hiding two rows saves nothing.
+  PX.FOLD_SHOW = 5;
+  PX.FOLD_SLACK = 2;
+  PX.foldCount = (total, open) => (open || total <= PX.FOLD_SHOW + PX.FOLD_SLACK ? total : PX.FOLD_SHOW);
+  // the button under a folded (or unfolded) list, or null when the list is short; ``toggle(open)``
+  PX.foldButton = function (total, open, toggle, unit) {
+    if (total <= PX.FOLD_SHOW + PX.FOLD_SLACK) return null;
+    return h('button.fold', { type: 'button', 'aria-expanded': open ? 'true' : 'false',
+      onclick: (e) => { e.stopPropagation(); toggle(!open); } },
+    PX.icon('chev', 'fold-chev'), open ? '收起' : `显示其余 ${total - PX.FOLD_SHOW} ${unit || '项'}`);
+  };
+  // the buttons at the end of a row, each in its own slot so that they line up down the list whichever a row has:
+  // 打开 (files that do not run code) · 在资源管理器中显示 · 问 AI. ``ask``: a click handler, or null
+  PX.rowActions = function ({ path, isDir, ask, extra }) {
+    return h('div.row-actions.slots',
+      h('span.slot', path && !isDir ? PX.openButton(path) : null),
+      h('span.slot', path ? PX.revealButton(path) : null),
+      h('span.slot.wide', ask ? h('button.btn.quiet.small', { type: 'button', title: '问 AI',
+        onclick: (e) => { e.stopPropagation(); ask(); } }, PX.icon('spark'), '问 AI') : null),
+      extra || null);
+  };
+  // a file that belongs to another account on this PC (shown to an administrator who asked for it)
+  PX.accountTag = (name) => (name ? h('span.tag.account', { title: `这是账户「${name}」的文件，不是你的。只由你手动勾选，不会发送给 AI` },
+    PX.icon('user'), name) : null);
+  // the header of a card that folds away: a click (or Enter / Space) on it toggles; a checkbox inside is its own
+  PX.foldHead = function (spec, open, toggle, ...children) {
+    return h(spec + '.gc-fold', { role: 'button', tabindex: '0', 'aria-expanded': open ? 'true' : 'false',
+      onclick: (e) => { if (!e.target.closest('input, button, a')) toggle(!open); },
+      onkeydown: (e) => { if ((e.key === 'Enter' || e.key === ' ') && e.target === e.currentTarget) { e.preventDefault(); toggle(!open); } } },
+    children, PX.icon('chev', 'gc-chev'));
   };
   PX.switchEl = function (checked, onchange, disabled) {
     const input = h('input', { type: 'checkbox', checked: !!checked, disabled: !!disabled, onchange });

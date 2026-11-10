@@ -190,6 +190,22 @@ PX.sel.paths.add('D:\\copy.png');
 assert.ok(PX.sel.has(copies));
 PX.sel.set(copies, false);
 assert.ok(!PX.sel.paths.has('E:\\copy.png'));
+// Long lists fold by one rule on every page: five rows, unless the list is only a couple longer.
+assert.strictEqual(PX.foldCount(5, false), 5);
+assert.strictEqual(PX.foldCount(PX.FOLD_SHOW + PX.FOLD_SLACK, false), 7);
+assert.strictEqual(PX.foldCount(8, false), PX.FOLD_SHOW);
+assert.strictEqual(PX.foldCount(8, true), 8);
+// Another account's file is the user's to tick, never the score's (it is personal, so only 「包括我的文件」 reaches it).
+assert.strictEqual(PX.scoreTick({ personal: true, account: '家人', score: 90, eligible: false }, 7, false), null);
+// The navigation marks a tool only when it has results; only junk's figure is green (space to get back).
+assert.deepStrictEqual(PX.navMark('mine', undefined), [null, '', '']);
+assert.deepStrictEqual(PX.navMark('junk', { size: 3 * 1024 ** 3, found: 5 * 1024 ** 3 }).filter((x, i) => i !== 1), ['3.0 GB', 'gain']);
+assert.strictEqual(PX.navMark('junk', { size: 3 * 1024 ** 3, found: 5 * 1024 ** 3 }, 1024 ** 3)[0], '1.0 GB');
+assert.strictEqual(PX.navMark('junk', { size: 0, found: 0 })[0], true);
+assert.strictEqual(PX.navMark('mine', { size: 2 * 1024 ** 3, count: 4 })[2], '');
+assert.strictEqual(PX.navMark('dups', { size: 10, count: 0 })[0], true);
+assert.strictEqual(PX.navMark('startup', { count: 2 })[0], '2 项');
+assert.strictEqual(PX.navMark('space', { size: 0 })[0], true);
 console.log('ui tests passed');
 // Elevation is another process: explicit shared choices must survive its UI initialization.
 PX.sel.rules.add('user_temp'); PX.sel.paths.add('D:\\keep.txt'); PX.sel.items.add('startup:sample');

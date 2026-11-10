@@ -392,12 +392,15 @@ class Insights:
         self.project_dirs: list[str] = []
         self.stats: dict = {}
         self.cancel = None
+        # other accounts' profile folders that were asked for (checkup.other_account_roots): their files are marked
+        self.accounts: list[tuple[str, str]] = []   # (folder, account name)
 
     # -- collection ------------------------------------------------------------------
     def collect(self, roots: list[str], skip=None, cancel=None, progress=None,
-                container_roots: list[str] | tuple = ()) -> 'Insights':
+                container_roots: list[str] | tuple = (), accounts: list[str] | tuple = ()) -> 'Insights':
         started = time.time()
         self.cancel = cancel
+        self.accounts = [(a, os.path.basename(a.rstrip('\\/'))) for a in accounts if a]
         self.files = []
         self.bundle_dirs = []
         self.program_dirs = []
@@ -499,6 +502,13 @@ class Insights:
                 detail['status'] = 'covered'
                 continue
             detail['status'] = 'scanned'
+            if paths.key(root) in {paths.key(a) for a, _ in self.accounts}:
+                try:   # another account's folder: say so when it cannot be read (not an administrator after all)
+                    with os.scandir(fsops.long_path(root)):
+                        pass
+                except OSError:
+                    detail['status'] = 'denied'
+                    continue
             for dirpath, files, dirs in fsops.walk_files(root, cancel):
                 k = paths.key(dirpath)
                 if k in visited:
@@ -621,6 +631,12 @@ class Insights:
                       'root_details': root_details, 'requested_roots': requested, 'dirs': directories,
                       'program_dirs': len(self.program_dirs), 'installed_program_dirs': installed_program_dirs,
                       'sandbox_dirs': sandboxes,
+                      'accounts': [name for folder, name in self.accounts
+                                   if any(d['status'] in ('scanned', 'covered') and paths.key(d['path']) == paths.key(folder)
+                                          for d in root_details)],
+                      'accounts_denied': [name for folder, name in self.accounts
+                                          if any(d['status'] == 'denied' and paths.key(d['path']) == paths.key(folder)
+                                                 for d in root_details)],
                       'truncated': truncated, 'limit': MAX_FILES}
         report(current, force=True)
         return self
@@ -641,14 +657,25 @@ class Insights:
                 x['score'] = file_score(f.kind, x)
         return [f.as_dict() for f in out]
 
+    def account_of(self, path: str) -> str | None:
+        """The other account whose folder ``path`` is in (None: the current user's, or nobody's)."""
+        for folder, name in self.accounts:
+            if paths.is_within(path, folder):
+                return name
+        return None
+
     def _age_days(self, rec: FileRec) -> float:
         return (self.now - rec.changed) / DAY
 
     def _file(self, rec: FileRec, note: str = '', remove: bool = False) -> dict:
-        return {'path': rec.path, 'name': rec.name, 'size': rec.disk_size, 'logical_size': rec.size,
-                'mtime': rec.mtime, 'note': note, 'remove': remove,
-                'age_days': max(0, self._age_days(rec)),
-                'category': rec.category}
+        out = {'path': rec.path, 'name': rec.name, 'size': rec.disk_size, 'logical_size': rec.size,
+               'mtime': rec.mtime, 'note': note, 'remove': remove,
+               'age_days': max(0, self._age_days(rec)),
+               'category': rec.category}
+        account = self.account_of(rec.path)
+        if account:
+            out['account'] = account
+        return out
 
     def _incomplete(self, claimed):
         rows = [r for r in self.files if os.path.splitext(r.name)[1].lower() in INCOMPLETE_EXTS
@@ -853,12 +880,15 @@ class Insights:
                         f'大于 {int(min_size / 1024 / 1024)} MB，且超过 {int(days)} 天没有修改。', 0.4)]
 
     def _downloads(self, claimed):
+        folders = [os.path.join(folder, 'Downloads') for folder, _ in self.accounts]
         try:
-            downloads = winapi.known_folder('downloads')
+            folders.insert(0, winapi.known_folder('downloads'))
         except OSError:
+            pass
+        if not folders:
             return []
         days = float(self.settings.get('download_days', 180))
-        rows = [r for r in self.files if paths.is_within(r.path, downloads) and paths.key(r.path) not in claimed
+        rows = [r for r in self.files if any(paths.is_within(r.path, d) for d in folders) and paths.key(r.path) not in claimed
                 and self._age_days(r) >= days and r.disk_size >= 1024 * 1024]
         if not rows:
             return []
@@ -870,7 +900,8 @@ class Insights:
         if not self.empty_dirs:
             return []
         files = [{'path': d, 'name': os.path.basename(d), 'size': 0, 'mtime': 0, 'note': '空文件夹', 'remove': True,
-                  'category': 'folder'} for d in self.empty_dirs[:500]]
+                  'category': 'folder', **({'account': self.account_of(d)} if self.account_of(d) else {})}
+                 for d in self.empty_dirs[:500]]
         return [Finding('empty', 'empty_folders', f'{len(files)} 个空文件夹', files, 0, '里面没有任何文件（包括子文件夹）。', 0.95)]
 
 
