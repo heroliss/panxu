@@ -1354,7 +1354,13 @@ def execute(backend, plan: dict, item_ids: list[str], job) -> dict:
             job.update(freed=s.bytes, detail=s.current or '移到回收站')
             backend.oplog.progress(pending, freed=s.bytes, done=s.files)
         try:
-            stats, recycled = fsops.recycle(unique, cancel=job.cancel, hwnd=winapi.find_window(APP_NAME), progress=on_progress)
+            # a Temp folder at the top of a drive holds many programs' leftovers: what nobody uses there still
+            # goes. Every other folder a running program uses is left whole (fsops.recycle).
+            mixed = {p for item, p in to_recycle if item['category'] == '其他临时目录'}
+            for item, _ in to_recycle:
+                item.pop('in_use', None)   # what an earlier run said; this run finds out again
+            stats, recycled = fsops.recycle(unique, cancel=job.cancel, hwnd=winapi.find_window(APP_NAME),
+                                            progress=on_progress, piecewise=mixed)
         except fsops.Cancelled:
             backend.oplog.drop(pending)  # stopped while sizing, before anything moved
             raise
@@ -1366,7 +1372,8 @@ def execute(backend, plan: dict, item_ids: list[str], job) -> dict:
         report['permanent'] = {'count': len(nuked), 'bytes': stats.permanent_bytes, 'paths': nuked[:50]}
         for f in stats.problems():
             report['failures'].append({'path': f.get('path'), 'reason': f.get('reason')})
-        report['skipped'] += stats.skipped()
+        titles = {paths.key(p): item['title'] for item, p in to_recycle}
+        report['skipped'] += [{**s, 'title': titles.get(paths.key(s['path']))} for s in stats.skipped()]
         in_use = {paths.key(s['path']): s for s in stats.skipped()}
         for item in {id(i): i for i, _ in to_recycle}.values():
             ok = [p for p in item['paths'] if paths.key(p) in gone or any(paths.is_within(p, g) for g in recycled)]
@@ -1390,7 +1397,12 @@ def execute(backend, plan: dict, item_ids: list[str], job) -> dict:
                 done(item, 'partial', f'{len(ok) + len(part)}/{len(item["paths"])} 项已移到回收站'
                      + (f'，{busy} 个文件正在使用' if busy else ''), freed=share)
             elif busy:
-                done(item, 'skipped', '正在被其他程序使用，已跳过')
+                # a running program is using it: nothing was touched. It stays in the plan as it was (still
+                # ticked), so that after closing the program 「执行」 simply does it -- no new check-up needed
+                names = sorted({n for p in item['paths'] for n in in_use.get(paths.key(p), {}).get('by', [])})
+                item['in_use'] = '「' + '、'.join(names[:3]) + ('」等' if len(names) > 3 else '」') + '正在使用' if names \
+                    else '正在被其他程序使用'
+                report['items'][item['id']] = {'status': 'held', 'note': item['in_use'], 'freed': None}
             else:
                 done(item, 'failed', '没有移到回收站')
         if recycled or stats.failed or stats.partial:

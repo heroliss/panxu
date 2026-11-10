@@ -413,7 +413,8 @@
     const problems = r.failures || [];
     // left alone because a program has them open: expected, said calmly and apart from what went wrong
     const skipped = r.skipped || [];
-    const busyFiles = skipped.reduce((n, s) => n + (s.left || 1), 0);
+    const users = [...new Set(skipped.flatMap((s) => s.by || []))];
+    const whole = skipped.filter((s) => s.path && !/其余/.test(s.reason || '')).length;   // left exactly as they were
     const ok = Object.values(r.items || {}).filter((x) => x.status === 'done' || x.status === 'partial').length;
     const card = c.appendChild(h('section.result-card' + (problems.length ? '.has-problems' : ''),
       h('div.rc-head', PX.icon(problems.length ? 'warn' : 'check'),
@@ -432,7 +433,9 @@
       const openList = state.open.has('skipped');
       card.appendChild(h('div.rc-problems.rc-skipped',
         h('div.rc-skip-line', PX.icon('info'),
-          h('span', h('b', `${fmt.count(busyFiles)} 个文件正在被程序使用，已跳过`), '　其余照常清理了。关掉相关程序后再体检一次，可以清理它们。'),
+          h('span', h('b', `${skipped.length} 项正在被程序使用，已跳过`),
+            users.length ? `（${users.slice(0, 4).join('、')}${users.length > 4 ? ' 等' : ''}）` : '',
+            whole ? '　正在使用的文件夹没有动，仍然勾着：关掉这些程序后再点「执行」即可，不用重新体检。' : '　其余照常清理了。'),
           h('button.btn.quiet.small', { type: 'button', 'aria-expanded': String(openList),
             onclick: () => { openList ? state.open.delete('skipped') : state.open.add('skipped'); draw(true); } },
           openList ? '收起' : `看是哪 ${skipped.length} 项`)),
@@ -636,6 +639,11 @@
     else if (it.blocked) {
       flags.appendChild(PX.tag(it.blocked, 'warn', 'lock'));
       if (it.blocked.startsWith('请先关闭')) flags.appendChild(PX.closedButton());
+    }
+    // the last cleanup left it alone because a running program was using it: close that, then 「执行」 again
+    if (it.in_use && it.status === 'pending') {
+      flags.appendChild(h('span.tag.warn', { title: '上次清理时它正在被使用，所以没有动。关掉这个程序后再点「执行」，不用重新体检。' },
+        PX.icon('lock'), '上次跳过：' + it.in_use));
     }
     if (it.ai && it.ai.verdict_label) flags.appendChild(PX.tag('AI：' + it.ai.verdict_label, it.ai.verdict === 'delete' ? 'good' : it.ai.verdict === 'keep' ? 'warn' : 'info', 'spark'));
     // one file or folder: a button to see it in Explorer right in the row

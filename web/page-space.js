@@ -102,7 +102,7 @@
       nuked.length ? PX.notice(`${nuked.length} 项太大，回收站放不下，你在 Windows 的提示里选了直接删除：已经彻底删除，不能从回收站还原。`, 'warn') : null,
       lines,
       skipped.length ? h('div', { style: { marginTop: '10px' } }, h('b', '正在被程序使用，已跳过：'),
-        h('span.small.muted', ' 关掉相关程序后可以再处理'),
+        h('span.small.muted', ' 它们没有动；关掉相关程序后可以再处理'),
         h('div.confirm-list', skipped.slice(0, 50).map((f) => h('div.row', h('div.name.mono-path', PX.displayPath(f.path)), h('div.small.muted', f.reason))))) : null,
       failures.length ? h('div', { style: { marginTop: '10px' } }, h('b', `${result.failed} 项没有完成：`),
         h('div.confirm-list', failures.slice(0, 50).map((f) => h('div.row', h('div.name.mono-path', f.path), h('div.small.muted', f.reason))))) : null);

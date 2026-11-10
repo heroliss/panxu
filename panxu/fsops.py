@@ -160,10 +160,22 @@ class DeleteStats:
     # are counted above; they are not among the failures (nothing went wrong: what is in use is skipped, as the
     # cleanup rules do) and not among the paths reported as gone.
     partial: dict = field(default_factory=dict)
+    # recycle(): what a running program is using and was therefore not touched at all: path -> program names
+    held: dict = field(default_factory=dict)
     # recycle(): the item being moved right now and how many are done, for a progress display
     current: str = ''
     done_items: int = 0
     total_items: int = 0
+
+    def hold(self, path: str, programs: list[str] | None = None):
+        """``path`` is left exactly as it is because a program is using it (recycle()): on record with the
+        program's name, counted as in use -- not as a failure."""
+        names = '、'.join(programs[:3]) + (' 等' if len(programs) > 3 else '') if programs else ''
+        self.in_use += 1
+        self.held[path] = list(programs or [])
+        if len(self.failures) < MAX_RECORDED_FAILURES:
+            self.failures.append({'path': path, 'in_use': True, 'by': list(programs or []),
+                                  'reason': f'「{names}」正在使用，已整个跳过' if names else '正在被其他程序使用，已整个跳过'})
 
     def fail(self, path: str, exc_or_reason):
         reason = exc_or_reason if isinstance(exc_or_reason, str) else error_reason(exc_or_reason)
@@ -186,23 +198,28 @@ class DeleteStats:
         self.permanent_bytes += other.permanent_bytes
         self.measured.update(other.measured)
         self.partial.update(other.partial)
+        self.held.update(other.held)
 
     def skipped(self) -> list[dict]:
         """What was left where it is because a program has it open -- not a failure: the folders that went
         except for such files (``partial``), and single files in use. {'path', 'reason', 'left'}."""
-        out = [{'path': path, 'left': info['left'],
-                'reason': f'{info["left"]} 个文件正在使用，已跳过；其余已移到回收站'} for path, info in self.partial.items()]
-        out += [{'path': f['path'], 'left': 1, 'reason': '正在使用，已跳过'} for f in self.failures
-                if f['reason'].endswith('正在被其他程序使用')]
+        out = [{'path': path, 'left': info['left'], 'by': [],
+                'reason': f'{info["left"]} 项正在使用，已跳过；其余已移到回收站'} for path, info in self.partial.items()]
+        out += [{'path': f['path'], 'left': 1, 'by': f.get('by', []),
+                 'reason': f['reason'] if f.get('in_use') else '正在使用，已跳过'} for f in self.failures if _is_in_use(f)]
         return out
 
     def problems(self) -> list[dict]:
         """The failures that are not just 「in use」 (see skipped)."""
-        return [f for f in self.failures if not f['reason'].endswith('正在被其他程序使用')]
+        return [f for f in self.failures if not _is_in_use(f)]
 
     def as_dict(self) -> dict:
         return {'files': self.files, 'dirs': self.dirs, 'bytes': self.bytes, 'failed': self.failed,
                 'in_use': self.in_use, 'failures': self.failures}
+
+
+def _is_in_use(failure: dict) -> bool:
+    return bool(failure.get('in_use')) or failure['reason'].endswith('正在被其他程序使用')
 
 
 class Cancelled(Exception):
@@ -432,12 +449,75 @@ def _arrived_in_bin(gone: list[str], since: float) -> set[str] | None:
 
 
 IN_USE = '正在被其他程序使用'
-# One shell call takes a whole batch, and stops at the first item it cannot move: a folder with one open file in
-# it (a cache of a program that is running) used to fail every item after it in the batch. So what a batch left
-# behind is tried again one by one, and a folder that still will not go is emptied piece by piece -- everything
-# except the files in use. Bounds for that: how deep, and how many shell calls one folder may take.
+# A program that is running may be using a folder it is asked to give up -- a cache it reads right now. Two
+# things were measured on a real PC:
+# * One shell call takes a whole batch and stops at the first item it cannot move: a folder with one locked file
+#   in it does not move at all (code 124), and the items after it in the batch are not processed.
+# * A file a program opened while allowing others to delete it is NOT locked: Windows moves it away, and the
+#   program loses a file it is using.
+# So before anything moves, the Restart Manager is asked who has files of each item open (programs_using); what
+# a program uses stays exactly as it is, with the program's name on record. Whatever the shell still leaves
+# behind is tried again one by one. Only for folders that are a mixed bag by nature (``piecewise``: a Temp
+# folder at the top of a drive) the entries nobody uses are moved one by one.
+USE_CHECK_FILES = 20000   # files of one item the Restart Manager is asked about (most are far smaller)
+USE_CHECK_CHUNK = 2000
 PIECE_DEPTH = 6
 PIECE_CALLS = 400
+
+
+def _files_to_ask_about(path: str, cancel=None, limit: int = USE_CHECK_FILES) -> list[str]:
+    if path_is_link(path):
+        return []
+    if not os.path.isdir(long_path(path)):
+        return [path]
+    files: list[str] = []
+    for dirpath, entries, _ in walk_files(path, cancel):
+        files.extend(os.path.join(dirpath, e.name) for e in entries)
+        if len(files) >= limit:
+            break
+    return files[:limit]
+
+
+def _ask(files: list[str], cancel=None) -> list[str] | None:
+    names: list[str] = []
+    for start in range(0, len(files), USE_CHECK_CHUNK):
+        check_cancel(cancel)
+        found = winapi.programs_using(files[start:start + USE_CHECK_CHUNK])
+        if found is None:
+            return None
+        names.extend(n for n in found if n not in names)
+    return names
+
+
+def programs_using(path: str, cancel=None, limit: int = USE_CHECK_FILES) -> list[str] | None:
+    """The programs that have a file of ``path`` (a file, or a folder at any depth; links are not entered) open
+    right now: [] when nobody, None when it could not be told (off Windows, the Restart Manager failed)."""
+    return _ask(_files_to_ask_about(path, cancel, limit), cancel)
+
+
+def programs_using_each(items: list[str], cancel=None) -> dict[str, list[str] | None]:
+    """``programs_using`` for many items. One question costs about half a second whatever it asks, so the items
+    are asked about together; only when somebody uses something are the items of that round asked one by one."""
+    out: dict[str, list[str] | None] = {}
+    round_items: list[tuple[str, list[str]]] = []
+    count = 0
+
+    def settle():
+        nonlocal round_items, count
+        files = [f for _, own in round_items for f in own]
+        found = _ask(files, cancel) if files else []
+        for path, own in round_items:
+            out[path] = [] if found == [] else _ask(own, cancel)
+        round_items, count = [], 0
+    for path in items:
+        own = _files_to_ask_about(path, cancel)
+        round_items.append((path, own))
+        count += len(own)
+        if count >= USE_CHECK_CHUNK:
+            settle()
+    if round_items:
+        settle()
+    return out
 
 
 def _shell_recycle(items: list[str], hwnd, cancel=None) -> tuple[dict[str, int], bool]:
@@ -468,19 +548,23 @@ def _shell_recycle(items: list[str], hwnd, cancel=None) -> tuple[dict[str, int],
 
 
 def _recycle_pieces(folder: str, hwnd, cancel, budget: list, depth: int = 0) -> bool:
-    """Move what can be moved out of a folder that would not go as a whole (a file in it is in use): its
-    entries, and for a sub-folder that will not go either, that folder's entries. Never enters a link.
-    Returns True when the user aborted in Windows' own dialog."""
+    """For a folder that is a mixed bag (see ``piecewise``): move its entries that nobody is using, and for a
+    sub-folder that will not go, that folder's entries. What a program uses is left alone, whole. Never enters
+    a link. Returns True when the user aborted in Windows' own dialog."""
     try:
         with os.scandir(long_path(folder)) as entries:
             children = [os.path.join(folder, e.name) for e in entries]
     except OSError:
         return False
+    if budget[0] <= 0 or (cancel is not None and cancel.is_set()):
+        return False
     children = [c for c in children if len(c) < 260]
-    for start in range(0, len(children), 64):
+    users = programs_using_each(children, cancel)
+    free = [c for c in children if not users[c]]   # nobody has it open (or it cannot be told: the shell decides)
+    for start in range(0, len(free), 64):
         if budget[0] <= 0 or (cancel is not None and cancel.is_set()):
             return False
-        chunk = children[start:start + 64]
+        chunk = free[start:start + 64]
         budget[0] -= 1
         still, aborted = _shell_recycle(chunk, hwnd, cancel)
         budget[0] -= len(still)
@@ -493,7 +577,8 @@ def _recycle_pieces(folder: str, hwnd, cancel, budget: list, depth: int = 0) -> 
     return False
 
 
-def recycle(paths: list[str], *, batch: int = 64, cancel=None, progress=None, hwnd=None) -> tuple[DeleteStats, list[str]]:
+def recycle(paths: list[str], *, batch: int = 64, cancel=None, progress=None, hwnd=None,
+            piecewise: set | frozenset = frozenset()) -> tuple[DeleteStats, list[str]]:
     """Move paths to the Recycle Bin. Returns (stats, list of paths gone from their place).
 
     Paths must already be validated by the caller's ProtectionPolicy. ``hwnd``
@@ -501,8 +586,10 @@ def recycle(paths: list[str], *, batch: int = 64, cancel=None, progress=None, hw
     user let Windows delete that way is in ``stats.permanent`` (and still among
     the returned paths: it is gone either way).
 
-    One item that cannot be moved never costs the others (see _shell_recycle). A folder with files in use
-    goes except for those files (``stats.partial``); a single file in use is a failure with that reason.
+    What a running program is using is not touched (``stats.held``, with the program's name), and it never
+    costs the other items (see the notes above). ``piecewise``: paths (``paths.key`` values are not needed, the
+    strings as passed) that are a mixed bag by nature; of those, the entries nobody uses still go
+    (``stats.partial``).
     """
     stats = DeleteStats()
     done: list[str] = []
@@ -530,11 +617,14 @@ def recycle(paths: list[str], *, batch: int = 64, cancel=None, progress=None, hw
         stats.current = chunk[0][0]
         if progress:
             progress(stats)  # what is being moved now: one large folder can take minutes
+        # who is using what, before anything moves
+        users = programs_using_each([p[0] for p in chunk], cancel)
+        free = [p for p in chunk if not users[p[0]]]
         started = time.time()
-        stuck, aborted = _shell_recycle([p[0] for p in chunk], hwnd, cancel)
-        gone = [path for path, _, _, _ in chunk if path not in stuck]
+        stuck, aborted = _shell_recycle([p[0] for p in free], hwnd, cancel) if free else ({}, False)
+        gone = [path for path, _, _, _ in free if path not in stuck]
         binned = _arrived_in_bin(gone, started)
-        for path, size, logical, count in chunk:
+        for path, size, logical, count in free:
             if path in stuck:
                 continue
             stats.files += count
@@ -546,27 +636,28 @@ def recycle(paths: list[str], *, batch: int = 64, cancel=None, progress=None, hw
                 stats.permanent_bytes += size
         stopped = cancel is not None and cancel.is_set()
         for path, size, logical, count in chunk:
-            if path not in stuck:
+            busy = users[path]
+            if not busy and path not in stuck:
                 continue
             if aborted or stopped:
                 stats.fail(path, '已取消')
                 continue
-            if not os.path.isdir(long_path(path)) or path_is_link(path):
-                # the shell says 124 for a file a program has open; other codes are passed on as they are
-                stats.fail(path, IN_USE if stuck[path] in (124, 32) else f'移到回收站失败（代码 {stuck[path]}）')
+            folder = os.path.isdir(long_path(path)) and not path_is_link(path)
+            if not (folder and path in piecewise):
+                if busy:
+                    stats.hold(path, busy)
+                elif stuck[path] in (124, 32):
+                    # the shell found it locked although nobody was listed (or that could not be asked)
+                    stats.hold(path, programs_using(path, cancel) or [])
+                else:
+                    stats.fail(path, f'移到回收站失败（代码 {stuck[path]}）')
                 continue
             stats.current = path
             if progress:
                 progress(stats)
             aborted = _recycle_pieces(path, hwnd, cancel, [PIECE_CALLS])
-            if not os.path.lexists(long_path(path)):
-                moved, files_moved, left = size, count, 0
-            else:
-                after, _, left = path_sizes(path)
-                moved, files_moved = max(0, size - after), max(0, count - left)
-                if not left:
-                    # nothing is in use any more: the (now empty) folders go as well
-                    _shell_recycle([path], hwnd)
+            after, _, left = path_sizes(path) if os.path.lexists(long_path(path)) else (0, 0, 0)
+            moved, files_moved = max(0, size - after), max(0, count - left)
             if not os.path.lexists(long_path(path)):
                 stats.files += count
                 stats.bytes += size
@@ -575,10 +666,12 @@ def recycle(paths: list[str], *, batch: int = 64, cancel=None, progress=None, hw
             elif files_moved:
                 stats.files += files_moved
                 stats.bytes += moved
-                stats.in_use += left
+                stats.in_use += 1
                 stats.partial[path] = {'left': left, 'bytes': moved, 'files': files_moved}
+            elif aborted:
+                stats.fail(path, '已取消')
             else:
-                stats.fail(path, '已取消' if aborted else '里面的文件' + IN_USE)
+                stats.hold(path, busy or [])
         stats.done_items += len(chunk)
         if progress:
             progress(stats)

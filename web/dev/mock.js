@@ -488,9 +488,11 @@
       if (items['rule:user_temp']) skipped.push({ title: '用户临时文件', left: 78, reason: '78 个文件正在使用，已跳过' });
       const unity = plan.items.find((i) => i.id === 'dir:unity');
       if (unity && items['dir:unity']) {
-        unity.status = 'partial'; unity.result = '3 个文件正在使用，已跳过；其余已移到回收站';
-        items['dir:unity'] = { status: 'partial', note: unity.result, freed: unity.freed };
-        skipped.push({ path: unity.paths[0], left: 3, reason: unity.result });
+        // a running program uses it: untouched, still pending and ticked
+        rec -= unity.size; recN -= 1;
+        Object.assign(unity, { status: 'pending', result: '', freed: undefined, in_use: '「Unity Hub」正在使用' });
+        items['dir:unity'] = { status: 'held', note: unity.in_use, freed: null };
+        skipped.push({ path: unity.paths[0], title: unity.title, left: 1, by: ['Unity Hub'], reason: '「Unity Hub」正在使用，已整个跳过' });
       }
       return { deleted: { count: 9000, bytes: del }, recycled: { count: recN, bytes: rec }, disabled: dis, services: svc, failures, skipped, items, summary: plan.summary };
     }, (f) => ({ stage: 'junk', detail: '用户临时文件', freed: f * 4 * GB })),

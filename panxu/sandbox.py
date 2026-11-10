@@ -750,6 +750,12 @@ class Sandbox:
                 self.save()  # after each one: stopped half way, every moved file can still be restored
         return 0, False
 
+    def programs_using(self, files: list[str]) -> list[str]:
+        """Like winapi.programs_using. ``state['in_use']``: {folder: program name} -- a simulated program that
+        has the files of that folder open (none by default; tests and demos set it)."""
+        held = self.state.get('in_use') or {}
+        return sorted({name for folder, name in held.items() if any(paths.is_within(f, folder) for f in files)})
+
     def recycled_since(self, since: float) -> set[str]:
         """Like winapi.recycled_since: the original paths put into the bin since then."""
         with self.lock:
