@@ -411,7 +411,10 @@
     if (r.disabled.length) figures.push(['', String(r.disabled.length), '个开机启动项已禁用', '随时可以在「开机与服务」里重新启用']);
     if ((r.services || []).length) figures.push(['', String(r.services.length), '个服务改为手动启动', '可以在「开机与服务」或「操作记录」里改回']);
     const problems = r.failures || [];
-    const ok = Object.values(r.items || {}).filter((x) => x.status === 'done').length;
+    // left alone because a program has them open: expected, said calmly and apart from what went wrong
+    const skipped = r.skipped || [];
+    const busyFiles = skipped.reduce((n, s) => n + (s.left || 1), 0);
+    const ok = Object.values(r.items || {}).filter((x) => x.status === 'done' || x.status === 'partial').length;
     const card = c.appendChild(h('section.result-card' + (problems.length ? '.has-problems' : ''),
       h('div.rc-head', PX.icon(problems.length ? 'warn' : 'check'),
         h('b', problems.length ? `清理完成，${problems.length} 项没有完成` : '清理完成'),
@@ -424,6 +427,17 @@
       card.appendChild(h('div.rc-problems', h('div.dp-label', '没有完成的'),
         problems.slice(0, 5).map((f) => h('div.rc-problem', h('b', f.title || PX.displayPath(f.path || '')), h('span', f.reason))),
         problems.length > 5 ? h('div.small.muted', `另有 ${problems.length - 5} 项，详见「操作记录」`) : null));
+    }
+    if (skipped.length) {
+      const openList = state.open.has('skipped');
+      card.appendChild(h('div.rc-problems.rc-skipped',
+        h('div.rc-skip-line', PX.icon('info'),
+          h('span', h('b', `${fmt.count(busyFiles)} 个文件正在被程序使用，已跳过`), '　其余照常清理了。关掉相关程序后再体检一次，可以清理它们。'),
+          h('button.btn.quiet.small', { type: 'button', 'aria-expanded': String(openList),
+            onclick: () => { openList ? state.open.delete('skipped') : state.open.add('skipped'); draw(true); } },
+          openList ? '收起' : `看是哪 ${skipped.length} 项`)),
+        openList ? skipped.slice(0, 30).map((f) => h('div.rc-problem', h('b', f.title || PX.displayPath(f.path || '')), h('span.muted', f.reason))) : null,
+        openList && skipped.length > 30 ? h('div.small.muted', `另有 ${skipped.length - 30} 项，详见「操作记录」`) : null));
     }
   }
 
@@ -439,7 +453,8 @@
       if (it.action === 'service' && !it.result?.startsWith('已在')) return ['已改为手动启动，随时可以改回', 'good'];
       return [it.result || '已完成', 'good'];
     }
-    if (it.status === 'partial') return [`只完成了一部分：${it.result}`, 'warn'];
+    if (it.status === 'partial') return [/正在使用/.test(it.result || '') ? it.result : `只完成了一部分：${it.result}`, 'warn'];
+    if (it.status === 'skipped' && /正在/.test(it.result || '')) return [it.result, 'warn'];
     return [`没有完成：${it.result || '原因未知'}`, 'warn'];
   }
 

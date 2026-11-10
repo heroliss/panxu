@@ -640,6 +640,11 @@ button.bl-row:hover .bl-label { color: var(--cobalt); }
 .rc-problems { display: grid; gap: 4px; padding-top: 10px; border-top: 1px dashed var(--rule); }
 .rc-problem { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 12.5px; }
 .rc-problem b { font-weight: 600; }
+.rc-skipped .rc-problem span { color: var(--ink-2); }
+.rc-skip-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12.5px; color: var(--ink-2); }
+.rc-skip-line > span { flex: 1; min-width: 220px; }
+.rc-skip-line b { color: var(--ink); font-weight: 600; }
+.rc-skip-line svg { width: 15px; height: 15px; flex: none; color: var(--ink-3); }
 .rc-problem span { color: var(--amber); }
 /* 已处理: folded away below the groups still to decide */
 .group-card.g-done { border-top-color: var(--ink-3); }

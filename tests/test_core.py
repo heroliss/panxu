@@ -1,10 +1,11 @@
 import json
 import os
 import unittest
+from unittest.mock import patch
 
 from helpers import WIN_ENV, TempDirTest
 
-from panxu import fsops, paths
+from panxu import fsops, paths, winapi
 from panxu.oplog import OperationLog
 from panxu.settings import Settings
 
@@ -136,6 +137,96 @@ class FsOpsTest(TempDirTest):
         self.assertEqual(done, [])
         self.assertEqual(stats.failed, 1)
         self.assertTrue(os.path.exists(f))
+
+
+class RecycleInUseTest(TempDirTest):
+    """fsops.recycle with a stand-in for the shell that behaves as Windows does (measured on a real PC): a
+    folder holding a file in use does not move at all, the call returns 124, and the items after it in the same
+    call are not touched."""
+
+    def setUp(self):
+        super().setUp()
+        self.bin = os.path.join(self.tmp, 'bin')
+        os.makedirs(self.bin)
+        self.busy = set()
+        self.calls = []
+
+        def shell(items, hwnd=None):
+            self.calls.append(list(items))
+            for n, path in enumerate(items):
+                locked = any(paths.is_within(b, path) for b in self.busy)
+                if locked:
+                    return 124, False
+                os.rename(path, os.path.join(self.bin, f'{len(self.calls)}-{n}-{os.path.basename(path)}'))
+            return 0, False
+        for name, value in (('recycle_paths', shell), ('recycled_since', lambda root, since: None)):
+            patcher = patch.object(winapi, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def folder(self, name, locked=()):
+        for rel in ('one.bin', 'sub/two.bin', 'sub/deep/three.bin'):
+            self.make(f'{name}/{rel}', 1000)
+        for rel in locked:
+            self.busy.add(self.make(f'{name}/{rel}', 1000))
+        return os.path.join(self.tmp, name)
+
+    def test_one_folder_in_use_does_not_fail_the_rest_of_the_batch(self):
+        a, b, c, d = self.folder('a'), self.folder('b', ['sub/deep/locked.bin']), self.folder('c'), self.folder('d')
+        stats, done = fsops.recycle([a, b, c, d])
+        self.assertEqual(done, [a, c, d])
+        self.assertEqual(stats.failed, 0)
+        self.assertEqual(stats.failures, [])
+        # b went except for the file in use: counted, and reported as skipped, not as a failure
+        self.assertEqual(stats.partial, {b: {'left': 1, 'bytes': 3000, 'files': 3}})
+        self.assertEqual((stats.files, stats.bytes, stats.in_use), (12, 12000, 1))
+        left = [os.path.join(base, f) for base, _, files in os.walk(b) for f in files]
+        self.assertEqual(left, [os.path.join(b, 'sub', 'deep', 'locked.bin')])
+        self.assertEqual([s['left'] for s in stats.skipped()], [1])
+        self.assertIn('其余已移到回收站', stats.skipped()[0]['reason'])
+        self.assertEqual(stats.problems(), [])
+
+    def test_a_single_file_in_use_is_said_to_be_in_use(self):
+        free = self.make('free.bin', 10)
+        held = self.make('held.bin', 10)
+        self.busy.add(held)
+        stats, done = fsops.recycle([held, free])
+        self.assertEqual(done, [free])
+        self.assertEqual(stats.failures, [{'path': held, 'reason': '正在被其他程序使用'}])
+        self.assertEqual(stats.in_use, 1)
+        self.assertEqual(stats.problems(), [])
+        self.assertEqual([s['path'] for s in stats.skipped()], [held])
+        self.assertTrue(os.path.exists(held))
+
+    def test_a_folder_where_everything_is_in_use_fails_with_a_reason_not_a_code(self):
+        folder = os.path.join(self.tmp, 'all')
+        self.busy.add(self.make('all/only.bin', 10))
+        stats, done = fsops.recycle([folder])
+        self.assertEqual(done, [])
+        self.assertEqual(stats.partial, {})
+        self.assertEqual(stats.failures, [{'path': folder, 'reason': '里面的文件正在被其他程序使用'}])
+        self.assertEqual(stats.problems(), [])   # nothing went wrong: it is in use
+
+    def test_other_shell_errors_keep_their_code_and_the_work_is_bounded(self):
+        with patch.object(winapi, 'recycle_paths', lambda items, hwnd=None: (1223, False)):
+            file = self.make('x.bin', 10)
+            stats, done = fsops.recycle([file])
+        self.assertEqual(stats.failures, [{'path': file, 'reason': '移到回收站失败（代码 1223）'}])
+        self.assertEqual(len(stats.problems()), 1)
+        # a folder full of files in use: the piecewise pass stops at its budget instead of one call per file
+        big = os.path.join(self.tmp, 'big')
+        for i in range(fsops.PIECE_CALLS * 2):
+            self.busy.add(self.make(f'big/{i // 50}/f{i}.bin', 1))
+        self.calls.clear()
+        fsops.recycle([big])
+        self.assertLess(len(self.calls), fsops.PIECE_CALLS * 2)
+
+    def test_the_users_cancel_in_windows_dialog_stops_everything(self):
+        a, b = self.folder('a'), self.folder('b')
+        with patch.object(winapi, 'recycle_paths', lambda items, hwnd=None: (1223, True)):
+            stats, done = fsops.recycle([a, b])
+        self.assertEqual(done, [])
+        self.assertEqual({f['reason'] for f in stats.failures}, {'已取消'})
 
 
 class JobStopTest(unittest.TestCase):

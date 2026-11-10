@@ -741,7 +741,10 @@ class Sandbox:
                     continue
                 ident = uuid.uuid4().hex[:8].upper()
                 stored = os.path.join(bin_dir, '$R' + ident + os.path.splitext(path)[1])
-                shutil.move(path, stored)
+                try:
+                    os.rename(path, stored)   # all or nothing, like the real Recycle Bin: a file in use stops it
+                except OSError:
+                    return 124, False         # and, like the shell, the rest of the batch is not touched
                 self.state.setdefault('recycle', []).append({'id': ident, 'original': path, 'stored': stored,
                                                              'time': time.time(), 'size': size})
                 self.save()  # after each one: stopped half way, every moved file can still be restored

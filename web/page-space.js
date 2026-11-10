@@ -85,8 +85,9 @@
   // fit there (the user said yes to Windows' own prompt)
   PX.deleteResult = function (result) {
     const failures = result.failures || [];
+    const skipped = result.skipped || [];
     const nuked = result.permanent || [];
-    const binned = result.done.length - nuked.length;
+    const binned = result.done.length - nuked.length + (result.partial || []).length;
     const lines = h('div.confirm-list');
     if (result.mode === 'recycle') {
       if (binned) lines.appendChild(h('div.row', h('div', h('b', `移到回收站 ${binned} 项`), h('div.small.muted', '需要时可以从回收站还原')),
@@ -100,6 +101,9 @@
       h('div.summary', fmt.bytes(result.freed)),
       nuked.length ? PX.notice(`${nuked.length} 项太大，回收站放不下，你在 Windows 的提示里选了直接删除：已经彻底删除，不能从回收站还原。`, 'warn') : null,
       lines,
+      skipped.length ? h('div', { style: { marginTop: '10px' } }, h('b', '正在被程序使用，已跳过：'),
+        h('span.small.muted', ' 关掉相关程序后可以再处理'),
+        h('div.confirm-list', skipped.slice(0, 50).map((f) => h('div.row', h('div.name.mono-path', PX.displayPath(f.path)), h('div.small.muted', f.reason))))) : null,
       failures.length ? h('div', { style: { marginTop: '10px' } }, h('b', `${result.failed} 项没有完成：`),
         h('div.confirm-list', failures.slice(0, 50).map((f) => h('div.row', h('div.name.mono-path', f.path), h('div.small.muted', f.reason))))) : null);
     PX.modal({ title: nuked.length ? '完成，部分已直接删除' : '完成', body, actions: [{ label: '好的', kind: 'primary' }] });

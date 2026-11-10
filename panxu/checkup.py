@@ -1281,7 +1281,9 @@ def execute(backend, plan: dict, item_ids: list[str], job) -> dict:
     policy = backend.policy()
     report = {'deleted': {'count': 0, 'bytes': 0}, 'recycled': {'count': 0, 'bytes': 0}, 'disabled': [], 'services': [],
               'permanent': {'count': 0, 'bytes': 0, 'paths': []},
-              'failures': [], 'items': {}}
+              # failures: what went wrong. skipped: left alone because a program has it open -- expected, not an
+              # error (close the program and clean again)
+              'failures': [], 'skipped': [], 'items': {}}
 
     def done(item, status, note='', freed=None):
         """``note``: a few words on how it went; ``freed``: the bytes it gave back (the page writes the unit)."""
@@ -1310,7 +1312,8 @@ def execute(backend, plan: dict, item_ids: list[str], job) -> dict:
                 report['deleted']['bytes'] += row['freed']
                 done(item, 'done', '已清理', freed=row['freed'])
                 if row['failed']:
-                    report['failures'].append({'title': item['title'], 'reason': f'{row["failed"]} 个文件正在使用，已跳过'})
+                    report['skipped'].append({'title': item['title'], 'left': row['failed'],
+                                              'reason': f'{row["failed"]} 个文件正在使用，已跳过'})
 
     # 2. folders and personal files -> Recycle Bin (each path re-checked against the policy)
     to_recycle: list[tuple[dict, str]] = []
@@ -1358,16 +1361,22 @@ def execute(backend, plan: dict, item_ids: list[str], job) -> dict:
         gone = {paths.key(p) for p in recycled}
         nuked = [p for p in stats.permanent]  # too large for the bin: Windows deleted them on the user's yes
         nuked_keys = {paths.key(p) for p in nuked}
-        report['recycled']['count'] += len(recycled) - len(nuked)
+        report['recycled']['count'] += len(recycled) - len(nuked) + len(stats.partial)
         report['recycled']['bytes'] += stats.bytes - stats.permanent_bytes
         report['permanent'] = {'count': len(nuked), 'bytes': stats.permanent_bytes, 'paths': nuked[:50]}
-        for f in stats.failures:
+        for f in stats.problems():
             report['failures'].append({'path': f.get('path'), 'reason': f.get('reason')})
+        report['skipped'] += stats.skipped()
+        in_use = {paths.key(s['path']): s for s in stats.skipped()}
         for item in {id(i): i for i, _ in to_recycle}.values():
             ok = [p for p in item['paths'] if paths.key(p) in gone or any(paths.is_within(p, g) for g in recycled)]
             share = sum(stats.measured[p][0] for p in ok if p in stats.measured)
             # A selected parent may have covered this path; use this item's scan measure only then.
             share += sum((item['size'] or 0) // max(1, len(item['paths'])) for p in ok if p not in stats.measured)
+            # folders that went except for files a program has open, and single files in use
+            part = [p for p in item['paths'] if p in stats.partial]
+            share += sum(stats.partial[p]['bytes'] for p in part)
+            busy = sum(in_use[paths.key(p)]['left'] for p in item['paths'] if paths.key(p) in in_use)
             # In the Recycle Bin: the space comes back when it is emptied.
             if ok and any(paths.within_any(p, nuked_keys) for p in ok):
                 item['permanent'] = True
@@ -1375,14 +1384,20 @@ def execute(backend, plan: dict, item_ids: list[str], job) -> dict:
                      freed=share)
             elif len(ok) == len(item['paths']):
                 done(item, 'done', '已移到回收站', freed=share)
-            elif ok:
-                done(item, 'partial', f'{len(ok)}/{len(item["paths"])} 项已移到回收站', freed=share)
+            elif part and len(ok) + len(part) == len(item['paths']):
+                done(item, 'partial', f'{busy} 个文件正在使用，已跳过；其余已移到回收站', freed=share)
+            elif ok or part:
+                done(item, 'partial', f'{len(ok) + len(part)}/{len(item["paths"])} 项已移到回收站'
+                     + (f'，{busy} 个文件正在使用' if busy else ''), freed=share)
+            elif busy:
+                done(item, 'skipped', '正在被其他程序使用，已跳过')
             else:
                 done(item, 'failed', '没有移到回收站')
-        if recycled or stats.failed:
-            title = f'清理方案：移到回收站 {len(recycled) - len(nuked)} 项' + (
+        if recycled or stats.failed or stats.partial:
+            title = f'清理方案：移到回收站 {len(recycled) - len(nuked) + len(stats.partial)} 项' + (
                 f'，{len(nuked)} 项回收站放不下、已直接删除' if nuked else '')
-            backend.oplog.add('recycle', title, freed=stats.bytes, items=recycled, failures=stats.failures,
+            backend.oplog.add('recycle', title, freed=stats.bytes, items=recycled + list(stats.partial),
+                              failures=stats.problems() + stats.skipped(),
                               details={'source': 'plan', 'mode': 'recycle', 'permanent': nuked[:200],
                                        'permanent_bytes': stats.permanent_bytes}, replaces=pending)
         else:

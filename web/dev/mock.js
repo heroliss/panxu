@@ -483,7 +483,16 @@
       }
       plan.summary = summarize();
       freedNow += del;  // only what was deleted: the Recycle Bin still holds the rest
-      return { deleted: { count: 9000, bytes: del }, recycled: { count: recN, bytes: rec }, disabled: dis, services: svc, failures, items, summary: plan.summary };
+      // like checkup.execute: what a program has open is skipped, and said apart from what went wrong
+      const skipped = [];
+      if (items['rule:user_temp']) skipped.push({ title: '用户临时文件', left: 78, reason: '78 个文件正在使用，已跳过' });
+      const unity = plan.items.find((i) => i.id === 'dir:unity');
+      if (unity && items['dir:unity']) {
+        unity.status = 'partial'; unity.result = '3 个文件正在使用，已跳过；其余已移到回收站';
+        items['dir:unity'] = { status: 'partial', note: unity.result, freed: unity.freed };
+        skipped.push({ path: unity.paths[0], left: 3, reason: unity.result });
+      }
+      return { deleted: { count: 9000, bytes: del }, recycled: { count: recN, bytes: rec }, disabled: dis, services: svc, failures, skipped, items, summary: plan.summary };
     }, (f) => ({ stage: 'junk', detail: '用户临时文件', freed: f * 4 * GB })),
     insights_roots: () => personalRoots,
     insights_scan: ({ roots }) => job(6, () => { insights = personalResult(roots); return insights; },
@@ -537,7 +546,7 @@
     sandbox_restore: ({ item_id }) => { const i = recycled.findIndex((r) => r.id === item_id); const [r] = recycled.splice(i, 1); sandbox.recycle_count -= 1; return r.original; },
     sandbox_reset: () => sandbox,
     drives: () => handlers.init().drives,
-    init: () => ({ version: '2.2.1', admin: !!sandbox || location.hash.includes('admin'), other_accounts: ['家人'], windows: true, settings, has_key: hasKey, sandbox,
+    init: () => ({ version: '2.2.2', admin: !!sandbox || location.hash.includes('admin'), other_accounts: ['家人'], windows: true, settings, has_key: hasKey, sandbox,
       plan_groups: planGroups, checkup_stages: stages,
       presets: [{ id: 'deepseek', name: 'DeepSeek', base_url: 'https://api.deepseek.com', protocol: 'openai', models: ['deepseek-flash', 'deepseek-v4-pro'], json_mode: true, thinking_toggle: true, key_url: 'x' },
         { id: 'kimi', name: 'Kimi（月之暗面）', base_url: 'https://api.moonshot.cn/v1', protocol: 'openai', models: [], json_mode: true },
