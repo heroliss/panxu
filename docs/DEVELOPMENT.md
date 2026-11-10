@@ -74,7 +74,7 @@ python -m pip install -r requirements.txt pyinstaller
 .\build.ps1
 ```
 
-先跑单元测试，再生成 `dist\PanXu\PanXu.exe`（文件夹版，带 `_internal`）和 `dist\PanXu-<版本>-win-x64.zip`。已有的 `dist\PanXu` 会被改名保留，不会被覆盖（0.x 曾把用户数据放在 exe 旁边）。版本号在 `panxu/__init__.py`；发布时更新 [CHANGELOG](../CHANGELOG.md)，在 `main` 上打 `v<版本>` 标签，把 zip 附到 GitHub Release。
+先跑单元测试，再生成 `dist\PanXu\PanXu.exe`（文件夹版，带 `_internal`）和 `dist\PanXu-<版本>-win-x64.zip`。打包后运行 `python tools\package_smoke.py dist\PanXu-<版本>-win-x64.zip`：它把压缩包解压到临时目录、给每个文件加上「来自互联网」标记（浏览器下载的压缩包解压后就是这样），在临时演练环境里启动并确认窗口打开——从构建目录直接运行发现不了这类问题（2.2.0 因此带着无法启动的问题发布）。已有的 `dist\PanXu` 会被改名保留，不会被覆盖（0.x 曾把用户数据放在 exe 旁边）。版本号在 `panxu/__init__.py`；发布时更新 [CHANGELOG](../CHANGELOG.md)，在 `main` 上打 `v<版本>` 标签，把 zip 附到 GitHub Release。
 
 ## 维护规则
 
