@@ -39,6 +39,7 @@ DEFAULTS = {
         'duplicates': True,
         'cross_drive_duplicates': True,
         'use_ai': True,          # ask the model when a key is configured
+        'other_accounts': False, # also look through other accounts' personal files (administrator only; never auto-ticked)
         'apps_services': True,   # read installed programs and third-party services (nothing is changed by the check-up)
         'ai_scopes': {'space': True, 'files': True, 'duplicates': True, 'startup': True, 'apps': True, 'services': True},
         'auto_threshold': 7,     # 勾选门槛 0-10: pre-tick eligible items scoring at least this (稳妥 8, 适中 7, 积极 5)
@@ -47,6 +48,7 @@ DEFAULTS = {
         'stale_days': 365,       # "很久没动" threshold for large personal files
         'large_mb': 100,
         'download_days': 180,    # downloads older than this are worth a look
+        'other_accounts': False, # 「我的文件」 page: include other accounts' folders (administrator only)
     },
     'duplicates': {'min_size_mb': 1},
     'large_files': {'min_size_mb': 100},

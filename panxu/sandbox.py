@@ -30,6 +30,7 @@ from . import paths, winapi
 
 MARKER = paths.SANDBOX_MARKER  # also how the scans recognise a kept 演练环境
 USER = 'demo'
+OTHER_USER = '家人'   # a second account: its files show up only with 「检查其他账户的个人文件」
 KB, MB, GB = 1024, 1024 ** 2, 1024 ** 3
 DAY = 86400.0
 
@@ -358,6 +359,16 @@ def _layout() -> tuple[list[_Spec], list[tuple[str, float]]]:
     add(F(f'{u}/Videos/录屏 2025-11-02.mp4', 1310 * MB, age=366))
     add(F(f'{u}/Videos/剪辑工程/Render/temp_render_001.mp4', 905 * MB, age=300))
     add(F(f'{u}/Music/歌单/夜曲.mp3', data=_blob(51, 4 * MB + 9, b'ID3'), age=900))
+
+    # -- another account on this PC (looked through only when an administrator asks for it) --
+    o = f'C/Users/{OTHER_USER}'
+    add(F(f'{o}/Downloads/游戏大厅_Setup_3.1.exe', 240 * MB, age=640))
+    add(F(f'{o}/Downloads/动画片合集.mp4.crdownload', 880 * MB, age=75))
+    add(F(f'{o}/Videos/网课录像 2023 春季.mp4', 3100 * MB, age=900, atime_age=900))
+    add(F(f'{o}/Documents/作业/作文.docx', data=docx(['我的暑假', '今年暑假我们去了海边。']), age=400))
+    add(F(f'{o}/Documents/作业/作文 - 副本.docx', data=docx(['我的暑假', '今年暑假我们去了海边。']), age=399))
+    add(F(f'{o}/AppData/Local/Temp/setup_cache.tmp', 60 * MB, age=300))
+    add(F(f'{o}/NTUSER.DAT', 3 * MB, age=1))
 
     # -- D: drive --------------------------------------------------------------------------
     # a Temp folder at the top of a drive (recognised by the knowledge base, not by a rule)

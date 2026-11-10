@@ -5,8 +5,12 @@
 (function () {
   'use strict';
   const { h, fmt } = PX;
-  const SOURCE = { rule: ['规则', 'good'], ai: ['AI', 'info'], insight: ['我的文件', ''], dup: ['重复文件', ''],
-    heuristic: ['盘序判断', 'warn'], knowledge: ['说明', ''] };
+  // whose judgment an item is, when it is one: [tag, colour, tooltip]. A rule, a file of yours or a duplicate needs
+  // no tag: its category already says so
+  const SOURCE = { ai: ['AI 判断', 'info', 'AI 模型看过这个文件夹的摘要后给出的建议'],
+    heuristic: ['盘序推断', 'warn', '没有规则认得它，盘序按线索推断（找不到对应的程序、很久没有改动等）'] };
+  // what a row is, as an icon in front of its title, when it is not a file or folder with an icon of its own
+  const KIND_ICON = { rule: 'broom', startup: 'power', service: 'gear', app: 'apps' };
   const GROUP = {
     safe: ['g-safe', '已经替你勾好：可以重建的缓存（直接删除），以及很可能没用的残留（进回收站，可以还原）。'],
     review: ['g-review', '可能可以清理，但需要你看一眼再决定。你的文件只会移到回收站。'],
@@ -148,6 +152,11 @@
       body.appendChild(PX.notice(`${preview.all_copies.length} 组重复文件你选了全部副本，这些文件一份都不保留，只能从回收站还原：`
         + preview.all_copies.slice(0, 3).join('、') + (preview.all_copies.length > 3 ? ' 等' : ''), 'warn'));
     }
+    const foreign = chosen.filter((it) => it.account);
+    if (foreign.length) {
+      body.appendChild(PX.notice(`其中 ${foreign.length} 项是其他账户（${[...new Set(foreign.map((it) => it.account))].join('、')}）的文件，不是你的。`
+        + '它们会进入你的回收站：对方登录后看不到，也不能自己还原。请先确认对方不再需要。', 'warn'));
+    }
     if (preview.skipped.length) body.appendChild(h('div.small.muted', `${preview.skipped.length} 项会跳过：` + preview.skipped.slice(0, 3).map((s) => `${s.title}（${s.reason}）`).join('；')));
     const ok = await PX.confirm({ title: `执行选中的 ${chosen.length} 项`, body, ok: '开始清理', wide: true });
     if (!ok) return;
@@ -238,6 +247,18 @@
         } }),
         h('span', h('b', driveName(d)), h('span.small.muted', ' ' + (d.label || (d.system ? '系统盘' : d.removable ? '移动磁盘' : '本地磁盘')))),
         h('span.small.muted.drive-capacity', `可用 ${fmt.bytes(d.free)} / ${fmt.bytes(d.total)}`), strata(d, 0, 'thin')));
+    }
+    const names = init.other_accounts || [];
+    if (names.length) {
+      const can = !!(init.admin || init.sandbox);
+      const block = scope.appendChild(h('div.checkup-option.checkup-accounts'));
+      block.appendChild(h('label', h('input', { type: 'checkbox', id: 'checkup-other_accounts', checked: can && !!ck.other_accounts,
+        disabled: busy || !can, 'aria-describedby': 'checkup-other_accounts-help',
+        onchange: (e) => saveOption('other_accounts', e.target.checked) }), '其他账户的个人文件', h('span.small.muted', names.join('、'))));
+      block.appendChild(h('div.small.muted', { id: 'checkup-other_accounts-help' }, can
+        ? '在「我的文件」里一并列出，标明是谁的；不会自动勾选，不发送给 AI，它们的应用数据照常跳过'
+        : '需要管理员权限才能读取其他账户的文件夹'));
+      if (!can) block.appendChild(h('button.btn.quiet.small.checkup-configure', { type: 'button', disabled: busy, onclick: PX.restartAsAdmin }, '以管理员身份重启'));
     }
     scope.appendChild(h('div.small.muted.checkup-scope', { role: 'status' },
       `${state.status === 'running' ? '本次' : state.plan ? '下次' : ''}整盘检查：${selected.length ? drives.filter((d) => selected.includes(d.root)).map(driveName).join('、') : '未选择磁盘'}。`,
@@ -442,7 +463,7 @@
       const one = it.paths && it.paths.length === 1 ? it.paths[0] : '';
       list.appendChild(h('div.row.done-row', PX.icon(kind === 'good' ? 'check' : 'warn', 'ic ' + kind),
         h('div.cell-main', h('div.name-line', h('span.name-text', it.title), h('span.muted.small', it.category)), h('div.why.' + kind, text)),
-        h('div.row-actions', one ? PX.revealButton(one) : null)));
+        PX.rowActions({ path: one, isDir: true })));
     }
   }
 
@@ -461,16 +482,26 @@
             h('button.btn.quiet.small', { type: 'button', onclick: () => openTool('apps') }, '应用')]));
       return;
     }
+    // what this check-up looked at, as one line under the title (it used to be a blue notice of its own)
+    const p = state.plan;
+    const space = p.coverage && p.coverage.space;
+    const roots = space ? space.roots || [] : [];
+    const scopeLine = !p.coverage ? '' : (roots.length ? `空间分析已查看 ${roots.map(PX.displayPath).join('、')}` : '本次未运行空间分析')
+      + `；个人文件${p.options?.duplicates !== false ? '和重复文件' : ''}按本次范围检查，跳过系统、应用数据和排除位置。`
+      + (space && space.incomplete ? `空间统计有跳过项${space.denied ? `（${fmt.count(space.denied)} 个目录无法读取）` : ''}，显示的是已检查到的占用。` : '');
     const section = c.appendChild(h('section.checkup-coverage', { 'aria-label': '本次检查情况' },
-      h('h2.section-title', '本次检查情况'), h('div.small.muted', '已检查的结果已同步到对应工具页；各页沿用同一份勾选。')));
+      h('h2.section-title', '本次检查了什么', h('span.muted', '结果已同步到各工具页，勾选是同一份')),
+      scopeLine ? h('div.small.muted.coverage-scope', scopeLine) : null));
+    const grid = section.appendChild(h('div.coverage-grid'));
     for (const row of PX.checkupCoverage(state.plan)) {
-      section.appendChild(h('div.coverage-row',
-        h('div', h('b', row.name), h('div.small.muted', row.note)),
-        PX.tag(row.status, row.status === '已检查' ? 'good' : row.status.includes('部分') || row.status === '有跳过项' ? 'warn' : ''),
-        h('div.actions', h('button.btn.quiet.small', { type: 'button', onclick: () => openTool(row.page) }, row.action || (row.skipped ? '单独检查' : '查看结果')),
+      const kind = row.status === '已检查' ? 'good' : row.status.includes('部分') || row.status === '有跳过项' ? 'warn' : '';
+      grid.appendChild(h('div.coverage-card' + (kind ? '.' + kind : ''),
+        h('div.cv-head', h('b', row.name), PX.tag(row.status, kind)),
+        h('div.small.muted.cv-note', row.note),
+        h('div.cv-actions', h('button.btn.quiet.small', { type: 'button', onclick: () => openTool(row.page) }, row.action || (row.skipped ? '单独检查' : '查看结果')),
           row.extra ? h('button.btn.quiet.small', { type: 'button', onclick: () => openTool(row.extra[0]) }, row.extra[1]) : null)));
     }
-    section.appendChild(h('div.small.muted', '未检查的工具可能保留以前的结果。上方选项只影响下一次首页体检；单项工具使用自己的范围和设置。'));
+    section.appendChild(h('div.small.muted', '未检查的工具可能保留以前的结果。范围和选项只影响下一次首页体检；单项工具使用自己的范围和设置。'));
   }
 
   // the plan at a glance: three tiles (one per group) and where the space is, by category
@@ -581,8 +612,10 @@
     const box = h('input', { type: 'checkbox', checked: isSel(it), disabled: !can,
       'aria-label': '选择 ' + it.title, onclick: (e) => e.stopPropagation(),
       onchange: (e) => { setSel(it, e.target.checked); draw(true); } });
-    const [srcLabel, srcKind] = SOURCE[it.source] || [it.source, ''];
+    const src = SOURCE[it.source];
     const flags = h('span.inline-tags');
+    if (it.account) flags.appendChild(PX.accountTag(it.account));
+    if (src) flags.appendChild(h('span.tag' + (src[1] ? '.' + src[1] : ''), { title: src[2] }, src[0]));
     if (it.status === 'done') flags.appendChild(PX.tag(it.result && it.result !== '已移到回收站' ? it.result : '已完成', 'good', 'check'));
     else if (it.status !== 'pending') flags.appendChild(PX.tag(it.result || '未完成', 'warn'));
     else if (it.blocked) {
@@ -590,8 +623,26 @@
       if (it.blocked.startsWith('请先关闭')) flags.appendChild(PX.closedButton());
     }
     if (it.ai && it.ai.verdict_label) flags.appendChild(PX.tag('AI：' + it.ai.verdict_label, it.ai.verdict === 'delete' ? 'good' : it.ai.verdict === 'keep' ? 'warn' : 'info', 'spark'));
-    // one file or folder: its icon, and a button to see it in Explorer right in the row
+    // one file or folder: a button to see it in Explorer right in the row
     const one = it.paths && it.paths.length === 1 ? it.paths[0] : !(it.paths && it.paths.length) && it.location ? it.location : '';
+    // every row is built alike: [☐] icon title tags / one line of why · score · size · the same three button slots.
+    // What cannot be ticked (a program to uninstall, something only explained) keeps the column, empty.
+    const icon = KIND_ICON[it.kind] ? PX.icon(KIND_ICON[it.kind], 'file-ic')
+      : one ? PX.fileIcon(one, isFolder(it)) : PX.icon(it.kind === 'dup' ? 'copy' : isFolder(it) ? 'folder' : 'file', 'file-ic');
+    const buttons = [];
+    if (it.status === 'pending' && it.group === 'info') {
+      for (const a of it.actions || []) {
+        buttons.push(h('button.btn.small' + (a.kind === 'hibernate' ? '.primary' : ''), { type: 'button',
+          onclick: (e) => { e.stopPropagation(); infoAction(it, a); } }, a.label));
+      }
+    }
+    if (it.status === 'pending' && it.action === 'uninstall') {
+      buttons.push(PX.apps && PX.apps.uninstalling(it.app_id)
+        ? h('button.btn.small.primary', { type: 'button', title: '卸载程序结束后会自动发现；也可以点这里马上检查',
+          onclick: (e) => { e.stopPropagation(); PX.apps.check(it.app_id); } }, PX.icon('refresh'), '检查是否卸载完成')
+        : h('button.btn.small', { type: 'button', title: '打开它自己的卸载程序，和「设置 > 应用」里卸载一样',
+          onclick: (e) => { e.stopPropagation(); if (PX.apps) PX.apps.uninstall(it.app_id); } }, '卸载…'));
+    }
     const row = h('div.row.plan-row' + (it.status !== 'pending' ? '.disabled' : ''), {
       onclick: () => {
         if (state.open.has(it.id)) state.open.delete(it.id);
@@ -599,26 +650,15 @@
         draw(true);
         state.entering = null;
       } },
-    it.group === 'info' ? PX.icon('info', 'ic') : it.action === 'uninstall' ? PX.icon('apps', 'ic') : box,
+    it.group === 'info' || it.action === 'uninstall' ? h('span.no-box') : box,
     h('div.cell-main',
-      h('div.name-line', one && it.kind !== 'rule' && it.kind !== 'app' ? PX.fileIcon(one, isFolder(it)) : null,
-        h('span.name-text', it.title), PX.tag(srcLabel, srcKind), flags),
+      h('div.name-line', icon, h('span.name-text', it.title), flags),
       h('div.why', rowText(it)),
-      it.group === 'info' && it.status === 'pending' && it.actions && it.actions.length
-        ? h('div.info-actions', it.actions.map((a) => h('button.btn.small' + (a.kind === 'hibernate' ? '.primary' : ''), {
-          type: 'button', onclick: (e) => { e.stopPropagation(); infoAction(it, a); } }, a.label))) : null,
-      it.action === 'uninstall' && it.status === 'pending' ? h('div.info-actions',
-        PX.apps && PX.apps.uninstalling(it.app_id)
-          ? h('button.btn.small.primary', { type: 'button', title: '卸载程序结束后会自动发现；也可以点这里马上检查',
-            onclick: (e) => { e.stopPropagation(); PX.apps.check(it.app_id); } }, PX.icon('refresh'), '检查是否卸载完成')
-          : h('button.btn.small', { type: 'button', title: '打开它自己的卸载程序，和「设置 > 应用」里卸载一样',
-            onclick: (e) => { e.stopPropagation(); if (PX.apps) PX.apps.uninstall(it.app_id); } }, '卸载…'),
-        h('button.btn.quiet.small', { type: 'button', onclick: (e) => { e.stopPropagation(); openTool('apps'); } }, '在「应用」里查看')) : null),
+      buttons.length ? h('div.info-actions', buttons) : null),
     PX.score(it.score, (it.basis || []).join('\n')),
     h('div.size', it.size || it.logical_size > 0 ? fmt.bytes(it.size) : ''),
-    h('div.row-actions', one && !isFolder(it) ? PX.openButton(one) : null, one ? PX.revealButton(one) : null,
-      h('button.btn.quiet.small', { type: 'button', title: '问 AI', onclick: (e) => { e.stopPropagation(); PX.ask({ type: 'plan_item', id: it.id }, it.title); } },
-        PX.icon('spark'), '问 AI')));
+    PX.rowActions({ path: one, isDir: isFolder(it) || it.kind === 'rule',
+      ask: it.account ? null : () => PX.ask({ type: 'plan_item', id: it.id }, it.title) }));
     list.appendChild(row);
     if (state.open.has(it.id)) list.appendChild(detail(it));
   }
@@ -653,13 +693,12 @@
           pick: { checked: on, disabled: !editable, onchange: (want, box) => chooseCopies(it, f.path, want, box) } }));
       }
     } else {
-      for (const p of showAll ? all : all.slice(0, 6)) rows.push(PX.placeRow(p, { folder: isFolder(it) || it.kind === 'rule' }));
+      for (const p of all.slice(0, PX.foldCount(all.length, showAll))) rows.push(PX.placeRow(p, { folder: isFolder(it) || it.kind === 'rule' }));
     }
-    const more = !dup && all.length > 6 ? h('button.fold', { type: 'button', onclick: (e) => {
-      e.stopPropagation();
-      showAll ? state.open.delete('paths:' + it.id) : state.open.add('paths:' + it.id);
+    const more = dup ? null : PX.foldButton(all.length, showAll, (open) => {
+      open ? state.open.add('paths:' + it.id) : state.open.delete('paths:' + it.id);
       draw(true);
-    } }, showAll ? '收起' : `显示全部 ${all.length} 项`) : null;
+    });
     const title = dup ? '这几份副本' : it.kind === 'rule' ? '清理这些位置' : '位置';
     const shown = rowText(it);  // the row already says this: never again below
     const fact = (text) => (text && text !== shown ? text : '');
@@ -679,9 +718,13 @@
   function group(c, id, name) {
     const rows = items().filter((it) => it.group === id && it.status === 'pending');  // handled ones: see handled()
     if (!rows.length) return;
+    const closed = state.open.has('closed:' + id);
+    const flip = (key) => (open) => { open ? state.open.add(key) : state.open.delete(key); draw(true); };
     const sec = c.appendChild(h('section.group-card.' + GROUP[id][0], { id: 'group-' + id }));
-    sec.appendChild(h('div.gc-head', h('i.sw.' + GROUP[id][0]), h('h2', name), h('span.gc-count', `${rows.length} 项`),
+    sec.appendChild(PX.foldHead('div.gc-head', !closed, (open) => flip('closed:' + id)(!open),
+      h('i.sw.' + GROUP[id][0]), h('h2', name), h('span.gc-count', `${rows.length} 项`),
       h('span.gc-note', GROUP[id][1]), h('span.gc-size', fmt.bytes(rows.reduce((s, it) => s + (it.size || 0), 0)))));
+    if (closed) return;
     const list = sec.appendChild(h('div.list'));
     const cats = [];
     for (const it of rows) { let cat = cats.find((x) => x.name === it.category); if (!cat) cats.push(cat = { name: it.category, rows: [] }); cat.rows.push(it); }
@@ -692,20 +735,21 @@
       const page = CAT_PAGE[cat.name] || (personal ? ['mine', '我的文件'] : null);
       // programs are uninstalled one at a time: their category has no box to tick them all
       const tickable = id !== 'info' && cat.rows.some((it) => it.action !== 'uninstall');
-      list.appendChild(h('div.cat-head', { id: catAnchor(id, cat.name) },
-        tickable ? PX.groupBox(can.length, can.filter(isSel).length, (on) => { for (const it of can) setSel(it, on); draw(true); },
-          '选择「' + cat.name + '」这一组') : id !== 'info' ? h('span.group-box-gap') : null,
-        h('b', cat.name), h('span.muted.small', `${cat.rows.length} 项` + (cat.rows.some((it) => it.size)
-          ? ` · ${fmt.bytes(cat.rows.reduce((s, it) => s + (it.size || 0), 0))}` : '')),
-        h('span.grow'),
-        page && id !== 'info' ? h('button.btn.quiet.small.go', { type: 'button', title: `在「${page[1]}」里看全部细节`, onclick: () => openTool(page[0]) },
-          `去「${page[1]}」`, PX.icon('chev')) : null));
-      const limit = cat.rows.length > 12 && !state.open.has('cat:' + id + cat.name) ? 8 : cat.rows.length;
-      cat.rows.slice(0, limit).forEach((it) => itemRow(list, it));
-      if (limit < cat.rows.length) {
-        list.appendChild(h('button.fold', { type: 'button', onclick: () => { state.open.add('cat:' + id + cat.name); draw(true); } },
-          `显示其余 ${cat.rows.length - limit} 项`));
+      // 仅供了解 has a single category that only repeats the card's title: no sub-heading then
+      if (!(id === 'info' && cats.length === 1)) {
+        list.appendChild(h('div.cat-head', { id: catAnchor(id, cat.name) },
+          tickable ? PX.groupBox(can.length, can.filter(isSel).length, (on) => { for (const it of can) setSel(it, on); draw(true); },
+            '选择「' + cat.name + '」这一组') : h('span.group-box-gap'),
+          h('div.cat-title', h('b', cat.name), h('span.muted.small', `${cat.rows.length} 项` + (cat.rows.some((it) => it.size)
+            ? ` · ${fmt.bytes(cat.rows.reduce((s, it) => s + (it.size || 0), 0))}` : ''))),
+          page && id !== 'info' ? h('button.btn.quiet.small.go', { type: 'button', title: `在「${page[1]}」里看全部细节`, onclick: () => openTool(page[0]) },
+            `去「${page[1]}」`, PX.icon('chev')) : null));
       }
+      const key = 'cat:' + id + cat.name;
+      const open = state.open.has(key);
+      cat.rows.slice(0, PX.foldCount(cat.rows.length, open)).forEach((it) => itemRow(list, it));
+      const more = PX.foldButton(cat.rows.length, open, flip(key));
+      if (more) list.appendChild(more);
     }
   }
 
@@ -723,17 +767,15 @@
       if (p.resumed) c.appendChild(PX.notice('已保留提权前的检查结果和勾选，只补查管理员项目；新发现的项目请手动勾选。空间分析原有的读取缺口仍保留，可按目录重扫。', 'info'));
       const coverage = p.coverage;
       if (coverage) {
-        const space = coverage.space;
-        const roots = space ? space.roots || [] : [];
-        c.appendChild(PX.notice((roots.length ? `空间分析已查看：${roots.map(PX.displayPath).join('、')}。` : '本次未运行空间分析。')
-          + `个人文件${p.options?.duplicates !== false ? '和重复文件' : ''}按本次范围检查；跳过系统、应用数据和排除位置。`
-          + (space && space.incomplete ? ` 空间统计有跳过项${space.denied ? `，其中 ${fmt.count(space.denied)} 个目录无法读取` : ''}，显示的是已检查到的占用。` : ''), 'info'));
         if (coverage.duplicates && coverage.duplicates.truncated) {
           c.appendChild(PX.notice('重复文件尚未全部比对：已达到本次体检的文件数、内容读取或比对时间上限。已列出的副本均完成内容校验，可到「重复文件」选择目录继续查找。', 'warn',
             h('button.btn.small', { type: 'button', onclick: () => PX.go('dups') }, '去重复文件')));
         }
       }
       const personalScan = p.personal_scan || (p.extra && p.extra.personal_scan);
+      if (personalScan && (personalScan.accounts_denied || []).length) {
+        c.appendChild(PX.notice(`没能读取这些账户的文件夹：${personalScan.accounts_denied.join('、')}。`, 'warn'));
+      }
       if (personalScan && personalScan.truncated) {
         c.appendChild(PX.notice(`我的文件这次没有全部扫完：已到 ${fmt.count(personalScan.limit || personalScan.files)} 个文件上限。可到「我的文件」选择文件夹分批整理。`, 'warn',
           h('button.btn.small', { type: 'button', onclick: () => PX.go('mine') }, '去我的文件')));
@@ -744,12 +786,11 @@
           h('button.btn.small', { type: 'button', onclick: () => PX.go('settings') }, '去设置')));
       }
       overview(c);
-      toolCoverage(c);
       c.appendChild(h('button.plan-disclosure', { type: 'button', 'aria-expanded': String(state.planOpen),
         'aria-controls': 'checkup-plan-details', onclick: () => { state.planOpen = !state.planOpen; draw(true); } },
         PX.icon('chev', 'gc-chev'),
-        state.planOpen ? '收起统一清理方案' : '查看统一清理方案',
-        h('span.small.muted', `共 ${items().length} 项 · 可逐项查看原因、调整勾选`)));
+        h('b', state.planOpen ? '收起清理方案' : '查看清理方案'),
+        h('span.small.muted', `共 ${items().length} 项 · 逐项查看原因、调整勾选`)));
       const details = c.appendChild(h('section', { id: 'checkup-plan-details', hidden: !state.planOpen }));
       if (state.planOpen) {
         if (items().some(selectable)) scoreBar(details);
@@ -759,6 +800,7 @@
         for (const g of p.groups) group(details, g.id, g.name);
         handled(details);
       }
+      toolCoverage(c);  // reference, after the plan: what was looked at, and the way into each tool
       const n = selectedItems().length;
       if (n || state.status === 'executing') {
         c.appendChild(h('div.actionbar', h('div.grow', h('span.fig', fmt.bytes(selectedSize())), h('span.muted', `  已选 ${n} 项`)),

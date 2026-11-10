@@ -190,6 +190,13 @@ PX.sel.paths.add('D:\\copy.png');
 assert.ok(PX.sel.has(copies));
 PX.sel.set(copies, false);
 assert.ok(!PX.sel.paths.has('E:\\copy.png'));
+// Long lists fold by one rule on every page: five rows, unless the list is only a couple longer.
+assert.strictEqual(PX.foldCount(5, false), 5);
+assert.strictEqual(PX.foldCount(PX.FOLD_SHOW + PX.FOLD_SLACK, false), 7);
+assert.strictEqual(PX.foldCount(8, false), PX.FOLD_SHOW);
+assert.strictEqual(PX.foldCount(8, true), 8);
+// Another account's file is the user's to tick, never the score's (it is personal, so only 「包括我的文件」 reaches it).
+assert.strictEqual(PX.scoreTick({ personal: true, account: '家人', score: 90, eligible: false }, 7, false), null);
 console.log('ui tests passed');
 // Elevation is another process: explicit shared choices must survive its UI initialization.
 PX.sel.rules.add('user_temp'); PX.sel.paths.add('D:\\keep.txt'); PX.sel.items.add('startup:sample');

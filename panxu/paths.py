@@ -189,6 +189,14 @@ _ROOT_SYSTEM_SUBTREES = {'windows', '$recycle.bin', 'system volume information',
                          '$windows.~bt', '$windows.~ws', '$winreagent', 'windows.old', '$sysreset', '$getcurrent'}
 
 
+# The folders Windows gives every account. They are known folders for the current user already; for any
+# other account (looked through as administrator) they must stay as well, empty or not.
+_PROFILE_FOLDERS = {'desktop', 'documents', 'downloads', 'pictures', 'videos', 'music', 'appdata', 'onedrive',
+                    'favorites', 'contacts', 'links', 'saved games', 'searches', '3d objects', 'application data',
+                    'local settings', 'my documents', 'start menu', 'cookies', 'recent', 'sendto', 'templates',
+                    'nethood', 'printhood'}
+
+
 def _absolute(path: str) -> bool:
     """Absolute with a drive (or UNC share) on Windows; POSIX-absolute in Linux test runs.
 
@@ -325,6 +333,9 @@ class ProtectionPolicy:
             return '这是系统或用户的基础文件夹，只能清理其中的内容'
         if key(ntpath.dirname(normalized)) in self.users_dirs:
             return '这是一个 Windows 用户的个人文件夹'
+        parent = ntpath.dirname(normalized)
+        if key(ntpath.dirname(parent)) in self.users_dirs and ntpath.basename(normalized).lower() in _PROFILE_FOLDERS:
+            return '这是 Windows 为每个账户准备的基础文件夹，只能清理其中的内容'
         # a selection must not contain anything protected
         for base in self.exact_paths + self.subtrees + self.excluded:
             if is_within(base, path) and key(base) != k:
