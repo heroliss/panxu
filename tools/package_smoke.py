@@ -53,6 +53,14 @@ def main() -> int:
     if os.name != 'nt' or len(sys.argv) != 2:
         print(__doc__)
         return 2
+    # 盘序 allows one window at a time: with one open, the package would only say 「盘序已经在运行」
+    kernel32 = ctypes.windll.kernel32
+    running = kernel32.OpenMutexW(0x00100000, False, 'Local\\PanXu-SingleInstance')   # SYNCHRONIZE
+    if running or ctypes.get_last_error() == 5 or kernel32.GetLastError() == 5:       # 5: an elevated instance
+        if running:
+            kernel32.CloseHandle(running)
+        print('盘序正在运行：请先关闭它再检查（同一时间只允许一个窗口），这次没有检查打包版。')
+        return 3
     work = tempfile.mkdtemp(prefix='panxu-package-')
     proc = None
     try:
