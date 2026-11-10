@@ -537,7 +537,7 @@
     sandbox_restore: ({ item_id }) => { const i = recycled.findIndex((r) => r.id === item_id); const [r] = recycled.splice(i, 1); sandbox.recycle_count -= 1; return r.original; },
     sandbox_reset: () => sandbox,
     drives: () => handlers.init().drives,
-    init: () => ({ version: '2.2.0', admin: !!sandbox || location.hash.includes('admin'), other_accounts: ['家人'], windows: true, settings, has_key: hasKey, sandbox,
+    init: () => ({ version: '2.2.1', admin: !!sandbox || location.hash.includes('admin'), other_accounts: ['家人'], windows: true, settings, has_key: hasKey, sandbox,
       plan_groups: planGroups, checkup_stages: stages,
       presets: [{ id: 'deepseek', name: 'DeepSeek', base_url: 'https://api.deepseek.com', protocol: 'openai', models: ['deepseek-flash', 'deepseek-v4-pro'], json_mode: true, thinking_toggle: true, key_url: 'x' },
         { id: 'kimi', name: 'Kimi（月之暗面）', base_url: 'https://api.moonshot.cn/v1', protocol: 'openai', models: [], json_mode: true },

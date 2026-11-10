@@ -21,6 +21,18 @@ def item(**kw):
     return {**base, **kw}
 
 
+class PackageTest(unittest.TestCase):
+    def test_the_package_ships_the_config_that_lets_a_downloaded_copy_start(self):
+        # 2.2.0 started from the build folder but not from the downloaded zip: its files carry the
+        # "from the internet" mark, and .NET then refuses to load Python.Runtime.dll without this setting
+        with open(os.path.join(ROOT, 'assets', 'PanXu.exe.config'), encoding='utf-8') as fh:
+            self.assertIn('<loadFromRemoteSources enabled="true"/>', fh.read())
+        with open(os.path.join(ROOT, 'build.ps1'), encoding='utf-8') as fh:
+            script = fh.read()
+        self.assertIn("'assets\\PanXu.exe.config'", script)
+        self.assertIn("'PanXu.exe.config'", script)
+
+
 class CheckPlanTest(unittest.TestCase):
     def levels(self, items, **kw):
         return [(f['level'], f['text']) for f in real_check.check_plan({'items': items}, WIN_ENV, **kw)]

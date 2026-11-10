@@ -101,10 +101,14 @@ if (Test-Path -LiteralPath (Join-Path $root 'licenses')) {
 
 $exe = Join-Path $package 'PanXu.exe'
 if (-not (Test-Path -LiteralPath $exe)) { throw 'PanXu.exe was not produced.' }
+# Files extracted from a downloaded zip carry the "from the internet" mark; without this file next to the exe
+# .NET refuses to load the bundled DLLs and the window never opens (see assets\PanXu.exe.config).
+Copy-Item -LiteralPath (Join-Path $root 'assets\PanXu.exe.config') -Destination (Join-Path $package 'PanXu.exe.config')
 $zip = Join-Path $dist "PanXu-$version-win-x64.zip"
 if (Test-Path -LiteralPath $zip) { $zip = Join-Path $dist "PanXu-$version-win-x64-$stamp.zip" }
 Compress-Archive -Path $package -DestinationPath $zip
 Write-Host ''
 Write-Host "Done: $exe"
 Write-Host "Zip:  $zip"
+Write-Host "Check it as a download: $Python tools\package_smoke.py `"$zip`""
 Write-Host 'Build success is not acceptance: launch PanXu.exe and walk through docs/ACCEPTANCE.md.'
