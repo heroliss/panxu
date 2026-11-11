@@ -258,6 +258,35 @@ def _layout() -> tuple[list[_Spec], list[tuple[str, float]]]:
     for app in ('Code - Insiders', 'obsidian'):
         add(F(f'{R}/{app}/Code Cache/js/demo', 1 * MB, age=40))
         add(F(f'{R}/{app}/IndexedDB/keep-data', data=b'KEEP USER DATA', age=40))
+    # programs with a Chromium inside (Electron, WebView2): their caches are found by structure
+    # (junk.find_chromium_caches), not by a rule per product. The caches go; everything next to them stays.
+    for app, mb in (('NoteFlow', 96), ('MusicBox', 210)):
+        prof = f'{R}/{app}'
+        add(F(f'{prof}/Local State', data=b'{"os_crypt": {}}', age=3))
+        add(F(f'{prof}/Preferences', data=b'{"theme": "dark"}', age=3))
+        add(F(f'{prof}/Network/Cookies', data=b'KEEP: signed in', age=3))
+        add(F(f'{prof}/Local Storage/leveldb/000003.log', data=b'KEEP: app data', age=3))
+        add(F(f'{prof}/IndexedDB/app.leveldb/000005.ldb', data=b'KEEP: offline data', age=3))
+        add(F(f'{prof}/config.json', data=b'{"window": [1280, 800]}', age=30))
+        for name in ('index', 'data_0', 'data_1'):
+            add(F(f'{prof}/Cache/Cache_Data/{name}', 256 * KB, age=20))
+            add(F(f'{prof}/GPUCache/{name}', 256 * KB, age=20))
+        add(F(f'{prof}/Cache/Cache_Data/f_000001', mb * MB, age=20))
+        add(F(f'{prof}/Code Cache/js/index', 64 * KB, age=20))
+        add(F(f'{prof}/Code Cache/js/9f2c1a_0', 12 * MB, age=20))
+    web = f'{L}/DeskWidget/EBWebView'
+    add(F(f'{web}/Local State', data=b'{}', age=5))
+    add(F(f'{web}/Default/Preferences', data=b'{}', age=5))
+    add(F(f'{web}/Default/Network/Cookies', data=b'KEEP: signed in', age=5))
+    add(F(f'{web}/Default/Cache/Cache_Data/index', 256 * KB, age=30))
+    add(F(f'{web}/Default/Cache/Cache_Data/f_00000a', 38 * MB, age=30))
+    for name in ('index', 'data_0', 'data_1', 'f_000001'):
+        add(F(f'{web}/GrShaderCache/{name}', 512 * KB, age=30))
+    # a folder that is only NAMED Cache, in a program without a Chromium profile: its name proves nothing
+    add(F(f'{R}/PhotoTool/Cache/projects.db', 40 * MB, age=20))
+    add(F(f'{R}/PhotoTool/settings.ini', data=b'[ui]\nlang=zh\n', age=20))
+    add(F(f'{L}/pnpm-cache/metadata/registry.npmjs.org/react.json', 18 * MB, age=70))
+    add(F(f'{u}/.cache/puppeteer/chrome/win64-130.0.6723.58/chrome-win64/chrome.dll', 310 * MB, age=120))
     add(F(f'{R}/Adobe/Common/Media Cache Files/clip_0001.cfa', 705 * MB, age=60))
     add(F(f'{R}/Slack/Cache/Cache_Data/data_3', 124 * MB, age=12))
     add(F(f'{u}/AppData/LocalLow/Intel/ShaderCache/cache.bin', 21 * MB, age=12))

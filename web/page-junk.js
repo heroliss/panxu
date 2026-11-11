@@ -184,6 +184,7 @@
         action: 'delete',
         score: { score: res.score, basis: res.basis || [] },
         facts: [['有多少', res.count ? `${fmt.count(res.count)} 个文件，共 ${fmt.bytes(res.size || 0)}` : ''],
+          ['是哪些程序的', PX.appsText(res.apps)],
           ['扫描范围', res.error],
           ['占用空间', PX.sizeDifference(res)],
           ['大小说明', res.size_note],
@@ -230,6 +231,10 @@
       if (inUse) notes.push(`${fmt.count(inUse)} 个文件正在被使用，已跳过`);
       if (failed - inUse > 0) notes.push(`${fmt.count(failed - inUse)} 个文件没有权限删除`);
       for (const r of skipped) notes.push(`${r.name}：${r.skipped}`);
+      // caches found by structure: a running app keeps all of its caches
+      for (const r of lc.rules.filter((x) => (x.held || []).length)) {
+        notes.push(`${r.held.length} 个程序正在运行，它们的缓存整个跳过（${r.held.slice(0, 5).map((x) => x.app.split('\\').pop()).join('、')}${r.held.length > 5 ? ' 等' : ''}），关掉后可以再清理`);
+      }
       container.appendChild(h('div.result', h('div.big', fmt.bytes(lc.freed)),
         h('div.grow', h('b', '已释放'), notes.length ? h('div.small.muted', notes.join('；')) : h('div.small.muted', '全部完成')),
         h('button.btn.quiet', { type: 'button', onclick: () => PX.go('history') }, '查看记录')));

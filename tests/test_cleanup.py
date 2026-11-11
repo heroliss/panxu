@@ -1,9 +1,10 @@
 import os
 import unittest
+from unittest.mock import patch
 
 from helpers import WIN_ENV, TempDirTest
 
-from panxu import junk
+from panxu import junk, winapi
 from panxu.oplog import OperationLog
 
 
@@ -19,7 +20,7 @@ class CatalogueTest(unittest.TestCase):
             self.assertIn(r.group, groups)
             self.assertIn(r.mode, ('files', 'recycle_bin', 'cleanmgr', 'command'))
             if r.mode == 'files':
-                self.assertTrue(r.targets, r.id)
+                self.assertTrue(r.targets or r.finder in junk.FINDERS, r.id)
 
     def test_runtime_guard_rejects_misconfigured_roots(self):
         env = dict(WIN_ENV)
@@ -30,6 +31,112 @@ class CatalogueTest(unittest.TestCase):
         self.assertIsNotNone(junk.unsafe_root_reason('C:\\Users\\alice', env))
         self.assertIsNone(junk.unsafe_root_reason('C:\\Users\\alice\\AppData\\Local\\Temp', env))
         self.assertIsNone(junk.unsafe_root_reason('C:\\Windows\\Temp', env))
+
+
+class ChromiumCacheFinderTest(TempDirTest):
+    """Caches of programs with a Chromium inside are found by their structure -- a Chromium profile AND the
+    cache's own layout -- never by a folder's name."""
+
+    R = 'Users/alice/AppData/Roaming/'
+    L = 'Users/alice/AppData/Local/'
+
+    def setUp(self):
+        super().setUp()
+        self.env = self.posix_env()
+        self.open = {}   # file -> program that has it open (the stand-in for Windows' Restart Manager)
+        patcher = patch.object(winapi, 'programs_using',
+                               lambda files: sorted({self.open[f] for f in files if f in self.open}))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def engine(self, processes=()):
+        return junk.JunkEngine(self.env, admin=False, processes=set(processes))
+
+    def profile(self, base, cache_mb=3):
+        """An Electron-style profile: what must stay, and its caches."""
+        keep = [self.make(base + rel, 10) for rel in (
+            'Local State', 'Preferences', 'Network/Cookies', 'Local Storage/leveldb/000003.log',
+            'IndexedDB/app.leveldb/000005.ldb', 'Service Worker/CacheStorage/abc/index', 'config.json',
+            'Cache/notes-of-the-app.txt', 'Code Cache/other/keep.bin', 'GPUCache/not-a-cache-file.txt')]
+        cache = [self.make(base + rel, size) for rel, size in (
+            ('Cache/Cache_Data/index', 100), ('Cache/Cache_Data/data_0', 100), ('Cache/Cache_Data/f_000001', cache_mb * 1000),
+            ('Code Cache/js/index', 100), ('Code Cache/js/9f2c_0', 500), ('Code Cache/wasm/index-dir/the-real-index', 50),
+            ('GPUCache/index', 100), ('GPUCache/data_0', 100), ('GPUCache/data_1', 100), ('GPUCache/f_00000a', 200))]
+        return keep, cache
+
+    def found(self):
+        return sorted(os.path.relpath(root, self.env['USERPROFILE']).replace(os.sep, '/')
+                      for _, root, _ in junk.rule_entries(junk.RULES_BY_ID['app_web_cache'], self.env))
+
+    def test_only_cache_layouts_inside_a_profile_are_found(self):
+        self.profile(self.R + 'NoteFlow/')
+        self.profile(self.L + 'DeskWidget/EBWebView/Default/')
+        self.make(self.L + 'DeskWidget/EBWebView/Local State', 5)
+        for name in ('index', 'data_0', 'data_1'):
+            self.make(self.L + f'DeskWidget/EBWebView/GrShaderCache/{name}', 10)
+        # named Cache, but no Chromium profile around it
+        self.make(self.R + 'PhotoTool/Cache/projects.db', 999)
+        self.make(self.R + 'PhotoTool/Cache/Cache_Data/index', 10)
+        self.make(self.R + 'PhotoTool/settings.ini', 5)
+        # a profile, but its Cache folder does not have the cache's layout
+        self.make(self.R + 'Odd/Local State', 5)
+        self.make(self.R + 'Odd/Network/Cookies', 5)
+        self.make(self.R + 'Odd/Cache/my-important-export.zip', 999)
+        self.make(self.R + 'Odd/GPUCache/readme.txt', 5)
+        # protected or covered elsewhere: never entered
+        self.profile(self.L + 'Packages/SomeApp_8wekyb3d8bbwe/LocalCache/EBWebView/Default/')
+        self.profile(self.L + 'Programs/Tool/data/')
+        self.assertEqual(self.found(), [
+            'AppData/Local/DeskWidget/EBWebView/Default/Cache/Cache_Data',
+            'AppData/Local/DeskWidget/EBWebView/Default/Code Cache/js',
+            'AppData/Local/DeskWidget/EBWebView/Default/Code Cache/wasm',
+            'AppData/Local/DeskWidget/EBWebView/Default/GPUCache',
+            'AppData/Local/DeskWidget/EBWebView/GrShaderCache',
+            'AppData/Roaming/NoteFlow/Cache/Cache_Data',
+            'AppData/Roaming/NoteFlow/Code Cache/js',
+            'AppData/Roaming/NoteFlow/Code Cache/wasm',
+            'AppData/Roaming/NoteFlow/GPUCache'])
+
+    def test_what_a_fixed_rule_covers_is_not_found_again(self):
+        self.profile(self.R + 'Code/')            # the vscode rule: Cache, Code Cache, GPUCache
+        self.profile(self.L + 'Google/Chrome/User Data/Default/')
+        self.make(self.L + 'Google/Chrome/User Data/Local State', 5)
+        self.assertEqual(self.found(), [])
+
+    def test_cleaning_takes_the_caches_and_nothing_else(self):
+        keep, cache = self.profile(self.R + 'NoteFlow/')
+        eng = self.engine()
+        row = eng.scan(['app_web_cache'])[0]
+        self.assertEqual((row['size'], row['count']), (sum(os.path.getsize(p) for p in cache), len(cache)))
+        self.assertEqual(row['apps'], [{'name': 'NoteFlow', 'size': row['size'], 'count': len(cache)}])
+        result = eng.clean(['app_web_cache'])
+        self.assertEqual(result['freed'], row['size'])
+        self.assertEqual(result['rules'][0]['held'], [])
+        self.assertFalse(any(os.path.exists(p) for p in cache))
+        self.assertTrue(all(os.path.exists(p) for p in keep))
+
+    def test_a_running_app_keeps_all_of_its_caches(self):
+        _, running = self.profile(self.R + 'NoteFlow/')
+        _, idle = self.profile(self.R + 'MusicBox/')
+        _, named = self.profile(self.R + 'Vendor Player/')
+        # Windows says a program has NoteFlow's cache index open; only one of its three caches is touched now
+        self.open[os.path.join(self.env['APPDATA'], 'NoteFlow', 'GPUCache', 'index')] = 'NoteFlow Desktop'
+        result = self.engine(processes={'vendorplayer.exe', 'explorer.exe'}).clean(['app_web_cache'])
+        row = result['rules'][0]
+        self.assertEqual(row['held'], [{'app': 'NoteFlow', 'by': ['NoteFlow Desktop']},
+                                       {'app': 'Vendor Player', 'by': ['vendorplayer.exe']}])
+        self.assertTrue(all(os.path.exists(p) for p in running + named), 'not one file of a running app goes')
+        self.assertFalse(any(os.path.exists(p) for p in idle))
+        self.assertEqual(result['freed'], 4350)   # MusicBox's ten cache files
+
+    def test_found_locations_are_real_folders_deep_inside_app_data(self):
+        self.profile(self.R + 'NoteFlow/')
+        outside = self.make('Elsewhere/App/Cache/Cache_Data/index', 10)
+        with patch.dict(junk.FINDERS, {'chromium': lambda env: [
+                (junk.Target(''), os.path.dirname(outside), 'App'),                       # not in app data
+                (junk.Target(''), self.env['APPDATA'], 'whole'),                          # a base folder itself
+                (junk.Target(''), os.path.join(self.env['APPDATA'], 'NoteFlow'), 'top')]}):  # only one level in
+            self.assertEqual(junk.rule_entries(junk.RULES_BY_ID['app_web_cache'], self.env), [])
 
 
 class EngineTest(TempDirTest):

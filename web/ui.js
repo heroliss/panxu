@@ -595,6 +595,13 @@
     h('div.row-actions', o && o.folder ? null : PX.openButton(path, '打开'), PX.revealButton(path, '打开位置')),
     o && o.facts && o.facts.length ? h('div.dp-place-facts', o.facts) : null);
 
+  // the apps a rule that finds caches by their structure covers (junk.RuleScan.apps): the biggest by name
+  PX.appsText = function (apps) {
+    if (!apps || !apps.length) return '';
+    const name = (a) => a.name.split('\\').pop();
+    return apps.slice(0, 6).map((a) => `${name(a)} ${PX.fmt.bytes(a.size)}`).join('、')
+      + (apps.length > 6 ? ` 等 ${apps.length} 个程序` : apps.length > 1 ? `，共 ${apps.length} 个程序` : '');
+  };
   // the checkbox in front of a group's title: ticked when every row is, a dash when some are, empty when none; a
   // click ticks them all, or unticks them all when all were ticked (``onset(on)``)
   PX.groupBox = function (total, ticked, onset, label) {

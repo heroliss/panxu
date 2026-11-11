@@ -459,8 +459,13 @@ IN_USE = '正在被其他程序使用'
 # a program uses stays exactly as it is, with the program's name on record. Whatever the shell still leaves
 # behind is tried again one by one. Only for folders that are a mixed bag by nature (``piecewise``: a Temp
 # folder at the top of a drive) the entries nobody uses are moved one by one.
+# What a question costs was measured too: about a tenth of a second when nobody uses the files, however many
+# are asked about -- and roughly that much again for EVERY file somebody has open. So questions that are
+# expected to say 「nobody」 are asked in large rounds, and one that said 「somebody」 is narrowed down in small
+# pieces that stop at the first hit.
 USE_CHECK_FILES = 20000   # files of one item the Restart Manager is asked about (most are far smaller)
 USE_CHECK_CHUNK = 2000
+USE_CHECK_PIECE = 100
 PIECE_DEPTH = 6
 PIECE_CALLS = 400
 
@@ -478,21 +483,25 @@ def _files_to_ask_about(path: str, cancel=None, limit: int = USE_CHECK_FILES) ->
     return files[:limit]
 
 
-def _ask(files: list[str], cancel=None) -> list[str] | None:
+def _ask(files: list[str], cancel=None, chunk: int = USE_CHECK_CHUNK, first_hit: bool = False) -> list[str] | None:
+    """Who has any of ``files`` open. ``first_hit``: stop at the first piece somebody uses (the names are then
+    those of that piece: enough to say who, and far cheaper than asking about every open file)."""
     names: list[str] = []
-    for start in range(0, len(files), USE_CHECK_CHUNK):
+    for start in range(0, len(files), chunk):
         check_cancel(cancel)
-        found = winapi.programs_using(files[start:start + USE_CHECK_CHUNK])
+        found = winapi.programs_using(files[start:start + chunk])
         if found is None:
             return None
         names.extend(n for n in found if n not in names)
+        if names and first_hit:
+            break
     return names
 
 
 def programs_using(path: str, cancel=None, limit: int = USE_CHECK_FILES) -> list[str] | None:
     """The programs that have a file of ``path`` (a file, or a folder at any depth; links are not entered) open
     right now: [] when nobody, None when it could not be told (off Windows, the Restart Manager failed)."""
-    return _ask(_files_to_ask_about(path, cancel, limit), cancel)
+    return _ask(_files_to_ask_about(path, cancel, limit), cancel, USE_CHECK_PIECE, first_hit=True)
 
 
 def programs_using_each(items: list[str], cancel=None) -> dict[str, list[str] | None]:
@@ -505,9 +514,9 @@ def programs_using_each(items: list[str], cancel=None) -> dict[str, list[str] | 
     def settle():
         nonlocal round_items, count
         files = [f for _, own in round_items for f in own]
-        found = _ask(files, cancel) if files else []
+        found = _ask(files, cancel, first_hit=True) if files else []
         for path, own in round_items:
-            out[path] = [] if found == [] else _ask(own, cancel)
+            out[path] = [] if found == [] else _ask(own, cancel, USE_CHECK_PIECE, first_hit=True)
         round_items, count = [], 0
     for path in items:
         own = _files_to_ask_about(path, cancel)

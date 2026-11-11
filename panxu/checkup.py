@@ -31,7 +31,7 @@ from .analyst import FILE_BATCH, newer_sibling
 from .duplicates import (AI_RANK, IN_USE, PLACE_RANK, find_duplicates, must_stay, place_label, removal_score,
                          verify_unchanged)
 from .insights import KIND_SCORE, Insights, content_question, file_score, is_copy_name, managed_dir, with_ai
-from .junk import RULES_BY_ID, resolve_target
+from .junk import RULES_BY_ID, resolve_target, rule_entries
 from .scanner import FLAG_CLOUD, FLAG_DENIED, FLAG_EXCLUDED, FLAG_LINKS, FLAG_PROGRAM, SpaceScan
 
 GROUPS = {'safe': '放心清理', 'review': '建议你看看', 'info': '仅供了解'}
@@ -368,6 +368,12 @@ def rule_assessment(row: dict) -> dict:
     elif rule.id == 'component_store':
         score, hold = 60, '耗时较长，且无法预估释放空间，请你决定'
         basis = ['通过 Windows 自带工具清理已替代的组件']
+    elif rule.finder:
+        score = 80
+        basis = ['按固定的目录结构和缓存文件格式识别出的 Chromium 界面缓存（不是凭文件夹名字），清理后会重新生成',
+                 '只取缓存本身，登录状态、设置和本地数据不动；正在运行的程序会整个跳过']
+    elif rule.id == 'browser_downloads':
+        score, basis = 55, ['可以重新下载，但体积大、下载慢；仍在跑自动化测试的工程需要它']
     elif rule.id in ('shader_cache', 'adobe_media_cache', 'gradle'):
         score, basis = 60, ['可以重建，但重新编译、分析媒体或构建的成本较高']
     elif rule.id == 'crash_dumps':
@@ -475,10 +481,12 @@ class PlanBuilder:
                 'what': '', 'why': rule.description,
                 'effect': rule.note or '', 'action': 'delete', 'source': 'rule',
                 'confidence': 1.0 if rule.default else 0.7, 'blocked': blocked,
-                'locations': row.get('locations', [])[:5], **rule_assessment(row)})
+                'locations': row.get('locations', [])[:5], 'apps': row.get('apps', []), **rule_assessment(row)})
             # A rule may delete only old files or only one pattern inside these roots.
             # Never also offer their parent as an entire-folder AI/heuristic cleanup.
             self._claimed.extend(row.get('locations', []))
+            if rule.finder:   # the result lists only the first locations; claim every one
+                self._claimed.extend(root for _, root, _ in rule_entries(rule, self.policy.env))
 
     def _folder_guards(self, path: str, node, owner: str | None, basis: list[str]) -> str | None:
         """Reasons a folder must not be pre-ticked whatever the score (also added to the basis)."""
@@ -505,8 +513,7 @@ class PlanBuilder:
     def reserve_rule_locations(self, env):
         """Residual-folder suggestions must not repackage rule caches or bypass their age filters."""
         for rule in RULES_BY_ID.values():
-            for target in rule.targets:
-                self._claimed.extend(resolve_target(target, env))
+            self._claimed.extend(root for _, root, _ in rule_entries(rule, env))
 
     def add_ai_dirs(self, suggestions: list[dict], env: dict, analyst=None, scan=None):
         app_bases = [env.get(k) for k in ('LOCALAPPDATA', 'APPDATA', 'LOCALLOW', 'ProgramData') if env.get(k)]
@@ -1314,6 +1321,12 @@ def execute(backend, plan: dict, item_ids: list[str], job) -> dict:
                 if row['failed']:
                     report['skipped'].append({'title': item['title'], 'left': row['failed'],
                                               'reason': f'{row["failed"]} 个文件正在使用，已跳过'})
+                if row.get('held'):
+                    names = [h['app'] for h in row['held']]
+                    report['skipped'].append({
+                        'title': item['title'], 'left': len(names), 'by': names,
+                        'reason': f'{len(names)} 个程序正在运行，它们的缓存整个跳过：' + '、'.join(names[:6])
+                                  + (' 等' if len(names) > 6 else '')})
 
     # 2. folders and personal files -> Recycle Bin (each path re-checked against the policy)
     to_recycle: list[tuple[dict, str]] = []
