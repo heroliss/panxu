@@ -421,6 +421,67 @@ class SingleInstance:
             self.handle = None
 
 
+_restart_manager = None
+
+
+def programs_using(files: list[str]) -> list[str] | None:
+    """Names of the programs that have any of these files open right now (Windows' Restart Manager, the
+    service installers use to ask 「which programs must close?」), or None when that cannot be told.
+
+    It sees every open handle, not only locks: a cache file a program opened while allowing others to delete
+    it (Chromium does) can be moved away by Windows, yet the program is still using it. Read-only: the
+    session is only asked for its list and ended; nothing is shut down or restarted."""
+    if not files:
+        return []
+    if _sim is not None:
+        return _sim.programs_using(files)
+    if not IS_WINDOWS:
+        return None
+    global _restart_manager
+    from ctypes import wintypes
+
+    class UniqueProcess(ctypes.Structure):
+        _fields_ = [('dwProcessId', wintypes.DWORD), ('ProcessStartTime', wintypes.FILETIME)]
+
+    class ProcessInfo(ctypes.Structure):
+        _fields_ = [('Process', UniqueProcess), ('strAppName', wintypes.WCHAR * 256),
+                    ('strServiceShortName', wintypes.WCHAR * 64), ('ApplicationType', ctypes.c_int),
+                    ('AppStatus', wintypes.ULONG), ('TSSessionId', wintypes.DWORD), ('bRestartable', wintypes.BOOL)]
+    try:
+        if _restart_manager is None:
+            _restart_manager = ctypes.WinDLL('rstrtmgr', use_last_error=True)
+        rm = _restart_manager
+        session = wintypes.DWORD()
+        key = ctypes.create_unicode_buffer(33)
+        if rm.RmStartSession(ctypes.byref(session), 0, key):
+            return None
+    except (OSError, AttributeError):
+        return None
+    try:
+        array = (wintypes.LPCWSTR * len(files))(*files)
+        if rm.RmRegisterResources(session, len(files), array, 0, None, 0, None):
+            return None
+        needed, count, reasons = wintypes.UINT(0), wintypes.UINT(0), wintypes.DWORD(0)
+        rc = rm.RmGetList(session, ctypes.byref(needed), ctypes.byref(count), None, ctypes.byref(reasons))
+        if rc == 0:
+            return []
+        if rc != 234:  # ERROR_MORE_DATA: how many there are
+            return None
+        infos = (ProcessInfo * needed.value)()
+        count = wintypes.UINT(needed.value)
+        if rm.RmGetList(session, ctypes.byref(needed), ctypes.byref(count), infos, ctypes.byref(reasons)):
+            return None
+        mine = os.getpid()
+        names = []
+        for info in infos[:count.value]:
+            name = info.strAppName.strip() or f'进程 {info.Process.dwProcessId}'
+            if info.Process.dwProcessId != mine and name not in names:
+                names.append(name)
+        return names
+    finally:
+        rm.RmEndSession(session)
+
+
 def find_window(title: str):
     if not IS_WINDOWS:
         return None

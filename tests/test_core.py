@@ -1,10 +1,11 @@
 import json
 import os
 import unittest
+from unittest.mock import patch
 
 from helpers import WIN_ENV, TempDirTest
 
-from panxu import fsops, paths
+from panxu import fsops, paths, winapi
 from panxu.oplog import OperationLog
 from panxu.settings import Settings
 
@@ -136,6 +137,143 @@ class FsOpsTest(TempDirTest):
         self.assertEqual(done, [])
         self.assertEqual(stats.failed, 1)
         self.assertTrue(os.path.exists(f))
+
+
+class RecycleInUseTest(TempDirTest):
+    """fsops.recycle with stand-ins that behave as Windows does (measured on a real PC).
+
+    The shell: a folder holding a locked file does not move at all, the call returns 124, and the items after
+    it in the same call are not touched. A file a program opened while sharing deletion is not locked: the
+    shell moves it. The Restart Manager names the program in both cases."""
+
+    def setUp(self):
+        super().setUp()
+        self.bin = os.path.join(self.tmp, 'bin')
+        os.makedirs(self.bin)
+        self.locked = {}     # file -> program: open, and locked against moving
+        self.shared = {}     # file -> program: open, but Windows would move it
+        self.calls = []
+        self.manager = True  # the Restart Manager answers
+
+        def shell(items, hwnd=None):
+            self.calls.append(list(items))
+            for n, path in enumerate(items):
+                if any(paths.is_within(f, path) for f in self.locked):
+                    return 124, False
+                os.rename(path, os.path.join(self.bin, f'{len(self.calls)}-{n}-{os.path.basename(path)}'))
+            return 0, False
+
+        def using(files):
+            if not self.manager:
+                return None
+            held = {**self.locked, **self.shared}
+            return sorted({held[f] for f in files if f in held})
+        for name, value in (('recycle_paths', shell), ('recycled_since', lambda root, since: None),
+                            ('programs_using', using)):
+            patcher = patch.object(winapi, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def folder(self, name):
+        for rel in ('one.bin', 'sub/two.bin', 'sub/deep/three.bin'):
+            self.make(f'{name}/{rel}', 1000)
+        return os.path.join(self.tmp, name)
+
+    def files_in(self, folder):
+        return sorted(os.path.relpath(os.path.join(base, f), folder).replace(os.sep, '/')
+                      for base, _, files in os.walk(folder) for f in files)
+
+    def test_a_folder_a_program_uses_is_left_whole_and_costs_nothing_else(self):
+        a, b, c, d = (self.folder(n) for n in 'abcd')
+        self.locked[self.make('b/sub/deep/locked.bin', 1000)] = 'Cursor'
+        stats, done = fsops.recycle([a, b, c, d])
+        self.assertEqual(done, [a, c, d])
+        self.assertEqual(stats.failed, 0)
+        self.assertEqual(stats.held, {b: ['Cursor']})
+        self.assertEqual(stats.partial, {})
+        # nothing of b moved: a running program's cache is not emptied around the files it holds
+        self.assertEqual(self.files_in(b), ['one.bin', 'sub/deep/locked.bin', 'sub/deep/three.bin', 'sub/two.bin'])
+        self.assertFalse(any(b in call for call in self.calls), 'a folder in use is never handed to the shell')
+        self.assertEqual((stats.files, stats.bytes, stats.in_use), (9, 9000, 1))
+        self.assertEqual(stats.problems(), [])
+        self.assertEqual(stats.skipped(), [{'path': b, 'left': 1, 'by': ['Cursor'], 'reason': '「Cursor」正在使用，已整个跳过'}])
+
+    def test_files_that_are_open_but_not_locked_are_not_pulled_from_under_the_program(self):
+        # Windows would move this folder without complaint; the program reading its cache would lose it
+        cache = self.folder('cache')
+        self.shared[os.path.join(cache, 'sub', 'two.bin')] = 'Unity'
+        self.shared[os.path.join(cache, 'one.bin')] = 'Unity Hub'
+        free = self.folder('free')
+        stats, done = fsops.recycle([cache, free])
+        self.assertEqual(done, [free])
+        self.assertEqual(stats.held, {cache: ['Unity', 'Unity Hub']})
+        self.assertEqual(len(self.files_in(cache)), 3)
+        self.assertIn('「Unity、Unity Hub」正在使用', stats.failures[0]['reason'])
+
+    def test_a_single_file_in_use_names_the_program(self):
+        free = self.make('free.bin', 10)
+        held = self.make('held.bin', 10)
+        self.locked[held] = 'Word'
+        stats, done = fsops.recycle([held, free])
+        self.assertEqual(done, [free])
+        self.assertEqual(stats.held, {held: ['Word']})
+        self.assertEqual(stats.problems(), [])
+        self.assertTrue(os.path.exists(held))
+
+    def test_without_the_restart_manager_the_shell_still_decides_one_item_at_a_time(self):
+        self.manager = False
+        a, b, c = (self.folder(n) for n in 'abc')
+        self.locked[self.make('b/locked.bin', 10)] = 'Cursor'
+        stats, done = fsops.recycle([a, b, c])
+        self.assertEqual(done, [a, c])           # c is after b in the batch and still goes
+        self.assertEqual(stats.held, {b: []})    # in use, by whom cannot be told
+        self.assertEqual(stats.failures[0]['reason'], '正在被其他程序使用，已整个跳过')
+        self.assertEqual(len(self.files_in(b)), 4)
+
+    def test_a_mixed_bag_folder_gives_up_what_nobody_uses(self):
+        # a Temp folder at the top of a drive: many programs' leftovers side by side
+        temp = os.path.join(self.tmp, 'Temp')
+        for rel in ('old-build/a.obj', 'old-build/b.obj', 'render/frames.bin', 'loose.tmp'):
+            self.make('Temp/' + rel, 100)
+        self.shared[self.make('Temp/live/session.dat', 100)] = 'Blender'
+        self.make('Temp/live/other.dat', 100)
+        stats, done = fsops.recycle([temp], piecewise={temp})
+        self.assertEqual(done, [])
+        self.assertEqual(self.files_in(temp), ['live/other.dat', 'live/session.dat'])   # the folder in use: whole
+        self.assertEqual(stats.partial, {temp: {'left': 2, 'bytes': 400, 'files': 4}})
+        self.assertEqual((stats.files, stats.bytes), (4, 400))
+        self.assertIn('其余已移到回收站', stats.skipped()[0]['reason'])
+        # the same folder without ``piecewise`` is left whole
+        other = os.path.join(self.tmp, 'App')
+        self.shared[self.make('App/cache/x.dat', 100)] = 'App'
+        self.make('App/logs/y.log', 100)
+        stats, done = fsops.recycle([other])
+        self.assertEqual((done, stats.partial, stats.held), ([], {}, {other: ['App']}))
+        self.assertEqual(len(self.files_in(other)), 2)
+
+    def test_other_shell_errors_keep_their_code(self):
+        with patch.object(winapi, 'recycle_paths', lambda items, hwnd=None: (1223, False)):
+            file = self.make('x.bin', 10)
+            stats, done = fsops.recycle([file])
+        self.assertEqual(stats.failures, [{'path': file, 'reason': '移到回收站失败（代码 1223）'}])
+        self.assertEqual(len(stats.problems()), 1)
+        self.assertEqual(stats.skipped(), [])
+
+    def test_the_users_cancel_in_windows_dialog_stops_everything(self):
+        a, b = self.folder('a'), self.folder('b')
+        with patch.object(winapi, 'recycle_paths', lambda items, hwnd=None: (1223, True)):
+            stats, done = fsops.recycle([a, b])
+        self.assertEqual(done, [])
+        self.assertEqual({f['reason'] for f in stats.failures}, {'已取消'})
+
+    def test_asking_about_a_folder_is_bounded_and_does_not_enter_links(self):
+        folder = self.folder('big')
+        asked = []
+        with patch.object(winapi, 'programs_using', lambda files: asked.append(list(files)) or []):
+            self.assertEqual(fsops.programs_using(folder, limit=2), [])
+        self.assertEqual(sum(len(batch) for batch in asked), 2)
+        self.manager = False
+        self.assertIsNone(fsops.programs_using(folder))
 
 
 class JobStopTest(unittest.TestCase):

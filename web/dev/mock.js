@@ -18,6 +18,7 @@
     ['chrome', 'Google Chrome', 'browser', 'Google Chrome 的网页缓存和图形缓存。不影响书签、密码、历史记录和登录状态。', true, false, 1.46 * GB],
     ['edge', 'Microsoft Edge', 'browser', 'Microsoft Edge 的网页缓存和图形缓存。不影响书签、密码、历史记录和登录状态。', true, false, 720 * MB],
     ['vscode', 'Visual Studio Code', 'app', 'VS Code 的界面缓存、扩展安装包缓存和旧日志。不影响设置和扩展。', true, false, 410 * MB],
+    ['app_web_cache', '应用界面缓存（Electron / 内嵌浏览器）', 'app', '哔哩哔哩、Cursor、Unity Hub、Steam 等用 Chromium 内核做界面的程序的网页、代码和图形缓存，下次启动会重新生成。只取缓存本身，登录状态和设置不动；正在运行的程序整个跳过。', true, false, 2.4 * GB],
     ['shader_cache', '显卡着色器缓存', 'app', 'DirectX 和显卡驱动编译的着色器缓存。删除后游戏首次运行会重新编译，可能短暂卡顿。', false, false, 2.1 * GB],
     ['npm', 'npm 缓存', 'dev', 'Node.js 包下载缓存。删除后再次安装依赖时会重新下载。', false, false, 3.4 * GB],
     ['pip', 'pip 缓存', 'dev', 'Python 包下载缓存。', false, false, 880 * MB],
@@ -483,7 +484,18 @@
       }
       plan.summary = summarize();
       freedNow += del;  // only what was deleted: the Recycle Bin still holds the rest
-      return { deleted: { count: 9000, bytes: del }, recycled: { count: recN, bytes: rec }, disabled: dis, services: svc, failures, items, summary: plan.summary };
+      // like checkup.execute: what a program has open is skipped, and said apart from what went wrong
+      const skipped = [];
+      if (items['rule:user_temp']) skipped.push({ title: '用户临时文件', left: 78, reason: '78 个文件正在使用，已跳过' });
+      const unity = plan.items.find((i) => i.id === 'dir:unity');
+      if (unity && items['dir:unity']) {
+        // a running program uses it: untouched, still pending and ticked
+        rec -= unity.size; recN -= 1;
+        Object.assign(unity, { status: 'pending', result: '', freed: undefined, in_use: '「Unity Hub」正在使用' });
+        items['dir:unity'] = { status: 'held', note: unity.in_use, freed: null };
+        skipped.push({ path: unity.paths[0], title: unity.title, left: 1, by: ['Unity Hub'], reason: '「Unity Hub」正在使用，已整个跳过' });
+      }
+      return { deleted: { count: 9000, bytes: del }, recycled: { count: recN, bytes: rec }, disabled: dis, services: svc, failures, skipped, items, summary: plan.summary };
     }, (f) => ({ stage: 'junk', detail: '用户临时文件', freed: f * 4 * GB })),
     insights_roots: () => personalRoots,
     insights_scan: ({ roots }) => job(6, () => { insights = personalResult(roots); return insights; },
@@ -537,7 +549,7 @@
     sandbox_restore: ({ item_id }) => { const i = recycled.findIndex((r) => r.id === item_id); const [r] = recycled.splice(i, 1); sandbox.recycle_count -= 1; return r.original; },
     sandbox_reset: () => sandbox,
     drives: () => handlers.init().drives,
-    init: () => ({ version: '2.2.1', admin: !!sandbox || location.hash.includes('admin'), other_accounts: ['家人'], windows: true, settings, has_key: hasKey, sandbox,
+    init: () => ({ version: '2.3.0', admin: !!sandbox || location.hash.includes('admin'), other_accounts: ['家人'], windows: true, settings, has_key: hasKey, sandbox,
       plan_groups: planGroups, checkup_stages: stages,
       presets: [{ id: 'deepseek', name: 'DeepSeek', base_url: 'https://api.deepseek.com', protocol: 'openai', models: ['deepseek-flash', 'deepseek-v4-pro'], json_mode: true, thinking_toggle: true, key_url: 'x' },
         { id: 'kimi', name: 'Kimi（月之暗面）', base_url: 'https://api.moonshot.cn/v1', protocol: 'openai', models: [], json_mode: true },
@@ -556,11 +568,14 @@
         && PX.points(SCORES['rule:' + id] || 70) >= settings.checkup.auto_threshold,
       basis: ['按缓存重建成本和最近活动评分'],
       logical_size: id === 'user_temp' ? 510 * GB : admin ? 0 : size, count: size ? Math.round(size / (200 * 1024)) : 0,
+      apps: id === 'app_web_cache' ? [['bilibili', 414], ['Yodao\\DeskDict', 329], ['Claude-Data', 324], ['Steam', 200], ['XiaomiCloud', 191],
+        ['ZCode', 165], ['UnityHub', 66], ['Cursor', 21], ['UGit', 13]].map(([name, mb]) => ({ name, size: mb * MB, count: mb * 3 })) : [],
       size_note: id === 'recycle_bin' ? 'Windows 提供的估算大小，可能包含稀疏或压缩文件的标称大小；清空后的已释放按磁盘可用空间变化计算。' : '',
       locations: ['C:\\Users\\demo\\AppData\\Local\\Temp'], needs_admin: admin, running: id === 'edge' ? ['msedge.exe'] : [], error: '', available: size === null || size > 0 })),
     junk_scan: () => job(4, handlers.junk_rows(),
       (f) => ({ index: Math.round(f * rules.length), total: rules.length, current: rules[Math.min(rules.length - 1, Math.round(f * rules.length))][1] })),
-    junk_clean: ({ rule_ids }) => job(6, { freed: 3.9 * GB, rules: rule_ids.map((id) => ({ id, name: id, freed: 1 * GB, files: 1200, failed: 12, in_use: 12, skipped: '', failures: [] })) },
+    junk_clean: ({ rule_ids }) => job(6, { freed: 3.9 * GB, rules: rule_ids.map((id) => ({ id, name: id, freed: 1 * GB, files: 1200, failed: 12, in_use: 12, skipped: '', failures: [],
+      held: id === 'app_web_cache' ? [{ app: 'bilibili', by: ['哔哩哔哩'] }, { app: 'UnityHub', by: ['The Official Unity Hub'] }] : [] })) },
       (f) => ({ index: Math.round(f * rule_ids.length), total: rule_ids.length, current: '用户临时文件', freed: f * 3.9 * GB })),
     space_result: () => ({ root: row(tree), stats: { dirs: 186204, files: 1203344, bytes: tree.size, denied: 412, seconds: 74.2 }, scanned_at: 1 }),
     space_scan: ({ root }) => job(6, { root: row(tree), stats: { dirs: 186204, files: 1203344, bytes: tree.size, cloud_files: 0, cloud_bytes: 0, denied: 412, seconds: 74.2 } },

@@ -103,3 +103,27 @@
 - NVIDIA：[官方着色器缓存说明](https://nvidia.custhelp.com/app/answers/detail/a_id/5735)列出 Local/NVIDIA Corporation/NV_Cache，补入现有着色器缓存规则。重新编译可能使首次游戏运行变慢，继续按较高重建成本评分。
 - DISM：[官方日志说明](https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/deployment-image-servicing-and-management--dism--best-practices)区分当前 dism.log 与轮换的 .bak。仅匹配 dism.log.bak、保留 7 天并检查维护进程；诊断历史不可重建，列为手动确认且永不自动勾选。不会清理当前日志、其他备份或系统事件日志。
 - 失效登记仅供核实，不把全注册表里陌生、空或过时的键批量当成垃圾。软件的修复、卸载元数据仍受保护；Windows 维护组件、Installer、DriverStore 等继续通过系统工具或说明入口处理。
+
+## 2026-11-11：按结构识别的应用界面缓存
+
+2026-11-06 的原则是「不把任意名为 Cache 的文件夹变成清理目标」，这条仍然成立。但逐个产品写规则跟不上：在维护者的电脑上只读排查，`%APPDATA%` 和 `%LOCALAPPDATA%` 里有 37 个程序各带一套 Chromium 缓存（哔哩哔哩、Cursor、Unity Hub、Steam、有道、Claude、各种 WebView2 小工具……），合计 2.4 GB，此前只有 VS Code、Slack 等几个有规则，其余靠 AI 当成普通文件夹建议、整个移进回收站。
+
+新规则 `app_web_cache`（`Rule.finder='chromium'`，`junk.find_chromium_caches`）不看名字，要求两个条件同时成立：
+
+1. **上一级是 Chromium 的用户资料目录**：里面有 `Local State` 或 `Preferences`，或者同时有 `Network`、`Local Storage`、`Session Storage` 中的两个。
+2. **文件夹本身是缓存的固定格式**：
+   - `Cache\Cache_Data`（网络缓存，里面是 block-file 的 `index` + `data_N`，或 simple cache 的 `index` / `index-dir`）；旧布局的 `Cache` 只取 `index`、`data_?`、`f_??????`。
+   - `Code Cache\js`、`wasm`、`webui_js`（各有 `index` 或 `index-dir`）。
+   - `GPUCache`、`DawnCache`、`DawnGraphiteCache`、`DawnWebGPUCache`、`GrShaderCache`、`ShaderCache`、`GraphiteDawnCache`：有 `index` + `data_0` + `data_1`，只取 `index`、`data_?`、`f_??????`，不递归。
+
+依据：[Electron 的 app.getPath 文档](https://www.electronjs.org/docs/latest/api/app#appgetpathname)（sessionData 下的缓存目录）和 Chromium `net/disk_cache` 的两种磁盘格式。同一目录下的 Cookies、Local Storage、IndexedDB、Service Worker、扩展和程序自己的文件都不在目标里；名字叫 Cache 但不满足上面两条的文件夹（例如某个程序把工程数据放在 `Cache` 里）不会被发现。
+
+范围：只在当前用户的 `%APPDATA%`、`%LOCALAPPDATA%` 里找，最深 4 层，不进入 `Packages`、`Programs`、`Temp`、`Microsoft\Windows` 等受保护或另有规则的位置；找到的位置必须在应用数据里至少两层深、通过和固定规则相同的运行时检查，并且不与任何固定路径规则重叠（浏览器、VS Code 等仍由各自的规则处理，不会重复计数）。
+
+**正在运行的程序整个跳过**（`JunkEngine.running_apps`）。这类规则没有固定的进程名单可等，所以清理时逐个程序判断，两个信号任一成立即算在运行：Windows 的重启管理器说有程序打开了缓存的索引文件（`index` / `data_0`，Chromium 运行期间一直开着）；或者有进程的名字和这个程序的文件夹名一致。只问索引文件是实测的结果：把一个程序的全部缓存文件都拿去问，在真实电脑上用了六分钟（每个被打开的文件都会拖慢回答），只问索引文件是十秒左右，认出的程序相同。
+
+评分 80（界面缓存，可重建），与其他规则一样再按近期活动调整；达到门槛会自动勾选。演练环境里有两个 Electron 程序、一个 WebView2 程序和一个只是名字叫 Cache 的反例。
+
+同时新增三条开发缓存规则（都默认不勾）：`pnpm`（`%LOCALAPPDATA%\pnpm-cache`，元数据缓存，不含 store）、`browser_downloads`（Puppeteer 的 `%USERPROFILE%\.cache\puppeteer` 和 Playwright 的 `%LOCALAPPDATA%\ms-playwright`，可重新下载，55 分）、`cpptools_ipch`（VS Code C/C++ 扩展的预编译头缓存）。
+
+排查时看到但**没有**做成规则的：`.cache\codex-runtimes`（2 GB，不确定能否随时重建）、`.cache\huggingface`（模型，重新下载成本高）、各程序的 `logs`（新版 Outlook、微信等，格式和保留需求各不相同）、浏览器的 `Service Worker\CacheStorage`（离线数据）、`.vscode\extensions`、`%ProgramData%\Package Cache`（卸载和修复需要）。

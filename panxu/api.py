@@ -824,6 +824,10 @@ class Backend:
                         fsops.check_cancel(job.cancel)
                         job.update(done=i, total=total, current=p, freed=stats.bytes)
                         self.oplog.progress(pending, freed=stats.bytes, done=len(done))
+                        busy = fsops.programs_using(p, job.cancel)
+                        if busy:
+                            stats.hold(p, busy)   # a running program is using it: not deleted from under it
+                            continue
                         try:
                             fsops.delete_path(p, cancel=job.cancel, stats=stats)
                         finally:
@@ -832,12 +836,13 @@ class Backend:
             finally:
                 # always record what was actually removed, even when stopped midway
                 cancelled = job.cancel.is_set()
-                if done or stats.failed:
-                    title = f'{verb} {len(done)} 项' + ('（已停止）' if cancelled else '')
+                if done or stats.failed or stats.partial or stats.held:
+                    title = f'{verb} {len(done) + len(stats.partial)} 项' + ('（已停止）' if cancelled else '')
                     if stats.permanent:  # too large for the bin: Windows deleted them, on the user's yes
                         title = (f'移到回收站 {len(done) - len(stats.permanent)} 项，{len(stats.permanent)} 项回收站放不下、已直接删除'
                                  + ('（已停止）' if cancelled else ''))
-                    self.oplog.add(kind, title, freed=stats.bytes, items=done, failures=stats.failures,
+                    self.oplog.add(kind, title, freed=stats.bytes, items=done + list(stats.partial),
+                                   failures=stats.problems() + stats.skipped(),
                                    details={'source': source, 'mode': mode, 'cancelled': cancelled,
                                             'permanent': stats.permanent[:200], 'permanent_bytes': stats.permanent_bytes},
                                    replaces=pending)
@@ -846,7 +851,10 @@ class Backend:
                 self.forget_paths(done, stats.measured)
                 if after is not None:
                     after(done)
-            return {'done': done, 'freed': stats.bytes, 'failed': stats.failed, 'failures': stats.failures,
+            # skipped: left because a program has it open (folders went except for those files) -- not failures
+            problems = stats.problems()
+            return {'done': done, 'freed': stats.bytes, 'failed': len(problems), 'failures': problems,
+                    'skipped': stats.skipped(), 'partial': list(stats.partial),
                     'mode': mode, 'permanent': stats.permanent, 'permanent_bytes': stats.permanent_bytes}
         return self.jobs.start('delete', run, group='modify')
 

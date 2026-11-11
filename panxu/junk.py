@@ -51,6 +51,7 @@ class Rule:
     command: tuple = ()        # argv template for mode=command (%VAR% expanded)
     note: str = ''             # shown as a caution in the UI
     slow: bool = False
+    finder: str = ''           # FINDERS key: locations found by their structure instead of a fixed path
 
 
 GROUPS = [
@@ -77,6 +78,125 @@ def _electron_cache(rule_id, name, folder, exe):
     return Rule(rule_id, name, 'app', f'{name} 的网页、代码和图形缓存，关闭程序后可清理，下次启动会重新生成。',
                 tuple(Target(f'%APPDATA%\\{folder}\\{d}') for d in ('Cache', 'Code Cache', 'GPUCache')),
                 processes=(exe,))
+
+
+# ---------------------------------------------------------------------------
+# Caches found by what they are instead of where one product keeps them.
+#
+# Every Electron app, WebView2 host and CEF client (Steam, bilibili, Cursor, Unity Hub ...) keeps a Chromium
+# profile in its app data, with Chromium's own caches in it under fixed names and in fixed on-disk formats. A
+# rule per product never keeps up: one PC had fifty of them. 「Any folder named Cache」 would be a guess, so a
+# location is taken only when BOTH hold:
+#   1. its parent is a Chromium profile (Local State / Preferences, or its Network + storage folders), and
+#   2. the folder itself has the cache's own layout -- the HTTP cache's Cache_Data, the block-file cache's
+#      index + data_N, the code cache's js / wasm stores.
+# Only those files are taken: Cookies, Local Storage, IndexedDB, Service Worker, extensions and whatever the
+# app itself keeps next to them are never listed. Names per https://www.electronjs.org/docs/latest/api/app and
+# Chromium's net/disk_cache (blockfile: index, data_0..3, f_xxxxxx; simple: index-dir + hashed entries).
+# ---------------------------------------------------------------------------
+
+CHROMIUM_BLOCK_CACHES = ('GPUCache', 'DawnCache', 'DawnGraphiteCache', 'DawnWebGPUCache', 'GrShaderCache',
+                         'ShaderCache', 'GraphiteDawnCache')
+BLOCKFILE_PATTERN = 'index|data_?|f_??????'
+_CODE_CACHE_STORES = ('js', 'wasm', 'webui_js')
+_PROFILE_FILES = {'local state', 'preferences'}
+_PROFILE_DIRS = {'network', 'local storage', 'session storage'}
+# never entered while looking for profiles: stores of their own, and places with rules or protection of their own
+_NO_DESCENT = {'cache', 'code cache', 'indexeddb', 'local storage', 'session storage', 'service worker',
+               'blob_storage', 'extensions', 'crashpad', 'network', 'node_modules', '.git', 'temp', 'tmp',
+               'logs', 'databases', 'file system', 'shared_proto_db'} | {n.lower() for n in CHROMIUM_BLOCK_CACHES}
+_VENDOR_FOLDERS = {'microsoft', 'google', 'tencent', 'netease', 'baidu', 'alibaba', 'bytedance', 'adobe',
+                   'jetbrains', 'mozilla', 'yodao', 'kingsoft'}
+FINDER_DEPTH = 4          # below the app-data folder: App \ [Vendor \] [User Data | EBWebView | Partitions] \ profile
+FINDER_MAX_DIRS = 30000
+
+
+def _listing(path: str) -> tuple[dict, set] | None:
+    """({lower-case sub-folder name: path}, {lower-case file names}) of a folder, links left out."""
+    dirs, files = {}, set()
+    try:
+        with os.scandir(fsops.long_path(path)) as entries:
+            for e in entries:
+                try:
+                    if fsops.is_link(e):
+                        continue
+                    if e.is_dir(follow_symlinks=False):
+                        dirs[e.name.lower()] = os.path.join(path, e.name)
+                    else:
+                        files.add(e.name.lower())
+                except OSError:
+                    continue
+    except OSError:
+        return None
+    return dirs, files
+
+
+def _is_blockfile(files: set) -> bool:
+    return 'index' in files and 'data_0' in files and 'data_1' in files
+
+
+def _chromium_cache_targets(profile_dirs: dict) -> list[tuple[Target, str]]:
+    """The caches of one Chromium profile that have their own layout: (what to take, where)."""
+    found = []
+    cache = profile_dirs.get('cache')
+    if cache:
+        inner = _listing(cache)
+        if inner:
+            data = inner[0].get('cache_data')
+            data_inner = _listing(data) if data else None
+            if data_inner and (_is_blockfile(data_inner[1]) or 'index' in data_inner[1] or 'index-dir' in data_inner[0]):
+                found.append((Target(''), data))                       # the HTTP cache proper
+            elif not data and _is_blockfile(inner[1]):
+                found.append((Target('', pattern=BLOCKFILE_PATTERN, recursive=False), cache))   # older layout
+    code = profile_dirs.get('code cache')
+    if code:
+        inner = _listing(code)
+        for store in _CODE_CACHE_STORES:
+            path = inner[0].get(store) if inner else None
+            store_inner = _listing(path) if path else None
+            if store_inner and ('index' in store_inner[1] or 'index-dir' in store_inner[0]):
+                found.append((Target(''), path))
+    for name in CHROMIUM_BLOCK_CACHES:
+        path = profile_dirs.get(name.lower())
+        inner = _listing(path) if path else None
+        if inner and _is_blockfile(inner[1]):
+            found.append((Target('', pattern=BLOCKFILE_PATTERN, recursive=False), path))
+    return found
+
+
+def find_chromium_caches(env: dict) -> list[tuple[Target, str, str]]:
+    """(what to take, where, the app it belongs to) for every Chromium profile in the user's app data."""
+    out = []
+    budget = FINDER_MAX_DIRS
+    for var in ('APPDATA', 'LOCALAPPDATA'):
+        base = env.get(var)
+        if not base:
+            continue
+        base = native(base)
+        protected = {paths.key(os.path.join(base, *rel)) for rel in (
+            ('Packages',), ('Temp',), ('Programs',), ('Microsoft', 'Windows'), ('Microsoft', 'WindowsApps'),
+            ('Microsoft', 'Credentials'), ('Microsoft', 'Vault'), ('Microsoft', 'Protect'), ('Microsoft', 'Crypto'))}
+        stack = [(base, 0)]
+        while stack and budget > 0:
+            folder, depth = stack.pop()
+            budget -= 1
+            listing = _listing(folder)
+            if listing is None:
+                continue
+            dirs, files = listing
+            if depth >= 1 and (files & _PROFILE_FILES or len(_PROFILE_DIRS & set(dirs)) >= 2):
+                parts = os.path.relpath(folder, base).split(os.sep)
+                vendor = parts[0].lower() in _VENDOR_FOLDERS or parts[0].startswith('@')
+                app = '\\'.join(parts[:2]) if vendor and len(parts) > 1 else parts[0]
+                out.extend((target, root, app) for target, root in _chromium_cache_targets(dirs))
+            if depth < FINDER_DEPTH:
+                for name, path in dirs.items():
+                    if name not in _NO_DESCENT and paths.key(path) not in protected:
+                        stack.append((path, depth + 1))
+    return out
+
+
+FINDERS = {'chromium': find_chromium_caches}
 
 
 RULES: list[Rule] = [
@@ -171,6 +291,9 @@ RULES: list[Rule] = [
          '新版 Teams 内嵌浏览器的网页、代码和图形缓存。下次启动会重新生成，不清空应用设置或账号资料。',
          tuple(Target('%LOCALAPPDATA%\\Packages\\MSTeams_8wekyb3d8bbwe\\LocalCache\\Microsoft\\MSTeams\\EBWebView\\Default\\' + name)
                for name in ('Cache', 'Code Cache', 'GPUCache')), processes=('ms-teams.exe',)),
+    Rule('app_web_cache', '应用界面缓存（Electron / 内嵌浏览器）', 'app',
+         '哔哩哔哩、Cursor、Unity Hub、Steam 等用 Chromium 内核做界面的程序的网页、代码和图形缓存，下次启动会重新生成。只取缓存本身，登录状态和设置不动；正在运行的程序整个跳过。',
+         finder='chromium'),
     Rule('adobe_media_cache', 'Adobe 媒体缓存', 'app',
          'Premiere Pro、After Effects 等为导入的音视频生成的缓存（.cfa/.pek 等）。删除后打开工程时会重新生成，期间较慢。',
          (Target('%APPDATA%\\Adobe\\Common\\Media Cache Files'), Target('%APPDATA%\\Adobe\\Common\\Media Cache')),
@@ -192,6 +315,14 @@ RULES: list[Rule] = [
     Rule('npm', 'npm 缓存', 'dev', 'Node.js 包下载缓存。删除后再次安装依赖时会重新下载。',
          (Target('%LOCALAPPDATA%\\npm-cache'),), default=False),
     Rule('yarn', 'Yarn 缓存', 'dev', 'Yarn 包下载缓存。', (Target('%LOCALAPPDATA%\\Yarn\\Cache'),), default=False),
+    Rule('pnpm', 'pnpm 元数据缓存', 'dev', 'pnpm 查询包信息时的缓存（不含已安装包共用的 store）。删除后再次安装时重新获取。',
+         (Target('%LOCALAPPDATA%\\pnpm-cache'),), default=False),
+    Rule('browser_downloads', '自动化测试下载的浏览器', 'dev',
+         'Puppeteer 和 Playwright 为自动化测试下载的整套浏览器，常有几百 MB 到几 GB。删除后，下次运行相应的安装命令会重新下载。',
+         (Target('%USERPROFILE%\\.cache\\puppeteer'), Target('%LOCALAPPDATA%\\ms-playwright')), default=False),
+    Rule('cpptools_ipch', 'VS Code C/C++ 智能感知缓存', 'dev',
+         'C/C++ 扩展为加快代码提示生成的预编译头缓存（ipch）。删除后打开工程时会重新生成。',
+         (Target('%LOCALAPPDATA%\\Microsoft\\vscode-cpptools\\ipch'),), default=False, processes=('code.exe',)),
     Rule('pip', 'pip 缓存', 'dev', 'Python 包下载缓存。', (Target('%LOCALAPPDATA%\\pip\\cache'),), default=False),
     Rule('uv', 'uv 缓存', 'dev', 'Python 包管理器 uv 的下载与构建缓存。删除后再次安装依赖时会重新下载。',
          (Target('%LOCALAPPDATA%\\uv\\cache'),), default=False, processes=('uv.exe',)),
@@ -283,6 +414,32 @@ def resolve_target(target: Target, env: dict) -> list[str]:
             and paths.key(os.path.realpath(p)) == paths.key(p)]
 
 
+def rule_entries(rule: Rule, env: dict) -> list[tuple[Target, str, str]]:
+    """Everything a rule covers right now: (what to take, where, app name for found locations or '').
+
+    Found locations go through the same runtime guard as fixed ones, must lie at least two levels inside the
+    user's app data, and never overlap a location a rule with a fixed path already covers (browsers, VS Code)."""
+    entries = [(target, root, '') for target in rule.targets for root in resolve_target(target, env)]
+    finder = FINDERS.get(rule.finder)
+    if finder is None:
+        return entries
+    fixed = set()
+    for other in RULES:
+        if other is not rule:
+            for target in other.targets:
+                fixed.update(paths.key(root) for root in resolve_target(target, env))
+    bases = [native(env[k]) for k in ('APPDATA', 'LOCALAPPDATA') if env.get(k)]
+    for target, root, app in finder(env):
+        base = next((b for b in bases if paths.is_within(root, b)), None)
+        if base is None or len(os.path.relpath(root, base).split(os.sep)) < 2:
+            continue
+        if paths.within_any(root, fixed) or any(k.startswith(paths.key(root) + '\\') for k in fixed):
+            continue
+        if unsafe_root_reason(root, env) is None and paths.key(os.path.realpath(root)) == paths.key(root):
+            entries.append((target, root, app))
+    return entries
+
+
 def running_process_names() -> set[str]:
     sim = winapi.simulation()
     if sim is not None:
@@ -348,6 +505,7 @@ class RuleScan:
     error: str = ''
     logical_size: int | None = 0
     size_note: str = ''
+    apps: dict = field(default_factory=dict)   # found locations: app name -> [bytes, files]
     recent_bytes: int = 0  # occupied bytes changed/created within 7 days
     stale_bytes: int = 0   # occupied bytes unchanged for at least 90 days
     unreadable: int = 0
@@ -396,6 +554,36 @@ class JunkEngine:
                     self.last_scan[rule_id].running = procs
         return out
 
+    def running_apps(self, entries, cancel=None) -> dict[str, list[str]]:
+        """Of the apps whose caches were found by structure, the ones that are running: {app: program names}.
+
+        Two independent signs, either is enough:
+        * Windows says a program has the cache's own bookkeeping files open (index / data_0: Chromium keeps
+          them open for as long as it runs). Only those few files are asked about -- asking about every cached
+          file took minutes on a real PC, because each open file makes the answer slower.
+        * a running process is named like the app's folder (Cursor.exe for ...\\Cursor)."""
+        by_app: dict[str, list[str]] = {}
+        for _, root, app in entries:
+            by_app.setdefault(app, []).append(root)
+        running = {''.join(c for c in os.path.splitext(name)[0].lower() if c.isalnum()): name for name in self.processes()}
+        busy: dict[str, list[str]] = {}
+        for app, roots in by_app.items():
+            fsops.check_cancel(cancel)
+            sentinels = []
+            for root in roots:
+                for rel in ('index', 'data_0', os.path.join('index-dir', 'the-real-index')):
+                    path = os.path.join(root, rel)
+                    if os.path.isfile(path):
+                        sentinels.append(path)
+                        break
+            names = list(winapi.programs_using(sentinels) or []) if sentinels else []
+            plain = ''.join(c for c in app.split('\\')[-1].lower() if c.isalnum())
+            if len(plain) >= 4:
+                names += [name for key, name in running.items() if key == plain and name not in names]
+            if names:
+                busy[app] = names
+        return busy
+
     def catalogue(self) -> list[dict]:
         return [{'id': r.id, 'name': r.name, 'group': r.group, 'group_name': GROUP_NAMES[r.group],
                  'description': r.description, 'default': r.default, 'admin': r.admin, 'mode': r.mode,
@@ -425,6 +613,9 @@ class JunkEngine:
                 'recent_bytes': result.recent_bytes, 'stale_bytes': result.stale_bytes, 'unreadable': result.unreadable,
                 'needs_admin': result.needs_admin, 'running': result.running, 'error': result.error,
                 'scope_blocked': result.scope_blocked,
+                # the apps a found-by-structure rule covers, biggest first: [{'name', 'size', 'count'}]
+                'apps': [{'name': name, 'size': size, 'count': count} for name, (size, count)
+                         in sorted(result.apps.items(), key=lambda kv: -kv[1][0])[:40]],
                 'available': not result.scope_blocked and (result.size is None or result.size > 0 or result.count > 0 or rule.mode in ('command',))}
 
     def _scan_rule(self, rule: Rule, cancel) -> RuleScan:
@@ -452,52 +643,57 @@ class JunkEngine:
         for target in rule.targets:
             if target.admin and not self.admin:
                 result.needs_admin = True
-            for root in resolve_target(target, self.env):
-                if skip(root):
-                    continue
-                result.locations.append(root)
-                if target.single_file:
-                    try:
-                        st = os.lstat(fsops.long_path(root))
-                        if fsops.st_is_link(st) or getattr(st, 'st_file_attributes', 0) & winapi.CLOUD_ATTRIBUTES:
+        for target, root, app in rule_entries(rule, self.env):
+            if skip(root):
+                continue
+            result.locations.append(root)
+            before = (result.size, result.count)
+            if target.single_file:
+                try:
+                    st = os.lstat(fsops.long_path(root))
+                    if fsops.st_is_link(st) or getattr(st, 'st_file_attributes', 0) & winapi.CLOUD_ATTRIBUTES:
+                        continue
+                    result.size += fsops.file_size(root, st)
+                    result.logical_size += st.st_size
+                    result.count += 1
+                except OSError:
+                    pass
+                continue
+            min_age = target.min_age_hours * HOUR
+            try:
+                for _, files, _ in fsops.walk_files(root, cancel, recursive=target.recursive,
+                                                    skip_dirs=frozenset(target.skip_dirs), skip=skip, on_error=unreadable):
+                    for entry in files:
+                        if not target.accepts(entry.name):
                             continue
-                        result.size += fsops.file_size(root, st)
+                        try:
+                            st = entry.stat(follow_symlinks=False)
+                        except OSError:
+                            unreadable(entry.path, None)
+                            continue
+                        if getattr(st, 'st_file_attributes', 0) & winapi.CLOUD_ATTRIBUTES:
+                            continue
+                        if min_age and now - fsops.age_time(st) < min_age:
+                            continue
+                        key = paths.key(entry.path)
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        used = fsops.file_size(entry.path, st)
+                        result.size += used
                         result.logical_size += st.st_size
                         result.count += 1
-                    except OSError:
-                        pass
-                    continue
-                min_age = target.min_age_hours * HOUR
-                try:
-                    for _, files, _ in fsops.walk_files(root, cancel, recursive=target.recursive,
-                                                        skip_dirs=frozenset(target.skip_dirs), skip=skip, on_error=unreadable):
-                        for entry in files:
-                            if not target.accepts(entry.name):
-                                continue
-                            try:
-                                st = entry.stat(follow_symlinks=False)
-                            except OSError:
-                                unreadable(entry.path, None)
-                                continue
-                            if getattr(st, 'st_file_attributes', 0) & winapi.CLOUD_ATTRIBUTES:
-                                continue
-                            if min_age and now - fsops.age_time(st) < min_age:
-                                continue
-                            key = paths.key(entry.path)
-                            if key in seen:
-                                continue
-                            seen.add(key)
-                            used = fsops.file_size(entry.path, st)
-                            result.size += used
-                            result.logical_size += st.st_size
-                            result.count += 1
-                            age = now - fsops.age_time(st)
-                            if age < 7 * DAY:
-                                result.recent_bytes += used
-                            elif age >= 90 * DAY:
-                                result.stale_bytes += used
-                except PermissionError:
-                    result.needs_admin = True
+                        age = now - fsops.age_time(st)
+                        if age < 7 * DAY:
+                            result.recent_bytes += used
+                        elif age >= 90 * DAY:
+                            result.stale_bytes += used
+            except PermissionError:
+                result.needs_admin = True
+            if app:
+                known = result.apps.setdefault(app, [0, 0])
+                known[0] += result.size - before[0]
+                known[1] += result.count - before[1]
         if rule.id == 'component_store':
             result.size = None  # cannot be estimated cheaply
             result.logical_size = None
@@ -525,7 +721,7 @@ class JunkEngine:
                     continue
                 step(index, rule.name, total_freed)
                 row = {'id': rule.id, 'name': rule.name, 'freed': 0, 'files': 0, 'failed': 0, 'in_use': 0,
-                       'skipped': '', 'failures': []}
+                       'skipped': '', 'failures': [], 'held': []}
                 outcome.append(row)
                 blocking = [p for p in rule.processes if p.lower() in running]
                 if blocking:
@@ -549,7 +745,8 @@ class JunkEngine:
                 self.oplog.add('junk', '垃圾清理' + ('（已停止）' if cancelled else ''),
                                freed=sum(r['freed'] for r in outcome),
                                items=[{'id': r['id'], 'name': r['name'], 'freed': r['freed'], 'files': r['files'],
-                                       'failed': r['failed'], 'skipped': r['skipped']} for r in outcome],
+                                       'failed': r['failed'], 'skipped': r['skipped'],
+                                       'held': [h['app'] for h in r.get('held', [])]} for r in outcome],
                                failures=failures, details={'mode': 'permanent', 'cancelled': cancelled}, replaces=pending)
             elif self.oplog is not None:
                 self.oplog.drop(pending)
@@ -578,28 +775,34 @@ class JunkEngine:
             return
         stats = fsops.DeleteStats()
         skip = self._skip()
+        entries = [e for e in rule_entries(rule, self.env) if not skip(e[1])]
+        if any(t.admin and not self.admin for t in rule.targets):
+            row['skipped'] = '部分位置需要管理员权限，已跳过'
+        # Locations found by structure have no program list to wait for: Windows is asked who has their files
+        # open, and an app that is running keeps all of its caches (never half of them).
+        busy_apps = self.running_apps(entries, cancel) if rule.finder else {}
+        if rule.finder:
+            row['held'] = [{'app': app, 'by': names} for app, names in sorted(busy_apps.items())]
         try:
-            for target in rule.targets:
+            for target, root, app in entries:
                 if target.admin and not self.admin:
-                    row['skipped'] = '部分位置需要管理员权限，已跳过'
                     continue
-                for root in resolve_target(target, self.env):
-                    if skip(root):
-                        continue
-                    if target.single_file:
-                        try:
-                            st = os.lstat(fsops.long_path(root))
-                            if fsops.st_is_link(st) or getattr(st, 'st_file_attributes', 0) & winapi.CLOUD_ATTRIBUTES:
-                                continue
-                            size = fsops.file_size(root, st)
-                        except OSError:
+                if app in busy_apps:
+                    continue
+                if target.single_file:
+                    try:
+                        st = os.lstat(fsops.long_path(root))
+                        if fsops.st_is_link(st) or getattr(st, 'st_file_attributes', 0) & winapi.CLOUD_ATTRIBUTES:
                             continue
-                        fsops.remove_file(root, stats, size)
+                        size = fsops.file_size(root, st)
+                    except OSError:
                         continue
-                    fsops.delete_matching(root, target.accepts, min_age_seconds=target.min_age_hours * HOUR,
-                                          recursive=target.recursive, skip_dirs=frozenset(target.skip_dirs),
-                                          cancel=cancel, stats=stats, progress=lambda s: progress(s.bytes), skip=skip)
-                    progress(stats.bytes)
+                    fsops.remove_file(root, stats, size)
+                    continue
+                fsops.delete_matching(root, target.accepts, min_age_seconds=target.min_age_hours * HOUR,
+                                      recursive=target.recursive, skip_dirs=frozenset(target.skip_dirs),
+                                      cancel=cancel, stats=stats, progress=lambda s: progress(s.bytes), skip=skip)
+                progress(stats.bytes)
         finally:  # partial results survive a cancel
             row.update(freed=stats.bytes, files=stats.files, failed=stats.failed, in_use=stats.in_use,
                        failures=stats.failures)
@@ -680,6 +883,9 @@ def known_rule_paths(env: dict) -> list[tuple[str, Rule]]:
             expanded = paths.expand(target.path, env)
             if expanded and target.pattern == '*' and not target.single_file:
                 out.append((expanded, rule))
+        if rule.finder:
+            # found locations are real paths already (no wildcard left in them)
+            out.extend((root, rule) for _, root, _ in rule_entries(rule, env))
     return out
 
 

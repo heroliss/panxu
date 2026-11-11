@@ -620,6 +620,33 @@ class CheckupTest(TempDirTest):
         for item in guessed.values():
             self.assertFalse(item['selected'])
 
+    def test_a_folder_a_running_program_uses_is_left_alone_and_stays_in_the_plan(self):
+        plan = self.checkup()
+        folders = [i for i in plan['items'] if i['action'] == 'recycle' and i['kind'] == 'paths' and not i['blocked']
+                   and len(i['paths']) == 1 and os.path.isdir(i['paths'][0])]
+        self.assertGreaterEqual(len(folders), 2)
+        busy, free = folders[0], folders[1]
+        before = sorted(os.listdir(busy['paths'][0]))
+        self.backend.sandbox.state['in_use'] = {busy['paths'][0]: 'Unity Hub'}
+        report = self.wait(self.call('plan_execute', item_ids=[busy['id'], free['id']]))
+        self.assertEqual(report['failures'], [], 'in use is not a failure')
+        self.assertEqual([(s['title'], s['by']) for s in report['skipped']], [(busy['title'], ['Unity Hub'])])
+        self.assertEqual(sorted(os.listdir(busy['paths'][0])), before, 'nothing in it was touched')
+        self.assertFalse(os.path.exists(free['paths'][0]), 'and it did not cost the other item')
+        self.assertEqual(report['items'][busy['id']]['status'], 'held')
+        items = {i['id']: i for i in self.call('plan')['items']}
+        self.assertEqual(items[busy['id']]['status'], 'pending')      # still to do: no new check-up needed
+        self.assertEqual(items[busy['id']]['in_use'], '「Unity Hub」正在使用')
+        self.assertEqual(items[free['id']]['status'], 'done')
+        # the program was closed: the same item now goes
+        self.backend.sandbox.state['in_use'] = {}
+        report = self.wait(self.call('plan_execute', item_ids=[busy['id']]))
+        self.assertEqual((report['failures'], report['skipped']), ([], []))
+        self.assertFalse(os.path.exists(busy['paths'][0]))
+        item = next(i for i in self.call('plan')['items'] if i['id'] == busy['id'])
+        self.assertEqual(item['status'], 'done')
+        self.assertNotIn('in_use', item)
+
     def test_execute_everything(self):
         plan = self.checkup()
         # a program's uninstaller runs from its own row, never with the rest of the plan

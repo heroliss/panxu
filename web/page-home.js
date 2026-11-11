@@ -411,7 +411,11 @@
     if (r.disabled.length) figures.push(['', String(r.disabled.length), '个开机启动项已禁用', '随时可以在「开机与服务」里重新启用']);
     if ((r.services || []).length) figures.push(['', String(r.services.length), '个服务改为手动启动', '可以在「开机与服务」或「操作记录」里改回']);
     const problems = r.failures || [];
-    const ok = Object.values(r.items || {}).filter((x) => x.status === 'done').length;
+    // left alone because a program has them open: expected, said calmly and apart from what went wrong
+    const skipped = r.skipped || [];
+    const users = [...new Set(skipped.flatMap((s) => s.by || []))];
+    const whole = skipped.filter((s) => s.path && !/其余/.test(s.reason || '')).length;   // left exactly as they were
+    const ok = Object.values(r.items || {}).filter((x) => x.status === 'done' || x.status === 'partial').length;
     const card = c.appendChild(h('section.result-card' + (problems.length ? '.has-problems' : ''),
       h('div.rc-head', PX.icon(problems.length ? 'warn' : 'check'),
         h('b', problems.length ? `清理完成，${problems.length} 项没有完成` : '清理完成'),
@@ -424,6 +428,19 @@
       card.appendChild(h('div.rc-problems', h('div.dp-label', '没有完成的'),
         problems.slice(0, 5).map((f) => h('div.rc-problem', h('b', f.title || PX.displayPath(f.path || '')), h('span', f.reason))),
         problems.length > 5 ? h('div.small.muted', `另有 ${problems.length - 5} 项，详见「操作记录」`) : null));
+    }
+    if (skipped.length) {
+      const openList = state.open.has('skipped');
+      card.appendChild(h('div.rc-problems.rc-skipped',
+        h('div.rc-skip-line', PX.icon('info'),
+          h('span', h('b', `${skipped.length} 项正在被程序使用，已跳过`),
+            users.length ? `（${users.slice(0, 4).join('、')}${users.length > 4 ? ' 等' : ''}）` : '',
+            whole ? '　正在使用的文件夹没有动，仍然勾着：关掉这些程序后再点「执行」即可，不用重新体检。' : '　其余照常清理了。'),
+          h('button.btn.quiet.small', { type: 'button', 'aria-expanded': String(openList),
+            onclick: () => { openList ? state.open.delete('skipped') : state.open.add('skipped'); draw(true); } },
+          openList ? '收起' : `看是哪 ${skipped.length} 项`)),
+        openList ? skipped.slice(0, 30).map((f) => h('div.rc-problem', h('b', f.title || PX.displayPath(f.path || '')), h('span.muted', f.reason))) : null,
+        openList && skipped.length > 30 ? h('div.small.muted', `另有 ${skipped.length - 30} 项，详见「操作记录」`) : null));
     }
   }
 
@@ -439,7 +456,8 @@
       if (it.action === 'service' && !it.result?.startsWith('已在')) return ['已改为手动启动，随时可以改回', 'good'];
       return [it.result || '已完成', 'good'];
     }
-    if (it.status === 'partial') return [`只完成了一部分：${it.result}`, 'warn'];
+    if (it.status === 'partial') return [/正在使用/.test(it.result || '') ? it.result : `只完成了一部分：${it.result}`, 'warn'];
+    if (it.status === 'skipped' && /正在/.test(it.result || '')) return [it.result, 'warn'];
     return [`没有完成：${it.result || '原因未知'}`, 'warn'];
   }
 
@@ -622,6 +640,11 @@
       flags.appendChild(PX.tag(it.blocked, 'warn', 'lock'));
       if (it.blocked.startsWith('请先关闭')) flags.appendChild(PX.closedButton());
     }
+    // the last cleanup left it alone because a running program was using it: close that, then 「执行」 again
+    if (it.in_use && it.status === 'pending') {
+      flags.appendChild(h('span.tag.warn', { title: '上次清理时它正在被使用，所以没有动。关掉这个程序后再点「执行」，不用重新体检。' },
+        PX.icon('lock'), '上次跳过：' + it.in_use));
+    }
     if (it.ai && it.ai.verdict_label) flags.appendChild(PX.tag('AI：' + it.ai.verdict_label, it.ai.verdict === 'delete' ? 'good' : it.ai.verdict === 'keep' ? 'warn' : 'info', 'spark'));
     // one file or folder: a button to see it in Explorer right in the row
     const one = it.paths && it.paths.length === 1 ? it.paths[0] : !(it.paths && it.paths.length) && it.location ? it.location : '';
@@ -706,7 +729,8 @@
     return PX.detailPanel({
       action: it.status === 'pending' ? it.action : null,
       warn: everyCopy ? `你选了全部 ${(it.dup_files || []).length} 份：这个文件一份都不保留，只能从回收站还原。` : it.caution,
-      facts: [['是什么', fact(it.what)], ['AI 认为它是', fact(it.ai && it.ai.what), 'ai'], ['建议', fact(it.advice)],
+      facts: [['是什么', fact(it.what)], ['是哪些程序的', PX.appsText(it.apps)],
+        ['AI 认为它是', fact(it.ai && it.ai.what), 'ai'], ['建议', fact(it.advice)],
         ['占用空间', PX.sizeDifference(it)], ['大小说明', it.size_note], ['还要知道', fact(it.effect)]],
       // 「很久没动过的大文件：1.9 年没有修改过」 when the row says 「1.9 年没有修改过」: once is enough
       score: { score: it.score, basis: (it.basis || []).filter((l) => l !== shown && l.replace(/^[^：]{1,12}：/, '') !== shown) },

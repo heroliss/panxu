@@ -31,7 +31,7 @@ from .analyst import FILE_BATCH, newer_sibling
 from .duplicates import (AI_RANK, IN_USE, PLACE_RANK, find_duplicates, must_stay, place_label, removal_score,
                          verify_unchanged)
 from .insights import KIND_SCORE, Insights, content_question, file_score, is_copy_name, managed_dir, with_ai
-from .junk import RULES_BY_ID, resolve_target
+from .junk import RULES_BY_ID, resolve_target, rule_entries
 from .scanner import FLAG_CLOUD, FLAG_DENIED, FLAG_EXCLUDED, FLAG_LINKS, FLAG_PROGRAM, SpaceScan
 
 GROUPS = {'safe': '放心清理', 'review': '建议你看看', 'info': '仅供了解'}
@@ -368,6 +368,12 @@ def rule_assessment(row: dict) -> dict:
     elif rule.id == 'component_store':
         score, hold = 60, '耗时较长，且无法预估释放空间，请你决定'
         basis = ['通过 Windows 自带工具清理已替代的组件']
+    elif rule.finder:
+        score = 80
+        basis = ['按固定的目录结构和缓存文件格式识别出的 Chromium 界面缓存（不是凭文件夹名字），清理后会重新生成',
+                 '只取缓存本身，登录状态、设置和本地数据不动；正在运行的程序会整个跳过']
+    elif rule.id == 'browser_downloads':
+        score, basis = 55, ['可以重新下载，但体积大、下载慢；仍在跑自动化测试的工程需要它']
     elif rule.id in ('shader_cache', 'adobe_media_cache', 'gradle'):
         score, basis = 60, ['可以重建，但重新编译、分析媒体或构建的成本较高']
     elif rule.id == 'crash_dumps':
@@ -475,10 +481,12 @@ class PlanBuilder:
                 'what': '', 'why': rule.description,
                 'effect': rule.note or '', 'action': 'delete', 'source': 'rule',
                 'confidence': 1.0 if rule.default else 0.7, 'blocked': blocked,
-                'locations': row.get('locations', [])[:5], **rule_assessment(row)})
+                'locations': row.get('locations', [])[:5], 'apps': row.get('apps', []), **rule_assessment(row)})
             # A rule may delete only old files or only one pattern inside these roots.
             # Never also offer their parent as an entire-folder AI/heuristic cleanup.
             self._claimed.extend(row.get('locations', []))
+            if rule.finder:   # the result lists only the first locations; claim every one
+                self._claimed.extend(root for _, root, _ in rule_entries(rule, self.policy.env))
 
     def _folder_guards(self, path: str, node, owner: str | None, basis: list[str]) -> str | None:
         """Reasons a folder must not be pre-ticked whatever the score (also added to the basis)."""
@@ -505,8 +513,7 @@ class PlanBuilder:
     def reserve_rule_locations(self, env):
         """Residual-folder suggestions must not repackage rule caches or bypass their age filters."""
         for rule in RULES_BY_ID.values():
-            for target in rule.targets:
-                self._claimed.extend(resolve_target(target, env))
+            self._claimed.extend(root for _, root, _ in rule_entries(rule, env))
 
     def add_ai_dirs(self, suggestions: list[dict], env: dict, analyst=None, scan=None):
         app_bases = [env.get(k) for k in ('LOCALAPPDATA', 'APPDATA', 'LOCALLOW', 'ProgramData') if env.get(k)]
@@ -1281,7 +1288,9 @@ def execute(backend, plan: dict, item_ids: list[str], job) -> dict:
     policy = backend.policy()
     report = {'deleted': {'count': 0, 'bytes': 0}, 'recycled': {'count': 0, 'bytes': 0}, 'disabled': [], 'services': [],
               'permanent': {'count': 0, 'bytes': 0, 'paths': []},
-              'failures': [], 'items': {}}
+              # failures: what went wrong. skipped: left alone because a program has it open -- expected, not an
+              # error (close the program and clean again)
+              'failures': [], 'skipped': [], 'items': {}}
 
     def done(item, status, note='', freed=None):
         """``note``: a few words on how it went; ``freed``: the bytes it gave back (the page writes the unit)."""
@@ -1310,7 +1319,14 @@ def execute(backend, plan: dict, item_ids: list[str], job) -> dict:
                 report['deleted']['bytes'] += row['freed']
                 done(item, 'done', '已清理', freed=row['freed'])
                 if row['failed']:
-                    report['failures'].append({'title': item['title'], 'reason': f'{row["failed"]} 个文件正在使用，已跳过'})
+                    report['skipped'].append({'title': item['title'], 'left': row['failed'],
+                                              'reason': f'{row["failed"]} 个文件正在使用，已跳过'})
+                if row.get('held'):
+                    names = [h['app'] for h in row['held']]
+                    report['skipped'].append({
+                        'title': item['title'], 'left': len(names), 'by': names,
+                        'reason': f'{len(names)} 个程序正在运行，它们的缓存整个跳过：' + '、'.join(names[:6])
+                                  + (' 等' if len(names) > 6 else '')})
 
     # 2. folders and personal files -> Recycle Bin (each path re-checked against the policy)
     to_recycle: list[tuple[dict, str]] = []
@@ -1351,23 +1367,36 @@ def execute(backend, plan: dict, item_ids: list[str], job) -> dict:
             job.update(freed=s.bytes, detail=s.current or '移到回收站')
             backend.oplog.progress(pending, freed=s.bytes, done=s.files)
         try:
-            stats, recycled = fsops.recycle(unique, cancel=job.cancel, hwnd=winapi.find_window(APP_NAME), progress=on_progress)
+            # a Temp folder at the top of a drive holds many programs' leftovers: what nobody uses there still
+            # goes. Every other folder a running program uses is left whole (fsops.recycle).
+            mixed = {p for item, p in to_recycle if item['category'] == '其他临时目录'}
+            for item, _ in to_recycle:
+                item.pop('in_use', None)   # what an earlier run said; this run finds out again
+            stats, recycled = fsops.recycle(unique, cancel=job.cancel, hwnd=winapi.find_window(APP_NAME),
+                                            progress=on_progress, piecewise=mixed)
         except fsops.Cancelled:
             backend.oplog.drop(pending)  # stopped while sizing, before anything moved
             raise
         gone = {paths.key(p) for p in recycled}
         nuked = [p for p in stats.permanent]  # too large for the bin: Windows deleted them on the user's yes
         nuked_keys = {paths.key(p) for p in nuked}
-        report['recycled']['count'] += len(recycled) - len(nuked)
+        report['recycled']['count'] += len(recycled) - len(nuked) + len(stats.partial)
         report['recycled']['bytes'] += stats.bytes - stats.permanent_bytes
         report['permanent'] = {'count': len(nuked), 'bytes': stats.permanent_bytes, 'paths': nuked[:50]}
-        for f in stats.failures:
+        for f in stats.problems():
             report['failures'].append({'path': f.get('path'), 'reason': f.get('reason')})
+        titles = {paths.key(p): item['title'] for item, p in to_recycle}
+        report['skipped'] += [{**s, 'title': titles.get(paths.key(s['path']))} for s in stats.skipped()]
+        in_use = {paths.key(s['path']): s for s in stats.skipped()}
         for item in {id(i): i for i, _ in to_recycle}.values():
             ok = [p for p in item['paths'] if paths.key(p) in gone or any(paths.is_within(p, g) for g in recycled)]
             share = sum(stats.measured[p][0] for p in ok if p in stats.measured)
             # A selected parent may have covered this path; use this item's scan measure only then.
             share += sum((item['size'] or 0) // max(1, len(item['paths'])) for p in ok if p not in stats.measured)
+            # folders that went except for files a program has open, and single files in use
+            part = [p for p in item['paths'] if p in stats.partial]
+            share += sum(stats.partial[p]['bytes'] for p in part)
+            busy = sum(in_use[paths.key(p)]['left'] for p in item['paths'] if paths.key(p) in in_use)
             # In the Recycle Bin: the space comes back when it is emptied.
             if ok and any(paths.within_any(p, nuked_keys) for p in ok):
                 item['permanent'] = True
@@ -1375,14 +1404,25 @@ def execute(backend, plan: dict, item_ids: list[str], job) -> dict:
                      freed=share)
             elif len(ok) == len(item['paths']):
                 done(item, 'done', '已移到回收站', freed=share)
-            elif ok:
-                done(item, 'partial', f'{len(ok)}/{len(item["paths"])} 项已移到回收站', freed=share)
+            elif part and len(ok) + len(part) == len(item['paths']):
+                done(item, 'partial', f'{busy} 个文件正在使用，已跳过；其余已移到回收站', freed=share)
+            elif ok or part:
+                done(item, 'partial', f'{len(ok) + len(part)}/{len(item["paths"])} 项已移到回收站'
+                     + (f'，{busy} 个文件正在使用' if busy else ''), freed=share)
+            elif busy:
+                # a running program is using it: nothing was touched. It stays in the plan as it was (still
+                # ticked), so that after closing the program 「执行」 simply does it -- no new check-up needed
+                names = sorted({n for p in item['paths'] for n in in_use.get(paths.key(p), {}).get('by', [])})
+                item['in_use'] = '「' + '、'.join(names[:3]) + ('」等' if len(names) > 3 else '」') + '正在使用' if names \
+                    else '正在被其他程序使用'
+                report['items'][item['id']] = {'status': 'held', 'note': item['in_use'], 'freed': None}
             else:
                 done(item, 'failed', '没有移到回收站')
-        if recycled or stats.failed:
-            title = f'清理方案：移到回收站 {len(recycled) - len(nuked)} 项' + (
+        if recycled or stats.failed or stats.partial:
+            title = f'清理方案：移到回收站 {len(recycled) - len(nuked) + len(stats.partial)} 项' + (
                 f'，{len(nuked)} 项回收站放不下、已直接删除' if nuked else '')
-            backend.oplog.add('recycle', title, freed=stats.bytes, items=recycled, failures=stats.failures,
+            backend.oplog.add('recycle', title, freed=stats.bytes, items=recycled + list(stats.partial),
+                              failures=stats.problems() + stats.skipped(),
                               details={'source': 'plan', 'mode': 'recycle', 'permanent': nuked[:200],
                                        'permanent_bytes': stats.permanent_bytes}, replaces=pending)
         else:

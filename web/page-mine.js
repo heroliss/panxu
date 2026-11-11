@@ -123,7 +123,7 @@
       h('div.confirm-list', byFinding.flatMap(([, files]) => files).slice(0, 200).map((x) => h('div.row', h('div.sub', x.path), h('span.num.small', fmt.bytes(x.size)))))) });
     if (!ok) return;
     // one result for all the groups (each is its own job)
-    const all = { mode: 'recycle', done: [], permanent: [], freed: 0, permanent_bytes: 0, failures: [], failed: 0 };
+    const all = { mode: 'recycle', done: [], permanent: [], freed: 0, permanent_bytes: 0, failures: [], failed: 0, skipped: [], partial: [] };
     for (const [f, files] of byFinding) {
       try {
         const r = await PX.api.run('insights_delete', { finding_id: f.id, paths_to_delete: files.map((x) => x.path) });
@@ -133,10 +133,12 @@
         all.permanent_bytes += r.permanent_bytes || 0;
         all.failures.push(...(r.failures || []));
         all.failed += r.failed || 0;
+        all.skipped.push(...(r.skipped || []));
+        all.partial.push(...(r.partial || []));
       } catch (e) { PX.fail(e); }
     }
     // too large for the Recycle Bin, deleted by Windows on the user's yes: that needs more than a toast
-    if (all.permanent.length) PX.deleteResult(all);
+    if (all.permanent.length || all.skipped.length) PX.deleteResult(all);
     else PX.toast(`已移到回收站 ${all.done.length} 项` + (all.failed ? `，${all.failed} 项失败` : ''), all.failed > 0);
     if (PX.sandbox) PX.sandbox.refresh();
     await reload();
