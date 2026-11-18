@@ -13,7 +13,7 @@
     const blocked = checks.filter((c) => c.blocked);
     const ok = checks.filter((c) => !c.blocked && c.exists);
     if (!ok.length) {
-      PX.toast(blocked.length ? `「${blocked[0].path}」不能删除：${blocked[0].blocked}` : '选中的项目已不存在', true);
+      PX.toast(blocked.length ? `「${PX.displayPath(blocked[0].path)}」不能删除：${blocked[0].blocked}` : '选中的项目已不存在', true);
       return null;
     }
     const size = ok.reduce((s, c) => s + (c.size || 0), 0);
@@ -77,6 +77,7 @@
     }
     clearInterval(ticker);
     dlg.close();
+    if (PX.sandbox) PX.sandbox.refresh();
     PX.deleteResult(result);
     return result;
   };
@@ -105,15 +106,34 @@
         h('span.small.muted', ' 它们没有动；关掉相关程序后可以再处理'),
         h('div.confirm-list', skipped.slice(0, 50).map((f) => h('div.row', h('div.name.mono-path', PX.displayPath(f.path)), h('div.small.muted', f.reason))))) : null,
       failures.length ? h('div', { style: { marginTop: '10px' } }, h('b', `${result.failed} 项没有完成：`),
-        h('div.confirm-list', failures.slice(0, 50).map((f) => h('div.row', h('div.name.mono-path', f.path), h('div.small.muted', f.reason))))) : null);
-    PX.modal({ title: nuked.length ? '完成，部分已直接删除' : '完成', body, actions: [{ label: '好的', kind: 'primary' }] });
+        h('div.confirm-list', failures.slice(0, 50).map((f) => h('div.row', h('div.name.mono-path', PX.displayPath(f.path)), h('div.small.muted', f.reason))))) : null);
+    PX.modal({ title: nuked.length ? '完成，部分已直接删除' : '完成', body, actions: [
+      ...(result.mode === 'recycle' && binned > 0 ? [{ label: '打开回收站', onClick: () => {
+        PX.api.call('open_system_page', { page: 'recyclebin' }).catch(PX.fail);
+        return false;
+      } }] : []),
+      { label: '好的', kind: 'primary' },
+    ] });
   };
 
   // ------------------------------------------------------------------ state
-  const state = { status: 'idle', target: null, progress: {}, jobId: null, result: null, nodeId: 0,
-    node: null, treemap: null, view: 'dirs', selected: PX.sel.paths, focus: null,
+  const state = { status: 'idle', loading: false, target: null, progress: {}, jobId: null, result: null, nodeId: 0,
+    node: null, treemap: null, view: 'dirs', selected: PX.sel.paths, focus: null, search: null,
     ai: { status: 'idle', result: null, progress: {}, selected: PX.sel.paths, jobId: null, showKeep: false },
     types: null, sort: { key: 'size', dir: 'desc' }, typeSort: { key: 'bytes', dir: 'desc' }, aiSort: { key: 'score', dir: 'desc' } };
+  let searchSeq = 0, searchTimer = null;
+  const dirSearch = PX.makeSearch('查找文件夹', (q) => {
+    clearTimeout(searchTimer);
+    const seq = ++searchSeq;
+    const trimmed = q.trim();
+    if (!trimmed) { state.search = null; rerender(true); return; }
+    searchTimer = setTimeout(async () => {
+      try {
+        const r = await PX.api.call('space_search', { query: trimmed, limit: 60 });
+        if (seq === searchSeq) { state.search = r; rerender(true); }
+      } catch (e) { if (seq === searchSeq) PX.fail(e); }
+    }, 120);
+  });
   // the folder list's columns, the file types and the AI's suggestions: what each can be sorted by
   const DIR_SORT = {
     name: { label: '名称', kind: 'text', get: (it) => PX.displayPath(it.name) },
@@ -139,12 +159,18 @@
   async function start(target) {
     if (state.status === 'scanning') { PX.go('space'); return; }
     if (PX.workBlocked()) return;
+    const prev = { target: state.target, result: state.result, nodeId: state.nodeId, node: state.node,
+      treemap: state.treemap, ai: state.ai, types: state.types };
     state.target = target;
     state.status = 'scanning';
     state.progress = {};
     state.result = null;
+    state.node = null;
+    state.treemap = null;
     state.ai = { status: 'idle', result: null, progress: {}, selected: PX.sel.paths, jobId: null, showKeep: false };
     state.types = null;
+    dirSearch.query = '';
+    state.search = null;
     PX.go('space', { top: true });
     try {
       state.result = await PX.api.run('space_scan', { root: target }, (p) => { state.progress = p; rerender(true); },
@@ -152,7 +178,11 @@
       state.status = 'done';
       await open(state.result.root.id, true);
     } catch (e) {
-      state.status = state.result ? 'done' : 'idle';
+      if (e.cancelled && prev.result) {
+        Object.assign(state, prev, { status: 'done' });
+      } else {
+        state.status = state.result ? 'done' : 'idle';
+      }
       if (!e.cancelled) PX.fail(e);
     }
     state.jobId = null;
@@ -167,8 +197,11 @@
       state.nodeId = nodeId;
       state.node = node;
       state.treemap = tm;
-      state.view = 'dirs';
-    } catch (e) { PX.fail(e); }
+      if (!silent) state.view = 'dirs';
+    } catch (e) {
+      if (silent && state.result && nodeId !== state.result.root.id) return open(state.result.root.id, true);
+      PX.fail(e);
+    }
     if (!silent) rerender();
   }
 
@@ -183,10 +216,13 @@
   let root = null;
   function rerender(soft) {
     if (!root || !PX.isCurrent('space')) return;
+    if (dirSearch.composing) return;
+    const focusSel = dirSearch.captureFocus();
     const main = document.getElementById('main');
     const top = main.scrollTop;
     PX.clear(root);
     draw(root);
+    dirSearch.restoreFocus(focusSel);
     if (soft) main.scrollTop = top;
   }
 
@@ -218,6 +254,7 @@
       return;
     }
     if (!state.result || !state.node) {
+      if (state.loading) { container.appendChild(PX.progressBar(null)); return; }
       container.appendChild(PX.empty('选择一个磁盘开始', '扫描只读取文件夹和文件的大小，不会修改任何东西。系统盘通常需要 1 到 3 分钟。'));
       return;
     }
@@ -252,23 +289,38 @@
 
   function drawDirs(container) {
     const data = state.node;
+    const parentCrumb = data.crumbs.length > 1 ? data.crumbs[data.crumbs.length - 2] : null;
     const crumbs = h('div.crumbs');
     data.crumbs.forEach((c, i) => {
       if (i) crumbs.appendChild(h('i', '›'));
       crumbs.appendChild(h('button', { type: 'button', onclick: () => open(c.id) }, PX.displayPath(c.name)));
     });
-    container.appendChild(h('div.crumbs-line', crumbs, data.node.path ? PX.revealButton(data.node.path, '在资源管理器中打开') : null));
+    container.appendChild(h('div.crumbs-line',
+      parentCrumb ? h('button.btn.quiet.small', { type: 'button', title: '返回上一级（Backspace / Alt+↑）',
+        onclick: () => open(parentCrumb.id) }, PX.icon('up'), '上一级') : null,
+      crumbs,
+      dirSearch.box(),
+      data.node.path ? PX.revealButton(data.node.path, '在资源管理器中打开') : null));
 
-    const parentSize = data.node.size || 1;
-    const items = PX.sortRows([...data.children, ...data.files], DIR_SORT, state.sort, 'size');
+    const sq = dirSearch.query.trim();
+    const searching = !!sq;
+    const parentSize = (searching ? (state.result && state.result.root.size) : data.node.size) || 1;
+    const rawItems = searching ? ((state.search && state.search.items) || []) : [...data.children, ...data.files];
+    const items = PX.sortRows(rawItems, DIR_SORT, state.sort, 'size');
     view.rows.clear();
     view.items = new Map(data.children.map((c) => [c.id, c]));
     const focused = items.find((it) => it.path === state.focus) || null;
     const listWrap = h('div');
+    if (searching && state.search) {
+      const total = state.search.total || 0;
+      listWrap.appendChild(h('div.small.muted', { style: { marginBottom: '8px' } },
+        total ? `找到 ${fmt.count(total)} 个匹配的文件夹` + (total > items.length ? `，按从大到小显示前 ${items.length} 个` : '') + '（双击进入，或点定位图标在空间图中查看）'
+          : '没有找到匹配的文件夹'));
+    }
     const head = (id, cls) => PX.sortHead(DIR_SORT, state.sort, id, (s) => { state.sort = s; rerender(true); }, cls);
     listWrap.appendChild(h('div.thead.space-head', h('span'), head('name'), head('size', 'r'), head('files', 'r'), head('mtime', 'r'), h('span')));
     const list = listWrap.appendChild(h('div.list'));
-    if (data.note && data.note.advice) list.appendChild(PX.notice(data.note.label + '：' + data.note.advice, 'info'));
+    if (!searching && data.note && data.note.advice) list.appendChild(PX.notice(data.note.label + '：' + data.note.advice, 'info'));
     for (const it of items) {
       const isDir = it.type === 'dir';
       const box = h('input', { type: 'checkbox', checked: state.selected.has(it.path), disabled: !!it.blocked,
@@ -277,24 +329,55 @@
       const tags = isDir ? noteTags(it) : [];
       const share = h('div.share', h('i', { style: { width: Math.max(0.5, (it.size / parentSize) * 100) + '%',
         background: isDir ? PX.kindColor(it.note ? it.note.kind : 'unknown') : 'var(--ink-3)' } }));
+      const enterFromRow = () => {
+        if (searching && isDir) { dirSearch.query = ''; state.search = null; open(it.id); return; }
+        enter(it);
+      };
       const row = list.appendChild(h('div.row.space-row' + (it === focused ? '.focus' : ''), {
         tabindex: '0', title: it.path,
         onclick: () => focusItem(it),
-        ondblclick: (e) => { if (!e.target.closest('button, input')) enter(it); },
-        onkeydown: (e) => { if (e.key === 'Enter') enter(it); },
+        ondblclick: (e) => { if (!e.target.closest('button, input')) enterFromRow(); },
+        onkeydown: (e) => {
+          if (e.target !== e.currentTarget) return;
+          if (e.key === 'Enter') { e.preventDefault(); enterFromRow(); }
+          else if (e.key === ' ') {
+            e.preventDefault();
+            if (!box.disabled) { box.checked = !box.checked; box.checked ? state.selected.add(it.path) : state.selected.delete(it.path); updateBar(); }
+          } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+            e.preventDefault();
+            const idx = items.indexOf(it) + (e.key === 'ArrowDown' ? 1 : -1);
+            if (idx >= 0 && idx < items.length) {
+              const next = items[idx];
+              focusItem(next, true);
+              view.rows.get(next.path)?.focus({ preventScroll: true });
+            }
+          }
+        },
       }, box,
       h('div.cell-main',
         h('div.nm', PX.fileIcon(it.path, isDir), h('span.name', PX.displayPath(it.name))),
+        searching ? h('div.sub', PX.pathText(it.path)) : null,
         tags.length ? h('div.label', tags) : null, share),
       h('div.size', fmt.bytes(it.size)),
       h('div.size.muted', isDir ? fmt.count(it.files) : ''),
       h('div.size.muted.small', fmt.date(it.mtime)),
-      PX.pathButtons(it.path, isDir)));
+      searching ? h('div.row-actions',
+        it.parent_id !== undefined ? h('button.btn.quiet.small.reveal', { type: 'button', title: '在空间图中定位', 'aria-label': '在空间图中定位',
+          onclick: async (e) => {
+            e.stopPropagation();
+            const targetPath = it.path;
+            dirSearch.query = '';
+            state.search = null;
+            await open(it.parent_id, true);
+            state.focus = targetPath;
+            rerender();
+          } }, PX.icon('map')) : null,
+        PX.revealButton(it.path)) : PX.pathButtons(it.path, isDir)));
       view.rows.set(it.path, row);
     }
-    if (data.more_files) list.appendChild(h('div.row.muted.small', { style: { gridTemplateColumns: '1fr' } },
+    if (!searching && data.more_files) list.appendChild(h('div.row.muted.small', { style: { gridTemplateColumns: '1fr' } },
       `另有 ${fmt.count(data.more_files)} 个较小的文件，共 ${fmt.bytes(data.more_bytes)}`));
-    if (!items.length) list.appendChild(h('div.empty', '这个文件夹是空的'));
+    if (!items.length) list.appendChild(h('div.empty', searching ? (state.search ? '换个关键词试试' : '正在查找…') : '这个文件夹是空的'));
 
     view.detail = detailCard(focused);
     const side = h('div.treemap-wrap', view.detail, h('div.treemap', { id: 'treemap', role: 'img', 'aria-label': '空间占用图' }),
@@ -353,10 +436,13 @@
       about || hint ? h('div.sd-text', { title: [lead + about, hint].filter(Boolean).join('\n') },
         lead ? h('b', lead) : null, about, hint ? h('span.sd-hint', (about ? ' ' : '') + hint) : null) : null,
       x.virtual ? null : h('div.sd-actions',
-        current ? null : isDir ? h('button.btn.small.primary', { type: 'button', onclick: () => open(x.id) }, PX.icon('chev'), '进入')
+        current ? null : isDir ? h('button.btn.small.primary', { type: 'button', onclick: () => {
+          dirSearch.query = ''; state.search = null; open(x.id);
+        } }, PX.icon('chev'), '进入')
           : PX.canOpen(x.path) ? h('button.btn.small.primary', { type: 'button', onclick: () => PX.openPath(x.path) }, PX.icon('open'), '打开') : null,
         h('button.btn.small', { type: 'button', title: '在资源管理器中显示', 'aria-label': '在资源管理器中显示', onclick: () => PX.reveal(x.path) },
           PX.icon('folder'), h('span.sd-btn-text', '在资源管理器中显示')),
+        PX.copyPathButton(x.path, null, 'button.btn.small'),
         h('button.btn.small', { type: 'button', onclick: () => PX.ask({ type: 'path', path: x.path }, current ? PX.displayPath(x.path) : x.name) },
           PX.icon('spark'), '问 AI')));
   }
@@ -382,13 +468,22 @@
     if (!barEl) return;
     PX.clear(barEl);
     const sel = visibleSelected();
+    barEl.hidden = !sel.length;
+    if (!sel.length) return;
     const lookup = new Map([...state.node.children, ...state.node.files].map((x) => [x.path, x]));
     const size = sel.reduce((s, p) => s + ((lookup.get(p) || {}).size || 0), 0);
-    barEl.appendChild(h('div.grow', sel.length ? h('span', `已选 ${sel.length} 项，约 `, h('span.fig', fmt.bytes(size)))
-      : h('span.muted', '单击查看详情，双击进入文件夹；勾选后可以删除')));
-    barEl.appendChild(h('button.btn', { type: 'button', disabled: sel.length !== 1, onclick: () => PX.reveal(sel[0]) },
-      PX.icon('folder'), '在资源管理器中显示'));
-    barEl.appendChild(h('button.btn.primary', { type: 'button', disabled: !sel.length, onclick: deleteSelected }, PX.icon('trash'), '删除…'));
+    barEl.appendChild(h('div.grow', h('span.fig', fmt.bytes(size)), h('span.muted', `  已选 ${sel.length} 项`)));
+    barEl.appendChild(h('button.btn', { type: 'button', onclick: () => {
+      for (const p of sel) state.selected.delete(p);
+      for (const p of sel) { const r = view.rows.get(p); if (r) { const cb = r.querySelector('input[type=checkbox]'); if (cb) cb.checked = false; } }
+      fillBar();
+    } }, '取消选择'));
+    if (sel.length === 1) {
+      barEl.appendChild(PX.copyPathButton(sel[0], '复制路径', 'button.btn'));
+      barEl.appendChild(h('button.btn', { type: 'button', onclick: () => PX.reveal(sel[0]) },
+        PX.icon('folder'), '在资源管理器中显示'));
+    }
+    barEl.appendChild(h('button.btn.primary', { type: 'button', onclick: deleteSelected }, PX.icon('trash'), '删除…'));
   }
   const updateBar = () => fillBar();
 
@@ -397,6 +492,14 @@
     const result = await PX.deleteFlow({ paths: chosen, title: `删除 ${chosen.length} 项` });
     if (result) {
       for (const p of result.done) state.selected.delete(p);
+      state.types = null;
+      try {
+        state.result = await PX.api.call('space_result');
+        if (state.ai.result) {
+          const suggestions = await PX.api.call('ai_results');
+          state.ai.result = suggestions.length ? { ...state.ai.result, suggestions } : null;
+        }
+      } catch (e) { /* ignore */ }
       await open(state.nodeId);
     }
   }
@@ -404,6 +507,7 @@
   function drawTreemap() {
     const box = document.getElementById('treemap');
     if (!box || !state.treemap) return;
+    PX.clear(box);
     const W = box.clientWidth, H = box.clientHeight;
     const top = (state.treemap.children || []).filter((c) => c.size > 0);
     if (!top.length) {
@@ -433,7 +537,7 @@
         for (const s of PX.treemap(it.children.filter((c) => c.size > 0), pad, head, r.w - pad * 2 - 2, r.h - head - pad - 2)) {
           cell.appendChild(h('div.tm' + (s.item.other ? '.other' : ''), {
             style: { left: s.x + 'px', top: s.y + 'px', width: s.w + 'px', height: s.h + 'px',
-              background: 'color-mix(in srgb, ' + (s.item.other ? 'var(--c-unknown)' : PX.kindColor(s.item.kind)) + ' 78%, #000 0%)',
+              background: 'color-mix(in srgb, ' + (s.item.other ? 'var(--c-unknown)' : PX.kindColor(s.item.kind)) + ' 78%, #000)',
               borderColor: 'rgba(255,255,255,.35)' },
             title: `${s.item.name}  ${fmt.bytes(s.item.size)}` + (s.item.id !== null ? '\n双击直接进入' : ''),
             // a block inside a block: one click selects the folder around it, a double-click goes straight in
@@ -445,6 +549,16 @@
       box.appendChild(cell);
     }
   }
+  document.addEventListener('keydown', (e) => {
+    if (!PX.isCurrent('space') || state.view !== 'dirs' || !state.node || state.node.crumbs.length < 2) return;
+    if (document.querySelector('.backdrop') || document.body.classList.contains('drawer-open')) return;
+    const tag = (e.target && e.target.tagName) || '';
+    if (/^(INPUT|TEXTAREA|SELECT)$/.test(tag) || (e.target && e.target.isContentEditable)) return;
+    if (e.key === 'Backspace' || (e.altKey && e.key === 'ArrowUp')) {
+      e.preventDefault();
+      open(state.node.crumbs[state.node.crumbs.length - 2].id);
+    }
+  });
   window.addEventListener('resize', () => {
     if (!PX.isCurrent('space') || state.view !== 'dirs') return;
     const b = document.getElementById('treemap');
@@ -461,21 +575,27 @@
   function drawTypes(container) {
     if (!state.types) { container.appendChild(PX.progressBar(null)); return; }
     const total = state.types.reduce((s, t) => s + t.bytes, 0) || 1;
+    container.appendChild(h('div.small.muted', { style: { marginBottom: '10px' } }, '点击任意类型，可直接查看该类型下最大的文件。'));
     const head = (id, cls) => PX.sortHead(TYPE_SORT, state.typeSort, id, (s) => { state.typeSort = s; rerender(true); }, cls);
-    container.appendChild(h('div.thead.types-row', h('span'), head('label'), h('span', '常见扩展名'), head('bytes', 'r'), head('count', 'r')));
+    container.appendChild(h('div.thead.types-row', h('span'), head('label'), h('span', '常见扩展名'), head('bytes', 'r'), head('count', 'r'), h('span')));
     const list = container.appendChild(h('div.list'));
     const colors = ['--c-program', '--c-personal', '--c-appdata', '--c-cache', '--c-cloud', '--c-other', '--c-system', '--c-unknown'];
     // each type keeps its colour (by its place from largest to smallest) whichever way the list is sorted
     const colour = new Map(state.types.map((t, i) => [t, `var(${colors[i % colors.length]})`]));
     for (const t of PX.sortRows(state.types, TYPE_SORT, state.typeSort, 'bytes')) {
-      list.appendChild(h('div.row.types-row',
-        h('span.dot', { style: { background: colour.get(t) } }),
-        h('div', h('div.name', t.label), h('div.share', h('i', { style: { width: (t.bytes / total) * 100 + '%', background: colour.get(t) } }))),
-        h('div.sub', t.top_exts.join(' ')),
-        h('div.size', fmt.bytes(t.bytes)), h('div.size.muted', fmt.count(t.count))));
+      list.appendChild(h('div.row.types-row.clickable', {
+        role: 'button', tabindex: '0', title: `查看最大的「${t.label}」文件`,
+        onclick: () => { if (PX.large) PX.large.openCategory(t.category); else PX.go('large'); },
+        onkeydown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); if (PX.large) PX.large.openCategory(t.category); else PX.go('large'); } },
+      },
+      h('span.dot', { style: { background: colour.get(t) } }),
+      h('div', h('div.name', t.label), h('div.share', h('i', { style: { width: (t.bytes / total) * 100 + '%', background: colour.get(t) } }))),
+      h('div.sub', t.top_exts.join(' ')),
+      h('div.size', fmt.bytes(t.bytes)), h('div.size.muted', fmt.count(t.count)),
+      PX.icon('chev', 'row-chev')));
     }
     container.appendChild(h('div', { style: { marginTop: '14px' } },
-      h('button.btn', { type: 'button', onclick: () => PX.go('large') }, PX.icon('big'), '查看最大的文件')));
+      h('button.btn', { type: 'button', onclick: () => { if (PX.large) PX.large.openCategory(''); else PX.go('large'); } }, PX.icon('big'), '查看全部大文件')));
   }
 
   // ---------------- AI view
@@ -563,8 +683,9 @@
     const res = ai.result;
     const groups = [['clean', '可以清理'], ['review', '需要你确认'], ['keep', '建议保留']];
     const usage = res.usage || {};
+    const usedTokens = (usage.input_tokens || 0) + (usage.output_tokens || 0);
     container.appendChild(h('div.page-head', { style: { marginBottom: '8px' } },
-      h('div.grow', h('div.muted.small', `使用 ${res.requests} 次请求，约 ${fmt.count((usage.input_tokens || 0) + (usage.output_tokens || 0))} tokens。AI 的判断仅供参考，删除前请确认。`), which),
+      h('div.grow', h('div.muted.small', `本次共请求模型 ${res.requests} 次${usedTokens ? `（消耗约 ${fmt.count(usedTokens)} 模型额度）` : ''}。AI 的判断仅供参考，删除前请确认。`), which),
       h('div.actions', h('button.btn.small', { type: 'button', onclick: () => startAI(false) }, PX.icon('refresh'), '重新分析（不用缓存）'))));
     const left = res.remaining || { count: 0, size: 0 };
     if (left.count) {
@@ -604,6 +725,12 @@
               h('button.btn.quiet.small', { type: 'button', title: '在资源管理器中打开这个文件夹，看看里面是什么',
                 onclick: () => PX.reveal(s.path) }, PX.icon('folder'), '打开文件夹'),
               h('button.btn.quiet.small', { type: 'button', title: '在左边的文件夹视图里找到它', onclick: () => locate(s) }, PX.icon('map'), '在空间图中定位'),
+              !s.blocked ? PX.excludeButton(s.path, async () => {
+                ai.selected.delete(s.path);
+                res.suggestions = await PX.api.call('ai_results');
+                rerender(true);
+                if (PX.home) PX.home.reload();
+              }) : null,
               h('button.btn.quiet.small', { type: 'button', onclick: () => PX.ask({ type: 'path', path: s.path }, s.app && s.app !== '未知' ? s.app : PX.displayPath(s.path)) },
                 PX.icon('spark'), '问 AI'))),
           verdict === 'keep' ? h('span') : PX.score(s.score, basis.join('\n')),
@@ -612,16 +739,26 @@
     }
     const sel = res.suggestions.filter((s) => !s.blocked && ai.selected.has(s.path)).map((s) => s.path);
     const size = res.suggestions.filter((s) => ai.selected.has(s.path)).reduce((a, s) => a + s.size, 0);
-    container.appendChild(h('div.actionbar',
-      h('div.grow', sel.length ? h('span', `已选 ${sel.length} 个文件夹，约 `, h('span.fig', fmt.bytes(size))) : h('span.muted', '勾选要清理的文件夹')),
-      h('button.btn.primary', { type: 'button', disabled: !sel.length, onclick: async () => {
-        const r = await PX.deleteFlow({ paths: sel, title: `清理 ${sel.length} 个文件夹`, source: 'ai' });
-        if (r) {
-          for (const p of r.done) ai.selected.delete(p);
-          res.suggestions = res.suggestions.filter((s) => !r.done.includes(s.path));
-          rerender();
-        }
-      } }, PX.icon('trash'), '清理选中项…')));
+    if (sel.length) {
+      container.appendChild(h('div.actionbar',
+        h('div.grow', h('span.fig', fmt.bytes(size)), h('span.muted', `  已选 ${sel.length} 个文件夹`)),
+        h('button.btn', { type: 'button', onclick: () => { for (const p of sel) ai.selected.delete(p); rerender(true); } }, '取消选择'),
+        h('button.btn.primary', { type: 'button', onclick: async () => {
+          const r = await PX.deleteFlow({ paths: sel, title: `清理 ${sel.length} 个文件夹`, source: 'ai' });
+          if (r) {
+            for (const p of r.done) ai.selected.delete(p);
+            state.types = null;
+            try {
+              state.result = await PX.api.call('space_result');
+              res.suggestions = await PX.api.call('ai_results');
+            } catch (e) {
+              res.suggestions = res.suggestions.filter((s) => !r.done.includes(s.path));
+            }
+            await open(state.nodeId, true);
+            rerender();
+          }
+        } }, PX.icon('trash'), '清理选中项…')));
+    }
   }
 
   async function locate(s) {
@@ -635,21 +772,24 @@
   PX.space = { state, start };
   PX.pages.space = { async render(container) {
     root = container;
+    if (state.status !== 'scanning' && !state.result) state.loading = true;
+    draw(container);
     if (state.status !== 'scanning') {
       try {
         const found = await PX.api.call('space_result');
-        if (found && (!state.result || found.scanned_at !== state.result.scanned_at)) {
+        if (found) {
+          const changedScan = !state.result || found.scanned_at !== state.result.scanned_at;
           state.result = found;
           state.target = found.root.path;
           state.status = 'done';
-          state.types = null;
-          state.ai.result = null;
+          if (changedScan) { state.types = null; state.view = 'dirs'; }
           const suggestions = await PX.api.call('ai_results');
-          if (suggestions.length) state.ai.result = { suggestions, requests: 0, errors: [] };
-          await open(found.root.id, true);
+          state.ai.result = suggestions.length ? { ...(changedScan ? { requests: 0, errors: [] } : state.ai.result || { requests: 0, errors: [] }), suggestions } : null;
+          await open(changedScan ? found.root.id : (state.nodeId || found.root.id), true);
         }
       } catch (e) { PX.fail(e); }
+      state.loading = false;
+      if (root === container) rerender(true);
     }
-    draw(container);
   } };
 })();

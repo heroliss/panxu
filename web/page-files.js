@@ -6,6 +6,9 @@
   // ------------------------------------------------------------------ large files
   const large = { min: 100, category: '', older: 0, rows: null, loadedFor: null, scanInfo: null, selected: PX.sel.paths,
     sort: { key: 'size', dir: 'desc' }, aiBusy: false };
+  const largeSearch = PX.makeSearch('搜索文件名或路径', () => drawLarge());
+  const matchLarge = (f, q) => !q || [f.name, PX.displayPath(f.path), f.category_label, f.ai?.what, f.ai?.reason]
+    .filter(Boolean).join(' ').toLowerCase().includes(q);
   const FILE_VERDICT = { keep: 'warn', delete: 'good', archive: 'info', review: '' };
   const LARGE_SORT = {
     name: { label: '名称', kind: 'text', get: (f) => f.name },
@@ -61,37 +64,42 @@
 
   function drawLarge() {
     if (!largeRoot || !PX.isCurrent('large')) return;
+    if (largeSearch.composing) return;
+    const focusSel = largeSearch.captureFocus();
     const main = document.getElementById('main');
     const top = main.scrollTop;
     const c = PX.clear(largeRoot);
     const space = PX.space.state;
     const askable = (large.rows || []).some((f) => !f.blocked && !f.ai);
+    const scannedName = large.scanInfo ? (large.scanInfo.root.virtual ? large.scanInfo.root.name : PX.displayPath(large.scanInfo.root.path)) : '';
     c.appendChild(h('div.page-head', h('div.grow', h('h1', '大文件'),
-      h('div.sub', space.result ? `来自对 ${PX.displayPath(space.result.root.path)} 的扫描，最多列出 5000 个最大的文件` : '列出磁盘上最大的文件')),
-      space.result && large.rows ? h('div.actions', h('button.btn', { type: 'button', disabled: large.aiBusy || !askable, onclick: askLarge },
+      h('div.sub', scannedName ? `来自对 ${scannedName} 的扫描，最多列出 5000 个最大的文件` : '列出磁盘上最大的文件')),
+      large.scanInfo && large.rows ? h('div.actions', h('button.btn', { type: 'button', disabled: large.aiBusy || !askable, onclick: askLarge },
         PX.icon('spark'), large.aiBusy ? 'AI 正在看…' : '让 AI 看看这些文件')) : null));
     if (space.status === 'scanning') {
-      c.appendChild(PX.notice('正在扫描，完成后这里会列出最大的文件。', 'info', h('button.btn.small', { type: 'button', onclick: () => PX.go('space') }, '查看进度')));
+      c.appendChild(PX.empty('正在扫描磁盘空间', '空间分析完成后，这里会自动列出最大的文件。'));
       return;
     }
     if (!large.scanInfo) {
       const drives = PX.state.init.drives.map((d) => h('button.btn' + (d.system ? '.primary' : ''), { type: 'button',
-        onclick: () => PX.space.start(d.root).then(() => { if (PX.isCurrent('space')) PX.go('large'); }) }, PX.icon('drive'), '扫描 ' + (d.letter || d.root.replace(/\\$/, ''))));
+        onclick: () => PX.space.start(d.root).then(() => { if (PX.isCurrent('space') && PX.space.state.result) PX.go('large'); }) }, PX.icon('drive'), '扫描 ' + (d.letter || d.root.replace(/\\$/, ''))));
       c.appendChild(PX.empty('需要先扫描一个磁盘', '大文件列表来自空间分析的扫描结果。', drives));
       return;
     }
     if (large.rows === null) { c.appendChild(PX.progressBar(null)); return; }
     const filters = h('div.filters',
       h('label', '最小', PX.seg([[50, '50 MB'], [100, '100 MB'], [500, '500 MB'], [1024, '1 GB']], large.min, (v) => { large.min = v; loadLarge(); })),
-      h('label', '修改于', PX.seg([[0, '不限'], [180, '半年前'], [365, '1 年前'], [730, '2 年前']], large.older, (v) => { large.older = v; loadLarge(); })));
+      h('label', '修改于', PX.seg([[0, '不限'], [180, '半年前'], [365, '1 年前'], [730, '2 年前']], large.older, (v) => { large.older = v; loadLarge(); })),
+      h('div.list-tools-right', largeSearch.box()));
     c.appendChild(filters);
     c.appendChild(h('div.chips', { style: { marginBottom: '16px' } }, CATS.map(([v, label]) =>
       h('button.chip' + (large.category === v ? '.on' : ''), { type: 'button', onclick: () => { large.category = v; loadLarge(); } }, label))));
-    const rows = [...large.rows];
+    const q = largeSearch.query.trim().toLowerCase();
+    const rows = large.rows.filter((f) => matchLarge(f, q));
     // by type, for the whole list: a row filters to that type
     // (files you cannot delete here, like pagefile.sys, are left out)
     const free = rows.filter((f) => !f.blocked);
-    if (!large.category && free.length) {
+    if (!large.category && !q && free.length) {
       const byCat = new Map();
       for (const f of free) byCat.set(f.category, (byCat.get(f.category) || 0) + f.size);
       if (byCat.size > 1) {
@@ -110,7 +118,7 @@
       h('span.sort-pair', head('name'), head('path'), rows.some((f) => f.ai) ? head('ai') : null),
       head('category'), head('mtime', 'r'), head('size', 'r'), h('span')));
     const list = c.appendChild(h('div.list'));
-    if (!rows.length) list.appendChild(PX.empty('没有符合条件的文件', '换个筛选条件试试。'));
+    if (!rows.length) list.appendChild(PX.empty(q ? '没有匹配的文件' : '没有符合条件的文件', q ? '换个关键词试试。' : '换个筛选条件试试。'));
     for (const f of rows) {
       const box = h('input', { type: 'checkbox', checked: large.selected.has(f.path), disabled: !!f.blocked, title: f.blocked || '',
         'aria-label': '选择 ' + f.name,
@@ -123,24 +131,32 @@
           PX.sizeDifference(f) ? h('div.small.muted', PX.sizeDifference(f)) : null,
           f.ai ? h('div.ai-note', h('span', f.ai.what), h('span.muted', f.ai.reason)) : null)),
         h('div.sub', f.category_label), h('div.size.muted.small', fmt.date(f.mtime)), h('div.size', fmt.bytes(f.size), PX.meter(f.size / largest)),
-        PX.pathButtons(f.path)));
+        PX.rowActions({ path: f.path, ask: () => PX.ask({ type: 'file', path: f.path }, f.name) })));
     }
     const barEl = c.appendChild(h('div.actionbar'));
     function bar() {
       PX.clear(barEl);
-      const sel = rows.filter((f) => !f.blocked && large.selected.has(f.path));
+      const sel = (large.rows || []).filter((f) => !f.blocked && large.selected.has(f.path));
+      barEl.hidden = !sel.length;
+      if (!sel.length) return;
       const size = sel.reduce((s, f) => s + f.size, 0);
-      barEl.appendChild(h('div.grow', sel.length ? h('span', `已选 ${sel.length} 个，共 `, h('span.fig', fmt.bytes(size))) : h('span.muted', '勾选不再需要的文件')));
-      barEl.appendChild(h('button.btn', { type: 'button', disabled: sel.length !== 1, onclick: () => PX.reveal(sel[0].path) }, PX.icon('folder'), '打开位置'));
-      barEl.appendChild(h('button.btn.primary', { type: 'button', disabled: !sel.length, onclick: async () => {
+      barEl.appendChild(h('div.grow', h('span.fig', fmt.bytes(size)), h('span.muted', `  已选 ${sel.length} 个文件`)));
+      barEl.appendChild(h('button.btn', { type: 'button', onclick: () => { for (const f of sel) large.selected.delete(f.path); drawLarge(); } }, '取消选择'));
+      if (sel.length === 1) {
+        barEl.appendChild(PX.copyPathButton(sel[0].path, '复制路径', 'button.btn'));
+        barEl.appendChild(h('button.btn', { type: 'button', onclick: () => PX.reveal(sel[0].path) }, PX.icon('folder'), '打开位置'));
+      }
+      barEl.appendChild(h('button.btn.primary', { type: 'button', onclick: async () => {
         const r = await PX.deleteFlow({ paths: sel.map((f) => f.path), title: `删除 ${sel.length} 个文件`, source: 'large_files' });
         if (r) { r.done.forEach((p) => large.selected.delete(p)); loadLarge(); }
       } }, PX.icon('trash'), '删除…'));
     }
     bar();
+    largeSearch.restoreFocus(focusSel);
     main.scrollTop = top;
   }
 
+  PX.large = { openCategory(cat) { large.category = cat || ''; PX.go('large', { top: true }); } };
   PX.pages.large = { async render(container) {
     largeRoot = container; large.rows = null; large.loadedFor = null;
     container.appendChild(PX.progressBar(null));
@@ -152,6 +168,9 @@
   const dup = { roots: null, defaults: null, min: 1, status: 'idle', progress: {}, result: null, selected: PX.sel.paths, keep: 'oldest',
     jobId: null, shown: 60, sort: { key: 'wasted', dir: 'desc' } };
   let dupRoot = null;
+  const dupSearch = PX.makeSearch('搜索文件名或路径', () => drawDups(true));
+  const matchDupGroup = (g, q) => !q || g.files.some((f) =>
+    [PX.displayPath(f.path), PX.placeText(f), f.ai?.reason].filter(Boolean).join(' ').toLowerCase().includes(q));
   const fileName = (p) => (p || '').split('\\').pop();
   const DUP_SORT = {
     wasted: { label: '可节省', kind: 'num', get: (g) => g.wasted },
@@ -168,18 +187,25 @@
   // the copy to keep by the chosen rule; but copies in a program's folder or a code project may be in use there:
   // they stay and only the loose copies are ticked, and a group of nothing but such copies is left to the user
   function autoSelect() {
+    const pickKeep = (list) => (dup.keep === 'newest' ? list.reduce((a, b) => (b.mtime > a.mtime ? b : a))
+      : dup.keep === 'shortest' ? list.reduce((a, b) => (b.path.length < a.path.length ? b : a))
+        : list.reduce((a, b) => (b.mtime < a.mtime ? b : a)));
     for (const g of dup.result.groups) {
       for (const f of g.files) dup.selected.delete(f.path);
       const files = g.files.filter((f) => !f.blocked);
       if (files.length < 1) continue;
-      if (g.files.some((f) => f.place)) {
-        for (const f of files) if (!f.place) dup.selected.add(f.path);
+      const guarded = g.files.filter((f) => f.place && f.place !== 'build');
+      if (guarded.length) {
+        for (const f of files) if (!f.place || f.place === 'build') dup.selected.add(f.path);
         continue;
       }
-      let keep;
-      if (dup.keep === 'newest') keep = g.files.reduce((a, b) => (b.mtime > a.mtime ? b : a));
-      else if (dup.keep === 'shortest') keep = g.files.reduce((a, b) => (b.path.length < a.path.length ? b : a));
-      else keep = g.files.reduce((a, b) => (b.mtime < a.mtime ? b : a));
+      const nonBuild = g.files.filter((f) => f.place !== 'build');
+      if (nonBuild.length && nonBuild.length < g.files.length) {
+        const keep = pickKeep(nonBuild);
+        for (const f of files) if (f !== keep) dup.selected.add(f.path);
+        continue;
+      }
+      const keep = pickKeep(g.files);
       for (const f of files) if (f !== keep) dup.selected.add(f.path);
     }
   }
@@ -257,6 +283,8 @@
 
   function drawDups(soft) {
     if (!dupRoot || !PX.isCurrent('dups')) return;
+    if (dupSearch.composing) return;
+    const focusSel = dupSearch.captureFocus();
     const main = document.getElementById('main');
     const top = main.scrollTop;
     const c = PX.clear(dupRoot);
@@ -312,23 +340,41 @@
       } }, '选择文件夹继续查找')));
     if (!dup.result.groups.length) { c.appendChild(PX.empty('暂未找到重复文件', '已完成比对的文件中没有发现内容相同的副本。')); return; }
 
+    const KEEP_LABELS = { oldest: '最早的', newest: '最新的', shortest: '路径最短的' };
+    const countDupSel = () => dup.result.groups.reduce((n, g) => n + g.files.filter((f) => dup.selected.has(f.path)).length, 0);
     c.appendChild(h('div.filters', { style: { marginTop: '18px' } },
-      h('label', '勾选时每组保留', PX.seg([['oldest', '最早的'], ['newest', '最新的'], ['shortest', '路径最短的']], dup.keep,
-        (v) => { dup.keep = v; drawDups(true); }), '一份'),
-      h('button.btn.small', { type: 'button', onclick: () => { autoSelect(); drawDups(true); } }, '按保留规则勾选'),
+      h('label', '勾选时每组保留', PX.seg(Object.entries(KEEP_LABELS), dup.keep,
+        (v) => {
+          dup.keep = v;
+          if (countDupSel() > 0) {
+            autoSelect();
+            const n = countDupSel();
+            PX.toast(`已改为每组保留${KEEP_LABELS[v]}一份` + (n ? `，共选 ${n} 个副本` : ''));
+          }
+          drawDups(true);
+        }), '一份'),
+      h('button.btn.small', { type: 'button', onclick: () => {
+        autoSelect();
+        const n = countDupSel();
+        PX.toast(n ? `按「保留${KEEP_LABELS[dup.keep]}」勾选了 ${n} 个副本` : '没有可自动勾选的副本（程序和工程目录里的副本需手动确认）');
+        drawDups(true);
+      } }, '按保留规则勾选'),
       h('span.small.muted', '程序文件夹、代码工程里和工程旁边的副本不会自动勾选'),
       h('div', { style: { flex: 1 } }),
       unclear().length ? h('button.btn', { type: 'button', disabled: dup.aiBusy, onclick: askAI,
         title: '程序、工程里或工程旁边的副本不好判断：请模型结合路径和盘序查到的情况，说说每一份能不能删' },
       PX.icon('spark'), dup.aiBusy ? 'AI 正在看…' : `让 AI 看看这 ${unclear().length} 组`) : null,
       dup.result.groups.some((g) => g.files.some((f) => f.ai)) ? h('button.btn', { type: 'button', onclick: followAI }, '按 AI 建议勾选') : null));
-    if (dup.result.groups.length > 1) {
-      const anyAI = dup.result.groups.some((g) => g.files.some((f) => f.ai));
-      c.appendChild(PX.sortBar(DUP_SORT, dup.sort, (s) => { dup.sort = s; drawDups(true); },
-        ['wasted', 'size', 'count', 'name', 'path', 'mtime', ...(anyAI ? ['ai'] : [])]));
-    }
+    const anyAI = dup.result.groups.some((g) => g.files.some((f) => f.ai));
+    const q = dupSearch.query.trim().toLowerCase();
+    const filteredGroups = dup.result.groups.filter((g) => matchDupGroup(g, q));
+    c.appendChild(h('div.list-tools',
+      dup.result.groups.length > 1 ? PX.sortBar(DUP_SORT, dup.sort, (s) => { dup.sort = s; drawDups(true); },
+        ['wasted', 'size', 'count', 'name', 'path', 'mtime', ...(anyAI ? ['ai'] : [])]) : h('span'),
+      h('div.list-tools-right', dupSearch.box())));
     const list = c.appendChild(h('div', { style: { borderTop: '1px solid var(--rule)' } }));
-    for (const g of PX.sortRows(dup.result.groups, DUP_SORT, dup.sort, 'wasted').slice(0, dup.shown)) {
+    if (!filteredGroups.length) list.appendChild(PX.empty('没有匹配的重复文件', '换个关键词试试。'));
+    for (const g of PX.sortRows(filteredGroups, DUP_SORT, dup.sort, 'wasted').slice(0, dup.shown)) {
       const grp = list.appendChild(h('div.dup-group', h('div.dup-head', h('b', `${g.files.length} 个相同文件`),
         h('span.muted.small', `每份标称 ${fmt.bytes(g.size)}`), h('span.size', '可节省 ' + fmt.bytes(g.wasted)))));
       if (g.files.every((f) => f.place) && g.files.some((f) => f.place !== 'build')) {
@@ -346,34 +392,39 @@
         grp.appendChild(h('div.row.dup-file' + (checked ? '' : '.keep'), box,
           h('div.cell-main.ic-cell', PX.fileIcon(f.path), h('div', h('div.name', PX.pathText(f.path)),
             f.place || f.ai || PX.sizeDifference(f) ? h('div.dup-facts', PX.copyFacts(f)) : null)),
-          h('div.size.muted.small', '修改于 ' + fmt.date(f.mtime)), PX.pathButtons(f.path)));
+          h('div.size.muted.small', '修改于 ' + fmt.date(f.mtime)),
+          PX.rowActions({ path: f.path, ask: () => PX.ask({ type: 'file', path: f.path }, fileName(f.path)) })));
       }
     }
-    if (dup.result.groups.length > dup.shown) {
+    if (filteredGroups.length > dup.shown) {
       list.appendChild(h('button.fold', { type: 'button', onclick: () => { dup.shown += 100; drawDups(true); } },
-        `还有 ${dup.result.groups.length - dup.shown} 组，显示更多`));
+        `还有 ${filteredGroups.length - dup.shown} 组，显示更多`));
     }
     const sel = [];
     let size = 0;
     for (const g of dup.result.groups) for (const f of g.files) if (dup.selected.has(f.path)) { sel.push(f.path); size += PX.copySize(f, g.size); }
-    c.appendChild(h('div.actionbar',
-      h('div.grow', sel.length ? h('span', `已选 ${sel.length} 个副本，共 `, h('span.fig', fmt.bytes(size))) : h('span.muted', '勾选要删除的副本')),
-      h('button.btn.primary', { type: 'button', disabled: !sel.length, onclick: async () => {
-        const whole = dup.result.groups.filter((g) => g.files.every((f) => dup.selected.has(f.path)));
-        const r = await PX.deleteFlow({ paths: sel, title: `把 ${sel.length} 个重复副本移到回收站`, allowPermanent: false,
-          method: 'dup_delete', params: { paths_to_delete: sel },
-          warning: whole.length ? `其中 ${whole.length} 组你选了全部副本，这些文件一份都不保留，只能从回收站还原：`
-            + whole.slice(0, 3).map((g) => g.files[0].path.split('\\').pop()).join('、') + (whole.length > 3 ? ' 等' : '') : '' });
-        if (r) {
-          const gone = new Set(r.done);
-          for (const g of dup.result.groups) g.files = g.files.filter((f) => !gone.has(f.path));
-          dup.result.groups = dup.result.groups.filter((g) => g.files.length > 1);
-          for (const g of dup.result.groups) g.wasted = PX.duplicateWaste(g);
-          dup.result.stats.wasted = dup.result.groups.reduce((s, g) => s + g.wasted, 0);
-          for (const p of gone) dup.selected.delete(p);
-          drawDups();
-        }
-      } }, PX.icon('trash'), '移到回收站…')));
+    if (sel.length) {
+      c.appendChild(h('div.actionbar',
+        h('div.grow', h('span.fig', fmt.bytes(size)), h('span.muted', `  已选 ${sel.length} 个副本`)),
+        h('button.btn', { type: 'button', onclick: () => { for (const p of sel) dup.selected.delete(p); drawDups(true); } }, '取消选择'),
+        h('button.btn.primary', { type: 'button', onclick: async () => {
+          const whole = dup.result.groups.filter((g) => g.files.every((f) => dup.selected.has(f.path)));
+          const r = await PX.deleteFlow({ paths: sel, title: `把 ${sel.length} 个重复副本移到回收站`, allowPermanent: false,
+            method: 'dup_delete', params: { paths_to_delete: sel },
+            warning: whole.length ? `其中 ${whole.length} 组你选了全部副本，这些文件一份都不保留，只能从回收站还原：`
+              + whole.slice(0, 3).map((g) => g.files[0].path.split('\\').pop()).join('、') + (whole.length > 3 ? ' 等' : '') : '' });
+          if (r) {
+            const gone = new Set(r.done);
+            for (const g of dup.result.groups) g.files = g.files.filter((f) => !gone.has(f.path));
+            dup.result.groups = dup.result.groups.filter((g) => g.files.length > 1);
+            for (const g of dup.result.groups) g.wasted = PX.duplicateWaste(g);
+            dup.result.stats.wasted = dup.result.groups.reduce((s, g) => s + g.wasted, 0);
+            for (const p of gone) dup.selected.delete(p);
+            drawDups();
+          }
+        } }, PX.icon('trash'), '移到回收站…')));
+    }
+    dupSearch.restoreFocus(focusSel);
     if (soft) main.scrollTop = top;
   }
 

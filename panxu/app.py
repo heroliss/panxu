@@ -47,14 +47,25 @@ def prepare_sandbox(root: str, real_data_dir: str):
     data_dir = os.path.join(sb.root, 'data')
     if not os.path.isdir(data_dir):
         os.makedirs(data_dir)
-        real = Settings(real_data_dir)
         sim = Settings(data_dir)
-        ai = real.get()['ai']
-        sim.update({'ai': ai, 'extra_personal_paths': [sb.native('D/资料'), sb.native('D/下载')]})
-        for name in ('ai_key:' + ai.get('preset', ''),):
-            key = real.get_secret(name)
-            if key:
-                sim.set_secret(name, key)
+        patch_data: dict = {'extra_personal_paths': [sb.native('D/资料'), sb.native('D/下载')]}
+        if os.path.isdir(real_data_dir):
+            raw_ai = Settings._read(os.path.join(real_data_dir, 'settings.json')).get('ai')
+            if isinstance(raw_ai, dict):
+                patch_data['ai'] = raw_ai
+            sim.update(patch_data)
+            preset = sim.get()['ai'].get('preset', '')
+            raw_sec = Settings._read(os.path.join(real_data_dir, 'secrets.json')).get('ai_key:' + preset)
+            if isinstance(raw_sec, dict):
+                try:
+                    import base64 as _b64
+                    key = winapi.unprotect_secret(_b64.b64decode(raw_sec['data']), raw_sec['scheme']).decode('utf-8')
+                    if key:
+                        sim.set_secret('ai_key:' + preset, key)
+                except (ValueError, OSError, KeyError, TypeError):
+                    pass
+        else:
+            sim.update(patch_data)
     return sb, data_dir
 
 
@@ -134,15 +145,32 @@ def auto_elevate(data_dir, *, attempted=False, sandbox=None, debug=False):
     return launch_elevated(data_dir, debug=debug)
 
 
+def _initial_dark(backend) -> bool:
+    theme = backend.settings.get().get('theme', 'system')
+    if theme == 'dark':
+        return True
+    if theme == 'light':
+        return False
+    try:
+        vals = dict(backend.apps._reg().values('HKCU', r'Software\Microsoft\Windows\CurrentVersion\Themes\Personalize'))
+        if 'AppsUseLightTheme' in vals:
+            return int(vals['AppsUseLightTheme']) == 0
+    except Exception:  # noqa: BLE001
+        pass
+    return False
+
+
 def create_app_window(backend, title):
     """Shared by the desktop app and the isolated native UI harness."""
     import webview
-    window = webview.create_window(title, html=ui_bundle.build(), js_api=Bridge(backend), width=1320, height=860,
-                                   min_size=(1040, 700), text_select=True, background_color='#ECEEEB',
+    dark = _initial_dark(backend)
+    window = webview.create_window(title, html=ui_bundle.build(theme='dark' if dark else 'light'), js_api=Bridge(backend),
+                                   width=1320, height=860, min_size=(1040, 700), text_select=True,
+                                   background_color='#141819' if dark else '#ECEEEB',
                                    frameless=True, easy_drag=False, shadow=True)
     backend.window_controls.bind(window)
     window.events.closing += lambda: confirm_close(
-        backend, lambda text: winapi.ask_yes_no(text, APP_NAME, winapi.find_window(title)))
+        backend, lambda text: winapi.ask_yes_no(text, APP_NAME, backend.window_controls.hwnd() or winapi.find_window(title)))
     return window
 
 
@@ -166,13 +194,14 @@ def main(argv=None):
     sb = None
     if args.sandbox is not None:
         sb, data_dir = prepare_sandbox(args.sandbox or os.path.join(default_data_dir(), 'sandbox'), data_dir)
-    setup_logging(data_dir, args.debug)
-    log.info('PanXu %s starting (admin=%s, sandbox=%s)', __version__, winapi.is_admin(), sb.root if sb else None)
 
     instance = winapi.SingleInstance()
     deadline = time.time() + (15 if args.elevated else 0)
     while not instance.acquire():
         if time.time() >= deadline:
+            if args.resume:
+                from . import handoff
+                handoff.discard(data_dir, args.resume)
             if not winapi.focus_window(APP_NAME):
                 winapi.message_box('盘序已经在运行。', APP_NAME)
             return 0
@@ -181,6 +210,9 @@ def main(argv=None):
     if auto_elevate(data_dir, attempted=args.elevated, sandbox=sb, debug=args.debug):
         instance.release()
         return 0
+
+    setup_logging(data_dir, args.debug)
+    log.info('PanXu %s starting (admin=%s, sandbox=%s)', __version__, winapi.is_admin(), sb.root if sb else None)
 
     try:
         import webview

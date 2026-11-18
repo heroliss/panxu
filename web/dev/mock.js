@@ -109,7 +109,7 @@
   }
 
   const settings = { theme: 'system', ai: { preset: 'deepseek', base_url: 'https://api.deepseek.com', model: 'deepseek-flash', protocol: 'openai',
-    json_mode: true, thinking: 'off', anonymize_paths: true, send_file_content: false, max_requests: 8, min_dir_mb: 200, timeout: 120 },
+    json_mode: true, thinking: 'low', anonymize_paths: true, send_file_content: false, max_requests: 8, min_dir_mb: 0, timeout: 120 },
   checkup: { space_scan: true, other_drives: true, selected_drives: null, duplicates: true, cross_drive_duplicates: true, apps_services: true, other_accounts: false,
     use_ai: true, ai_scopes: { space: true, files: true, duplicates: true, startup: true, apps: true, services: true }, auto_threshold: 7 },
   insights: { stale_days: 365, large_mb: 100, download_days: 180, other_accounts: false },
@@ -231,7 +231,7 @@
       actions: [{ kind: 'copy', arg: 'docker system prune', label: '复制清理命令' }, { kind: 'reveal', label: '打开文件夹' }] }),
   ];
   const SCORES = { 'rule:user_temp': 95, 'rule:chrome': 75, 'rule:crash_dumps': 70, 'dir:unity': 70, 'rule:edge': 75, 'rule:npm': 70,
-    'dir:idea21': 60, 'dir:oldgame': 30, 'file:iso': 30, 'file:wechat': 85, 'file:vscode': 85, 'file:crdl': 90, 'file:thesis': 85,
+    'dir:idea21': 60, 'dir:oldgame': 30, 'file:iso': 30, 'file:wechat': 85, 'file:vscode': 85, 'file:crdl': 90, 'file:other': 90, 'file:thesis': 85,
     'dup:1': 85, 'startup:qv': 60, 'app:a4': 60, 'app:a5': 40, 'service:AdobeARMservice': 60 };
   const HOLD = { 'dir:oldgame': '找不到对应的程序，但不确定是不是绿色版', 'startup:qv': '开机启动项由你决定',
     'app:a4': '卸载要运行它自己的卸载程序，请你逐个确认', 'app:a5': '卸载要运行它自己的卸载程序，请你逐个确认',
@@ -408,12 +408,19 @@
       const part = f * activeStages.length - (step - 1);
       const stage = activeStages[step - 1];
       const index = stages.findIndex((s) => s.id === stage.id);
-      return { stage: stage.id, stage_label: stage.label, step, steps: activeStages.length, stages: activeStages,
-        part: stage.id === 'insights' ? null : part, count: [`${Math.round(part * 44)} / 44 条规则`, `已统计 ${Math.round(part * 412000).toLocaleString()} 个文件`,
-          `已看过 ${Math.round(part * 18233).toLocaleString()} 个文件`, '已找到 3,120 个文件', `已问 ${Math.round(part * 6)} 次`, ''][index],
-        detail: [U + '\\AppData\\Local\\Temp', roots.join('、'), U + '\\Documents', '逐字节比对内容', '空间分析', ''][index] };
+      const completed = activeStages.slice(0, step - 1).flatMap((s) => s.id === 'space' ? ['space', 'large'] : s.id === 'insights' ? ['mine'] : [s.id]);
+      return { stage: stage.id, stage_label: stage.label, step, steps: activeStages.length, stages: activeStages, completed,
+        part: stage.id === 'insights' ? null : part,
+        count: [`${Math.round(part * 44)} / 44 条规则`, `已统计 ${Math.round(part * 412000).toLocaleString()} 个文件`,
+          `已看过 ${Math.round(part * 18233).toLocaleString()} 个文件`, '已找到 3,120 个文件',
+          `已读取 ${apps.length} 个程序`, `已问 ${Math.round(part * 6)} 次`, ''][index] || '',
+        detail: [U + '\\AppData\\Local\\Temp', roots.join('、'), U + '\\Documents', '逐字节比对内容',
+          '开机启动项与第三方服务', '空间分析', ''][index] || '' };
     });
     },
+    admin_refresh: () => job(2, () => plan),
+    window_action: () => ({ available: false, custom: false, maximized: false }),
+    other_accounts: () => ({ admin: !!sandbox || location.hash.includes('admin'), accounts: ['家人'] }),
     plan: () => { if (plan) plan.summary = summarize(); return plan; },
     // like Backend.m_nav_summary: only what has results
     nav_summary: () => {
@@ -458,10 +465,11 @@
     },
     plan_preview: ({ item_ids }) => {
       const out = { delete: { count: 0, size: 0, titles: [] }, recycle: { count: 0, size: 0, titles: [] }, disable: { count: 0, titles: [] },
-        service: { count: 0, titles: [] }, skipped: [] };
+        service: { count: 0, titles: [] }, skipped: [], all_copies: [] };
       for (const it of plan.items) {
         if (!item_ids.includes(it.id)) continue;
         if (it.action === 'uninstall') { out.skipped.push({ title: it.title, reason: '要单独运行它自己的卸载程序' }); continue; }
+        if (it.kind === 'dup' && !it.keep) out.all_copies.push(it.title);
         const slot = out[it.action]; slot.count += 1; slot.titles.push(it.title); if ('size' in slot) slot.size += it.size || 0;
       }
       return out;
@@ -508,12 +516,22 @@
     ai_review_files: () => job(5, { files: {}, usage: { requests: 1 }, errors: [] }),
     large_ai_review: ({ files }) => job(5, () => { for (const f of largeFiles) if (files.includes(f.path)) f.ai = { verdict: 'archive', verdict_label: '建议归档', what: '很久以前的录像或备份', reason: '一年多没改过，体积大，适合移到移动硬盘' };
       return { files: {}, usage: { requests: 1 }, errors: [], sent: files.length }; }),
-    app_residues_result: () => plan ? { items: plan.items.filter((i) => ['软件残留', '旧版本数据'].includes(i.category)), registry: [],
+    app_residues_result: () => plan ? { items: plan.items.filter((i) => ['软件残留', '旧版本数据'].includes(i.category)),
+      registry: [{ id: 'reg:ghost', title: '旧版录屏助手', why: '安装目录和卸载程序都已不存在，可能是以前直接删除了程序文件夹。',
+        advice: '如果在「设置 > 应用 > 已安装的应用」里点卸载提示找不到文件，可以让系统移除这条失效记录。',
+        registry_path: 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\GhostRec',
+        location: 'C:\\Program Files\\GhostRec', uninstaller: 'C:\\Program Files\\GhostRec\\uninstall.exe',
+        ask: { type: 'global' } }],
       stats: { roots: [U + '\\AppData\\Local'], checked: 12, truncated: false }, scanned_at: now } : null,
     app_residues_scan: () => job(3, { items: [P({ id: 'residue:oldeditor', category: '软件残留', title: '旧编辑器数据',
       paths: [U + '\\AppData\\Local\\OldEditor'], size: 18 * MB, score: 40, eligible: false, selected: false,
       action: 'recycle', why: '未匹配到安装登记，半年没有新增或修改；可能属于绿色软件。',
-      basis: ['未匹配到安装登记不等于已经卸载', '需要你决定是否保留'], effect: '可能包含以前的设置' })], registry: [],
+      basis: ['未匹配到安装登记不等于已经卸载', '需要你决定是否保留'], effect: '可能包含以前的设置' })],
+      registry: [{ id: 'reg:ghost', title: '旧版录屏助手', why: '安装目录和卸载程序都已不存在，可能是以前直接删除了程序文件夹。',
+        advice: '如果在「设置 > 应用 > 已安装的应用」里点卸载提示找不到文件，可以让系统移除这条失效记录。',
+        registry_path: 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\GhostRec',
+        location: 'C:\\Program Files\\GhostRec', uninstaller: 'C:\\Program Files\\GhostRec\\uninstall.exe',
+        ask: { type: 'global' } }],
       stats: { roots: [U + '\\AppData\\Local'], checked: 12, truncated: false }, scanned_at: now }),
     apps_list: () => ({ apps, admin: true, usage_known: true, ai: plan && plan.ai.scopes.includes('apps')
       ? { a4: { what: '看图软件，附带资讯弹窗', suggestion: 'uninstall', reason: '常驻弹出广告资讯' } } : {} }),
@@ -521,10 +539,15 @@
     // stand-ins for the shell's type icons: a yellow folder, a page with the extension on it
     type_icons: ({ kinds }) => Object.fromEntries(kinds.map((k) => [k, 'data:image/svg+xml,' + encodeURIComponent(k === 'folder'
       ? '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><path d="M2 7h11l3 3h14v17H2z" fill="#F2C14E"/><path d="M2 12h28v15H2z" fill="#F7D774"/></svg>'
-      : `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><path d="M6 2h14l6 6v22H6z" fill="#fff" stroke="#9AA3AF"/><text x="16" y="24" font-size="8" text-anchor="middle" font-family="sans-serif" fill="${{ '.mp4': '#C2410C', '.docx': '#2B579A', '.iso': '#6B7280', '.zip': '#B45309', '.png': '#0E7490', '.jpg': '#0E7490', '.pdf': '#B91C1C' }[k] || '#4B5563'}">${k.slice(1, 5).toUpperCase()}</text></svg>`)])),
+      : `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><path d="M6 2h14l6 6v22H6z" fill="#fff" stroke="#9AA3AF"/><text x="16" y="24" font-size="8" text-anchor="middle" font-family="sans-serif" fill="${{ '.mp4': '#C2410C', '.docx': '#2B579A', '.iso': '#6B7280', '.zip': '#B45309', '.png': '#0E7490', '.jpg': '#0E7490', '.pdf': '#B91C1C' }[k] || '#4B5563'}">${k === '.' ? 'FILE' : k.slice(1, 5).toUpperCase()}</text></svg>`)])),
     app_icons: ({ ids }) => Object.fromEntries(ids.filter((id) => id === 'a1' || id === 'a2').map((id) => [id,
       'data:image/svg+xml;base64,' + btoa('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><rect width="24" height="24" rx="5" fill="' + (id === 'a1' ? '#4285f4' : '#07c160') + '"/></svg>')])),
     app_measure: ({ app_id }) => ({ id: app_id, size: 2.3 * GB, files: 812 }),
+    apps_measure_all: () => job(4, () => {
+      const out = {};
+      for (const a of apps) if (!a.size && a.location_exists) { a.size = 2.3 * GB; a.size_source = 'measured'; out[a.id] = a.size; }
+      return out;
+    }, (f) => ({ done: Math.floor(f * 2), total: 2 })),
     // the "uninstaller" finishes 6 seconds after it was opened
     app_uninstall: ({ app_id }) => {
       uninstalledAt[app_id] = Date.now();
@@ -549,7 +572,7 @@
     sandbox_restore: ({ item_id }) => { const i = recycled.findIndex((r) => r.id === item_id); const [r] = recycled.splice(i, 1); sandbox.recycle_count -= 1; return r.original; },
     sandbox_reset: () => sandbox,
     drives: () => handlers.init().drives,
-    init: () => ({ version: '2.3.0', admin: !!sandbox || location.hash.includes('admin'), other_accounts: ['家人'], windows: true, settings, has_key: hasKey, sandbox,
+    init: () => ({ version: '2.4.0', admin: !!sandbox || location.hash.includes('admin'), other_accounts: ['家人'], windows: true, settings, has_key: hasKey, sandbox,
       plan_groups: planGroups, checkup_stages: stages,
       presets: [{ id: 'deepseek', name: 'DeepSeek', base_url: 'https://api.deepseek.com', protocol: 'openai', models: ['deepseek-flash', 'deepseek-v4-pro'], json_mode: true, thinking_toggle: true, key_url: 'x' },
         { id: 'kimi', name: 'Kimi（月之暗面）', base_url: 'https://api.moonshot.cn/v1', protocol: 'openai', models: [], json_mode: true },
@@ -610,7 +633,14 @@
       { category: 'installer', label: '安装包', count: 1600, bytes: 9 * GB, top_exts: ['.exe', '.msi'] },
     ],
     space_find: ({ path }) => { const n = nodes.find((x) => x.path.toLowerCase() === path.toLowerCase()); return n ? n.id : null; },
-    large_files: ({ min_mb, category }) => ({ files: largeFiles.filter((f) => f.size >= min_mb * MB && (!category || f.category === category)), scanned_root: 'C:\\', scanned_at: now }),
+    space_search: ({ query, limit = 60 }) => {
+      const q = String(query || '').trim().toLowerCase();
+      const hits = nodes.filter((n) => n.parent && n.kind !== 'file' && (q.includes('\\') ? n.path.toLowerCase().includes(q) : n.name.toLowerCase().includes(q)))
+        .sort((a, b) => b.size - a.size);
+      return { items: hits.slice(0, limit).map((n) => ({ ...row(n), parent_id: n.parent ? n.parent.id : n.id })), total: hits.length };
+    },
+    large_files: ({ min_mb, category, older_days }) => ({ files: largeFiles.filter((f) => f.size >= min_mb * MB
+      && (!category || f.category === category) && (!older_days || f.mtime <= now - older_days * day)), scanned_root: 'C:\\', scanned_at: now }),
     check_paths: ({ items }) => items.map((p) => ({ path: p, exists: true, size: (nodes.find((n) => n.path === p) || largeFiles.find((f) => f.path === p) || { size: 1.5 * GB }).size,
       files: 10, blocked: null, caution: p.includes('Roaming') ? '位于应用配置目录，可能包含应用设置或账号数据' : null, note: null })),
     // a folder named Temp is too large for the Recycle Bin here, and the user says yes to Windows' prompt
@@ -669,12 +699,23 @@
       for (const [k, v] of Object.entries(changes)) settings[k] = v && typeof v === 'object' && !Array.isArray(v) ? Object.assign(settings[k] || {}, v) : v;
       return { settings, has_key: hasKey };
     },
+    exclude_path: ({ path }) => {
+      settings.excluded_paths = [...new Set([...(settings.excluded_paths || []), path])];
+      if (plan) for (const it of plan.items) if ((it.paths || []).includes(path)) { it.blocked = '位于你设置的排除目录中'; it.selected = false; }
+      return { settings, path };
+    },
+    unexclude_path: ({ path }) => {
+      settings.excluded_paths = (settings.excluded_paths || []).filter((p) => p !== path);
+      if (plan) for (const it of plan.items) if ((it.paths || []).includes(path)) it.blocked = null;
+      return { settings, path };
+    },
     set_api_key: ({ key }) => { hasKey = !!key; mockAIState = 'untested'; return hasKey; },
     has_api_key: () => hasKey,
     ai_models: () => ['deepseek-chat', 'deepseek-reasoner'],
     ai_test: () => ({ reply: { ok: true }, model: settings.ai.model }),
     ai_clear_cache: () => true,
     pick_folder: () => 'D:\\Projects',
+    resolve_folder: ({ path }) => ({ path: String(path || '').trim().replace(/^%APPDATA%/i, 'C:\\Users\\demo\\AppData\\Roaming').replace(/^%LOCALAPPDATA%/i, 'C:\\Users\\demo\\AppData\\Local') }),
     reveal: ({ path }) => ({ shown: path, missing: false }),
     open_path: ({ path }) => ({ opened: path }),
     flash_window: () => false,
@@ -689,7 +730,12 @@
     if (!fn) return { ok: false, error: '未知操作：' + method };
     try {
       const data = fn(params || {});
-      if (typeof data === 'string' && jobs[data]) jobs[data].kind = method;
+      if (typeof data === 'string' && jobs[data]) {
+        const KIND_MAP = { ai_review_files: 'ai_review', large_ai_review: 'ai_review', apps_measure_all: 'apps_measure',
+          delete_paths: 'delete', dup_delete: 'delete', insights_delete: 'delete' };
+        jobs[data].kind = KIND_MAP[method] || method;
+        jobs[data].synchronized = method !== 'ai_ask';
+      }
       return { ok: true, data };
     } catch (e) { return { ok: false, error: e.message }; }
   } } };

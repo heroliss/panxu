@@ -19,6 +19,38 @@
     return h('div.field', h('label', label), control, help ? h('div.help', help) : null);
   }
 
+  function folderAdder(list, saveKey, forExclude) {
+    const same = (a, b) => String(a || '').replace(/[\\/]+$/, '').toLowerCase() === String(b || '').replace(/[\\/]+$/, '').toLowerCase();
+    const addResolved = async (rawPath) => {
+      const r = await PX.api.call('resolve_folder', { path: rawPath, for_exclude: !!forExclude });
+      const norm = r.path;
+      if (list.some((x) => same(x, norm))) { PX.toast('这个文件夹已经在列表里了'); return false; }
+      if (!await save({ [saveKey]: [...list, norm] })) return false;
+      if (forExclude && PX.home) PX.home.reload();
+      PX.toast('已添加：' + PX.displayPath(norm));
+      draw();
+      return true;
+    };
+    const input = h('input', { type: 'text', placeholder: '或粘贴文件夹路径（支持 %APPDATA% 等）', 'aria-label': '文件夹路径', spellcheck: 'false' });
+    const submit = async () => {
+      const v = input.value.trim();
+      if (!v) { PX.toast('请先输入或粘贴文件夹路径'); input.focus(); return; }
+      try { if (await addResolved(v)) input.value = ''; } catch (e) { PX.fail(e); }
+    };
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); submit(); }
+    });
+    return h('div.folder-add',
+      h('button.btn', { type: 'button', onclick: async () => {
+        try {
+          const f = await PX.api.call('pick_folder');
+          if (f) await addResolved(f);
+        } catch (e) { PX.fail(e); }
+      } }, PX.icon('plus'), '选择文件夹…'),
+      input,
+      h('button.btn', { type: 'button', onclick: submit }, '添加'));
+  }
+
   function draw() {
     if (!root || !PX.isCurrent('settings')) return;
     const init = PX.state.init;
@@ -41,7 +73,7 @@
     const sec1 = form.appendChild(h('section', { id: 'ai-model-settings' }, h('h2', 'AI 模型')));
     if (PX.aiStatus) sec1.appendChild(PX.aiStatus.panel());
     sec1.appendChild(field('启动检测', h('label.inline', PX.switchEl(s.ai_check_on_start !== false,
-      (e) => save({ ai_check_on_start: e.target.checked })), h('span', '启动时检测模型连接并提示问题')),
+      (e) => save({ ai_check_on_start: e.target.checked }), false, '启动时检测模型连接并提示问题'), h('span', '启动时检测模型连接并提示问题')),
     '仅发送固定测试消息，不包含文件名或文件内容，可能消耗少量模型额度。'));
     const presetSel = h('select', { 'aria-label': '模型服务' }, init.presets.map((p) => h('option', { value: p.id }, p.name)));
     presetSel.value = ai.preset;
@@ -55,10 +87,10 @@
     sec1.appendChild(field('服务', presetSel, preset.key_url ? h('span', '在服务商的控制台创建 API Key：', h('button.btn.quiet.small', { type: 'button',
       onclick: () => PX.api.call('open_key_page', { preset: preset.id }).catch(PX.fail) }, '打开网页')) : null));
     const url = h('input', { type: 'text', value: ai.base_url, 'aria-label': '接口地址', placeholder: 'https://…', spellcheck: 'false' });
-    url.addEventListener('change', () => save({ ai: { base_url: url.value.trim() } }));
+    url.addEventListener('change', async () => { if (await save({ ai: { base_url: url.value.trim() } })) PX.toast('接口地址已保存'); });
     sec1.appendChild(field('接口地址', url));
     const model = h('input', { type: 'text', value: ai.model, list: 'model-list', 'aria-label': '模型', spellcheck: 'false' });
-    model.addEventListener('change', () => save({ ai: { model: model.value.trim() } }));
+    model.addEventListener('change', async () => { if (await save({ ai: { model: model.value.trim() } })) PX.toast('模型名称已保存'); });
     const listEl = h('datalist', { id: 'model-list' }, [...new Set([...(preset.models || []), ...models])].map((m) => h('option', { value: m })));
     const fetchBtn = h('button.btn', { type: 'button', onclick: async () => {
       fetchBtn.disabled = true;
@@ -67,15 +99,26 @@
     } }, '获取模型列表');
     sec1.appendChild(field('模型', h('div.inline', model, fetchBtn, listEl), models.length ? '可用：' + models.slice(0, 12).join('、') + (models.length > 12 ? ' 等' : '') : null));
     const key = h('input', { type: 'password', 'aria-label': 'API Key', autocomplete: 'off',
-      placeholder: init.has_key ? '已保存（不显示）。输入新的 Key 可替换' : preset.needs_key === false ? '本地服务通常不需要' : '粘贴 API Key' });
+      placeholder: init.has_key ? '已保存（不显示）。输入新的 Key 可替换' : preset.needs_key === false ? '本地服务通常不需要' : '粘贴 API Key',
+      oninput: () => {
+        const hasInput = !!key.value.trim();
+        keyBtn.textContent = hasInput ? '保存' : init.has_key ? '清除已保存的 Key' : '保存';
+        keyBtn.classList.toggle('primary', hasInput);
+      } });
     const keyBtn = h('button.btn', { type: 'button', onclick: async () => {
+      const val = key.value.trim();
+      if (!val && !init.has_key) { PX.toast('请先粘贴 API Key'); return; }
+      if (!val && init.has_key) {
+        const ok = await PX.confirm({ title: '清除 API Key', body: h('div', '确定要清除已保存的 API Key 吗？'), ok: '清除' });
+        if (!ok) return;
+      }
       try {
-        init.has_key = await PX.api.call('set_api_key', { preset: ai.preset, key: key.value });
+        init.has_key = await PX.api.call('set_api_key', { preset: ai.preset, key: val });
         await PX.aiStatus?.refresh();
         PX.toast(init.has_key ? 'API Key 已保存' : 'API Key 已清除');
         draw();
       } catch (e) { PX.fail(e); }
-    } }, key.value ? '保存' : init.has_key ? '保存 / 清除' : '保存');
+    } }, init.has_key ? '清除已保存的 Key' : '保存');
     sec1.appendChild(field('API Key', h('div.inline', key, keyBtn), '只保存在这台电脑上，用 Windows 账户加密。'));
     const json = h('input', { type: 'checkbox', checked: !!ai.json_mode, onchange: (e) => save({ ai: { json_mode: e.target.checked } }) });
     sec1.appendChild(field('JSON 模式', h('label.inline', json, h('span.small.muted', '让模型只输出 JSON。服务不支持时会自动关闭'))));
@@ -84,7 +127,7 @@
         async (v) => { await save({ ai: { thinking: v } }); draw(); }),
       '用于「问 AI」：「低」想得更周全，只慢一两秒；「高」更慢也更费额度。判断文件夹和文件时总是不思考：那是简短的结构化判断，思考会让一次体检慢很多，还可能被截断。'));
     }
-    sec1.appendChild(field('读取文档内容', h('label.inline', PX.switchEl(ai.send_file_content, (e) => save({ ai: { send_file_content: e.target.checked } })),
+    sec1.appendChild(field('读取文档内容', h('label.inline', PX.switchEl(ai.send_file_content, (e) => save({ ai: { send_file_content: e.target.checked } }), false, '读取文档内容'),
       h('span.small.muted', '允许把文档开头约 800 字发给模型，帮你判断文件是什么')),
     '打开后每次发送前仍会单独询问，并列出会读取的文档。一键体检从不发送文件内容。'));
     const testBtn = h('button.btn', { type: 'button', 'data-ai-health-check': '',
@@ -95,7 +138,8 @@
             init.has_key = await PX.api.call('set_api_key', { preset: ai.preset, key: key.value.trim() });
             key.value = '';
             key.placeholder = '已保存（不显示）。输入新的 Key 可替换';
-            keyBtn.textContent = '保存 / 清除';
+            keyBtn.textContent = '清除已保存的 Key';
+            keyBtn.classList.remove('primary');
           } catch (e) { PX.fail(e); return; }
         }
         await PX.aiStatus.check();
@@ -145,17 +189,13 @@
     const extra = s.extra_personal_paths || [];
     const exList = secMine.appendChild(h('div.folder-list'));
     for (const p of extra) {
-      exList.appendChild(h('div.row', PX.fileIcon(p, true), h('div.name', PX.pathText(p)), h('div.row-actions', PX.revealButton(p),
-        h('button.btn.quiet.small', { type: 'button',
-          onclick: async () => { await save({ extra_personal_paths: extra.filter((x) => x !== p) }); draw(); } }, '移除'))));
+      exList.appendChild(h('div.row', PX.fileIcon(p, true), h('div.name', PX.pathText(p)),
+        h('div.row-actions', PX.copyPathButton(p), PX.revealButton(p),
+          h('button.btn.quiet.small', { type: 'button',
+            onclick: async () => { await save({ extra_personal_paths: extra.filter((x) => x !== p) }); draw(); } }, '移除'))));
     }
     if (!extra.length) exList.appendChild(h('div.row.muted.small', { style: { gridTemplateColumns: '1fr' } }, '没有额外的文件夹'));
-    secMine.appendChild(h('div', { style: { marginBottom: '16px' } }, h('button.btn', { type: 'button', onclick: async () => {
-      try {
-        const f = await PX.api.call('pick_folder');
-        if (f && !extra.includes(f)) { await save({ extra_personal_paths: [...extra, f] }); draw(); }
-      } catch (e) { PX.fail(e); }
-    } }, PX.icon('plus'), '添加文件夹')));
+    secMine.appendChild(h('div', { style: { marginBottom: '16px' } }, folderAdder(extra, 'extra_personal_paths', false)));
     secMine.appendChild(field('很久没动过', PX.seg([[180, '半年'], [365, '1 年'], [730, '2 年']], ins.stale_days || 365,
       async (v) => { await save({ insights: { stale_days: v } }); draw(); }), '超过这么久没有修改的大文件会列出来。'));
     secMine.appendChild(field('大文件', PX.seg([[50, '50 MB'], [100, '100 MB'], [500, '500 MB']], ins.large_mb || 100,
@@ -163,20 +203,20 @@
 
     // ---- protected folders
     const sec3 = form.appendChild(h('section', h('h2', '排除的文件夹')));
-    sec3.appendChild(h('div.small.muted', { style: { marginBottom: '10px' } }, '这些位置会从扫描和清理中排除，也不能通过选择上级目录来处理。'));
+    sec3.appendChild(h('div.small.muted', { style: { marginBottom: '10px' } }, '这些位置会从扫描和清理中排除，也不能通过选择上级目录来处理。可直接粘贴隐藏目录（如 %APPDATA%\\某软件）添加。'));
     const ex = sec3.appendChild(h('div.folder-list'));
     for (const p of s.excluded_paths) {
-      ex.appendChild(h('div.row', PX.fileIcon(p, true), h('div.name', PX.pathText(p)), h('div.row-actions', PX.revealButton(p),
-        h('button.btn.quiet.small', { type: 'button',
-          onclick: async () => { await save({ excluded_paths: s.excluded_paths.filter((x) => x !== p) }); draw(); } }, '移除'))));
+      ex.appendChild(h('div.row', PX.fileIcon(p, true), h('div.name', PX.pathText(p)),
+        h('div.row-actions', PX.copyPathButton(p), PX.revealButton(p),
+          h('button.btn.quiet.small', { type: 'button',
+            onclick: async () => {
+              await save({ excluded_paths: s.excluded_paths.filter((x) => x !== p) });
+              if (PX.home) PX.home.reload();
+              draw();
+            } }, '移除'))));
     }
     if (!s.excluded_paths.length) ex.appendChild(h('div.row.muted.small', { style: { gridTemplateColumns: '1fr' } }, '没有排除的文件夹'));
-    sec3.appendChild(h('button.btn', { type: 'button', onclick: async () => {
-      try {
-        const f = await PX.api.call('pick_folder');
-        if (f && !s.excluded_paths.includes(f)) { await save({ excluded_paths: [...s.excluded_paths, f] }); draw(); }
-      } catch (e) { PX.fail(e); }
-    } }, PX.icon('plus'), '添加文件夹'));
+    sec3.appendChild(folderAdder(s.excluded_paths, 'excluded_paths', true));
 
     // ---- appearance
     const sec4 = form.appendChild(h('section', h('h2', '外观')));

@@ -41,7 +41,7 @@ log = logging.getLogger(__name__)
 SERIAL_METHODS = frozenset('''checkup junk_scan space_scan insights_scan dup_scan app_residues_scan
     ai_analyze large_ai_review ai_review_files dup_ai_review ai_explain apps_measure_all app_measure app_leftovers
     junk_clean delete_paths dup_delete insights_delete plan_execute plan_dup_choose app_uninstall startup_set
-    service_set hibernate_set revert sandbox_reset sandbox_restore ai_clear_cache restart_as_admin admin_refresh'''.split())
+    service_set hibernate_set revert sandbox_reset sandbox_restore ai_clear_cache admin_refresh'''.split())
 
 SETTINGS_URIS = {
     'storage': 'ms-settings:storagesense',
@@ -58,8 +58,10 @@ SETTINGS_PROGRAMS = {
 # opening these runs something (programs, installers, scripts, shortcuts to them): 「打开」 refuses them
 # (the same list is in web/ui.js, PX.canOpen)
 RUNS_CODE = {'.exe', '.com', '.scr', '.pif', '.cpl', '.msi', '.msix', '.msixbundle', '.msp', '.appx', '.appxbundle',
-             '.application', '.appref-ms', '.bat', '.cmd', '.ps1', '.psm1', '.vbs', '.vbe', '.js', '.jse', '.wsf', '.wsh',
-             '.hta', '.jar', '.lnk', '.url', '.reg', '.inf', '.msc', '.sys', '.dll', '.ocx'}
+             '.application', '.appref-ms', '.bat', '.cmd', '.ps1', '.psm1', '.ps2', '.msh', '.vbs', '.vbe', '.js',
+             '.jse', '.wsf', '.wsh', '.hta', '.jar', '.lnk', '.url', '.reg', '.inf', '.msc', '.sys', '.dll', '.ocx',
+             '.py', '.pyw', '.pyz', '.sh', '.chm', '.diagcab', '.scf', '.settingcontent-ms', '.library-ms',
+             '.searchconnector-ms', '.xll', '.xbap'}
 
 
 class Backend:
@@ -148,7 +150,8 @@ class Backend:
     def _probe_ai(self, ai, key):
         if self.sandbox is not None:
             return self.sandbox.ai_probe(ai, key)
-        client = ai_client.client_from_settings({**ai, 'timeout': min(12, float(ai.get('timeout') or 12))}, key)
+        timeout = 30 if ai.get('preset') == 'ollama' else min(12, float(ai.get('timeout') or 12))
+        client = ai_client.client_from_settings({**ai, 'timeout': timeout}, key)
         client.max_tokens = 64
         reply = ai_client.extract_json(client.complete('你是连接测试助手。只输出 JSON。', '请回复 {"ok": true}', want_json=True))
         if reply.get('ok') is not True:
@@ -179,13 +182,64 @@ class Backend:
 
         def alive(path):
             return not paths.within_any(path, gone)
+
+        if getattr(self, 'ai_results', None):
+            updated_ai = {}
+            for nid, s in self.ai_results.items():
+                if not alive(s['path']):
+                    continue
+                if self.scan is not None and self.scan.complete:
+                    try:
+                        node = self.scan.node(nid)
+                    except KeyError:
+                        continue
+                    if node.size <= 0 and node.files <= 0:
+                        continue
+                    s = {**s, 'size': node.size, 'logical_size': node.logical_size, 'files': node.files}
+                updated_ai[nid] = s
+            self.ai_results = updated_ai
+
         # the plan on 首页 shows what was done on the tool pages too
+        policy = self.policy() if self.plan else None
         for item in (self.plan or {}).get('items', []):
-            if item['status'] == 'pending' and item.get('paths') and not any(alive(p) for p in item['paths']):
-                item['status'], item['result'] = 'done', '已处理'
+            if item['status'] != 'pending':
+                continue
+            if item.get('kind') == 'dup' and item.get('dup_files'):
+                surviving = [f for f in item['dup_files'] if alive(f['path'])]
+                if len(surviving) <= 1:
+                    item.update(status='done', result='已处理', selected=False, paths=[])
+                elif len(surviving) != len(item['dup_files']):
+                    item['dup_files'] = surviving
+                    kept_keys = {paths.key(k) for k in item.get('keep', [])}
+                    keep = {f['path'] for f in surviving if paths.key(f['path']) in kept_keys}
+                    if (not keep and not item.get('chosen')) or len(keep) == len(surviving):
+                        keep = checkup.default_keepers(surviving)
+                    item.update(checkup.dup_choice(item['dup_size'], surviving, keep))
+                    reasons = [policy.reason(p) for p in item['paths'] if policy.reason(p)]
+                    cautions = [policy.caution(p) for p in item['paths'] if policy.caution(p)]
+                    item['blocked'] = reasons[0] if reasons else None
+                    item['caution'] = cautions[0] if cautions else None
+                    if item['blocked']:
+                        item['selected'] = False
+                    item['basis'] = item['basis'] + checkup.decision_note(
+                        item, self.plan.get('threshold', checkup.DEFAULT_THRESHOLD))
+            elif item.get('paths'):
+                left = [p for p in item['paths'] if alive(p)]
+                if not left:
+                    item.update(status='done', result='已处理', selected=False)
+                elif len(left) != len(item['paths']):
+                    item['paths'] = left
+                    if item.get('id') == 'insight:empty_folders' or str(item.get('title', '')).endswith('个空文件夹'):
+                        item['title'] = f'{len(left)} 个空文件夹'
+        if self.plan:
+            self.plan['summary'] = checkup.summarize(self.plan)
         for item in (self.app_residues or {}).get('items', []):
-            if item['status'] == 'pending' and item.get('paths') and not any(alive(p) for p in item['paths']):
-                item['status'], item['result'] = 'done', '已处理'
+            if item['status'] == 'pending' and item.get('paths'):
+                left = [p for p in item['paths'] if alive(p)]
+                if not left:
+                    item.update(status='done', result='已处理')
+                elif len(left) != len(item['paths']):
+                    item['paths'] = left
         if self.insights:
             kept = []
             for f in self.insights['findings']:
@@ -300,7 +354,8 @@ class Backend:
             except OSError:
                 continue
             kind = winapi.drive_type(root)
-            rows.append({'root': root, 'label': winapi.volume_label(root), 'fstype': p.fstype,
+            letter = ntpath.splitdrive(root)[0]
+            rows.append({'root': root, 'letter': letter, 'label': winapi.volume_label(root), 'fstype': p.fstype,
                          'total': usage.total, 'used': usage.used, 'free': usage.free,
                          'system': paths.key(root) == paths.key(self.env.get('SystemDrive', 'C:') + '\\'),
                          'removable': kind == winapi.DRIVE_REMOVABLE, 'fixed': kind == winapi.DRIVE_FIXED})
@@ -326,8 +381,14 @@ class Backend:
         pending = [i for i in (self.plan or {}).get('items', []) if i['status'] == 'pending']
         if self.plan:
             coverage = self.plan.get('coverage') or {}
+            app_cov = coverage.get('apps') or {}
+            has_plan_apps = bool(app_cov.get('residues') or app_cov.get('listed') is not None)
             residues = [i for i in pending if i['category'] in checkup.RESIDUE_CATEGORIES]
-            if coverage.get('apps'):
+            if self.app_residues and (not has_plan_apps or (self.app_residues.get('scanned_at') or 0) > (self.plan.get('created') or 0)):
+                rows = [i for i in self.app_residues.get('items', []) if i['status'] == 'pending']
+                out['apps'] = {'count': len(rows) + sum(1 for i in pending if i.get('kind') == 'app'),
+                               'size': sum(i.get('size') or 0 for i in rows)}
+            elif has_plan_apps:
                 out['apps'] = {'count': len(residues) + sum(1 for i in pending if i.get('kind') == 'app'),
                                'size': sum(i.get('size') or 0 for i in residues)}
             out['startup'] = {'count': sum(1 for i in pending if i.get('kind') in ('startup', 'service'))}
@@ -363,9 +424,10 @@ class Backend:
             return True
         if self.sandbox is not None:
             raise UserError('演练环境不会请求真实管理员权限')
-        self.jobs._check_busy()
-        from .handoff import ui_state
-        self.restart_ui = ui_state(selection, page)
+        with self.jobs.submission():
+            self.jobs._check_busy()
+            from .handoff import ui_state
+            self.restart_ui = ui_state(selection, page)
         if self._relaunch is None or not self._relaunch():
             raise UserError('没有获得管理员权限（可能在系统提示中选择了「否」）')
         return True
@@ -376,13 +438,17 @@ class Backend:
             raise UserError('没有需要补查的管理员项目')
 
         def run(job):
-            ids = [r['id'] for r in self.junk_rows or [] if r.get('needs_admin') or r.get('unreadable')]
+            if self.junk_rows is not None:
+                ids = [r['id'] for r in self.junk_rows if r.get('needs_admin') or r.get('unreadable')]
+            else:
+                ids = [r.id for r in RULES_BY_ID.values() if r.admin or any(t.admin for t in r.targets)]
             rows = self.junk.scan(rule_ids=ids, cancel=job.cancel,
                                   progress=lambda i, n, name: job.update(current=name, index=i, total=n)) if ids else []
-            builder = checkup.PlanBuilder(self.policy(), threshold=self.settings.get()['checkup']['auto_threshold'])
+            threshold = (self.plan or {}).get('threshold', self.settings.get()['checkup']['auto_threshold'])
+            builder = checkup.PlanBuilder(self.policy(), threshold=threshold)
             builder.add_junk(rows)
             # Preserve explicit choices. Newly discovered or previously blocked rules remain unticked.
-            chosen = set(self.resume['selection']['rules'])
+            chosen = set((self.resume.get('selection') or {}).get('rules') or [])
             for item in builder.items:
                 item['selected'] = item['rule'] in chosen and not item['blocked']
                 if not item['selected']:
@@ -402,14 +468,19 @@ class Backend:
                 for item in builder.items:
                     previous = old.get(item['rule'])
                     if previous and previous['status'] != 'pending':
-                        item.update({k: previous[k] for k in ('status', 'result', 'freed') if k in previous})
-                        item['selected'] = False
+                        if previous['status'] != 'done' or (not item.get('size') and not item.get('count')):
+                            item.update({k: previous[k] for k in ('status', 'result', 'freed') if k in previous})
+                            item['selected'] = False
                 refreshed = {i['rule'] for i in builder.items}
                 handled_rules = [i for rid, i in old.items() if rid in ids and rid not in refreshed and i['status'] != 'pending']
                 self.plan['items'] = [i for i in self.plan['items'] if i.get('rule') not in ids] + builder.items + handled_rules
                 for item in self.plan['items']:
-                    if item['blocked'] == '需要管理员权限' and item['kind'] == 'service':
+                    if item['blocked'] == '需要管理员权限' and item['kind'] in ('service', 'startup'):
+                        if item['kind'] == 'startup' and paths.is_foreign_user() and str(item.get('startup_id', '')).startswith('hkcu'):
+                            continue
                         item['blocked'] = None
+                        item['basis'] = [b for b in item['basis'] if not b.startswith(('自动勾选', '没有自动勾选', '没有勾选'))]
+                        item['basis'].extend(checkup.decision_note(item, threshold))
                 coverage = self.plan.get('coverage', {})
                 coverage['junk'] = {'rules': len(merged), 'unavailable': sum(bool(r.get('error') or r.get('scope_blocked')) for r in merged.values())}
                 # Only supplement an app check the user actually enabled. No new model request.
@@ -424,16 +495,25 @@ class Backend:
                         coverage['apps'].update(listed=len(apps), suggested=suggested)
                     except OSError:
                         log.exception('could not refresh application usage after elevation')
+                checkup.sort_plan_items(self.plan['items'])
                 self.plan['summary'] = checkup.summarize(self.plan)
             self.resume['refresh_pending'] = False
             return self.plan
         return self.jobs.start('admin_refresh', run)
 
+    def _validate_ui_path(self, path: str, missing_msg: str):
+        if not isinstance(path, str) or not os.path.isabs(path):
+            raise UserError(missing_msg)
+        norm = paths.strip_extended(path).replace('/', '\\')
+        if ':' in ntpath.splitdrive(norm)[1]:
+            raise UserError(missing_msg)
+        if self.sandbox is not None and not paths.is_within(norm, self.sandbox.root):
+            raise UserError('演练环境不会打开电脑上的真实文件')
+
     def m_reveal(self, path: str):
         """Show a path in Explorer (a file selected in its folder, a folder opened). A path that is gone --
         cleaned, moved to the Recycle Bin -- opens the nearest folder that is still there."""
-        if not isinstance(path, str) or not os.path.isabs(path):
-            raise UserError('路径不存在')
+        self._validate_ui_path(path, '路径不存在')
         target = path
         for _ in range(8):
             if os.path.exists(target):
@@ -444,6 +524,8 @@ class Backend:
             target = parent
         else:
             raise UserError('路径不存在')
+        if self.sandbox is not None and not paths.is_within(target, self.sandbox.root):
+            raise UserError('演练环境不会打开电脑上的真实文件')
         winapi.reveal_in_explorer(target)
         return {'shown': target, 'missing': target != path}
 
@@ -463,13 +545,19 @@ class Backend:
         """Open a file with its default program, or a folder, like a double-click in Explorer. Programs,
         scripts and shortcuts are refused: for them "open" means run, and an old installer or an unknown
         script lying in Downloads must never start by a click in a disk cleaner."""
-        if not isinstance(path, str) or not os.path.isabs(path) or not os.path.exists(path):
+        self._validate_ui_path(path, '文件不存在：可能已经被删除或移走')
+        if not os.path.exists(path):
             raise UserError('文件不存在：可能已经被删除或移走')
-        if os.path.isdir(path):
+        real = paths.strip_extended(os.path.realpath(path))
+        if self.sandbox is not None and not paths.is_within(real, self.sandbox.root):
+            raise UserError('演练环境不会打开电脑上的真实文件')
+        if os.path.isdir(path) and os.path.isdir(real):
             winapi.reveal_in_explorer(path)
             return {'opened': path}
-        if os.path.splitext(path)[1].lower() in RUNS_CODE:
-            raise UserError('这是程序或脚本，打开就会运行它。盘序不直接运行程序；可以在资源管理器中查看后自己决定。')
+        for candidate in (path, real):
+            ext = os.path.splitext(paths.strip_extended(candidate).rstrip('. '))[1].lower()
+            if ext in RUNS_CODE:
+                raise UserError('这是程序或脚本，打开就会运行它。盘序不直接运行程序；可以在资源管理器中查看后自己决定。')
         try:
             winapi.open_file(path)
         except OSError as exc:
@@ -514,6 +602,14 @@ class Backend:
             text = winapi.decode_console(proc.stdout + proc.stderr).strip()
             raise RuntimeError(text.splitlines()[-1] if text else f'powercfg 返回 {proc.returncode}')
 
+    def _sync_hibernate_item(self, enabled: bool):
+        path = self._hiberfil()
+        for item in (self.plan or {}).get('items', []):
+            if item.get('location') and paths.key(item['location']) == paths.key(path):
+                item['status'], item['result'] = ('pending', '') if enabled else ('done', '已关闭休眠')
+        if self.plan:
+            self.plan['summary'] = checkup.summarize(self.plan)
+
     def m_hibernate_set(self, enabled: bool):
         """Switch hibernation (and with it hiberfil.sys and Fast Startup) off or on; logged with an undo."""
         path = self._hiberfil()
@@ -529,9 +625,7 @@ class Backend:
         self.oplog.add('system', title, freed=0 if enabled else size,
                        items=[{'name': 'hiberfil.sys', 'path': path, 'size': size}],
                        revert={'action': 'hibernate', 'enabled': not enabled})
-        for item in (self.plan or {}).get('items', []):
-            if item.get('location') and paths.key(item['location']) == paths.key(path):
-                item['status'], item['result'] = ('pending', '') if enabled else ('done', '已关闭休眠')
+        self._sync_hibernate_item(bool(enabled))
         return {'enabled': bool(enabled), 'freed': 0 if enabled else size}
 
     def m_open_key_page(self, preset: str):
@@ -576,11 +670,41 @@ class Backend:
     def m_running_check(self):
         """Which cleanup rules wait for a program right now (no rescan); updates the plan too."""
         running = self.junk.running_now()
+        changed = checkup.refresh_running(self.plan, running) if self.plan else []
+        by_rule = {i['rule']: i for i in (self.plan or {}).get('items', []) if i.get('kind') == 'rule'}
         for row in self.junk_rows or []:
             if row['id'] in running:
                 row['running'] = running[row['id']]
-        changed = checkup.refresh_running(self.plan, running) if self.plan else []
+            item = by_rule.get(row['id'])
+            if item:
+                row.update(blocked=item['blocked'], selected=item['selected'], basis=list(item['basis']))
+            elif row['id'] in running:
+                names = running[row['id']]
+                if names and not row.get('blocked'):
+                    row['blocked'] = '请先关闭：' + '、'.join(names)
+                    row['selected'] = False
+                elif not names and str(row.get('blocked') or '').startswith('请先关闭：'):
+                    row['blocked'] = None
         return {'running': running, 'plan_changed': changed}
+
+    def _update_junk_rows_after_clean(self, rule_results: list[dict]) -> None:
+        if self.junk_rows is None:
+            return
+        by_id = {r['id']: r for r in rule_results}
+        for row in self.junk_rows:
+            r = by_id.get(row['id'])
+            if not r or r.get('skipped'):
+                continue
+            freed = int(r.get('freed') or 0)
+            if not r.get('failed') and not r.get('held'):
+                row.update(size=0 if row.get('size') is not None else None, logical_size=0,
+                           count=0, available=False, selected=False, locations=[], apps=[])
+            else:
+                if row.get('size') is not None:
+                    row['size'] = max(0, row['size'] - freed)
+                if row.get('logical_size') is not None:
+                    row['logical_size'] = max(0, row['logical_size'] - freed)
+                row['selected'] = False
 
     def m_junk_clean(self, rule_ids: list):
         if not isinstance(rule_ids, list) or not rule_ids:
@@ -590,12 +714,17 @@ class Backend:
             def progress(i, total, name, freed):
                 job.update(index=i, total=total, current=name, freed=freed)
             result = self.junk.clean([str(r) for r in rule_ids], cancel=job.cancel, progress=progress)
-            self.junk_rows = None
+            self._update_junk_rows_after_clean(result['rules'])
+            if self.scan is not None and self.scan.complete:
+                self.scan.top_files = [f for f in self.scan.top_files if os.path.lexists(fsops.long_path(f['path']))]
             # the same rules in the plan on 首页 are done now
-            cleaned = {r['id'] for r in result['rules'] if not r['skipped']}
+            cleaned = {r['id']: r for r in result['rules'] if not r['skipped']}
             for item in (self.plan or {}).get('items', []):
                 if item.get('kind') == 'rule' and item['rule'] in cleaned and item['status'] == 'pending':
-                    item['status'], item['result'] = 'done', '已在「垃圾清理」清理'
+                    item.update(status='done', result='已在「垃圾清理」清理',
+                                freed=cleaned[item['rule']].get('freed', 0), selected=False)
+            if self.plan:
+                self.plan['summary'] = checkup.summarize(self.plan)
             return result
         return self.jobs.start('junk_clean', run, group='modify')
 
@@ -612,7 +741,7 @@ class Backend:
         if winapi.IS_WINDOWS:
             # canonical spelling (no 8.3 names, junctions or \\?\ prefixes) so every
             # path derived from the scan matches the protection rules
-            root = os.path.realpath(root)
+            root = paths.strip_extended(os.path.realpath(root))
 
         def run(job):
             scan = SpaceScan(root, skip=checkup.space_skip(self.env, self.policy(), self.app_dirs))
@@ -690,6 +819,26 @@ class Backend:
         scan = self._require_scan()
         node = scan.find(path)
         return node.id if node is not None else None
+
+    def m_space_search(self, query: str, limit: int = 60):
+        scan = self._require_scan()
+        q = str(query or '').strip()
+        if not q:
+            return {'items': [], 'total': 0}
+        if self.sandbox is not None and len(q) >= 2 and q[1] == ':' and q[0].isalpha():
+            rest = q[2:].lstrip('\\/')
+            cand = os.path.join(self.sandbox.root, q[0].upper(), rest) if rest else os.path.join(self.sandbox.root, q[0].upper())
+            if os.path.exists(cand) or scan.find(cand) is not None:
+                q = cand
+        top, total = scan.search_dirs(q, limit=min(200, max(1, int(limit))))
+        policy = self.policy()
+        items = []
+        for n in top:
+            row = self._node_row(scan, n)
+            row['blocked'] = policy.reason(row['path'])
+            row['parent_id'] = n.parent.id if n.parent is not None else n.id
+            items.append(row)
+        return {'items': items, 'total': total}
 
     def m_space_types(self):
         return self._require_scan().ext_summary()
@@ -815,7 +964,8 @@ class Backend:
                         job.update(total=s.total_items or total, done=s.done_items, current=s.current, freed=s.bytes,
                                    failed=s.failed)
                         self.oplog.progress(pending, freed=s.bytes, done=s.files)
-                    part, recycled = fsops.recycle(selected, cancel=job.cancel, hwnd=winapi.find_window(APP_NAME),
+                    hwnd = self.window_controls.hwnd() or winapi.find_window(APP_NAME)
+                    part, recycled = fsops.recycle(selected, cancel=job.cancel, hwnd=hwnd,
                                                    progress=on_progress)
                     done.extend(recycled)
                     stats.merge(part)
@@ -915,8 +1065,10 @@ class Backend:
     # ------------------------------------------------------------------ duplicates
     def m_dup_result(self):
         if self.dups:
+            policy = self.policy()
             for g in self.dups['groups']:
                 for f in g['files']:
+                    f['blocked'] = policy.reason(f['path'])
                     f['ai'] = self.dup_ai.get(f['path'])
         return self.dups
 
@@ -939,6 +1091,9 @@ class Backend:
         # searched before the rest of a disk
         ordered = checkup.ordered_roots(self.env, self.settings.get(), roots)
         skip = checkup.system_skip(self.env, policy, ordered)
+        excl = self.settings.get().get('excluded_paths', []) + self.app_dirs
+        excl_keys = {paths.key(p) for p in excl if p}
+        ref_skip = (lambda p: paths.within_any(p, excl_keys)) if excl_keys else None
         containers = checkup.personal_roots(self.env, {}) + [d['root'] for d in drives] \
             + [self.env.get('USERPROFILE'), self.env.get('PUBLIC')]
         # a whole disk is searched with the check-up's bounds (reads, time); a chosen folder completely
@@ -948,7 +1103,7 @@ class Backend:
 
         def run(job):
             result = find_duplicates(ordered, min_size=int(float(min_size_mb) * 1024 * 1024), skip=skip,
-                                     container_roots=containers, **bounds,
+                                     ref_skip=ref_skip, container_roots=containers, **bounds,
                                      cancel=job.cancel, progress=lambda p: job.update(**p))
             for g in result['groups']:
                 for f in g['files']:
@@ -1005,13 +1160,18 @@ class Backend:
     def m_startup_list(self):
         return [{**item, 'ai': self.startup_ai.get(item['id'])} for item in self.startup.list()]
 
+    def _sync_startup_item(self, item_id: str, enabled: bool, done_note: str = '已在「开机与服务」禁用'):
+        for item in (self.plan or {}).get('items', []):
+            if item.get('startup_id') == str(item_id):
+                item.update(status='pending' if enabled else 'done',
+                            result='' if enabled else done_note, selected=False)
+        if self.plan:
+            self.plan['summary'] = checkup.summarize(self.plan)
+
     def m_startup_set(self, item_id: str, enabled: bool):
         try:
             result = self.startup.set_enabled(str(item_id), bool(enabled))
-            for item in (self.plan or {}).get('items', []):
-                if item.get('startup_id') == str(item_id):
-                    item.update(status='pending' if result['enabled'] else 'done',
-                                result='' if result['enabled'] else '已在「开机与服务」禁用', selected=False)
+            self._sync_startup_item(str(item_id), result['enabled'])
             return result
         except (ValueError, PermissionError) as exc:
             raise UserError(str(exc)) from None
@@ -1025,6 +1185,8 @@ class Backend:
             if item.get('kind') == 'service' and item.get('service_name') == name and item['status'] in ('pending', 'done', 'failed', 'skipped'):
                 off = start_type in ('manual', 'disabled')
                 item.update(status='done' if off else 'pending', result='已在「开机与服务」修改' if off else '', selected=False)
+        if self.plan:
+            self.plan['summary'] = checkup.summarize(self.plan)
 
     def m_service_set(self, name: str, start_type: str, stop_now: bool = False):
         try:
@@ -1041,7 +1203,9 @@ class Backend:
             items = self.services_for_ai(self.services.list())
         elif kind == 'apps':
             running = itemfacts.running_programs()
-            items = [self._app_for_ai(a, running) for a in self.apps.list()]
+            registry = ((self.app_residues or {}).get('registry') if self.app_residues is not None
+                        else self.apps.registry_issues([d['root'] for d in self.m_drives() if d.get('fixed')]))
+            items = [self._app_for_ai(a, running, registry=registry) for a in self.apps.list()]
         else:
             raise UserError('未知类型')
         s = self.settings.get()
@@ -1207,11 +1371,15 @@ class Backend:
         if a['usage_known']:
             extra['last_run'] = fmt_date(a['last_used']) if a['last_used'] else '没有运行记录'
         # without administrator rights there is no run history: a program open right now is still plainly in use
-        if running and a.get('location') and a.get('location_exists'):
-            base = os.path.normcase(os.path.normpath(a['location'])) + os.sep
+        own_loc = a.get('own_location')
+        if running and own_loc and a.get('location_exists'):
+            base = os.path.normcase(os.path.normpath(own_loc)) + os.sep
             if any(p.startswith(base) for p in running):
                 extra['open_now'] = '现在正开着'
-        return {'key': 'app:' + a['name'] + '|' + a['version'] + ('|missing-registration' if issue else ''), 'id': a['id'], 'kind': 'app', 'name': a['name'],
+        key = ('app:' + a['name'] + '|' + a['version']
+               + ('|missing-registration' if issue else '')
+               + ('|u1' if a.get('usage_known') else ''))
+        return {'key': key, 'id': a['id'], 'kind': 'app', 'name': a['name'],
                 'publisher': a['publisher'], 'command': '', 'extra': extra}
 
     # ------------------------------------------------------------------ 我的文件
@@ -1293,12 +1461,18 @@ class Backend:
         s = self.settings.get()
         if include_content and not s['ai'].get('send_file_content'):
             raise UserError('设置中没有允许读取文档内容')
-        files = self.files_for_ai(finding_ids, include_content=bool(include_content))
+        files = self.files_for_ai(finding_ids, include_content=False)
         if not files:
             raise UserError('没有可以发送的文件')
         client = self._client()
 
         def run(job):
+            if include_content:
+                for f in files:
+                    fsops.check_cancel(job.cancel)
+                    excerpt = insights.content_excerpt(f['path'], 800)
+                    if excerpt:
+                        f['excerpt'] = excerpt
             result = self.analyst.review_files(files, client, s['ai'].get('anonymize_paths', True),
                                                max_requests=int(s['ai'].get('max_requests', 8)), cancel=job.cancel,
                                                progress=lambda p: job.update(**p))
@@ -1339,6 +1513,13 @@ class Backend:
         if len(keep) == len(copies):
             raise UserError('至少选一份要移到回收站的副本')
         item.update(checkup.dup_choice(item['dup_size'], copies, keep), chosen=True)
+        policy = self.policy()
+        reasons = [policy.reason(p) for p in item['paths'] if policy.reason(p)]
+        cautions = [policy.caution(p) for p in item['paths'] if policy.caution(p)]
+        item['blocked'] = reasons[0] if reasons else None
+        item['caution'] = cautions[0] if cautions else None
+        if item['blocked']:
+            item['selected'] = False
         threshold = plan.get('threshold', checkup.DEFAULT_THRESHOLD)
         item['basis'] = item['basis'] + checkup.decision_note(item, threshold)
         plan['summary'] = checkup.summarize(plan)
@@ -1370,6 +1551,7 @@ class Backend:
         plan = self._require_plan()
         if not isinstance(item_ids, list) or not item_ids:
             raise UserError('请选择要执行的项目')
+        chosen_ids = {str(i) for i in item_ids}
 
         def run(job):
             try:
@@ -1377,7 +1559,16 @@ class Backend:
             except ValueError as exc:
                 raise UserError(str(exc)) from None
             finally:
-                self.junk_rows = None
+                if self.junk_rows is not None:
+                    done_rules = [
+                        {'id': it['rule'], 'skipped': '', 'freed': it.get('freed') or 0,
+                         'failed': 1 if it['status'] == 'partial' else 0}
+                        for it in plan.get('items', [])
+                        if it.get('kind') == 'rule' and it['id'] in chosen_ids and it.get('status') in ('done', 'partial')
+                    ]
+                    self._update_junk_rows_after_clean(done_rules)
+                if self.scan is not None and self.scan.complete:
+                    self.scan.top_files = [f for f in self.scan.top_files if os.path.lexists(fsops.long_path(f['path']))]
         return self.jobs.start('plan_execute', run, group='modify')
 
     def _require_plan(self) -> dict:
@@ -1395,7 +1586,8 @@ class Backend:
 
         def run(job):
             try:
-                return {**self.analyst.ask(client, context, messages), 'model': client.model}
+                res = self.analyst.ask(client, context, messages)
+                return {**res, 'model': res.get('model') or client.model}
             except (ai_client.AIError, ValueError) as exc:
                 raise UserError(str(exc)) from None
         return self.jobs.start('ai_ask', run)
@@ -1404,6 +1596,10 @@ class Backend:
         return paths.anonymize(path, self.env) if self.settings.get()['ai'].get('anonymize_paths', True) else path
 
     def _path_context(self, path: str) -> dict:
+        if self._other_account_file(path):
+            raise UserError('这是其他账户的文件，盘序不会把它的名字或内容发给 AI')
+        if self.sandbox is not None and not paths.is_within(path, self.sandbox.root):
+            raise UserError('演练环境不会读取电脑上的真实文件')
         policy = self.policy()
         ctx = {'path': self._anon(path)}
         node = self.scan.find(path) if self.scan is not None and self.scan.complete else None
@@ -1518,6 +1714,8 @@ class Backend:
     def _file_context(self, path: str, include_content: bool) -> dict:
         if self._other_account_file(path):
             raise UserError('这是其他账户的文件，盘序不会把它的名字或内容发给 AI')
+        if self.sandbox is not None and not paths.is_within(path, self.sandbox.root):
+            raise UserError('演练环境不会读取电脑上的真实文件')
         ctx = {'path': self._anon(path), 'type': paths.category_label(paths.category_of(path))}
         try:
             st = os.lstat(fsops.long_path(path))
@@ -1555,8 +1753,8 @@ class Backend:
             nodes.sort(key=lambda n: -n.size)
             out['largest_folders'] = [[self._anon(self.scan.path_of(n)), fmt_size(n.size)] for n in nodes[:10]]
         if self.plan:
-            out['cleanup_plan'] = [[i['title'], checkup.GROUPS[i['group']], fmt_size(i['size'] or 0)]
-                                   for i in self.plan['items'][:15]]
+            out['cleanup_plan'] = [[self._anon_text(i['title']), checkup.GROUPS[i['group']], fmt_size(i['size'] or 0)]
+                                   for i in self.plan['items'] if not i.get('account')][:15]
         return out
 
     # ------------------------------------------------------------------ 演练环境
@@ -1588,8 +1786,10 @@ class Backend:
         self.scan, self.ai_results, self.dups, self.junk_rows = None, {}, None, None
         self.startup_ai, self.app_ai, self.service_ai = {}, {}, {}
         self.app_residues = None
-        self.insights, self.file_ai, self.plan, self._app_index = None, {}, None, None
+        self.insights, self.file_ai, self.dup_ai, self.plan, self._app_index = None, {}, {}, None, None
         self.apps._cache = None
+        self.apps._measured.clear()
+        self.apps._removed.clear()
         self.junk.last_scan.clear()
         return self._sandbox_info()
 
@@ -1607,11 +1807,13 @@ class Backend:
         try:
             if revert['action'] == 'startup':
                 self.startup.set_enabled(revert['id'], revert['enabled'], log=False)
+                self._sync_startup_item(revert['id'], revert['enabled'])
             elif revert['action'] == 'service':
                 self.services.set_start_type(revert['name'], revert['start_type'], log=False)
                 self._sync_service_item(revert['name'], revert['start_type'])
             elif revert['action'] == 'hibernate':
                 self._set_hibernate(bool(revert['enabled']))
+                self._sync_hibernate_item(bool(revert['enabled']))
             else:
                 raise UserError('这条记录不能撤销')
         except (ValueError, PermissionError, RuntimeError, OSError) as exc:
@@ -1620,10 +1822,117 @@ class Backend:
         return True
 
     # ------------------------------------------------------------------ settings
+    def _refresh_item_exclusions(self, items: list[dict], policy, threshold: int) -> bool:
+        changed = False
+        for item in items:
+            if item.get('kind') == 'rule' or item.get('action') == 'none' or not item.get('paths'):
+                continue
+            reasons = [policy.reason(p) for p in item['paths'] if policy.reason(p)]
+            cautions = [policy.caution(p) for p in item['paths'] if policy.caution(p)]
+            new_blocked = reasons[0] if reasons else None
+            item['caution'] = cautions[0] if cautions else None
+            if new_blocked != item.get('blocked'):
+                was_blocked = bool(item.get('blocked'))
+                item['blocked'] = new_blocked
+                if new_blocked:
+                    item['selected'] = False
+                elif was_blocked and item.get('status') == 'pending':
+                    item['selected'] = bool(item.get('eligible') and (checkup.points(item.get('score')) or 0) >= threshold)
+                item['basis'] = ([b for b in item.get('basis', [])
+                                  if not b.startswith(('自动勾选：', '没有自动勾选：', '没有勾选：'))]
+                                 + checkup.decision_note(item, threshold))
+                changed = True
+        return changed
+
+    def _refresh_exclusions(self):
+        """Sync in-memory plan and residue items when excluded_paths changes so the UI reflects it without rescanning."""
+        policy = self.policy()
+        default_threshold = self.settings.get().get('checkup', {}).get('auto_threshold', checkup.DEFAULT_THRESHOLD)
+        plan = self.plan
+        if plan and self._refresh_item_exclusions(plan.get('items', []), policy, plan.get('threshold', default_threshold)):
+            plan['summary'] = checkup.summarize(plan)
+        residues = self.app_residues
+        if residues:
+            self._refresh_item_exclusions(residues.get('items', []), policy, default_threshold)
+
+    def _normalize_exclusion_target(self, path: str) -> str:
+        if not isinstance(path, str) or not path.strip():
+            raise UserError('路径格式不正确')
+        raw = paths.strip_extended(path.strip())
+        if not os.path.isabs(raw):
+            raise UserError('请输入完整的绝对路径')
+        norm = paths.native(os.path.abspath(raw))
+        if ':' in ntpath.splitdrive(norm)[1]:
+            raise UserError('路径格式不正确')
+        if (paths.is_drive_root(norm)
+                or paths.key(norm) in {paths.key(d) for d in paths.simulated_drives()}
+                or (self.sandbox is not None and paths.key(norm) == paths.key(self.sandbox.root))):
+            raise UserError('不能将整个磁盘根目录加入排除')
+        if self.sandbox is not None and not paths.is_within(norm, self.sandbox.root):
+            raise UserError('演练环境只能排除演练目录内的位置')
+        return norm
+
+    def _expand_user_input_path(self, path: str) -> str:
+        if not isinstance(path, str) or not path.strip():
+            raise UserError('请输入文件夹路径')
+        raw = paths.strip_extended(path.strip().strip('"'))
+        if '%' in raw:
+            raw = paths.expand(raw, self.env)
+        raw = os.path.expanduser(raw)
+        if self.sandbox is not None and len(raw) >= 2 and raw[1] == ':' and raw[0].isalpha() \
+                and not paths.is_within(raw, self.sandbox.root):
+            sim_drive = os.path.join(self.sandbox.root, raw[0].upper())
+            if os.path.isdir(sim_drive):
+                rest = raw[2:].lstrip('\\/')
+                raw = os.path.join(sim_drive, rest) if rest else sim_drive
+        return raw
+
+    def m_resolve_folder(self, path: str, for_exclude: bool = False):
+        """Validate and normalize a typed/pasted folder path (supporting %APPDATA% etc.) for Settings."""
+        raw = self._expand_user_input_path(path)
+        if for_exclude:
+            norm = self._normalize_exclusion_target(raw)
+        else:
+            if not os.path.isabs(raw):
+                raise UserError('请输入完整的绝对路径')
+            norm = paths.native(os.path.abspath(raw))
+            if ':' in ntpath.splitdrive(norm)[1]:
+                raise UserError('路径格式不正确')
+            if self.sandbox is not None and not paths.is_within(norm, self.sandbox.root):
+                raise UserError('演练环境只能添加演练目录内的位置')
+        if not os.path.isdir(fsops.long_path(norm)):
+            raise UserError('找不到这个文件夹，请检查路径是否正确')
+        return {'path': norm}
+
+    def m_exclude_path(self, path: str):
+        """Add ``path`` to ``excluded_paths`` (idempotent) and update any open plan immediately."""
+        norm = self._normalize_exclusion_target(path)
+        k = paths.key(norm)
+        cur = [x for x in (self.settings.get().get('excluded_paths') or []) if isinstance(x, str) and x.strip()]
+        if not any(paths.key(x) == k for x in cur):
+            cur.append(norm)
+            s = self.settings.update({'excluded_paths': cur})
+        else:
+            s = self.settings.get()
+        self._refresh_exclusions()
+        return {'settings': s, 'path': norm}
+
+    def m_unexclude_path(self, path: str):
+        """Remove ``path`` from ``excluded_paths`` and update any open plan immediately."""
+        norm = self._normalize_exclusion_target(path)
+        k = paths.key(norm)
+        cur = [x for x in (self.settings.get().get('excluded_paths') or [])
+               if isinstance(x, str) and x.strip() and paths.key(x) != k]
+        s = self.settings.update({'excluded_paths': cur})
+        self._refresh_exclusions()
+        return {'settings': s, 'path': norm}
+
     def m_settings_save(self, changes: dict):
         if not isinstance(changes, dict):
             raise UserError('设置格式不正确')
         s = self.settings.update(changes)
+        if 'excluded_paths' in changes:
+            self._refresh_exclusions()
         return {'settings': s, 'has_key': self.settings.has_secret('ai_key:' + s['ai']['preset'])}
 
     def m_set_api_key(self, preset: str, key: str):
@@ -1654,7 +1963,7 @@ class Backend:
 
 class _NoCallClient:
     """Stands in when every answer comes from the cache."""
-    model = 'cache'
+    model = '本地缓存'
 
     class usage:  # noqa: N801 - mimic Client.usage
         @staticmethod

@@ -4,6 +4,9 @@
   const PX = (window.PX = window.PX || {});
   PX.pages = {};
   PX.state = {};
+  if (typeof document !== 'undefined' && document.documentElement && !document.documentElement.dataset.theme && window.matchMedia) {
+    document.documentElement.dataset.theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  }
 
   // h('div.row.junk', {onclick}, child, 'text', [more]) — text is always set as text, never HTML.
   function h(spec, attrs, ...children) {
@@ -75,7 +78,8 @@
   };
   PX.icon = function (name, cls) {
     const span = document.createElement('span');
-    span.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + (P[name] || '') + '</svg>';
+    const path = Object.prototype.hasOwnProperty.call(P, name) ? P[name] : '';
+    span.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + path + '</svg>';
     const svg = span.firstChild;
     if (cls) svg.setAttribute('class', cls);
     return svg;
@@ -141,16 +145,76 @@
   PX.copySize = (file, groupSize) => (Number.isFinite(file.size) ? file.size : groupSize);
   PX.duplicateWaste = (group) => group.files.slice(1).reduce((sum, file) => sum + PX.copySize(file, group.size), 0);
   // a program's icon, or its initial on a colour derived from the name
-  PX.avatar = function (name, icon) {
+  PX.avatar = function (name, icon, key) {
     if (icon) return h('img.app-icon', { src: icon, alt: '' });
     let hash = 0;
     for (const ch of name || '?') hash = (hash * 31 + ch.codePointAt(0)) % 360;
     const letter = [...(name || '?').replace(/^(microsoft|the)\s+/i, '')][0] || '?';
-    return h('span.app-icon.letter', { style: { background: `hsl(${hash} 45% 52%)` }, 'aria-hidden': 'true' }, letter.toUpperCase());
+    const el = h('span.app-icon.letter', { style: { background: `hsl(${hash} 48% 40%)` }, 'aria-hidden': 'true' }, letter.toUpperCase());
+    if (key) el.dataset.avatarKey = key;
+    return el;
+  };
+  PX.patchAvatars = function (scope, got) {
+    if (!scope || !got) return;
+    for (const el of scope.querySelectorAll('[data-avatar-key]')) {
+      const url = got[el.dataset.avatarKey];
+      if (url) el.replaceWith(h('img.app-icon', { src: url, alt: '' }));
+    }
+  };
+  PX.searchBox = function (input, query, onClear) {
+    if (!input.dataset.escBound) {
+      input.dataset.escBound = '1';
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && input.value && !e.isComposing) {
+          e.preventDefault(); e.stopPropagation(); input.value = ''; onClear();
+        }
+      });
+    }
+    return h('div.search-box', PX.icon('search', 'search-ic'), input,
+      query ? h('button.search-clear', { type: 'button', title: '清除搜索（Esc）', 'aria-label': '清除搜索',
+        onclick: () => { input.value = ''; onClear(); input.focus({ preventScroll: true }); } }, PX.icon('x')) : null);
+  };
+  // IME-safe live search box that preserves focus and caret selection across full DOM redraws
+  PX.makeSearch = function (placeholder, onQuery) {
+    let query = '', composing = false, pending = false;
+    const input = h('input', { type: 'text', placeholder, 'aria-label': placeholder });
+    const fire = () => { query = input.value; onQuery(query); };
+    input.addEventListener('compositionstart', () => { composing = true; });
+    input.addEventListener('compositionend', () => {
+      composing = false;
+      if (pending || input.value !== query) { pending = false; fire(); }
+    });
+    input.addEventListener('input', () => { if (!composing) fire(); else pending = true; });
+    return {
+      input,
+      get query() { return query; },
+      set query(v) { query = v || ''; if (input.value !== query) input.value = query; },
+      get composing() { return composing && typeof document !== 'undefined' && document.activeElement === input; },
+      box() { return PX.searchBox(input, query, () => { query = ''; onQuery(''); }); },
+      captureFocus() {
+        if (typeof document !== 'undefined' && document.activeElement === input) return [input.selectionStart, input.selectionEnd];
+        if (input.value !== query) input.value = query;
+        return null;
+      },
+      restoreFocus(sel) {
+        if (!sel || !input.isConnected) return;
+        input.focus({ preventScroll: true });
+        if (sel[0] !== null) { try { input.setSelectionRange(sel[0], sel[1]); } catch (e) { /* ignore */ } }
+      },
+    };
+  };
+  // [barClass, tagText, tagKind] when a drive is running low on free space
+  PX.driveHealth = function (d) {
+    if (!d || !d.total || d.total <= 0 || !Number.isFinite(d.free)) return ['', '', ''];
+    const ratio = d.free / d.total;
+    const GB = 1024 ** 3;
+    if (ratio < 0.05 || (d.system && d.free < 8 * GB)) return ['crit', '空间告急', 'bad'];
+    if (ratio < 0.12 || (d.system && d.free < 20 * GB)) return ['tight', '空间紧张', 'warn'];
+    return ['', '', ''];
   };
 
   // In the 演练环境 the drives are folders; show 'C:\Users\demo' rather than the folder's real location.
-  // Drives carry a 'letter' only there, so real paths pass through unchanged.
+  // Real drives have root === letter + '\', so they pass through unchanged.
   PX.displayPath = function (path) {
     const drives = (PX.state.init && PX.state.init.drives) || [];
     if (!path) return path || '';
@@ -158,6 +222,7 @@
     for (const d of drives) {
       if (!d.letter) continue;
       const root = d.root.replace(/[\\/]+$/, '');
+      if (root.toLowerCase() === d.letter.toLowerCase()) continue;
       if (low === root.toLowerCase()) return d.letter + '\\';
       if (low.startsWith(root.toLowerCase() + '\\')) return d.letter + path.slice(root.length);
     }
@@ -170,6 +235,7 @@
     for (const d of (PX.state.init && PX.state.init.drives) || []) {
       if (!d.letter) continue;
       const root = d.root.replace(/[\\/]+$/, '');
+      if (root.toLowerCase() === d.letter.toLowerCase()) continue;
       let i = out.toLowerCase().indexOf(root.toLowerCase());
       while (i >= 0) {
         out = out.slice(0, i) + d.letter + out.slice(i + root.length);
@@ -370,13 +436,60 @@
   };
   PX.revealButton = (path, label) => h('button.btn.quiet.small.reveal', { type: 'button', title: '在资源管理器中显示',
     'aria-label': '在资源管理器中显示', onclick: (e) => { e.stopPropagation(); PX.reveal(path); } }, PX.icon('folder'), label || null);
+  PX.copyText = async function (text, msg = '已复制路径') {
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch (e) {
+      const area = document.body.appendChild(h('textarea', { style: { position: 'fixed', opacity: '0' } }));
+      area.value = text;
+      area.select();
+      document.execCommand('copy');
+      area.remove();
+    }
+    PX.toast(msg);
+  };
+  PX.copyPathButton = (path, label, spec = 'button.btn.quiet.small.reveal') => (path ? h(spec, { type: 'button',
+    title: '复制路径', 'aria-label': '复制路径',
+    onclick: (e) => { e.stopPropagation(); PX.copyText(PX.displayPath(path), '已复制路径'); } },
+  PX.icon('copy'), label || null) : null);
+  PX.excludeButton = function (path, onChanged, label = '加入排除') {
+    if (!path) return null;
+    return h('button.btn.quiet.small', {
+      type: 'button',
+      title: '加入「设置 > 排除的位置」，以后不再建议清理',
+      onclick: async (e) => {
+        e.stopPropagation();
+        const wasTicked = PX.sel.paths.has(path);
+        try {
+          const r = await PX.api.call('exclude_path', { path });
+          if (r && r.settings) PX.state.init.settings = r.settings;
+          PX.sel.paths.delete(path);
+          if (onChanged) await onChanged(r);
+          PX.toast('已加入排除位置，以后不再建议清理', false, {
+            label: '撤销',
+            onClick: async () => {
+              try {
+                const u = await PX.api.call('unexclude_path', { path: (r && r.path) || path });
+                if (u && u.settings) PX.state.init.settings = u.settings;
+                if (wasTicked) PX.sel.paths.add(path);
+                if (onChanged) await onChanged(u);
+                PX.toast('已取消排除');
+              } catch (err) { PX.fail(err); }
+            },
+          });
+        } catch (err) { PX.fail(err); }
+      },
+    }, PX.icon('lock'), label);
+  };
 
   // 「打开」: like a double-click in Explorer -- for documents, pictures, video, archives. Opening a program, an
   // installer, a script or a shortcut would run it, so those have no 「打开」 (the same list as api.RUNS_CODE)
   const RUNS_CODE = new Set(['.exe', '.com', '.scr', '.pif', '.cpl', '.msi', '.msix', '.msixbundle', '.msp', '.appx',
-    '.appxbundle', '.application', '.appref-ms', '.bat', '.cmd', '.ps1', '.psm1', '.vbs', '.vbe', '.js', '.jse', '.wsf',
-    '.wsh', '.hta', '.jar', '.lnk', '.url', '.reg', '.inf', '.msc', '.sys', '.dll', '.ocx']);
-  PX.canOpen = (path) => !RUNS_CODE.has(((path || '').match(/\.[^.\\/]+$/) || [''])[0].toLowerCase());
+    '.appxbundle', '.application', '.appref-ms', '.bat', '.cmd', '.ps1', '.psm1', '.ps2', '.msh', '.vbs', '.vbe', '.js',
+    '.jse', '.wsf', '.wsh', '.hta', '.jar', '.lnk', '.url', '.reg', '.inf', '.msc', '.sys', '.dll', '.ocx', '.py', '.pyw',
+    '.pyz', '.sh', '.chm', '.diagcab', '.scf', '.settingcontent-ms', '.library-ms', '.searchconnector-ms', '.xll', '.xbap']);
+  PX.canOpen = (path) => !RUNS_CODE.has(((path || '').replace(/[. ]+$/, '').match(/\.[^.\\/]+$/) || [''])[0].toLowerCase());
   PX.openPath = async function (path) {
     try { await PX.api.call('open_path', { path }); } catch (e) { PX.fail(e); }
   };
@@ -469,6 +582,8 @@
   // locked: a dialog about work in progress -- a click beside it or Esc must not hide it (the work goes on unseen)
   PX.modal = function ({ title, body, actions, wide, onClose, locked }) {
     const layer = document.getElementById('layer');
+    const appEl = document.getElementById('app');
+    if (appEl) appEl.inert = true;
     const prevFocus = document.activeElement;
     const foot = h('div.foot');
     const box = h('div.modal' + (wide ? '.wide' : ''), { role: 'dialog', 'aria-modal': 'true', 'aria-label': title },
@@ -477,6 +592,7 @@
     function close(value) {
       back.remove();
       document.removeEventListener('keydown', onKey);
+      if (appEl && !layer.querySelector('.backdrop')) appEl.inert = false;
       if (prevFocus && prevFocus.focus) prevFocus.focus();
       if (onClose) onClose(value);
     }
@@ -485,7 +601,7 @@
     back.addEventListener('mousedown', (e) => { if (e.target === back && !locked) close(false); });
     for (const a of actions || []) {
       if (a.spacer) { foot.appendChild(h('div.grow', a.node || null)); continue; }
-      const btn = h('button.btn' + (a.kind ? '.' + a.kind : ''), { type: 'button' }, a.label);
+      const btn = h('button.btn' + (a.kind ? '.' + a.kind : ''), { type: 'button', disabled: !!a.disabled }, a.label);
       btn.addEventListener('click', async () => {
         if (a.onClick) {
           const keep = await a.onClick(btn);
@@ -549,16 +665,16 @@
   // ---- an expanded row, laid out the same everywhere: a warning band; short facts on the left (是什么, what
   // happens after, ...); the 建议清理度 card on the right (its reasons, then the decision); the places at the bottom.
   // facts: [[label, text, kind]]; score: {score, basis}; places: {title, note, rows, more}
-  const DECISION = /^(自动勾选|没有自动勾选|没有勾选)/;
+  const DECISION = /^(自动勾选|没有自动勾选|没有勾选|提权补查)/;
   // reasons that hold an item back or ask for care (checkup.py's guards and duplicates.removal_score), as opposed to
   // evidence for cleaning it (「可能是旧版本留下的」 is evidence)
-  const CAUTION = /还有改动|可能是存档|可能是程序本身|仍在使用|只能由你|由你决定|无法恢复|默认不勾|各自引用|出问题|有文件提到|可能引用|素材来源|请你|不能运行|没有经过|拿不准|不到 ?\d|没有完整|无法读取|很快重建|成本较高|仍可能需要|不能据此|尚未|不代表/;
-  PX.basisKind = (line) => (/^AI/.test(line) ? 'ai' : CAUTION.test(line) ? 'warn' : 'plus');
+  const CAUTION = /还有改动|可能是存档|可能是程序本身|仍在使用|只能由你|由你决定|无法恢复|默认不勾|各自引用|出问题|有文件提到|可能引用|素材来源|请你|不能运行|没有经过|拿不准|不到 ?\d|没有完整|无法读取|很快重建|成本较高|仍可能需要|不能据此|尚未|不代表|失去.*机会|无法重新下载|工程需要它|不等于|不知道最近|一份都不剩|受保护的位置|只看了文件名/;
+  PX.basisKind = (line) => (CAUTION.test(line) ? 'warn' : /^AI(：|\s*建议)/.test(line) ? 'ai' : 'plus');
   // what a cleanup does, in one line: [icon, what, the one thing to know about it]
   PX.ACTIONS = { delete: ['trash', '永久删除', '不经过回收站'], recycle: ['trash', '移到回收站', '需要时可以还原'],
     disable: ['power', '禁用开机启动', '随时可以重新启用'], service: ['power', '改为手动启动', '需要它的程序仍能按需启动，随时可以改回'],
     uninstall: ['apps', '运行它自己的卸载程序', '逐个确认，不会和其他项目一起执行'] };
-  PX.detailPanel = function ({ warn, action, facts, score, places, enter }) {
+  PX.detailPanel = function ({ warn, action, facts, score, places, actions, enter }) {
     const panel = h('div.dp' + (enter ? '.enter' : ''));
     const act = PX.ACTIONS[action];
     if (act) panel.appendChild(h('div.dp-action.' + action, PX.icon(act[0]), h('b', act[1]), h('span', act[2])));
@@ -582,9 +698,11 @@
       panel.appendChild(h('div.dp-places', h('div.dp-label', places.title, places.note ? h('span.dp-note', places.note) : null),
         places.rows, places.more || null));
     }
+    const extraBtns = (actions || []).filter(Boolean);
+    if (extraBtns.length) panel.appendChild(h('div.dp-actions', extraBtns));
     return panel;
   };
-  // one place in a detail panel: [☐ 保留] icon path (facts below it) 打开 / 打开位置; ``pick`` {checked, onchange}
+  // one place in a detail panel: [☐ 保留] icon path (facts below it) 打开 / 复制路径 / 打开位置; ``pick`` {checked, onchange}
   // lets the user choose (a duplicate's copies: ticked goes to the Recycle Bin)
   PX.placeRow = (path, o) => h('div.dp-place' + (o && o.pick ? '.pickable' : ''),
     o && o.pick ? h('label.dp-pick', h('input', { type: 'checkbox', checked: !!o.pick.checked, disabled: !!o.pick.disabled,
@@ -592,7 +710,7 @@
       : o && o.badge ? PX.tag(o.badge[0], o.badge[1]) : h('span'),
     PX.fileIcon(path, !!(o && o.folder)),
     h('div.dp-path', PX.pathText(path)),
-    h('div.row-actions', o && o.folder ? null : PX.openButton(path, '打开'), PX.revealButton(path, '打开位置')),
+    h('div.row-actions', o && o.folder ? null : PX.openButton(path, '打开'), PX.copyPathButton(path), PX.revealButton(path, '打开位置')),
     o && o.facts && o.facts.length ? h('div.dp-place-facts', o.facts) : null);
 
   // the apps a rule that finds caches by their structure covers (junk.RuleScan.apps): the biggest by name
@@ -644,8 +762,8 @@
       onkeydown: (e) => { if ((e.key === 'Enter' || e.key === ' ') && e.target === e.currentTarget) { e.preventDefault(); toggle(!open); } } },
     children, PX.icon('chev', 'gc-chev'));
   };
-  PX.switchEl = function (checked, onchange, disabled) {
-    const input = h('input', { type: 'checkbox', checked: !!checked, disabled: !!disabled, onchange });
+  PX.switchEl = function (checked, onchange, disabled, label) {
+    const input = h('input', { type: 'checkbox', checked: !!checked, disabled: !!disabled, 'aria-label': label || null, onchange });
     return h('label.switch', input, h('span'));
   };
   // Pages redraw every few hundred milliseconds while a job runs, so a bar is a new element each time. With a

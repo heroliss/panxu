@@ -2,10 +2,23 @@
 (function () {
   'use strict';
   const { h } = PX;
-  const state = { tab: 'startup', items: null, services: null, ai: { startup: {}, services: {} }, aiBusy: '', scope: 'third', query: '',
-    icons: {}, sort: { key: 'order', dir: 'asc' }, serviceSort: { key: 'name', dir: 'asc' } };
+  const state = { tab: 'startup', items: null, services: null, ai: { startup: {}, services: {} }, aiBusy: '', scope: 'third',
+    startupQuery: '', query: '', icons: {}, sort: { key: 'order', dir: 'asc' }, serviceSort: { key: 'name', dir: 'asc' } };
   const SUGGEST = { keep: ['建议保留', ''], optional: ['可以禁用', 'info'], disable: ['建议禁用', 'warn'] };
   let root = null;
+  let composing = false, startupComposing = false;
+  const startupSearchInput = h('input', {
+    type: 'text', placeholder: '搜索启动项', 'aria-label': '搜索启动项',
+    oncompositionstart: () => { startupComposing = true; },
+    oncompositionend: (e) => { startupComposing = false; state.startupQuery = e.target.value; draw(); },
+    oninput: (e) => { state.startupQuery = e.target.value; if (!e.isComposing && !startupComposing) draw(); },
+  });
+  const searchInput = h('input', {
+    type: 'text', placeholder: '搜索服务', 'aria-label': '搜索服务',
+    oncompositionstart: () => { composing = true; },
+    oncompositionend: (e) => { composing = false; state.query = e.target.value; draw(); },
+    oninput: (e) => { state.query = e.target.value; if (!e.isComposing && !composing) draw(); },
+  });
   const order = new WeakMap();  // the order Windows lists them in (registry, then the startup folders)
   const STARTUP_SORT = {
     order: { label: '默认', kind: 'num', dir: 'asc', words: ['和任务管理器一样的顺序', '倒序'], get: (it) => order.get(it) },
@@ -47,7 +60,7 @@
     loadIcons();
   }
 
-  // program icons for the list, fetched after it is shown
+  // program icons for the list, patched in place once fetched
   async function loadIcons() {
     const rows = state.tab === 'startup' ? state.items || [] : (state.services || []).filter((s) => s.kind === 'third_party');
     const files = [...new Set(rows.map((r) => r.exe).filter((p) => p && !(p in state.icons)))];
@@ -55,8 +68,8 @@
     try {
       const got = await PX.api.call('file_icons', { files });
       for (const p of files) state.icons[p] = got[p] || null;
+      if (PX.isCurrent('startup')) PX.patchAvatars(root, got);
     } catch (e) { return; }
-    if (PX.isCurrent('startup')) draw();
   }
 
   async function explain() {
@@ -90,6 +103,8 @@
     try {
       const r = await PX.api.call('startup_set', { item_id: item.id, enabled });
       item.enabled = r.enabled;
+      PX.sel.items.delete('startup:' + item.id);
+      PX.refreshNav?.();
       PX.toast((enabled ? '已启用 ' : '已禁用 ') + item.display_name + '，下次登录时生效');
       setTimeout(draw, 220);  // after the switch has moved: update the counts
     } catch (e) { input.checked = !enabled; PX.fail(e); }
@@ -108,21 +123,31 @@
       const r = await PX.api.call('service_set', { name: svc.name, start_type: start, stop_now: stopNow });
       svc.start_type = r.start_type;
       if (r.stopped) svc.status = 'stopped';
+      PX.sel.items.delete('service:' + svc.name);
+      PX.refreshNav?.();
       PX.toast(`已将「${svc.display_name}」设为${PX.state.init.start_types[start]}`);
       draw();
     } catch (e) { select.value = svc.start_type; PX.fail(e); }
   }
 
-  function drawStartup(c) {
+  function drawStartup(c, restoreStartupSearch) {
     const init = PX.state.init;
     if (!state.items) { c.appendChild(PX.progressBar(null)); return; }
     const on = state.items.filter((i) => i.enabled).length;
+    const sq = state.startupQuery.trim().toLowerCase();
+    const filtered = state.items.filter((it) => !sq
+      || ((it.display_name || '') + ' ' + (it.publisher || '') + ' ' + (it.command || '')).toLowerCase().includes(sq));
     c.appendChild(h('div.page-head', { style: { marginBottom: '10px' } },
       h('div.grow', h('div.muted', '和任务管理器的「启动应用」是同一套开关，关掉的随时可以重新打开。')),
       h('div.actions',
+        state.items.length > 6 || sq ? PX.searchBox(startupSearchInput, state.startupQuery, () => { state.startupQuery = ''; draw(); }) : null,
         h('button.btn', { type: 'button', disabled: !!state.aiBusy || !state.items.length, onclick: explain }, PX.icon('spark'), state.aiBusy ? '正在分析…' : 'AI 解释这些启动项'),
         h('button.btn', { type: 'button', disabled: !!state.refreshing, onclick: () => load(true) }, PX.icon('refresh'),
           state.refreshing ? '正在刷新…' : '刷新'))));
+    if (restoreStartupSearch) {
+      startupSearchInput.focus({ preventScroll: true });
+      if (restoreStartupSearch[0] !== null) startupSearchInput.setSelectionRange(restoreStartupSearch[0], restoreStartupSearch[1]);
+    }
     if (state.items.length) {
       const advice = Object.entries(state.ai.startup).filter(([id, a]) => a.suggestion === 'disable' && state.items.some((i) => i.id === id && i.enabled));
       const analysed = Object.keys(state.ai.startup).length > 0;
@@ -130,45 +155,54 @@
       tiles.appendChild(PX.statTile({ cls: 's-hi', label: '开机自动运行', value: String(on), sub: `共 ${state.items.length} 个启动项`, part: on / state.items.length }));
       tiles.appendChild(PX.statTile({ cls: 's-lo', label: '已禁用', value: String(state.items.length - on), sub: '随时可以重新启用' }));
       tiles.appendChild(PX.statTile({ cls: 's-mid', label: 'AI 建议禁用', value: analysed ? String(advice.length) : '—',
-        sub: analysed ? (advice.length ? '还开着的里面，可以放心禁用的' : '开着的都建议保留') : '点「AI 解释这些启动项」后显示' }));
+        sub: analysed ? (advice.length ? '点此将建议禁用的排到最前' : '开着的都建议保留') : '点「AI 解释这些启动项」后显示',
+        onclick: analysed && advice.length ? () => { state.sort = { key: 'ai', dir: 'desc' }; draw(); } : null }));
     }
     if (!init.admin && state.items.some((i) => i.needs_admin)) {
       c.appendChild(PX.notice('「所有用户」的启动项需要管理员权限才能修改。', 'info',
         h('button.btn.small', { type: 'button', onclick: PX.restartAsAdmin }, '以管理员身份重启')));
     }
-    if (state.items.length > 1) {
+    if (filtered.length > 1) {
       c.appendChild(PX.sortBar(STARTUP_SORT, state.sort, (s) => { state.sort = s; draw(); },
         ['order', 'name', 'enabled', ...(Object.keys(state.ai.startup).length ? ['ai'] : []), 'publisher', 'source']));
     }
     const list = c.appendChild(h('div.list'));
-    if (!state.items.length) list.appendChild(PX.empty('没有开机启动项', ''));
-    for (const it of PX.sortRows(state.items, STARTUP_SORT, state.sort, 'order')) {
-      const sw = PX.switchEl(it.enabled, (e) => toggle(it, e.target.checked, e.target), it.needs_admin);
+    if (!filtered.length) list.appendChild(PX.empty(sq ? '没有匹配的启动项' : '没有开机启动项', ''));
+    for (const it of PX.sortRows(filtered, STARTUP_SORT, state.sort, 'order')) {
+      const sw = PX.switchEl(it.enabled, (e) => toggle(it, e.target.checked, e.target), it.needs_admin,
+        (it.enabled ? '禁用 ' : '启用 ') + it.display_name);
       sw.title = it.needs_admin ? '需要管理员权限' : it.enabled ? '点击禁用' : '点击启用';
       list.appendChild(h('div.row.su-row', sw,
-        h('div.app-main', PX.avatar(it.display_name, state.icons[it.exe]),
+        h('div.app-main', PX.avatar(it.display_name, state.icons[it.exe], it.exe && !(it.exe in state.icons) ? it.exe : null),
           h('div.cell-main', h('div.name', it.display_name), h('div.sub', [it.publisher || '未知发布者', it.source_label].join('，')),
             aiNote(state.ai.startup[it.id]))),
         h('div.sub', { title: PX.displayText(it.command) }, (it.exists ? '' : '文件不存在：') + PX.displayText(it.command)),
-        h('div.row-actions', it.exists ? PX.revealButton(it.location) : PX.tag('文件不存在', 'warn'),
-        h('button.btn.quiet.small', { type: 'button', onclick: () => PX.ask({ type: 'startup', id: it.id }, it.display_name) }, PX.icon('spark'), '问 AI'))));
+        h('div.row-actions',
+          it.command ? h('button.btn.quiet.small.reveal', { type: 'button', title: '复制启动命令', 'aria-label': '复制启动命令',
+            onclick: () => PX.copyText(PX.displayText(it.command), '已复制启动命令') }, PX.icon('copy')) : null,
+          it.exists ? PX.revealButton(it.location)
+            : h('span.tag.warn', { title: '启动项指向的程序文件已不存在，禁用后登录时不再尝试启动' }, '文件不存在'),
+          h('button.btn.quiet.small', { type: 'button', onclick: () => PX.ask({ type: 'startup', id: it.id }, it.display_name) }, PX.icon('spark'), '问 AI'))));
     }
   }
 
-  function drawServices(c) {
+  function drawServices(c, restoreSearch) {
     const init = PX.state.init;
     if (!state.services) { c.appendChild(PX.progressBar(null)); return; }
     const q = state.query.trim().toLowerCase();
     const rows = PX.sortRows(state.services.filter((s) => (state.scope === 'all' || s.kind === 'third_party')
-      && (!q || (s.display_name + s.name + s.publisher).toLowerCase().includes(q))), SERVICE_SORT, state.serviceSort, 'name');
+      && (!q || ((s.display_name || '') + ' ' + (s.name || '') + ' ' + (s.publisher || '')).toLowerCase().includes(q))), SERVICE_SORT, state.serviceSort, 'name');
     const third = state.services.filter((s) => s.kind === 'third_party').length;
     c.appendChild(h('div.page-head', { style: { marginBottom: '10px' } },
       h('div.grow', h('div.muted', `${state.services.length} 个服务，其中 ${third} 个来自第三方软件。Windows 和微软的服务只显示，不在这里修改。`)),
       h('div.actions',
-        h('input', { type: 'text', placeholder: '搜索服务', value: state.query, 'aria-label': '搜索服务',
-          oninput: (e) => { state.query = e.target.value; const pos = e.target.selectionStart; draw(); const i = root.querySelector('input[type=text]'); if (i) { i.focus(); i.setSelectionRange(pos, pos); } } }),
+        PX.searchBox(searchInput, state.query, () => { state.query = ''; draw(); }),
         PX.seg([['third', '第三方'], ['all', '全部']], state.scope, (v) => { state.scope = v; draw(); }),
         h('button.btn', { type: 'button', disabled: !!state.aiBusy || !third, onclick: explain }, PX.icon('spark'), state.aiBusy ? '正在分析…' : 'AI 解释第三方服务'))));
+    if (restoreSearch) {
+      searchInput.focus({ preventScroll: true });
+      if (restoreSearch[0] !== null) searchInput.setSelectionRange(restoreSearch[0], restoreSearch[1]);
+    }
     if (!init.admin) {
       c.appendChild(PX.notice('修改服务的启动方式需要管理员权限。', 'info',
         h('button.btn.small', { type: 'button', onclick: PX.restartAsAdmin }, '以管理员身份重启')));
@@ -189,26 +223,37 @@
         control = h('div', h('div', s.start_label), h('div.small.faint', s.kind === 'windows' ? 'Windows 服务' : '微软服务'));
       }
       list.appendChild(h('div.row.svc-row',
-        h('div.app-main', PX.avatar(s.display_name, state.icons[s.exe]),
+        h('div.app-main', PX.avatar(s.display_name, state.icons[s.exe], s.exe && !(s.exe in state.icons) ? s.exe : null),
           h('div.cell-main', h('div.name', s.display_name), h('div.sub', { title: s.description }, s.description || s.name), aiNote(state.ai.services[s.name]))),
         h('div.cell-main', h('div.sub', s.publisher || '未知发布者'), s.exe ? h('div.sub', PX.pathText(s.exe)) : h('div.sub', { title: PX.displayText(s.binpath) }, PX.displayText(s.binpath))),
         h('div.small', s.status === 'running' ? PX.tag(s.status_label, 'good') : h('span.muted', s.status_label)),
         control,
-        h('div.row-actions', s.exe ? PX.revealButton(s.exe) : null,
-          h('button.btn.quiet.small', { type: 'button', title: '问 AI', onclick: () => PX.ask({ type: 'service', id: s.name }, s.display_name) }, PX.icon('spark')))));
+        h('div.row-actions',
+          s.exe ? PX.copyPathButton(s.exe) : null,
+          s.exe ? PX.revealButton(s.exe) : null,
+          h('button.btn.quiet.small', { type: 'button', title: '问 AI', 'aria-label': '问 AI',
+            onclick: () => PX.ask({ type: 'service', id: s.name }, s.display_name) }, PX.icon('spark')))));
     }
     if (!rows.length) list.appendChild(PX.empty('没有匹配的服务', ''));
   }
 
   function draw() {
     if (!root || !PX.isCurrent('startup')) return;
+    if ((composing && document.activeElement === searchInput)
+      || (startupComposing && document.activeElement === startupSearchInput)) return;
+    const restoreStartupSearch = state.tab === 'startup' && document.activeElement === startupSearchInput
+      ? [startupSearchInput.selectionStart, startupSearchInput.selectionEnd] : null;
+    const restoreSearch = state.tab === 'services' && document.activeElement === searchInput
+      ? [searchInput.selectionStart, searchInput.selectionEnd] : null;
+    if (!restoreStartupSearch && startupSearchInput.value !== state.startupQuery) startupSearchInput.value = state.startupQuery;
+    if (!restoreSearch && searchInput.value !== state.query) searchInput.value = state.query;
     const main = document.getElementById('main');
     const top = main.scrollTop;
     const c = PX.clear(root);
     c.appendChild(h('div.page-head', h('div.grow', h('h1', '开机与服务'), h('div.sub', '减少开机自动运行的程序，可以加快开机并减少后台占用'))));
     c.appendChild(h('div.tabs', [['startup', '开机启动'], ['services', '服务']].map(([id, label]) =>
       h('button' + (state.tab === id ? '.on' : ''), { type: 'button', onclick: () => { state.tab = id; draw(); load(); } }, label))));
-    if (state.tab === 'startup') drawStartup(c); else drawServices(c);
+    if (state.tab === 'startup') drawStartup(c, restoreStartupSearch); else drawServices(c, restoreSearch);
     main.scrollTop = top;
   }
 

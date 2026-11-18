@@ -21,12 +21,18 @@
     }
     const banner = document.getElementById('ai-health-banner');
     if (banner) {
-      banner.hidden = state.state === 'ready';
+      const hideBanner = state.state === 'ready' || PX.currentPage?.() === 'settings'
+        || (state.state === 'checking' && !manual);
+      banner.hidden = hideBanner;
       banner.dataset.state = state.state;
-      if (!banner.hidden) PX.clear(banner).append(h('div.grow', h('b', `${LABELS[state.state]}：${state.message}`),
-        h('p', state.state === 'checking' || state.help.includes('基础扫描') ? state.help : state.help + ' 当前仍可进行基础扫描。')),
-      h('button.btn.small', { type: 'button', onclick: openSettings }, '去设置'),
-      ...(state.state !== 'unconfigured' ? [checkButton()] : []));
+      PX.clear(banner);
+      if (!hideBanner) {
+        const heading = state.state === 'checking' ? state.message + '…' : `${LABELS[state.state]}：${state.message}`;
+        banner.append(h('div.grow', h('b', heading),
+          h('p', state.state === 'checking' || state.help.includes('基础扫描') ? state.help : state.help + ' 当前仍可进行基础扫描。')),
+        h('button.btn.small', { type: 'button', onclick: openSettings }, '去设置'),
+        ...(state.state !== 'unconfigured' ? [checkButton()] : []));
+      }
     }
     for (const btn of document.querySelectorAll('[data-ai-health-check]')) btn.disabled = state.state === 'checking';
   }
@@ -55,8 +61,9 @@
         PX.modal({ title: 'AI 连接状态', body: h('div', h('p', s.message), h('p', s.help),
           s.checked_at ? h('p.small.muted', '最近检测：' + new Date(s.checked_at * 1000).toLocaleTimeString()) : null,
           h('p.small.muted', '连接检测只发送固定测试消息，不含文件名或内容，可能消耗少量模型额度。')),
-        actions: [{ label: '关闭' }, { label: '重新检测', onClick: () => PX.aiStatus.check() },
-          { label: '去设置', kind: 'primary', onClick: openSettings }] });
+        actions: [{ label: '关闭' },
+          ...(s.state !== 'unconfigured' ? [{ label: '重新检测', disabled: s.state === 'checking', onClick: () => PX.aiStatus.check() }] : []),
+          ...(PX.currentPage?.() !== 'settings' ? [{ label: '去设置', kind: 'primary', onClick: openSettings }] : [])] });
       } }, 'AI 待验证'));
       render();
     },

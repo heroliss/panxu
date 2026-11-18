@@ -7,6 +7,9 @@
   const state = { status: 'idle', result: null, selected: PX.sel.paths, open: new Set(), progress: {}, jobId: null,
     loaded: false, aiBusy: false, sort: { key: 'order', dir: 'asc' } };
   let root = null;
+  const mineSearch = PX.makeSearch('搜索文件名或位置', () => draw(true));
+  const matchMine = (f, x, q) => !q || [x.name, PX.displayPath(x.path), x.note, f.kind_label, f.title, x.ai?.what, x.ai?.reason]
+    .filter(Boolean).join(' ').toLowerCase().includes(q);
   // inside each kind: 盘序's order (the version to keep heads its group, the rest largest first) or the user's
   const order = new WeakMap();
   const SORT = {
@@ -120,22 +123,38 @@
       foreign.length ? PX.notice(`其中 ${foreign.length} 项是其他账户（${owners.join('、')}）的文件，不是你的。它们会进入你的回收站：`
         + '对方登录后看不到，也不能自己还原。请先确认对方不再需要。', 'warn') : null,
       h('div', foreign.length === count ? '只会移到回收站，需要时可以由你还原。' : '这些是你自己的文件，只会移到回收站，需要时可以还原。'),
-      h('div.confirm-list', byFinding.flatMap(([, files]) => files).slice(0, 200).map((x) => h('div.row', h('div.sub', x.path), h('span.num.small', fmt.bytes(x.size)))))) });
+      h('div.confirm-list', byFinding.flatMap(([, files]) => files).slice(0, 200).map((x) => h('div.row', h('div.sub', PX.displayPath(x.path)), h('span.num.small', fmt.bytes(x.size)))))) });
     if (!ok) return;
-    // one result for all the groups (each is its own job)
+    // one result for all the groups (each is its own job), with a locked progress dialog
     const all = { mode: 'recycle', done: [], permanent: [], freed: 0, permanent_bytes: 0, failures: [], failed: 0, skipped: [], partial: [] };
-    for (const [f, files] of byFinding) {
-      try {
-        const r = await PX.api.run('insights_delete', { finding_id: f.id, paths_to_delete: files.map((x) => x.path) });
-        all.done.push(...r.done);
-        all.permanent.push(...(r.permanent || []));
-        all.freed += r.freed || 0;
-        all.permanent_bytes += r.permanent_bytes || 0;
-        all.failures.push(...(r.failures || []));
-        all.failed += r.failed || 0;
-        all.skipped.push(...(r.skipped || []));
-        all.partial.push(...(r.partial || []));
-      } catch (e) { PX.fail(e); }
+    let activeJob = null, stopped = false;
+    const slot = h('div', PX.progressBar(null, 'mine-recycle'));
+    const cur = h('div.del-current');
+    const dlg = PX.modal({ title: '正在移到回收站', locked: true, body: h('div', slot, cur),
+      actions: [{ label: '停止', onClick: () => { stopped = true; if (activeJob) PX.api.cancel(activeJob); return false; } }] });
+    try {
+      for (const [f, files] of byFinding) {
+        if (stopped) break;
+        cur.textContent = f.title || f.kind_label || '';
+        try {
+          const r = await PX.api.run('insights_delete', { finding_id: f.id, paths_to_delete: files.map((x) => x.path) },
+            (p) => { if (p.current) cur.textContent = PX.displayPath(p.current); }, (id) => { activeJob = id; });
+          all.done.push(...r.done);
+          all.permanent.push(...(r.permanent || []));
+          all.freed += r.freed || 0;
+          all.permanent_bytes += r.permanent_bytes || 0;
+          all.failures.push(...(r.failures || []));
+          all.failed += r.failed || 0;
+          all.skipped.push(...(r.skipped || []));
+          all.partial.push(...(r.partial || []));
+        } catch (e) {
+          if (e.cancelled) break;
+          PX.fail(e);
+        }
+        activeJob = null;
+      }
+    } finally {
+      dlg.close();
     }
     // too large for the Recycle Bin, deleted by Windows on the user's yes: that needs more than a toast
     if (all.permanent.length || all.skipped.length) PX.deleteResult(all);
@@ -194,12 +213,12 @@
   const flip = (key) => (open) => { open ? state.open.add(key) : state.open.delete(key); draw(true); };
 
   // the rows of one finding, folded like every other list (PX.foldCount)
-  function fileRows(list, f) {
+  function fileRows(list, f, q) {
     const key = 'f:' + f.id;
-    const open = state.open.has(key);
+    const open = !!q || state.open.has(key);
     f.files.forEach((x, i) => order.set(x, i));
     PX.sortRows(f.files, SORT, state.sort, 'size').slice(0, PX.foldCount(f.files.length, open)).forEach((x) => fileRow(list, f, x));
-    const more = PX.foldButton(f.files.length, open, flip(key));
+    const more = q ? null : PX.foldButton(f.files.length, open, flip(key));
     if (more) list.appendChild(more);
   }
   const selectRemovable = (f, word) => {
@@ -212,38 +231,39 @@
   // One card per kind of finding, all built alike: [☐] kind · count · what to do about it · size · fold. A kind
   // with a single finding lists its files; 「同一文件的多个版本」 has one sub-group per document, each with its
   // own checkbox, like the categories of the plan on 首页.
-  function kindCard(c, kind, group) {
+  function kindCard(c, kind, group, q) {
     const first = group[0];
     const files = group.flatMap((f) => f.files);
     const can = files.filter((x) => !x.blocked);
-    const closed = state.open.has('closed:' + kind);
+    const closed = !q && state.open.has('closed:' + kind);
     const sec = c.appendChild(h('section.group-card.kind-card', { id: 'kind-' + kind }));
     sec.appendChild(PX.foldHead('div.gc-head', !closed, (open) => flip('closed:' + kind)(!open),
       PX.groupBox(can.length, can.filter((x) => state.selected.has(x.path)).length, (on) => tick(can, on), '选择这一类：' + first.kind_label),
       h('h2', first.kind_label), h('span.gc-count', `${files.length} 项`), h('span.gc-note', first.advice),
-      h('span.gc-size', group.some((f) => f.size) ? fmt.bytes(group.reduce((sum, f) => sum + f.size, 0)) : '')));
+      h('span.gc-size', group.some((f) => f.size) ? fmt.bytes(files.reduce((sum, x) => sum + (x.size || 0), 0)) : '')));
     if (closed) return;
     const list = sec.appendChild(h('div.list'));
     if (group.length === 1 && kind !== 'name_versions') {
       const pick = selectRemovable(first, '可以删除');
       list.appendChild(h('div.card-note', h('span.grow', first.reason), pick));
-      fileRows(list, first);
+      fileRows(list, first, q);
       return;
     }
     const key = 'more:' + kind;
-    const open = state.open.has(key);
+    const open = !!q || state.open.has(key);
     for (const f of group.slice(0, PX.foldCount(group.length, open))) {
       const mine = f.files.filter((x) => !x.blocked);
       list.appendChild(h('div.cat-head', { id: 'finding-' + f.id },
         PX.groupBox(mine.length, mine.filter((x) => state.selected.has(x.path)).length, (on) => tick(mine, on), '选择这一组：' + f.title),
-        h('div.cat-title', h('b', f.title), h('span.muted.small', `${f.files.length} 项 · ${fmt.bytes(f.size)}`),
+        h('div.cat-title', h('b', f.title), h('span.muted.small', `${f.files.length} 项 · ${fmt.bytes(f.files.reduce((s, x) => s + (x.size || 0), 0))}`),
           h('div.small.muted.cat-why', f.reason)),
         selectRemovable(f, '内容相同')));
       // every version ticked is allowed (the user's call), and said plainly
-      if (everyVersion(f)) list.appendChild(h('div.card-note.warn', PX.icon('warn'), h('span.grow', `这 ${f.files.length} 个版本都勾上了：这份文件一个版本都不保留，只能从回收站还原。`)));
-      fileRows(list, f);
+      const orig = state.result.findings.find((o) => o.id === f.id) || f;
+      if (everyVersion(orig)) list.appendChild(h('div.card-note.warn', PX.icon('warn'), h('span.grow', `这 ${orig.files.length} 个版本都勾上了：这份文件一个版本都不保留，只能从回收站还原。`)));
+      fileRows(list, f, q);
     }
-    const more = PX.foldButton(group.length, open, flip(key), '组');
+    const more = q ? null : PX.foldButton(group.length, open, flip(key), '组');
     if (more) list.appendChild(more);
   }
 
@@ -271,6 +291,8 @@
 
   function draw(keepScroll) {
     if (!root || !PX.isCurrent('mine')) return;
+    if (mineSearch.composing) return;
+    const focusSel = mineSearch.captureFocus();
     const main = document.getElementById('main');
     const top = main.scrollTop;
     const c = PX.clear(root);
@@ -320,26 +342,35 @@
       (r.stats.sandbox_dirs ? `${r.stats.program_dirs ? '' : '。'}${r.stats.sandbox_dirs} 个盘序演练环境里是演练用的假文件，也跳过了。` : '')));
     if (!r.findings.length) c.appendChild(PX.empty('没有发现需要注意的文件', '已查看的范围里，没有符合整理条件的文件。'));
     else {
-      overview(c, r);
+      const q = mineSearch.query.trim().toLowerCase();
+      if (!q) overview(c, r);
       const anyAI = r.findings.some((f) => f.files.some((x) => x.ai));
-      const kinds = [...new Set(r.findings.map((f) => f.kind))];
-      const allClosed = kinds.every((k) => state.open.has('closed:' + k));
+      const allKinds = [...new Set(r.findings.map((f) => f.kind))];
+      const allClosed = allKinds.every((k) => state.open.has('closed:' + k));
       c.appendChild(h('div.list-tools', PX.sortBar(SORT, state.sort, (s) => { state.sort = s; draw(true); },
         ['order', 'score', 'size', 'mtime', 'name', 'path', ...(anyAI ? ['ai'] : [])]),
-      kinds.length > 1 ? h('button.btn.quiet.small', { type: 'button', onclick: () => {
-        for (const k of kinds) allClosed ? state.open.delete('closed:' + k) : state.open.add('closed:' + k);
-        draw(true);
-      } }, allClosed ? '全部展开' : '全部收起') : null));
+      h('div.list-tools-right',
+        mineSearch.box(),
+        !q && allKinds.length > 1 ? h('button.btn.quiet.small', { type: 'button', onclick: () => {
+          for (const k of allKinds) allClosed ? state.open.delete('closed:' + k) : state.open.add('closed:' + k);
+          draw(true);
+        } }, allClosed ? '全部展开' : '全部收起') : null)));
+      const filteredFindings = q
+        ? r.findings.map((f) => ({ ...f, files: f.files.filter((x) => matchMine(f, x, q)) })).filter((f) => f.files.length)
+        : r.findings;
+      const kinds = [...new Set(filteredFindings.map((f) => f.kind))];
+      if (!kinds.length) c.appendChild(PX.empty('没有匹配的文件', '换个关键词试试。'));
       // the backend's order of kinds; each kind is one card
-      for (const kind of kinds) kindCard(c, kind, r.findings.filter((f) => f.kind === kind));
+      for (const kind of kinds) kindCard(c, kind, filteredFindings.filter((f) => f.kind === kind), q);
     }
     const chosen = r.findings.flatMap((f) => f.files).filter((x) => state.selected.has(x.path));
     if (chosen.length) {
       const size = chosen.reduce((sum, x) => sum + x.size, 0);
       c.appendChild(h('div.actionbar', h('div.grow', h('span.fig', fmt.bytes(size)), h('span.muted', `  已选 ${chosen.length} 项`)),
-        h('button.btn', { type: 'button', onclick: () => { for (const x of chosen) state.selected.delete(x.path); draw(true); } }, '清除选择'),
+        h('button.btn', { type: 'button', onclick: () => { for (const x of chosen) state.selected.delete(x.path); draw(true); } }, '取消选择'),
         h('button.btn.primary', { type: 'button', onclick: recycle }, PX.icon('trash'), '移到回收站')));
     }
+    mineSearch.restoreFocus(focusSel);
     if (keepScroll) main.scrollTop = top;
   }
 
