@@ -28,6 +28,17 @@ class WindowControls:
     def state(self):
         return {'available': self.provider() is not None, 'maximized': self.maximized, 'custom': self.custom}
 
+    def hwnd(self):
+        if sys.platform != 'win32':
+            return None
+        window = self.provider()
+        if window is None:
+            return None
+        try:
+            return window.native.Handle.ToInt64()
+        except Exception:  # noqa: BLE001
+            return None
+
     def _prepare_frame(self, window):
         if sys.platform != 'win32':
             return
@@ -35,8 +46,14 @@ class WindowControls:
             # A borderless WinForms form otherwise loses its resize frame. Retain the native
             # sizing/system-menu styles without WS_CAPTION, and maximize inside the work area.
             from System import Action
+            from System.Drawing import Rectangle
             from System.Windows.Forms import Screen
             native = window.native
+            def update_max_bounds(*_):
+                screen = Screen.FromHandle(native.Handle)
+                wa, bounds = screen.WorkingArea, screen.Bounds
+                # WinForms copies MaximizedBounds.Location into MINMAXINFO.ptMaxPosition, which is monitor-relative.
+                native.MaximizedBounds = Rectangle(wa.X - bounds.X, wa.Y - bounds.Y, wa.Width, wa.Height)
             def configure():
                 user = _user32()
                 hwnd = native.Handle.ToInt64()
@@ -45,8 +62,9 @@ class WindowControls:
                     user.SetWindowLongPtrW(hwnd, -16, (style | 0x00040000 | 0x00020000 | 0x00010000 | 0x00080000) & ~0x00C00000)
                     user.SetWindowPos(hwnd, None, 0, 0, 0, 0, 0x0027)  # frame changed, no move/size/z-order
                     self._preserve_restore_size(native, user)
+                    native.Move += lambda s, e: update_max_bounds() if str(native.WindowState) == 'Normal' else None
                     self._frame_ready = True
-                native.MaximizedBounds = Screen.FromHandle(native.Handle).WorkingArea
+                update_max_bounds()
             native.Invoke(Action(configure))
         except Exception:
             log.exception('custom window frame unavailable; restoring the system frame')

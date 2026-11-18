@@ -56,7 +56,9 @@ if IS_WINDOWS:
     _user32 = ctypes.WinDLL('user32', use_last_error=True)
 
     class SHFILEOPSTRUCTW(ctypes.Structure):
-        # x64 layout uses natural alignment (pshpack1 applies to 32-bit only).
+        # pshpack1 applies on 32-bit Windows only; x64 uses natural alignment.
+        if ctypes.sizeof(ctypes.c_void_p) == 4:
+            _pack_ = 1
         _fields_ = [
             ('hwnd', wintypes.HWND),
             ('wFunc', wintypes.UINT),
@@ -69,6 +71,8 @@ if IS_WINDOWS:
         ]
 
     class SHQUERYRBINFO(ctypes.Structure):
+        if ctypes.sizeof(ctypes.c_void_p) == 4:
+            _pack_ = 1
         _fields_ = [('cbSize', wintypes.DWORD), ('i64Size', ctypes.c_int64), ('i64NumItems', ctypes.c_int64)]
 
     class DATA_BLOB(ctypes.Structure):
@@ -111,6 +115,8 @@ if IS_WINDOWS:
                                                 ctypes.POINTER(wintypes.DWORD), ctypes.POINTER(wintypes.DWORD),
                                                 ctypes.POINTER(wintypes.DWORD), wintypes.LPWSTR, wintypes.DWORD]
     _kernel32.GetVolumeInformationW.restype = wintypes.BOOL
+    _kernel32.GetVolumePathNameW.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD]
+    _kernel32.GetVolumePathNameW.restype = wintypes.BOOL
     _kernel32.GetDriveTypeW.argtypes = [wintypes.LPCWSTR]
     _kernel32.GetDriveTypeW.restype = wintypes.UINT
     _kernel32.GetCompressedFileSizeW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(wintypes.DWORD)]
@@ -205,7 +211,8 @@ def recycle_paths(paths: list[str], hwnd=None) -> tuple[int, bool]:
     if not IS_WINDOWS:
         raise OSError('Recycle Bin is only available on Windows')
     co_initialize()
-    buffer = '\0'.join(paths) + '\0\0'
+    norm_paths = [os.path.abspath(p) for p in paths]
+    buffer = '\0'.join(norm_paths) + '\0\0'
     op = SHFILEOPSTRUCTW()
     op.hwnd = hwnd
     op.wFunc = FO_DELETE
@@ -223,17 +230,37 @@ def _dollar_i_original(path: str) -> str | None:
     try:
         with open(path, 'rb') as fh:
             data = fh.read(4096)
+            if len(data) < 24:
+                return None
+            ver = int.from_bytes(data[0:8], 'little')
+            if ver == 2:
+                if len(data) < 28:
+                    return None
+                n = int.from_bytes(data[24:28], 'little')
+                if n <= 0 or n > 32768:
+                    return None
+                need = 28 + 2 * n
+                if need > len(data):
+                    data += fh.read(need - len(data))
+                raw = data[28:need]
+            elif ver == 1:
+                raw = data[24:24 + 520]
+            else:
+                return None
     except OSError:
         return None
-    if len(data) < 24:
-        return None
-    if int.from_bytes(data[0:8], 'little') == 2 and len(data) >= 28:
-        n = int.from_bytes(data[24:28], 'little')
-        raw = data[28:28 + 2 * n]
-    else:
-        raw = data[24:24 + 520]
     text = raw.decode('utf-16-le', 'ignore').split('\0', 1)[0]
     return text or None
+
+
+def volume_root(path: str) -> str:
+    """Volume mount point for ``path`` (honours folder-mounted NTFS volumes on Windows)."""
+    full = os.path.abspath(path)
+    if _sim is None and IS_WINDOWS:
+        buf = ctypes.create_unicode_buffer(261)
+        if _kernel32.GetVolumePathNameW(full, buf, 261) and buf.value:
+            return buf.value
+    return os.path.splitdrive(full)[0] + os.sep
 
 
 def recycled_since(root: str, since: float) -> set[str] | None:
@@ -259,6 +286,8 @@ def recycled_since(root: str, since: float) -> set[str] | None:
                                     found.add(original)
                 except OSError:
                     continue
+    except FileNotFoundError:
+        return set()  # drive has no Recycle Bin (USB flash drive, network share): gone means permanently deleted
     except OSError:
         return None
     return found if readable else None
@@ -270,6 +299,7 @@ def recycle_bin_info(root: str | None = None) -> tuple[int, int]:
         return _sim.recycle_bin_info()
     if not IS_WINDOWS:
         return 0, 0
+    co_initialize()
     info = SHQUERYRBINFO()
     info.cbSize = ctypes.sizeof(SHQUERYRBINFO)
     hr = _shell32.SHQueryRecycleBinW(root, ctypes.byref(info))
@@ -283,15 +313,20 @@ def empty_recycle_bin(root: str | None = None) -> bool:
         return _sim.empty_recycle_bin()
     if not IS_WINDOWS:
         return False
+    co_initialize()
     hr = _shell32.SHEmptyRecycleBinW(None, root, SHERB_NOCONFIRMATION | SHERB_NOPROGRESSUI | SHERB_NOSOUND)
-    # E_UNEXPECTED is returned when the bin is already empty.
-    return hr in (0, ctypes.c_long(0x8000FFFF).value)
+    # E_UNEXPECTED / S_FALSE is returned when the bin is already empty.
+    return hr in (0, 1, ctypes.c_long(0x8000FFFF).value)
 
 
 def known_folder(name: str) -> str:
     """Resolve a user shell folder, honouring redirection (OneDrive, D:\\...)."""
     if _sim is not None:
         return _sim.known_folder(name)
+    from . import paths
+    if paths.is_foreign_user():
+        base = paths.environment().get('USERPROFILE') or os.path.expanduser('~')
+        return os.path.join(base, _KNOWN_FALLBACK[name])
     home = os.path.expanduser('~')
     fallback = os.path.join(home, _KNOWN_FALLBACK[name])
     if not IS_WINDOWS:
@@ -312,7 +347,8 @@ def protect_secret(data: bytes) -> tuple[bytes, str]:
     """Encrypt for the current Windows user with DPAPI. Returns (blob, scheme)."""
     if not IS_WINDOWS:
         return data, 'plain'
-    blob_in = DATA_BLOB(len(data), ctypes.cast(ctypes.create_string_buffer(data, len(data)), ctypes.POINTER(ctypes.c_char)))
+    buf = ctypes.create_string_buffer(data, max(1, len(data)))
+    blob_in = DATA_BLOB(len(data), ctypes.cast(buf, ctypes.POINTER(ctypes.c_char)))
     blob_out = DATA_BLOB()
     if not _crypt32.CryptProtectData(ctypes.byref(blob_in), 'PanXu', None, None, None, 0x1, ctypes.byref(blob_out)):
         raise ctypes.WinError(ctypes.get_last_error())
@@ -327,7 +363,8 @@ def unprotect_secret(blob: bytes, scheme: str) -> bytes:
         return blob
     if scheme != 'dpapi' or not IS_WINDOWS:
         raise ValueError('无法在此系统上解密已保存的密钥')
-    blob_in = DATA_BLOB(len(blob), ctypes.cast(ctypes.create_string_buffer(blob, len(blob)), ctypes.POINTER(ctypes.c_char)))
+    buf = ctypes.create_string_buffer(blob, max(1, len(blob)))
+    blob_in = DATA_BLOB(len(blob), ctypes.cast(buf, ctypes.POINTER(ctypes.c_char)))
     blob_out = DATA_BLOB()
     if not _crypt32.CryptUnprotectData(ctypes.byref(blob_in), None, None, None, None, 0x1, ctypes.byref(blob_out)):
         raise ctypes.WinError(ctypes.get_last_error())
@@ -449,7 +486,18 @@ def programs_using(files: list[str]) -> list[str] | None:
                     ('AppStatus', wintypes.ULONG), ('TSSessionId', wintypes.DWORD), ('bRestartable', wintypes.BOOL)]
     try:
         if _restart_manager is None:
-            _restart_manager = ctypes.WinDLL('rstrtmgr', use_last_error=True)
+            rm = ctypes.WinDLL('rstrtmgr', use_last_error=True)
+            rm.RmStartSession.argtypes = [ctypes.POINTER(wintypes.DWORD), wintypes.DWORD, wintypes.LPWSTR]
+            rm.RmStartSession.restype = wintypes.DWORD
+            rm.RmRegisterResources.argtypes = [wintypes.DWORD, wintypes.UINT, ctypes.POINTER(wintypes.LPCWSTR),
+                                               wintypes.UINT, ctypes.c_void_p, wintypes.UINT, ctypes.c_void_p]
+            rm.RmRegisterResources.restype = wintypes.DWORD
+            rm.RmGetList.argtypes = [wintypes.DWORD, ctypes.POINTER(wintypes.UINT), ctypes.POINTER(wintypes.UINT),
+                                     ctypes.POINTER(ProcessInfo), ctypes.POINTER(wintypes.DWORD)]
+            rm.RmGetList.restype = wintypes.DWORD
+            rm.RmEndSession.argtypes = [wintypes.DWORD]
+            rm.RmEndSession.restype = wintypes.DWORD
+            _restart_manager = rm
         rm = _restart_manager
         session = wintypes.DWORD()
         key = ctypes.create_unicode_buffer(33)
@@ -458,18 +506,25 @@ def programs_using(files: list[str]) -> list[str] | None:
     except (OSError, AttributeError):
         return None
     try:
-        array = (wintypes.LPCWSTR * len(files))(*files)
-        if rm.RmRegisterResources(session, len(files), array, 0, None, 0, None):
+        norm_files = [os.path.abspath(f) for f in files]
+        array = (wintypes.LPCWSTR * len(norm_files))(*norm_files)
+        if rm.RmRegisterResources(session, len(norm_files), array, 0, None, 0, None):
             return None
         needed, count, reasons = wintypes.UINT(0), wintypes.UINT(0), wintypes.DWORD(0)
         rc = rm.RmGetList(session, ctypes.byref(needed), ctypes.byref(count), None, ctypes.byref(reasons))
         if rc == 0:
             return []
-        if rc != 234:  # ERROR_MORE_DATA: how many there are
-            return None
-        infos = (ProcessInfo * needed.value)()
-        count = wintypes.UINT(needed.value)
-        if rm.RmGetList(session, ctypes.byref(needed), ctypes.byref(count), infos, ctypes.byref(reasons)):
+        infos = None
+        for _ in range(4):
+            if rc != 234:  # ERROR_MORE_DATA
+                return None
+            alloc = max(1, needed.value)
+            infos = (ProcessInfo * alloc)()
+            count = wintypes.UINT(alloc)
+            rc = rm.RmGetList(session, ctypes.byref(needed), ctypes.byref(count), infos, ctypes.byref(reasons))
+            if rc == 0:
+                break
+        else:
             return None
         mine = os.getpid()
         names = []
@@ -559,10 +614,28 @@ def decode_console(data: bytes) -> str:
 def reveal_in_explorer(path: str) -> None:
     if not IS_WINDOWS:
         return
-    if os.path.isdir(path):
-        os.startfile(path)  # noqa: S606 - path comes from our own scan results
-    else:
-        subprocess.Popen(['explorer', '/select,', path])
+    full = os.path.abspath(path)
+    if os.path.isdir(full):
+        os.startfile(full)  # noqa: S606 - path comes from our own scan results
+        return
+    try:
+        co_initialize()
+        _shell32.ILCreateFromPathW.argtypes = [wintypes.LPCWSTR]
+        _shell32.ILCreateFromPathW.restype = ctypes.c_void_p
+        _shell32.SHOpenFolderAndSelectItems.argtypes = [ctypes.c_void_p, wintypes.UINT, ctypes.c_void_p, wintypes.DWORD]
+        _shell32.SHOpenFolderAndSelectItems.restype = ctypes.c_long
+        _shell32.ILFree.argtypes = [ctypes.c_void_p]
+        _shell32.ILFree.restype = None
+        pidl = _shell32.ILCreateFromPathW(full)
+        if pidl:
+            try:
+                if _shell32.SHOpenFolderAndSelectItems(pidl, 0, None, 0) == 0:
+                    return
+            finally:
+                _shell32.ILFree(pidl)
+    except (OSError, AttributeError):
+        pass
+    subprocess.Popen(['explorer', '/select,' + full])
 
 
 def open_uri(uri: str) -> None:

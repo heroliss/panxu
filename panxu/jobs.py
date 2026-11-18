@@ -60,35 +60,40 @@ class JobManager:
 
     def __init__(self, synchronize: bool = False):
         self._jobs: dict[str, Job] = {}
-        self._lock = threading.RLock()
+        self._lock = threading.Lock()
+        self._submit_lock = threading.RLock()
         self.synchronize = synchronize
 
     def _check_busy(self):
-        for job in self._jobs.values():
-            if job.synchronized and job.status == 'running':
-                raise BusyError(job)
+        with self._lock:
+            for job in self._jobs.values():
+                if job.synchronized and job.status == 'running':
+                    raise BusyError(job)
 
     @contextmanager
     def submission(self):
         """Keep input reads and job registration atomic with respect to other submissions."""
-        with self._lock:
+        with self._submit_lock:
             self._check_busy()
             yield
 
     def start(self, kind: str, fn, *args, group: str | None = None, **kwargs) -> str:
         """Run ``fn(job, *args, **kwargs)`` in a thread. ``group`` serialises
         jobs that must not overlap (e.g. anything that deletes)."""
-        with self._lock:
-            self._prune()
-            synchronized = self.synchronize and kind != 'ai_ask'
-            if synchronized:
-                self._check_busy()
-            if group:
-                for other in self._jobs.values():
-                    if other.group == group and other.status == 'running':
-                        raise UserError('另一项清理操作正在进行，请等它完成后再试。')
-            job = Job(kind, group, synchronized)
-            self._jobs[job.id] = job
+        with self._submit_lock:
+            with self._lock:
+                self._prune()
+                synchronized = self.synchronize and kind != 'ai_ask'
+                if synchronized:
+                    for other in self._jobs.values():
+                        if other.synchronized and other.status == 'running':
+                            raise BusyError(other)
+                if group:
+                    for other in self._jobs.values():
+                        if other.group == group and other.status == 'running':
+                            raise UserError('另一项清理操作正在进行，请等它完成后再试。')
+                job = Job(kind, group, synchronized)
+                self._jobs[job.id] = job
 
         def runner():
             winapi.co_initialize()
@@ -97,18 +102,20 @@ class JobManager:
                 with job._lock:
                     job.result = result
                     job.status = 'cancelled' if job.cancel.is_set() and result is None else 'done'
+                    job.finished = time.time()
             except Cancelled:
                 with job._lock:
                     job.status = 'cancelled'
+                    job.finished = time.time()
             except UserError as exc:
                 with job._lock:
                     job.status, job.error = 'error', str(exc)
+                    job.finished = time.time()
             except Exception as exc:  # noqa: BLE001 - surface unexpected errors to the UI
                 log.error('job %s failed: %s', kind, traceback.format_exc())
                 with job._lock:
                     job.status, job.error = 'error', f'内部错误：{exc}'
-            finally:
-                job.finished = time.time()
+                    job.finished = time.time()
 
         threading.Thread(target=runner, name=f'job-{kind}', daemon=True).start()
         return job.id

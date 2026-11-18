@@ -20,7 +20,7 @@ class OperationLog:
 
     def __init__(self, path: str):
         self.path = path
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._open: set[str] = set()         # begun in this run and not finished yet: 「进行中」
         self._progress_at: dict[str, float] = {}
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -43,17 +43,20 @@ class OperationLog:
             entry['revert'] = revert
         if replaces:
             entry['replaces'] = replaces
-        self._append(entry, rotate=True)
-        if replaces:
-            self._open.discard(replaces)
+        with self._lock:
+            self._append(entry, rotate=True)
+            if replaces:
+                self._open.discard(replaces)
+                self._progress_at.pop(replaces, None)
         return entry
 
     def begin(self, kind: str, title: str, items=None) -> str:
         """Write down a change that is about to start (see the class docstring); returns its id."""
-        entry = self.add(kind, title, items=items, details={'pending': True})
-        self._open.add(entry['id'])
-        self._progress_at[entry['id']] = time.time()  # the first progress line after a second, not a zero at once
-        return entry['id']
+        with self._lock:
+            entry = self.add(kind, title, items=items, details={'pending': True})
+            self._open.add(entry['id'])
+            self._progress_at[entry['id']] = time.time()  # the first progress line after a second, not a zero at once
+            return entry['id']
 
     def progress(self, entry_id: str | None, **values) -> None:
         """How far a begun change got (written at most once a second)."""
@@ -68,8 +71,10 @@ class OperationLog:
     def drop(self, entry_id: str | None) -> None:
         """A begun change that did nothing after all (cancelled before the first file)."""
         if entry_id:
-            self.mark(entry_id, dropped=True)
-            self._open.discard(entry_id)
+            with self._lock:
+                self.mark(entry_id, dropped=True)
+                self._open.discard(entry_id)
+                self._progress_at.pop(entry_id, None)
 
     def mark(self, entry_id: str, **changes) -> None:
         """Record a follow-up (e.g. reverted) as a new line referencing the entry."""
@@ -82,6 +87,7 @@ class OperationLog:
                 self._rotate()
             # a line cut off by a crash must not swallow this one
             prefix = '\n' if self._ends_without_newline() else ''
+            os.makedirs(os.path.dirname(self.path) or '.', exist_ok=True)
             with open(self.path, 'a', encoding='utf-8') as fh:
                 fh.write(prefix + line)
                 fh.flush()
@@ -97,35 +103,34 @@ class OperationLog:
     def _rotate(self):
         try:
             if os.path.getsize(self.path) > MAX_BYTES:
-                old = self.path + '.1'
-                if os.path.exists(old):
-                    os.remove(old)
-                os.replace(self.path, old)
-        except FileNotFoundError:
+                os.replace(self.path, self.path + '.1')
+        except OSError:
             pass
 
     def entries(self, limit: int = 200) -> list[dict]:
         """Newest first, with follow-up marks merged into their entries."""
         rows, marks, replaced = [], {}, set()
-        for path in (self.path + '.1', self.path):
-            try:
-                # errors='replace': a line cut off in the middle of a character is skipped, not fatal
-                with open(path, encoding='utf-8', errors='replace') as fh:
-                    for line in fh:
-                        try:
-                            row = json.loads(line)
-                        except json.JSONDecodeError:
-                            continue
-                        if not isinstance(row, dict):
-                            continue
-                        if 'ref' in row:
-                            marks.setdefault(row['ref'], {}).update({k: v for k, v in row.items() if k != 'ref'})
-                        elif 'id' in row:
-                            rows.append(row)
-                            if row.get('replaces'):
-                                replaced.add(row['replaces'])
-            except FileNotFoundError:
-                continue
+        with self._lock:
+            open_ids = set(self._open)
+            for path in (self.path + '.1', self.path):
+                try:
+                    # errors='replace': a line cut off in the middle of a character is skipped, not fatal
+                    with open(path, encoding='utf-8', errors='replace') as fh:
+                        for line in fh:
+                            try:
+                                row = json.loads(line)
+                            except json.JSONDecodeError:
+                                continue
+                            if not isinstance(row, dict):
+                                continue
+                            if 'ref' in row:
+                                marks.setdefault(row['ref'], {}).update({k: v for k, v in row.items() if k != 'ref'})
+                            elif 'id' in row:
+                                rows.append(row)
+                                if row.get('replaces'):
+                                    replaced.add(row['replaces'])
+                except OSError:
+                    continue
         rows = [r for r in rows if r['id'] not in replaced and not marks.get(r['id'], {}).get('dropped')]
         rows = rows[-limit:][::-1]
         for row in rows:
@@ -133,7 +138,7 @@ class OperationLog:
                 row['followup'] = marks[row['id']]
             if (row.get('details') or {}).get('pending'):
                 # begun but never finished: still running in this PanXu, or PanXu was closed / killed meanwhile
-                row['state'] = 'running' if row['id'] in self._open else 'interrupted'
+                row['state'] = 'running' if row['id'] in open_ids else 'interrupted'
                 got = (row.get('followup') or {}).get('progress') or {}
                 row['freed'] = int(got.get('freed') or 0)
                 row['done_count'] = got.get('done')

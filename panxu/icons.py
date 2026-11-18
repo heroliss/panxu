@@ -76,7 +76,13 @@ def _shortcut_icon(path: str) -> tuple[str, int] | None:
             ole32.CoUninitialize()
 
 
+_GDI = None
+
+
 def _gdi():
+    global _GDI
+    if _GDI is not None:
+        return _GDI
     from ctypes import wintypes
     user32 = ctypes.WinDLL('user32', use_last_error=True)
     gdi32 = ctypes.WinDLL('gdi32', use_last_error=True)
@@ -98,7 +104,8 @@ def _gdi():
     gdi32.SelectObject.restype = wintypes.HGDIOBJ
     gdi32.DeleteObject.argtypes = [wintypes.HGDIOBJ]
     gdi32.DeleteDC.argtypes = [wintypes.HDC]
-    return user32, gdi32
+    _GDI = (user32, gdi32)
+    return _GDI
 
 
 def _render(icon, size: int) -> bytes | None:
@@ -113,12 +120,13 @@ def _render(icon, size: int) -> bytes | None:
                     ('biYPelsPerMeter', ctypes.c_long), ('biClrUsed', wintypes.DWORD), ('biClrImportant', wintypes.DWORD)]
 
     header = BITMAPINFOHEADER(ctypes.sizeof(BITMAPINFOHEADER), size, -size, 1, 32, 0, 0, 0, 0, 0, 0)  # top-down
-    screen = user32.GetDC(None)
-    dc = gdi32.CreateCompatibleDC(screen)
-    bits = ctypes.c_void_p()
-    bitmap = gdi32.CreateDIBSection(dc, ctypes.byref(header), 0, ctypes.byref(bits), None, 0)
-    old = gdi32.SelectObject(dc, bitmap) if bitmap else None
+    screen = dc = bitmap = old = None
     try:
+        screen = user32.GetDC(None)
+        dc = gdi32.CreateCompatibleDC(screen)
+        bits = ctypes.c_void_p()
+        bitmap = gdi32.CreateDIBSection(dc, ctypes.byref(header), 0, ctypes.byref(bits), None, 0)
+        old = gdi32.SelectObject(dc, bitmap) if bitmap else None
         if not bitmap or not bits:
             return None
         frames = []
@@ -130,12 +138,14 @@ def _render(icon, size: int) -> bytes | None:
             frames.append(ctypes.string_at(bits, size * size * 4))
         return encode_png(size, size, unblend(*frames))
     finally:
-        if old:
+        if old and dc:
             gdi32.SelectObject(dc, old)
         if bitmap:
             gdi32.DeleteObject(bitmap)
-        gdi32.DeleteDC(dc)
-        user32.ReleaseDC(None, screen)
+        if dc:
+            gdi32.DeleteDC(dc)
+        if screen:
+            user32.ReleaseDC(None, screen)
         user32.DestroyIcon(icon)
 
 
@@ -156,12 +166,12 @@ def file_icon(path: str, index: int = 0, size: int = SIZE) -> bytes | None:
     return _render(icon, size)
 
 
-TYPE_KEY = re.compile(r'^(folder|\.[a-z0-9_+~-]{1,16})$')
+TYPE_KEY = re.compile(r'^(folder|\.[a-z0-9_+~-]{0,16})$')
 
 
 def type_icon(kind: str, size: int = SIZE) -> bytes | None:
-    """PNG of the icon Explorer shows for a file type ('.pdf') or for 'folder'. Only the name is passed to
-    the shell (SHGFI_USEFILEATTRIBUTES): no file is read, so this also works for files that are gone."""
+    """PNG of the icon Explorer shows for a file type ('.pdf', '.' for no extension) or for 'folder'. Only the
+    name is passed to the shell (SHGFI_USEFILEATTRIBUTES): no file is read, so this also works for files that are gone."""
     if not winapi.IS_WINDOWS or not TYPE_KEY.match(kind or ''):
         return None
     from ctypes import wintypes
@@ -176,7 +186,7 @@ def type_icon(kind: str, size: int = SIZE) -> bytes | None:
     shell32.SHGetFileInfoW.restype = ctypes.c_size_t
     ole32.CoInitializeEx.argtypes = [ctypes.c_void_p, wintypes.DWORD]
     ole32.CoInitializeEx.restype = ctypes.c_long
-    name, attrs = ('folder', 0x10) if kind == 'folder' else ('file' + kind, 0x80)  # DIRECTORY / NORMAL
+    name, attrs = ('folder', 0x10) if kind == 'folder' else ('file' if kind == '.' else 'file' + kind, 0x80)  # DIRECTORY / NORMAL
     com = ole32.CoInitializeEx(None, 0x2)
     try:
         info = SHFILEINFOW()

@@ -51,8 +51,20 @@ def is_foreign_user() -> bool:
     return bool(original and current and key(original) != key(current))
 
 
+def strip_extended(path: str) -> str:
+    """Remove Win32 extended-length prefix (\\\\?\\ or \\\\?\\UNC\\) produced by long_path/realpath."""
+    if not path:
+        return path
+    if path[:8].lower() == '\\\\?\\unc\\':
+        return '\\\\' + path[8:]
+    if path.startswith('\\\\?\\') and len(path) >= 6 and path[5] == ':':
+        return path[4:]
+    return path
+
+
 def _norm(value: str) -> str:
     # POSIX paths only occur in simulations and tests on Linux; keep them usable there
+    value = strip_extended(value)
     return os.path.normpath(value) if value.startswith('/') and os.sep == '/' else ntpath.normpath(value)
 
 
@@ -101,7 +113,7 @@ def native(path: str) -> str:
 
 def key(path: str) -> str:
     """Case-insensitive comparison key for a Windows path."""
-    return ntpath.normcase(ntpath.normpath(path)).rstrip('\\')
+    return ntpath.normcase(ntpath.normpath(strip_extended(path))).rstrip('\\')
 
 
 def is_within(path: str, base: str) -> bool:
@@ -112,12 +124,14 @@ def is_within(path: str, base: str) -> bool:
 def within_any(path: str, keys: set[str]) -> bool:
     """Is ``path`` one of ``keys`` (``key()`` values) or inside one of them? Looks up the path's parent folders,
     so it costs the folder depth, not the number of keys (deleting 20 000 files must not take n x n steps)."""
+    if not keys:
+        return False
     k = key(path)
     while True:
         if k in keys:
             return True
         up = key(ntpath.dirname(k))
-        if up == k or not up:
+        if up == k:
             return False
         k = up
 
@@ -134,18 +148,26 @@ _ANON_ORDER = ('LOCALLOW', 'LOCALAPPDATA', 'APPDATA', 'TEMP', 'USERPROFILE', 'PU
 
 def anonymize(path: str, env: dict[str, str]) -> str:
     """Replace user-identifying bases with %VAR% before sending to a model."""
+    clean = strip_extended(path)
     best = None
     for name in _ANON_ORDER:
         base = env.get(name)
-        if base and is_within(path, base):
+        if base and is_within(clean, base):
             if best is None or len(base) > len(env[best]):
                 best = name
     if best is None:
+        home = env.get('USERPROFILE')
+        users_dir = ntpath.dirname(home) if home else ''
+        if users_dir and not is_drive_root(users_dir) and is_within(clean, users_dir):
+            rel = ntpath.normpath(clean)[len(ntpath.normpath(users_dir)):].lstrip('\\')
+            parts = rel.split('\\', 1)
+            if parts[0] and parts[0].lower() not in ('public', 'default', 'all users'):
+                return '%SystemDrive%\\Users\\<其他账户>' + ('\\' + parts[1] if len(parts) > 1 else '')
         for root, letter in _sim_drives.items():
-            if is_within(path, root):
-                return letter + (ntpath.normpath(path)[len(ntpath.normpath(root)):] or '\\')
-        return path
-    rest = ntpath.normpath(path)[len(ntpath.normpath(env[best])):]
+            if is_within(clean, root):
+                return letter + (ntpath.normpath(clean)[len(ntpath.normpath(root)):] or '\\')
+        return clean
+    rest = ntpath.normpath(clean)[len(ntpath.normpath(env[best])):]
     return '%' + best + '%' + rest
 
 
@@ -212,11 +234,25 @@ def _absolute(path: str) -> bool:
 def _real(path: str) -> str:
     """Resolve 8.3 names, junctions and trailing dots the way Windows will (Windows only)."""
     if not winapi.IS_WINDOWS:
-        return path
+        return strip_extended(path)
     try:
-        return os.path.realpath(path)
+        return strip_extended(os.path.realpath(path))
     except (OSError, ValueError):
-        return path
+        return strip_extended(path)
+
+
+SYSTEM_PROFILES = {
+    'default', 'default user', 'all users', 'public', 'defaultuser0', 'defaultapppool',
+    'classic .net apppool', 'defaultaccount', 'wdagutilityaccount', 'wsiaccount',
+    'localservice', 'networkservice', 'systemprofile', 'containeradministrator', 'containeruser',
+}
+SYSTEM_PROFILE_PREFIXES = ('defaultuser', 'codexsandbox', '.net v', 'mssql$')
+
+
+def is_system_profile(name: str) -> bool:
+    """True for Windows built-in, IIS/SQL service, or sandbox tool accounts under Users."""
+    low = name.strip().rstrip('. ').lower()
+    return low in SYSTEM_PROFILES or low.startswith(SYSTEM_PROFILE_PREFIXES)
 
 
 class ProtectionPolicy:
@@ -274,7 +310,8 @@ class ProtectionPolicy:
             subtrees += [ntpath.join(users, 'Default'), ntpath.join(users, 'All Users')]
         subtrees += app_dirs or []
         self.exact_paths = [p for p in exact if p]
-        self.exact = {key(p) for p in self.exact_paths} | {key(_real(p)) for p in self.exact_paths}
+        self.exact_paths += [_real(p) for p in list(self.exact_paths) if key(_real(p)) != key(p)]
+        self.exact = {key(p) for p in self.exact_paths}
         self.subtrees = subtrees + [_real(p) for p in subtrees if _real(p) != p]
         self.excluded = [p for p in (excluded or []) if p]
         self.excluded += [_real(p) for p in self.excluded if _real(p) != p]
@@ -284,14 +321,24 @@ class ProtectionPolicy:
         """Why ``path`` must not be deleted, or None if allowed."""
         if not isinstance(path, str) or not _absolute(path):
             return '路径无效'
-        if path.startswith(('\\\\?\\', '\\\\.\\')):
+        slash_norm = path.replace('/', '\\')
+        if slash_norm.startswith(('\\\\?\\', '\\\\.\\', '\\??\\')):
             return '不支持这种路径写法'
-        drive = ntpath.splitdrive(ntpath.normpath(path))[0]
+        if ':' in ntpath.splitdrive(slash_norm)[1]:
+            return '不支持文件流路径'
+        drive, rest = ntpath.splitdrive(ntpath.normpath(slash_norm))
         if drive.startswith('\\\\') and drive.rstrip('\\').endswith('$'):
             return '不能通过管理共享删除'
         forms = [path]
+        # Win32 strips trailing dots and spaces when opening path components; check that form too.
+        parts = [p.rstrip('. ') for p in rest.split('\\') if p]
+        if any(not p for p in parts):
+            return '路径无效'
+        trimmed = (drive + '\\' + '\\'.join(parts)) if drive else ('\\' + '\\'.join(parts))
+        if parts and key(trimmed) != key(path):
+            forms.append(trimmed)
         real = _real(path)
-        if key(real) != key(path):
+        if key(real) not in {key(f) for f in forms}:
             forms.append(real)
         if self.allowed_roots and not all(any(is_within(f, r) for r in self.allowed_roots) for f in forms):
             return '演练环境中只能处理演练目录里的文件'
@@ -299,6 +346,50 @@ class ProtectionPolicy:
             reason = self._reason(form)
             if reason:
                 return reason
+        return None
+
+    def _profile_reason(self, normalized: str) -> str | None:
+        """Protect registry hives and system AppData subtrees inside *any* user profile under Users."""
+        home = self.env.get('USERPROFILE', '')
+        own_account = ntpath.basename(home.rstrip('\\/')).lower() if home else ''
+        for users_key in self.users_dirs:
+            k = key(normalized)
+            if not k.startswith(users_key + '\\'):
+                continue
+            rel = [p for p in k[len(users_key) + 1:].split('\\') if p]
+            if len(rel) < 2:
+                continue
+            account = rel[0]
+            if account in ('public',):
+                continue
+            if account != own_account and is_system_profile(account):
+                return '这是系统或工具专用账户目录，不能删除'
+            second = rel[1].rstrip('. ')
+            if len(rel) == 2 and second.startswith(('ntuser.dat', 'ntuser.ini', 'ntuser.pol')):
+                return '这是 Windows 账户注册表文件，不能删除'
+            if second != 'appdata':
+                continue
+            if own_account and account != own_account:
+                return '这是其他账户的应用数据，不能删除'
+            profile_appdata = users_key + '\\' + account + '\\appdata'
+            protected = (
+                profile_appdata + '\\local\\packages',
+                profile_appdata + '\\local\\microsoft\\windowsapps',
+                profile_appdata + '\\local\\microsoft\\credentials',
+                profile_appdata + '\\local\\microsoft\\vault',
+                profile_appdata + '\\local\\microsoft\\windows',
+                profile_appdata + '\\roaming\\microsoft\\protect',
+                profile_appdata + '\\roaming\\microsoft\\crypto',
+                profile_appdata + '\\roaming\\microsoft\\credentials',
+                profile_appdata + '\\roaming\\microsoft\\vault',
+                profile_appdata + '\\roaming\\microsoft\\systemcertificates',
+                profile_appdata + '\\roaming\\microsoft\\windows',
+            )
+            for p in protected:
+                if k == p or k.startswith(p + '\\'):
+                    return '位于受保护的系统目录中'
+                if p.startswith(k + '\\'):
+                    return f'其中包含受保护的文件夹：{p}'
         return None
 
     def _split_root(self, path: str) -> tuple[str, list[str]]:
@@ -334,8 +425,11 @@ class ProtectionPolicy:
         if key(ntpath.dirname(normalized)) in self.users_dirs:
             return '这是一个 Windows 用户的个人文件夹'
         parent = ntpath.dirname(normalized)
-        if key(ntpath.dirname(parent)) in self.users_dirs and ntpath.basename(normalized).lower() in _PROFILE_FOLDERS:
+        if key(ntpath.dirname(parent)) in self.users_dirs and ntpath.basename(normalized).lower().rstrip('. ') in _PROFILE_FOLDERS:
             return '这是 Windows 为每个账户准备的基础文件夹，只能清理其中的内容'
+        prof_reason = self._profile_reason(normalized)
+        if prof_reason:
+            return prof_reason
         # a selection must not contain anything protected
         for base in self.exact_paths + self.subtrees + self.excluded:
             if is_within(base, path) and key(base) != k:

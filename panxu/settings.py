@@ -80,6 +80,8 @@ class Settings:
         self.path = os.path.join(data_dir, 'settings.json')
         self.secret_path = os.path.join(data_dir, 'secrets.json')
         self._lock = threading.Lock()
+        self._secrets: dict | None = None
+        self._decrypted: dict[str, str] = {}
         os.makedirs(data_dir, exist_ok=True)
         raw = self._read(self.path)
         self._data = _merge(DEFAULTS, raw)
@@ -123,6 +125,7 @@ class Settings:
 
     def _write(self, path, value):
         # written next to it, on disk, then swapped in: a crash or power cut leaves the old file or the new one
+        os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
         tmp = path + '.tmp'
         with open(tmp, 'w', encoding='utf-8') as fh:
             json.dump(value, fh, ensure_ascii=False, indent=2)
@@ -142,25 +145,43 @@ class Settings:
             return copy.deepcopy(self._data)
 
     # -- secrets -----------------------------------------------------------
+    def _secret_key(self, name: str) -> str:
+        from . import paths
+        if paths.is_foreign_user():
+            return f'foreign:{os.environ.get("USERNAME", "admin")}:{name}'
+        return name
+
     def set_secret(self, name: str, value: str) -> None:
+        key = self._secret_key(name)
         with self._lock:
-            store = self._read(self.secret_path)
+            store = dict(self._secrets) if self._secrets is not None else self._read(self.secret_path)
             if value:
                 blob, scheme = winapi.protect_secret(value.encode('utf-8'))
-                store[name] = {'scheme': scheme, 'data': base64.b64encode(blob).decode('ascii')}
+                store[key] = {'scheme': scheme, 'data': base64.b64encode(blob).decode('ascii')}
+                self._decrypted[key] = value
             else:
-                store.pop(name, None)
+                store.pop(key, None)
+                self._decrypted.pop(key, None)
+            self._secrets = store
             self._write(self.secret_path, store)
 
     def get_secret(self, name: str) -> str:
+        key = self._secret_key(name)
         with self._lock:
-            row = self._read(self.secret_path).get(name)
-        if not row:
+            if key in self._decrypted:
+                return self._decrypted[key]
+            if self._secrets is None:
+                self._secrets = self._read(self.secret_path)
+            row = self._secrets.get(key)
+        if not row or not isinstance(row, dict):
             return ''
         try:
-            return winapi.unprotect_secret(base64.b64decode(row['data']), row['scheme']).decode('utf-8')
-        except (ValueError, OSError, KeyError):
-            return ''
+            text = winapi.unprotect_secret(base64.b64decode(row['data']), row['scheme']).decode('utf-8')
+        except (ValueError, OSError, KeyError, TypeError):
+            text = ''
+        with self._lock:
+            self._decrypted[key] = text
+        return text
 
     def has_secret(self, name: str) -> bool:
         return bool(self.get_secret(name))
