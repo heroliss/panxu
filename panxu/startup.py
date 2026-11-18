@@ -22,6 +22,7 @@ HKCU, HKLM = 'HKCU', 'HKLM'
 # (source id, hive, Run key or folder template, approval key, label, needs admin)
 SOURCES = [
     ('hkcu_run', HKCU, RUN, APPROVED + r'\Run', '注册表（当前用户）', False),
+    ('hkcu_run32', HKCU, RUN32, APPROVED + r'\Run32', '注册表（当前用户，32 位）', False),
     ('hklm_run', HKLM, RUN, APPROVED + r'\Run', '注册表（所有用户）', True),
     ('hklm_run32', HKLM, RUN32, APPROVED + r'\Run32', '注册表（所有用户，32 位）', True),
     ('user_folder', HKCU, r'%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup', APPROVED + r'\StartupFolder',
@@ -104,11 +105,21 @@ _VAR = re.compile(r'%([^%\s]+)%')
 
 def expand_vars(text: str, env: dict) -> str:
     """Expand %VAR% (case-insensitive) without touching spacing or slashes."""
-    lookup = {k.lower(): v for k, v in os.environ.items()}
+    isolated = winapi.simulation() is not None or paths.is_foreign_user()
+    lookup = {} if isolated else {k.lower(): v for k, v in os.environ.items()}
     lookup.update({k.lower(): v for k, v in env.items()})
     if env.get('SystemRoot'):
         lookup['windir'] = env['SystemRoot']
+    if env.get('ProgramData'):
+        lookup.setdefault('allusersprofile', env['ProgramData'])
+    if env.get('ProgramFiles'):
+        lookup.setdefault('commonprogramfiles', ntpath.join(env['ProgramFiles'], 'Common Files'))
+    if env.get('ProgramFiles(x86)'):
+        lookup.setdefault('commonprogramfiles(x86)', ntpath.join(env['ProgramFiles(x86)'], 'Common Files'))
     return _VAR.sub(lambda m: lookup.get(m.group(1).lower(), m.group(0)), text)
+
+
+_NOSPC_SWITCH = re.compile(r'^([^/]+?\.(?:exe|cmd|bat|com))(?=/)(.*)$', re.I)
 
 
 def split_command(command: str, env: dict | None = None) -> tuple[str, str]:
@@ -119,6 +130,9 @@ def split_command(command: str, env: dict | None = None) -> tuple[str, str]:
         if end > 0:
             return text[1:end], text[end + 1:].strip()
         return text.strip('"'), ''
+    m = _NOSPC_SWITCH.match(text)
+    if m and (os.sep == '\\' or not text.startswith('/')):
+        return m.group(1).strip(), m.group(2).strip()
     parts = text.split(' ')
     exts = ('.exe', '.cmd', '.bat', '.com', '.vbs', '.lnk', '.scr')
     for i in range(len(parts), 0, -1):  # longest existing path wins ("C:\Program Files\X\x.exe -a")
@@ -155,13 +169,18 @@ def parse_lnk(data: bytes) -> dict:
             size, header, info_flags, _vol, base_off, _net, suffix_off = struct.unpack_from('<7I', data, info)
             target = ''
             if info_flags & 0x1:
+                suffix = ''
                 if header >= 0x24:
                     base_u = struct.unpack_from('<I', data, info + 28)[0]
                     if base_u:
                         target = _wstr(data, info + base_u)
+                    suffix_u = struct.unpack_from('<I', data, info + 32)[0]
+                    if suffix_u:
+                        suffix = _wstr(data, info + suffix_u)
                 if not target:
                     target = _astr(data, info + base_off)
-                suffix = _astr(data, info + suffix_off) if suffix_off else ''
+                if not suffix and suffix_off:
+                    suffix = _astr(data, info + suffix_off)
                 if suffix:
                     target = ntpath.join(target, suffix)
             out['target'] = target
@@ -174,6 +193,15 @@ def parse_lnk(data: bytes) -> dict:
                 raw = data[pos:pos + count * width]
                 pos += count * width
                 out[key] = raw.decode('utf-16-le' if unicode else 'mbcs' if winapi.IS_WINDOWS else 'latin-1', 'replace')
+        # ExtraData blocks: EnvironmentVariableDataBlock (0xA0000001) carries %windir%\... targets when LinkInfo is absent.
+        while not out['target'] and pos + 8 <= len(data):
+            block_size, sig = struct.unpack_from('<II', data, pos)
+            if block_size < 4:
+                break
+            if sig == 0xA0000001 and block_size >= 0x314 and pos + block_size <= len(data):
+                out['target'] = _wstr(data, pos + 268) or _astr(data, pos + 8)
+                break
+            pos += block_size
     except (struct.error, IndexError):
         pass
     return out
@@ -234,7 +262,8 @@ class StartupManager:
                         try:
                             with open(full, 'rb') as fh:
                                 lnk = parse_lnk(fh.read(65536))
-                            target, args = lnk['target'] or full, lnk.get('arguments', '')
+                            raw_target = expand_vars(lnk['target'], self.env) if lnk['target'] else ''
+                            target, args = raw_target or full, lnk.get('arguments', '')
                         except OSError:
                             pass
                     items.append(self._item(source_id, label, needs_admin, name, f'"{target}" {args}'.strip(),

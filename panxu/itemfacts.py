@@ -14,6 +14,8 @@ import re
 from . import winapi
 
 _PUBLISHER = re.compile(r'<PublisherDisplayName>([^<]{1,120})</PublisherDisplayName>', re.I)
+_GENERIC_FOLDERS = {'program files', 'program files (x86)', 'common files', 'programdata', 'appdata', 'local',
+                    'roaming', 'programs', 'tools', 'software', 'games', 'apps', 'application', 'bin', 'system32'}
 
 
 def app_root(exe: str) -> str:
@@ -21,13 +23,20 @@ def app_root(exe: str) -> str:
     otherwise the program's own folder."""
     if not exe:
         return ''
+    sep = '/' if exe.startswith('/') and '\\' not in exe else '\\'
     parts = re.split(r'[\\/]', exe)
     low = [p.lower() for p in parts]
     if 'windowsapps' in low:
         i = low.index('windowsapps')
         if i + 1 < len(parts) - 1:
-            return '\\'.join(parts[:i + 2])
-    return ntpath.dirname(exe)
+            prefix = '/' if exe.startswith('/') and '\\' not in exe else ''
+            return prefix + sep.join([p for p in parts[:i + 2] if p])
+    folder = os.path.dirname(exe) if sep == '/' else ntpath.dirname(exe)
+    if ntpath.basename(folder).lower() in ('bin', 'service', 'services', 'daemon', 'x64', 'x86'):
+        parent = os.path.dirname(folder) if sep == '/' else ntpath.dirname(folder)
+        if parent and ntpath.basename(parent.rstrip('\\/')).lower() not in _GENERIC_FOLDERS:
+            folder = parent
+    return folder
 
 
 def package_name(root: str) -> str:
@@ -47,7 +56,8 @@ def package_publisher(root: str) -> str:
             m = _PUBLISHER.search(fh.read(200_000))
     except OSError:
         return ''
-    return m.group(1).strip() if m else ''
+    val = m.group(1).strip() if m else ''
+    return '' if val.lower().startswith('ms-resource:') else val
 
 
 def _key(p: str) -> str:
@@ -57,6 +67,9 @@ def _key(p: str) -> str:
 def _app_open(exe: str, root: str, running: set[str]) -> bool:
     """Another program of the same app (not this one) is running: the user has the app open."""
     if not root:
+        return False
+    leaf = ntpath.basename(root.rstrip('\\/')).lower()
+    if not leaf or leaf.endswith(':') or leaf in _GENERIC_FOLDERS:
         return False
     mine, base = _key(exe), _key(root) + os.sep
     return any(p != mine and p.startswith(base) for p in running)

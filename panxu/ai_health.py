@@ -45,6 +45,7 @@ class AIHealth:
         signature, ai, _, missing = config
         if signature != self._signature:
             self._signature = signature
+            self._result = None
             self._state = {'state': 'unconfigured' if missing else 'untested', 'checked_at': None,
                            'message': '请填写 ' + '、'.join(missing) if missing else '当前模型连接尚未验证',
                            'help': '基础扫描仍可使用；配置并测试模型后，才能使用 AI 分析和问 AI。',
@@ -79,8 +80,13 @@ class AIHealth:
                   429: ('模型服务限流或额度已用完', '稍后重新检测，或检查服务商的额度限制。')}
         if code in errors:
             return errors[code]
-        if '超时' in str(exc) or isinstance(exc, TimeoutError):
+        text = str(exc)
+        if '超时' in text or isinstance(exc, TimeoutError):
             return '模型连接超时', '检查网络与服务地址，稍后重新检测；基础扫描仍可使用。'
+        if '无效字符' in text:
+            return 'API Key 包含无效字符', '在设置中重新粘贴 API Key（去除多余空格或全角符号），再测试连接。'
+        if '截断' in text or '深度思考' in text:
+            return '模型回答被截断', '思考内容过长导致未输出答案；可在设置中关闭或调低「深度思考」后重试。'
         return '模型暂时无法使用', '请检查网络、服务地址、模型名称和 API Key，再测试连接。'
 
     def record(self, signature, error=None):
@@ -141,6 +147,9 @@ class AIHealth:
         health, signature = self, signature or self.configuration()[0]
 
         class ObservedClient:
+            def __setattr__(self, name, value):
+                setattr(client, name, value)
+
             def __getattr__(self, name):
                 attr = getattr(client, name)
                 if name not in ('chat', 'complete', 'complete_json'):
@@ -148,8 +157,13 @@ class AIHealth:
                 def call(*args, **kwargs):
                     try:
                         result = attr(*args, **kwargs)
-                    except (AIError, ValueError) as exc:
-                        health.record(signature, exc)
+                    except AIError as exc:
+                        if '没有要发送的问题' not in str(exc):
+                            health.record(signature, exc)
+                        raise
+                    except ValueError:
+                        # A HTTP 200 reply whose JSON could not be parsed means the connection itself worked.
+                        health.record(signature)
                         raise
                     health.record(signature)
                     return result

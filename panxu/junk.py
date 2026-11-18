@@ -72,31 +72,17 @@ def _chromium(rule_id, name, user_data, exe, default=True):
                 targets, default=default, processes=(exe,))
 
 
-def _electron_cache(rule_id, name, folder, exe):
+CHROMIUM_BLOCK_CACHES = ('GPUCache', 'DawnCache', 'DawnGraphiteCache', 'DawnWebGPUCache', 'GrShaderCache',
+                         'ShaderCache', 'GraphiteDawnCache')
+_ELECTRON_CACHE_DIRS = ('Cache', 'Code Cache') + CHROMIUM_BLOCK_CACHES
+
+
+def _electron_cache(rule_id, name, folder, exe, extra_targets=()):
     # Only Chromium's disposable rendering caches, never User/History, IndexedDB,
     # Local Storage, Service Worker, vaults or app-specific data in the same profile.
     return Rule(rule_id, name, 'app', f'{name} 的网页、代码和图形缓存，关闭程序后可清理，下次启动会重新生成。',
-                tuple(Target(f'%APPDATA%\\{folder}\\{d}') for d in ('Cache', 'Code Cache', 'GPUCache')),
+                tuple(Target(f'%APPDATA%\\{folder}\\{d}') for d in _ELECTRON_CACHE_DIRS) + tuple(extra_targets),
                 processes=(exe,))
-
-
-# ---------------------------------------------------------------------------
-# Caches found by what they are instead of where one product keeps them.
-#
-# Every Electron app, WebView2 host and CEF client (Steam, bilibili, Cursor, Unity Hub ...) keeps a Chromium
-# profile in its app data, with Chromium's own caches in it under fixed names and in fixed on-disk formats. A
-# rule per product never keeps up: one PC had fifty of them. 「Any folder named Cache」 would be a guess, so a
-# location is taken only when BOTH hold:
-#   1. its parent is a Chromium profile (Local State / Preferences, or its Network + storage folders), and
-#   2. the folder itself has the cache's own layout -- the HTTP cache's Cache_Data, the block-file cache's
-#      index + data_N, the code cache's js / wasm stores.
-# Only those files are taken: Cookies, Local Storage, IndexedDB, Service Worker, extensions and whatever the
-# app itself keeps next to them are never listed. Names per https://www.electronjs.org/docs/latest/api/app and
-# Chromium's net/disk_cache (blockfile: index, data_0..3, f_xxxxxx; simple: index-dir + hashed entries).
-# ---------------------------------------------------------------------------
-
-CHROMIUM_BLOCK_CACHES = ('GPUCache', 'DawnCache', 'DawnGraphiteCache', 'DawnWebGPUCache', 'GrShaderCache',
-                         'ShaderCache', 'GraphiteDawnCache')
 BLOCKFILE_PATTERN = 'index|data_?|f_??????'
 _CODE_CACHE_STORES = ('js', 'wasm', 'webui_js')
 _PROFILE_FILES = {'local state', 'preferences'}
@@ -107,7 +93,7 @@ _NO_DESCENT = {'cache', 'code cache', 'indexeddb', 'local storage', 'session sto
                'logs', 'databases', 'file system', 'shared_proto_db'} | {n.lower() for n in CHROMIUM_BLOCK_CACHES}
 _VENDOR_FOLDERS = {'microsoft', 'google', 'tencent', 'netease', 'baidu', 'alibaba', 'bytedance', 'adobe',
                    'jetbrains', 'mozilla', 'yodao', 'kingsoft'}
-FINDER_DEPTH = 4          # below the app-data folder: App \ [Vendor \] [User Data | EBWebView | Partitions] \ profile
+FINDER_DEPTH = 5          # below the app-data folder: App \ [Vendor \] [User Data | EBWebView | Partitions] \ profile
 FINDER_MAX_DIRS = 30000
 
 
@@ -260,37 +246,62 @@ RULES: list[Rule] = [
     _chromium('chrome_canary', 'Google Chrome Canary', '%LOCALAPPDATA%\\Google\\Chrome SxS\\User Data', 'chrome.exe'),
     _chromium('edge', 'Microsoft Edge', '%LOCALAPPDATA%\\Microsoft\\Edge\\User Data', 'msedge.exe'),
     _chromium('brave', 'Brave', '%LOCALAPPDATA%\\BraveSoftware\\Brave-Browser\\User Data', 'brave.exe'),
+    _chromium('vivaldi', 'Vivaldi', '%LOCALAPPDATA%\\Vivaldi\\User Data', 'vivaldi.exe'),
     _chromium('chrome360', '360 极速浏览器', '%LOCALAPPDATA%\\360Chrome\\Chrome\\User Data', '360chrome.exe'),
     _chromium('se360', '360 安全浏览器', '%APPDATA%\\360se6\\User Data', '360se.exe'),
     _chromium('qqbrowser', 'QQ 浏览器', '%LOCALAPPDATA%\\Tencent\\QQBrowser\\User Data', 'qqbrowser.exe'),
-    Rule('firefox', 'Firefox', 'browser', 'Firefox 的网页缓存。不影响书签、密码和历史记录。',
+    Rule('opera', 'Opera / Opera GX', 'browser',
+         'Opera 与 Opera GX 的网页、代码和图形缓存。不影响书签、密码、历史记录和登录状态。',
+         (Target('%LOCALAPPDATA%\\Opera Software\\Opera Stable\\Cache'),
+          Target('%LOCALAPPDATA%\\Opera Software\\Opera Stable\\System Cache'),
+          Target('%LOCALAPPDATA%\\Opera Software\\Opera GX Stable\\Cache'),
+          Target('%LOCALAPPDATA%\\Opera Software\\Opera GX Stable\\System Cache'))
+         + tuple(Target(f'%APPDATA%\\Opera Software\\{ed}\\{d}')
+                 for ed in ('Opera Stable', 'Opera GX Stable') for d in ('Code Cache',) + CHROMIUM_BLOCK_CACHES),
+         processes=('opera.exe',)),
+    Rule('firefox', 'Firefox', 'browser', 'Firefox 的网页与图形缓存。不影响书签、密码和历史记录。',
          (Target('%LOCALAPPDATA%\\Mozilla\\Firefox\\Profiles\\*\\cache2'),
           Target('%LOCALAPPDATA%\\Mozilla\\Firefox\\Profiles\\*\\startupCache'),
+          Target('%LOCALAPPDATA%\\Mozilla\\Firefox\\Profiles\\*\\shader-cache'),
           Target('%LOCALAPPDATA%\\Mozilla\\Firefox\\Profiles\\*\\thumbnails')),
          processes=('firefox.exe',)),
 
     # -- apps -----------------------------------------------------------------
     _electron_cache('vscode_insiders', 'VS Code Insiders', 'Code - Insiders', 'code - insiders.exe'),
     _electron_cache('obsidian', 'Obsidian 界面缓存', 'obsidian', 'obsidian.exe'),
+    _electron_cache('notion', 'Notion 界面缓存', 'Notion', 'notion.exe'),
     Rule('vscode', 'Visual Studio Code', 'app', 'VS Code 的界面缓存、扩展安装包缓存和旧日志。不影响设置和扩展。',
-         (Target('%APPDATA%\\Code\\Cache'), Target('%APPDATA%\\Code\\CachedData'),
-          Target('%APPDATA%\\Code\\Code Cache'), Target('%APPDATA%\\Code\\GPUCache'),
-          Target('%APPDATA%\\Code\\CachedExtensionVSIXs'), Target('%APPDATA%\\Code\\logs', min_age_hours=7 * 24)),
+         tuple(Target(f'%APPDATA%\\Code\\{d}') for d in _ELECTRON_CACHE_DIRS)
+         + (Target('%APPDATA%\\Code\\CachedData'), Target('%APPDATA%\\Code\\CachedExtensionVSIXs'),
+            Target('%APPDATA%\\Code\\logs', min_age_hours=7 * 24)),
          processes=('code.exe',)),
+    Rule('cursor', 'Cursor', 'app', 'Cursor 的界面缓存、V8 字节码缓存、扩展安装包缓存和旧日志。不影响设置、对话和扩展。',
+         tuple(Target(f'%APPDATA%\\Cursor\\{d}') for d in _ELECTRON_CACHE_DIRS)
+         + (Target('%APPDATA%\\Cursor\\CachedData'), Target('%APPDATA%\\Cursor\\CachedExtensionVSIXs'),
+            Target('%APPDATA%\\Cursor\\logs', min_age_hours=7 * 24)),
+         processes=('cursor.exe',)),
+    Rule('windsurf', 'Windsurf', 'app', 'Windsurf 的界面缓存、字节码缓存、扩展安装包缓存和旧日志。不影响设置、对话和扩展。',
+         tuple(Target(f'%APPDATA%\\Windsurf\\{d}') for d in _ELECTRON_CACHE_DIRS)
+         + (Target('%APPDATA%\\Windsurf\\CachedData'), Target('%APPDATA%\\Windsurf\\CachedExtensionVSIXs'),
+            Target('%APPDATA%\\Windsurf\\logs', min_age_hours=7 * 24)),
+         processes=('windsurf.exe',)),
+    Rule('trae', 'Trae', 'app', 'Trae 的界面缓存、字节码缓存、扩展安装包缓存和旧日志。不影响设置、对话和扩展。',
+         tuple(Target(f'%APPDATA%\\Trae\\{d}') for d in _ELECTRON_CACHE_DIRS)
+         + (Target('%APPDATA%\\Trae\\CachedData'), Target('%APPDATA%\\Trae\\CachedExtensionVSIXs'),
+            Target('%APPDATA%\\Trae\\logs', min_age_hours=7 * 24)),
+         processes=('trae.exe',)),
     Rule('discord', 'Discord', 'app', 'Discord 的图片和网页缓存。',
-         (Target('%APPDATA%\\discord\\Cache'), Target('%APPDATA%\\discord\\Code Cache'),
-          Target('%APPDATA%\\discord\\GPUCache')), processes=('discord.exe',)),
+         tuple(Target(f'%APPDATA%\\discord\\{d}') for d in _ELECTRON_CACHE_DIRS), processes=('discord.exe',)),
     Rule('teams_classic', 'Microsoft Teams（经典版）', 'app', '经典版 Teams 的缓存。',
-         (Target('%APPDATA%\\Microsoft\\Teams\\Cache'), Target('%APPDATA%\\Microsoft\\Teams\\Code Cache'),
-          Target('%APPDATA%\\Microsoft\\Teams\\GPUCache'), Target('%APPDATA%\\Microsoft\\Teams\\tmp')),
+         tuple(Target(f'%APPDATA%\\Microsoft\\Teams\\{d}') for d in _ELECTRON_CACHE_DIRS)
+         + (Target('%APPDATA%\\Microsoft\\Teams\\tmp'),),
          processes=('teams.exe',)),
     Rule('slack', 'Slack', 'app', 'Slack 的图片和网页缓存。不影响聊天记录和登录状态。',
-         (Target('%APPDATA%\\Slack\\Cache'), Target('%APPDATA%\\Slack\\Code Cache'),
-          Target('%APPDATA%\\Slack\\GPUCache')), processes=('slack.exe',)),
+         tuple(Target(f'%APPDATA%\\Slack\\{d}') for d in _ELECTRON_CACHE_DIRS), processes=('slack.exe',)),
     Rule('teams_new', 'Microsoft Teams（新版）界面缓存', 'app',
          '新版 Teams 内嵌浏览器的网页、代码和图形缓存。下次启动会重新生成，不清空应用设置或账号资料。',
          tuple(Target('%LOCALAPPDATA%\\Packages\\MSTeams_8wekyb3d8bbwe\\LocalCache\\Microsoft\\MSTeams\\EBWebView\\Default\\' + name)
-               for name in ('Cache', 'Code Cache', 'GPUCache')), processes=('ms-teams.exe',)),
+               for name in _ELECTRON_CACHE_DIRS), processes=('ms-teams.exe',)),
     Rule('app_web_cache', '应用界面缓存（Electron / 内嵌浏览器）', 'app',
          '哔哩哔哩、Cursor、Unity Hub、Steam 等用 Chromium 内核做界面的程序的网页、代码和图形缓存，下次启动会重新生成。只取缓存本身，登录状态和设置不动；正在运行的程序整个跳过。',
          finder='chromium'),
@@ -301,7 +312,8 @@ RULES: list[Rule] = [
     Rule('shader_cache', '显卡着色器缓存', 'app',
          'DirectX 和显卡驱动编译的着色器缓存。删除后游戏首次运行会重新编译，可能短暂卡顿。',
          (Target('%LOCALAPPDATA%\\D3DSCache'), Target('%LOCALAPPDATA%\\NVIDIA\\DXCache'),
-          Target('%LOCALAPPDATA%\\NVIDIA\\GLCache'), Target('%LOCALAPPDATA%\\NVIDIA Corporation\\NV_Cache'), Target('%LOCALAPPDATA%\\AMD\\DxCache'),
+          Target('%LOCALAPPDATA%\\NVIDIA\\GLCache'), Target('%LOCALAPPDATA%\\NVIDIA\\OptiXCache'),
+          Target('%LOCALAPPDATA%\\NVIDIA Corporation\\NV_Cache'), Target('%LOCALAPPDATA%\\AMD\\DxCache'),
           Target('%LOCALAPPDATA%\\AMD\\DxcCache'), Target('%LOCALAPPDATA%\\AMD\\GLCache'),
           Target('%LOCALAPPDATA%\\AMD\\VkCache'), Target('%LOCALLOW%\\Intel\\ShaderCache')),
          default=False),
@@ -317,6 +329,10 @@ RULES: list[Rule] = [
     Rule('yarn', 'Yarn 缓存', 'dev', 'Yarn 包下载缓存。', (Target('%LOCALAPPDATA%\\Yarn\\Cache'),), default=False),
     Rule('pnpm', 'pnpm 元数据缓存', 'dev', 'pnpm 查询包信息时的缓存（不含已安装包共用的 store）。删除后再次安装时重新获取。',
          (Target('%LOCALAPPDATA%\\pnpm-cache'),), default=False),
+    Rule('bun', 'Bun 包下载缓存', 'dev', 'Bun 下载的包归档缓存（不含全局安装的包与命令）。删除后安装依赖时会重新下载。',
+         (Target('%USERPROFILE%\\.bun\\install\\cache'),), default=False, processes=('bun.exe',)),
+    Rule('deno', 'Deno 缓存', 'dev', 'Deno 下载的远程模块与编译生成缓存。删除后运行脚本时会按需重新获取与编译。',
+         (Target('%LOCALAPPDATA%\\deno\\deps'), Target('%LOCALAPPDATA%\\deno\\gen')), default=False, processes=('deno.exe',)),
     Rule('browser_downloads', '自动化测试下载的浏览器', 'dev',
          'Puppeteer 和 Playwright 为自动化测试下载的整套浏览器，常有几百 MB 到几 GB。删除后，下次运行相应的安装命令会重新下载。',
          (Target('%USERPROFILE%\\.cache\\puppeteer'), Target('%LOCALAPPDATA%\\ms-playwright')), default=False),
@@ -326,6 +342,24 @@ RULES: list[Rule] = [
     Rule('pip', 'pip 缓存', 'dev', 'Python 包下载缓存。', (Target('%LOCALAPPDATA%\\pip\\cache'),), default=False),
     Rule('uv', 'uv 缓存', 'dev', 'Python 包管理器 uv 的下载与构建缓存。删除后再次安装依赖时会重新下载。',
          (Target('%LOCALAPPDATA%\\uv\\cache'),), default=False, processes=('uv.exe',)),
+    Rule('poetry', 'Poetry 缓存', 'dev',
+         'Python Poetry 下载的包索引与 wheel 缓存（不含虚拟环境目录 virtualenvs）。删除后安装依赖时会重新下载。',
+         (Target('%LOCALAPPDATA%\\pypoetry\\Cache\\cache'), Target('%LOCALAPPDATA%\\pypoetry\\Cache\\artifacts')),
+         default=False, processes=('poetry.exe',)),
+    Rule('conda_pkgs', 'Conda 包压缩包缓存', 'dev',
+         'Conda 下载的 .conda / .tar.bz2 压缩包归档（不含已解压并链接到环境中的包目录），效果同 conda clean --tarballs。',
+         (Target('%USERPROFILE%\\.conda\\pkgs', pattern='*.conda|*.tar.bz2', recursive=False),
+          Target('%LOCALAPPDATA%\\conda\\conda\\pkgs', pattern='*.conda|*.tar.bz2', recursive=False)),
+         default=False, processes=('conda.exe',)),
+    Rule('composer', 'Composer 缓存', 'dev', 'PHP Composer 包与元数据下载缓存。删除后安装依赖时会重新下载。',
+         (Target('%LOCALAPPDATA%\\Composer\\files'), Target('%LOCALAPPDATA%\\Composer\\repo')), default=False),
+    Rule('unity_gi_cache', 'Unity 全局光照缓存', 'dev',
+         'Unity 编辑器生成的全局光照（GI）烘焙缓存。删除后打开对应三维场景时会重新计算光照。',
+         (Target('%LOCALLOW%\\Unity\\Caches\\GiCache'),), default=False, processes=('unity.exe',)),
+    Rule('unreal_ddc', 'Unreal Engine 派生数据缓存', 'dev',
+         '虚幻引擎编译生成的着色器与纹理派生数据缓存（DerivedDataCache）。删除后打开工程时会重新构建，耗时较长。',
+         (Target('%LOCALAPPDATA%\\UnrealEngine\\Common\\DerivedDataCache'),), default=False,
+         processes=('unrealeditor.exe', 'ue4editor.exe')),
     Rule('electron_dl', 'Electron 下载缓存', 'dev', 'electron 与 electron-builder 下载的运行时压缩包，重新打包时会再下载。',
          (Target('%LOCALAPPDATA%\\electron\\Cache'), Target('%LOCALAPPDATA%\\electron-builder\\Cache')), default=False),
     Rule('jetbrains_logs', 'JetBrains IDE 日志', 'dev', 'IntelliJ IDEA、PyCharm 等 IDE 的旧日志，只删除 7 天前的。',
@@ -337,8 +371,8 @@ RULES: list[Rule] = [
     Rule('maven', 'Maven 本地仓库', 'dev', 'Maven 依赖下载缓存。删除后构建时会重新下载。',
          (Target('%USERPROFILE%\\.m2\\repository'),), default=False),
     Rule('go_build', 'Go 编译缓存', 'dev', 'Go 的编译缓存。', (Target('%LOCALAPPDATA%\\go-build'),), default=False),
-    Rule('cargo', 'Cargo 下载缓存', 'dev', 'Rust crate 压缩包缓存。',
-         (Target('%USERPROFILE%\\.cargo\\registry\\cache'),), default=False),
+    Rule('cargo', 'Cargo 下载缓存', 'dev', 'Rust crate 压缩包与解压源码缓存，构建时会按需重新生成。',
+         (Target('%USERPROFILE%\\.cargo\\registry\\cache'), Target('%USERPROFILE%\\.cargo\\registry\\src')), default=False),
 
     # -- advanced -------------------------------------------------------------
     Rule('windows_old', '旧版 Windows 安装', 'advanced',
@@ -398,45 +432,86 @@ def unsafe_root_reason(root: str, env: dict, temp_like: bool = False) -> str | N
     return None
 
 
-def resolve_target(target: Target, env: dict) -> list[str]:
+def _has_reparse_ancestor(path: str) -> bool:
+    """True when ``path`` or any of its parent folders is a junction or symbolic link."""
+    cur = os.path.abspath(path)
+    while True:
+        if fsops.path_is_link(cur):
+            return True
+        up = os.path.dirname(cur)
+        if up == cur or not up:
+            return False
+        cur = up
+
+
+def _real_env(env: dict) -> dict:
+    if not winapi.IS_WINDOWS:
+        return env
+    out = {}
+    for k, v in env.items():
+        if v and os.path.exists(v) and not _has_reparse_ancestor(v):
+            try:
+                out[k] = paths.strip_extended(os.path.realpath(v))
+                continue
+            except OSError:
+                pass
+        out[k] = v
+    return out
+
+
+def resolve_target(target: Target, env: dict, _renv: dict | None = None) -> list[str]:
     expanded = paths.expand(target.path, env)
     if expanded is None:
         return []
     local = native(expanded)
     if '*' in local or '?' in local:
-        found = sorted(p for p in glob.glob(local) if os.path.isdir(p) and not fsops.path_is_link(p))
+        found = sorted(p for p in glob.glob(local) if os.path.isdir(p) and not _has_reparse_ancestor(p))
     elif target.single_file:
-        found = [local] if os.path.isfile(local) else []
+        found = [local] if os.path.isfile(local) and not _has_reparse_ancestor(local) else []
     else:
-        found = [local] if os.path.isdir(local) and not fsops.path_is_link(local) else []
+        found = [local] if os.path.isdir(local) and not _has_reparse_ancestor(local) else []
+    if not found:
+        return []
     temp_like = target.path.upper().startswith('%TEMP%')
-    return [p for p in found if unsafe_root_reason(p, env, temp_like) is None
-            and paths.key(os.path.realpath(p)) == paths.key(p)]
+    renv = _renv if _renv is not None else _real_env(env)
+    out = []
+    for p in found:
+        real = paths.strip_extended(os.path.realpath(p)) if winapi.IS_WINDOWS else p
+        if unsafe_root_reason(real, renv, temp_like) is None:
+            out.append(real if paths.key(real) != paths.key(p) else p)
+    return out
 
 
-def rule_entries(rule: Rule, env: dict) -> list[tuple[Target, str, str]]:
+def rule_entries(rule: Rule, env: dict, _renv: dict | None = None, _fixed_keys: set[str] | None = None) -> list[tuple[Target, str, str]]:
     """Everything a rule covers right now: (what to take, where, app name for found locations or '').
 
     Found locations go through the same runtime guard as fixed ones, must lie at least two levels inside the
     user's app data, and never overlap a location a rule with a fixed path already covers (browsers, VS Code)."""
-    entries = [(target, root, '') for target in rule.targets for root in resolve_target(target, env)]
+    renv = _renv if _renv is not None else _real_env(env)
+    entries = [(target, root, '') for target in rule.targets for root in resolve_target(target, env, renv)]
     finder = FINDERS.get(rule.finder)
     if finder is None:
         return entries
-    fixed = set()
-    for other in RULES:
-        if other is not rule:
-            for target in other.targets:
-                fixed.update(paths.key(root) for root in resolve_target(target, env))
-    bases = [native(env[k]) for k in ('APPDATA', 'LOCALAPPDATA') if env.get(k)]
+    if _fixed_keys is not None:
+        fixed = _fixed_keys
+    else:
+        fixed = set()
+        for other in RULES:
+            if other is not rule:
+                for target in other.targets:
+                    fixed.update(paths.key(root) for root in resolve_target(target, env, renv))
+    bases = [native(renv[k]) for k in ('APPDATA', 'LOCALAPPDATA') if renv.get(k)]
     for target, root, app in finder(env):
-        base = next((b for b in bases if paths.is_within(root, b)), None)
-        if base is None or len(os.path.relpath(root, base).split(os.sep)) < 2:
+        if _has_reparse_ancestor(root):
             continue
-        if paths.within_any(root, fixed) or any(k.startswith(paths.key(root) + '\\') for k in fixed):
+        real = paths.strip_extended(os.path.realpath(root)) if winapi.IS_WINDOWS else root
+        base = next((b for b in bases if paths.is_within(real, b)), None)
+        if base is None or len(os.path.relpath(real, base).split(os.sep)) < 2:
             continue
-        if unsafe_root_reason(root, env) is None and paths.key(os.path.realpath(root)) == paths.key(root):
-            entries.append((target, root, app))
+        if paths.within_any(real, fixed) or any(k.startswith(paths.key(real) + '\\') for k in fixed):
+            continue
+        if unsafe_root_reason(real, renv) is None:
+            entries.append((target, real if paths.key(real) != paths.key(root) else root, app))
     return entries
 
 
@@ -570,12 +645,22 @@ class JunkEngine:
         for app, roots in by_app.items():
             fsops.check_cancel(cancel)
             sentinels = []
+            seen_profiles = set()
             for root in roots:
                 for rel in ('index', 'data_0', os.path.join('index-dir', 'the-real-index')):
                     path = os.path.join(root, rel)
                     if os.path.isfile(path):
                         sentinels.append(path)
-                        break
+                base_name = os.path.basename(root).lower()
+                profile = os.path.dirname(os.path.dirname(root)) if base_name in ('cache_data', *_CODE_CACHE_STORES) else os.path.dirname(root)
+                pkey = paths.key(profile)
+                if pkey not in seen_profiles:
+                    seen_profiles.add(pkey)
+                    for rel in (os.path.join('Network', 'Cookies'), os.path.join('Local Storage', 'leveldb', 'LOCK'),
+                                os.path.join('Session Storage', 'LOCK')):
+                        p = os.path.join(profile, rel)
+                        if os.path.isfile(p):
+                            sentinels.append(p)
             names = list(winapi.programs_using(sentinels) or []) if sentinels else []
             plain = ''.join(c for c in app.split('\\')[-1].lower() if c.isalnum())
             if len(plain) >= 4:
@@ -593,12 +678,21 @@ class JunkEngine:
     def scan(self, rule_ids=None, cancel=None, progress=None) -> list[dict]:
         rules = [RULES_BY_ID[i] for i in rule_ids] if rule_ids else RULES
         running = self.processes()
+        renv = _real_env(self.env)
+        skip = self._skip()
+        fixed_keys = None
+        if any(r.finder for r in rules):
+            fixed_keys = set()
+            for other in RULES:
+                if not other.finder:
+                    for target in other.targets:
+                        fixed_keys.update(paths.key(root) for root in resolve_target(target, self.env, renv))
         results = []
         for index, rule in enumerate(rules):
             fsops.check_cancel(cancel)
             if progress:
                 progress(index, len(rules), rule.name)
-            result = self._scan_rule(rule, cancel)
+            result = self._scan_rule(rule, cancel, _renv=renv, _fixed_keys=fixed_keys, _skip=skip)
             result.running = [p for p in rule.processes if p.lower() in running]
             results.append(result)
             with self._lock:
@@ -618,7 +712,7 @@ class JunkEngine:
                          in sorted(result.apps.items(), key=lambda kv: -kv[1][0])[:40]],
                 'available': not result.scope_blocked and (result.size is None or result.size > 0 or result.count > 0 or rule.mode in ('command',))}
 
-    def _scan_rule(self, rule: Rule, cancel) -> RuleScan:
+    def _scan_rule(self, rule: Rule, cancel, _renv=None, _fixed_keys=None, _skip=None) -> RuleScan:
         result = RuleScan(rule.id)
         if self._command_excluded(rule):
             result.error = '系统清理工具不能只跳过部分文件，本项与排除目录重叠，已跳过'
@@ -633,7 +727,7 @@ class JunkEngine:
         if rule.admin and not self.admin:
             result.needs_admin = True
         now = time.time()
-        skip = self._skip()
+        skip = _skip or self._skip()
 
         def unreadable(path, exc):
             result.unreadable += 1
@@ -643,43 +737,59 @@ class JunkEngine:
         for target in rule.targets:
             if target.admin and not self.admin:
                 result.needs_admin = True
-        for target, root, app in rule_entries(rule, self.env):
+        for target, root, app in rule_entries(rule, self.env, _renv=_renv, _fixed_keys=_fixed_keys):
+            if target.admin and not self.admin:
+                result.needs_admin = True
+                continue
             if skip(root):
                 continue
             result.locations.append(root)
             before = (result.size, result.count)
+            min_age = target.min_age_hours * HOUR
             if target.single_file:
                 try:
                     st = os.lstat(fsops.long_path(root))
                     if fsops.st_is_link(st) or getattr(st, 'st_file_attributes', 0) & winapi.CLOUD_ATTRIBUTES:
                         continue
-                    result.size += fsops.file_size(root, st)
+                    age = now - fsops.age_time(st)
+                    if min_age and age < min_age:
+                        continue
+                    key = paths.key(root)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    used = fsops.file_size(root, st)
+                    result.size += used
                     result.logical_size += st.st_size
                     result.count += 1
+                    if age < 7 * DAY:
+                        result.recent_bytes += used
+                    elif age >= 90 * DAY:
+                        result.stale_bytes += used
                 except OSError:
                     pass
                 continue
-            min_age = target.min_age_hours * HOUR
             try:
-                for _, files, _ in fsops.walk_files(root, cancel, recursive=target.recursive,
-                                                    skip_dirs=frozenset(target.skip_dirs), skip=skip, on_error=unreadable):
+                for dirpath, files, _ in fsops.walk_files(root, cancel, recursive=target.recursive,
+                                                          skip_dirs=frozenset(target.skip_dirs), skip=skip, on_error=unreadable):
                     for entry in files:
                         if not target.accepts(entry.name):
                             continue
                         try:
                             st = entry.stat(follow_symlinks=False)
                         except OSError:
-                            unreadable(entry.path, None)
+                            unreadable(os.path.join(dirpath, entry.name), None)
                             continue
                         if getattr(st, 'st_file_attributes', 0) & winapi.CLOUD_ATTRIBUTES:
                             continue
                         if min_age and now - fsops.age_time(st) < min_age:
                             continue
-                        key = paths.key(entry.path)
+                        file_path = os.path.join(dirpath, entry.name)
+                        key = paths.key(file_path)
                         if key in seen:
                             continue
                         seen.add(key)
-                        used = fsops.file_size(entry.path, st)
+                        used = fsops.file_size(file_path, st)
                         result.size += used
                         result.logical_size += st.st_size
                         result.count += 1
@@ -764,6 +874,8 @@ class JunkEngine:
             if winapi.empty_recycle_bin(None):
                 after = free_by_drive(list(before))
                 row['freed'] = max(0, sum(after[root] - free for root, free in before.items() if root in after))
+            else:
+                row['skipped'] = '回收站未能清空'
             return
         if rule.mode in ('cleanmgr', 'command'):
             before = disk_free(self.env)
@@ -776,23 +888,28 @@ class JunkEngine:
         stats = fsops.DeleteStats()
         skip = self._skip()
         entries = [e for e in rule_entries(rule, self.env) if not skip(e[1])]
-        if any(t.admin and not self.admin for t in rule.targets):
-            row['skipped'] = '部分位置需要管理员权限，已跳过'
+        has_admin_only = any(t.admin and not self.admin for t in rule.targets)
+        runnable = [e for e in entries if not (e[0].admin and not self.admin)]
+        if not runnable and has_admin_only:
+            row['skipped'] = '需要管理员权限'
+            return
+        if has_admin_only:
+            row['partial_admin'] = True
         # Locations found by structure have no program list to wait for: Windows is asked who has their files
         # open, and an app that is running keeps all of its caches (never half of them).
-        busy_apps = self.running_apps(entries, cancel) if rule.finder else {}
+        busy_apps = self.running_apps(runnable, cancel) if rule.finder else {}
         if rule.finder:
             row['held'] = [{'app': app, 'by': names} for app, names in sorted(busy_apps.items())]
         try:
-            for target, root, app in entries:
-                if target.admin and not self.admin:
-                    continue
+            for target, root, app in runnable:
                 if app in busy_apps:
                     continue
                 if target.single_file:
                     try:
                         st = os.lstat(fsops.long_path(root))
                         if fsops.st_is_link(st) or getattr(st, 'st_file_attributes', 0) & winapi.CLOUD_ATTRIBUTES:
+                            continue
+                        if target.min_age_hours and time.time() - fsops.age_time(st) < target.min_age_hours * HOUR:
                             continue
                         size = fsops.file_size(root, st)
                     except OSError:
@@ -819,8 +936,10 @@ class JunkEngine:
         if proc.returncode == 3010:
             return  # success, restart required to finish
         if proc.returncode != 0:
-            text = winapi.decode_console(proc.stdout + proc.stderr).strip().splitlines()
-            raise RuntimeError((text[-1] if text else f'返回代码 {proc.returncode}')[:200])
+            lines = [ln.strip() for ln in winapi.decode_console(proc.stdout + proc.stderr).splitlines() if ln.strip()]
+            meaningful = [ln for ln in lines if 'dism.log' not in ln.lower() and 'the dism log file' not in ln.lower()]
+            msg = (meaningful[-1] if meaningful else lines[-1] if lines else f'返回代码 {proc.returncode}')
+            raise RuntimeError(msg[:200])
 
     def _run_cleanmgr(self, rule: Rule, slot: int = 6547):
         """Run Disk Cleanup unattended for the given handlers only.
@@ -875,15 +994,15 @@ class JunkEngine:
             clear_slot()
 
 
-def known_rule_paths(env: dict) -> list[tuple[str, Rule]]:
+def known_rule_paths(env: dict, include_finders: bool = True) -> list[tuple[str, Rule]]:
     """Expanded (template) target paths for annotating the space view."""
     out = []
     for rule in RULES:
         for target in rule.targets:
             expanded = paths.expand(target.path, env)
-            if expanded and target.pattern == '*' and not target.single_file:
+            if expanded and (target.pattern == '*' or target.single_file):
                 out.append((expanded, rule))
-        if rule.finder:
+        if include_finders and rule.finder:
             # found locations are real paths already (no wildcard left in them)
             out.extend((root, rule) for _, root, _ in rule_entries(rule, env))
     return out

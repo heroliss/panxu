@@ -6,11 +6,14 @@ agent loops.
 """
 from __future__ import annotations
 
+import http.client
 import json
 import re
 import ssl
 import urllib.error
 import urllib.request
+
+from . import __version__
 
 PRESETS = [
     # DeepSeek (2026-10): deepseek-flash = latest V4.1 Flash, deepseek-v4-pro. Thinking is on by default
@@ -68,8 +71,31 @@ def _friendly_http_error(code: int, body: str) -> str:
         detail = body[:200]
     hints = {401: 'API Key 无效或已过期', 402: '账户余额不足', 403: '没有访问该模型的权限',
              404: '接口地址或模型名称不正确', 429: '请求太频繁或额度已用完，请稍后再试'}
-    hint = hints.get(code, f'服务返回错误 {code}')
+    if code in hints:
+        has_cn = any('\u4e00' <= ch <= '\u9fff' for ch in (detail or ''))
+        return f'{hints[code]}（{detail}）' if has_cn else hints[code]
+    hint = f'服务返回错误 {code}'
     return f'{hint}（{detail}）' if detail else hint
+
+
+def _friendly_net_error(reason) -> str:
+    if isinstance(reason, TimeoutError):
+        return '模型服务响应超时'
+    text = str(reason or '')
+    low = text.lower()
+    if 'timed out' in low or 'timeout' in low:
+        return '模型服务响应超时'
+    if 'getaddrinfo failed' in low or 'name or service not known' in low or '11001' in low:
+        return '无法解析服务器地址，请检查网络连接或接口地址是否正确'
+    if 'connection refused' in low or '10061' in low:
+        return '服务器拒绝连接（若使用本地服务，请确认它已启动）'
+    if 'connection reset' in low or '10054' in low or 'eof occurred' in low:
+        return '与模型服务的网络连接中断，请稍后重试'
+    if 'certificate_verify_failed' in low or 'ssl' in low:
+        return '安全连接（SSL）证书校验失败，请检查网络环境或接口地址'
+    if any('\u4e00' <= ch <= '\u9fff' for ch in text):
+        return f'无法连接模型服务：{text}'
+    return '无法连接模型服务，请检查网络连接与接口地址'
 
 
 class Client:
@@ -94,11 +120,15 @@ class Client:
         self.thinking = thinking
         self.temperature = temperature
         self._dropped: set[str] = set()
+        self._use_completion_tokens = False
         self.usage = Usage()
 
     # -- transport ---------------------------------------------------------------
     def _request(self, method: str, url: str, body: dict | None = None) -> dict:
-        headers = {'Content-Type': 'application/json', 'Accept': 'application/json', 'User-Agent': 'PanXu/1.1'}
+        if self.api_key and not self.api_key.isascii():
+            raise AIError('API Key 包含无效字符（如空格或中文符号），请重新粘贴')
+        headers = {'Content-Type': 'application/json', 'Accept': 'application/json',
+                   'User-Agent': f'PanXu/{__version__}'}
         if self.protocol == 'anthropic':
             headers['x-api-key'] = self.api_key
             headers['anthropic-version'] = '2023-06-01'
@@ -118,11 +148,13 @@ class Client:
             err.status = exc.code
             raise err from None
         except urllib.error.URLError as exc:
-            raise AIError(f'无法连接模型服务：{exc.reason}') from None
+            raise AIError(_friendly_net_error(exc.reason)) from None
         except TimeoutError:
             raise AIError('模型服务响应超时') from None
         except (ValueError, UnicodeDecodeError):
             raise AIError('模型服务返回了无法解析的内容') from None
+        except (http.client.HTTPException, ssl.SSLError, OSError) as exc:
+            raise AIError(_friendly_net_error(exc)) from None
 
     def list_models(self) -> list[str]:
         data = self._request('GET', self.base_url + '/models')
@@ -131,7 +163,8 @@ class Client:
         return sorted({i for i in ids if i})
 
     def _openai_body(self, system: str, messages: list[dict], want_json: bool) -> dict:
-        body = {'model': self.model, 'max_tokens': self.max_tokens,
+        token_key = 'max_completion_tokens' if self._use_completion_tokens else 'max_tokens'
+        body = {'model': self.model, token_key: self.max_tokens,
                 'messages': [{'role': 'system', 'content': system}] + messages}
         if want_json and self.json_mode:
             body['response_format'] = {'type': 'json_object'}
@@ -148,8 +181,17 @@ class Client:
 
     def chat(self, system: str, messages: list[dict], want_json: bool = False) -> str:
         """One request with a conversation (``[{'role': 'user'|'assistant', 'content': str}]``)."""
-        messages = [{'role': m['role'], 'content': str(m['content'])} for m in messages
+        raw_msgs = [{'role': m['role'], 'content': str(m['content'])} for m in messages
                     if m.get('role') in ('user', 'assistant') and m.get('content')]
+        while raw_msgs and raw_msgs[0]['role'] != 'user':
+            raw_msgs.pop(0)
+        merged: list[dict] = []
+        for m in raw_msgs:
+            if merged and merged[-1]['role'] == m['role']:
+                merged[-1]['content'] += '\n\n' + m['content']
+            else:
+                merged.append(m)
+        messages = merged
         if not messages or messages[-1]['role'] != 'user':
             raise AIError('没有要发送的问题')
         if self.protocol == 'anthropic':
@@ -159,17 +201,28 @@ class Client:
             data = self._request('POST', self.base_url + '/messages', body)
             self.usage.add(data.get('usage'))
             parts = [c.get('text', '') for c in data.get('content', []) if c.get('type') == 'text']
-            return ''.join(parts)
+            content = ''.join(parts)
+            if not content.strip() and data.get('stop_reason') == 'max_tokens':
+                raise AIError('模型的回答被截断（思考内容过长）。可以在设置中关闭「深度思考」后重试')
+            return content
         body = self._openai_body(system, messages, want_json)
         try:
             data = self._request('POST', self.base_url + '/chat/completions', body)
         except AIError as exc:
             optional = [k for k in self.OPTIONAL_FIELDS if k in body]
-            if getattr(exc, 'status', None) == 400 and optional:
-                # the service rejected an optional field (JSON mode, thinking switch, ...): retry plainly
-                self._dropped.update(optional)
-                if 'response_format' in optional:
-                    self.json_mode = False
+            msg_low = str(exc).lower()
+            retried = False
+            if getattr(exc, 'status', None) == 400:
+                if not self._use_completion_tokens and 'max_completion_tokens' in msg_low:
+                    self._use_completion_tokens = True
+                    retried = True
+                if optional:
+                    # the service rejected an optional field (JSON mode, thinking switch, ...): retry plainly
+                    self._dropped.update(optional)
+                    if 'response_format' in optional:
+                        self.json_mode = False
+                    retried = True
+            if retried:
                 data = self._request('POST', self.base_url + '/chat/completions',
                                      self._openai_body(system, messages, want_json))
             else:
@@ -198,42 +251,63 @@ class Client:
             return extract_json(text)
 
 
-_FENCE = re.compile(r'```(?:json)?\s*(.*?)```', re.S)
+_FENCE = re.compile(r'```(?:json)?\s*(.*?)```', re.S | re.I)
+_THINK = re.compile(r'<think>.*?(?:</think>|$)', re.S | re.I)
+
+
+def strip_thinking(text: str) -> str:
+    """Remove inline <think>...</think> blocks emitted by reasoning models."""
+    return _THINK.sub('', text or '').strip()
+
+
+def _find_json_dict(candidate: str) -> dict | None:
+    pos = candidate.find('{')
+    while pos >= 0:
+        depth, in_str, escape = 0, False, False
+        end = -1
+        for i in range(pos, len(candidate)):
+            ch = candidate[i]
+            if in_str:
+                if escape:
+                    escape = False
+                elif ch == '\\':
+                    escape = True
+                elif ch == '"':
+                    in_str = False
+                continue
+            if ch == '"':
+                in_str = True
+            elif ch == '{':
+                depth += 1
+            elif ch == '}':
+                depth -= 1
+                if depth == 0:
+                    end = i + 1
+                    break
+        if end > pos:
+            try:
+                value = json.loads(candidate[pos:end])
+                if isinstance(value, dict):
+                    return value
+            except ValueError:
+                pass
+        pos = candidate.find('{', pos + 1)
+    return None
 
 
 def extract_json(text: str) -> dict:
-    """Parse the first JSON object in a model reply (tolerates code fences / prose)."""
-    if not text:
-        raise ValueError('empty reply')
-    match = _FENCE.search(text)
-    if match:
-        text = match.group(1)
-    start = text.find('{')
-    if start < 0:
-        raise ValueError('no JSON object')
-    depth, in_str, escape = 0, False, False
-    for i in range(start, len(text)):
-        ch = text[i]
-        if in_str:
-            if escape:
-                escape = False
-            elif ch == '\\':
-                escape = True
-            elif ch == '"':
-                in_str = False
-            continue
-        if ch == '"':
-            in_str = True
-        elif ch == '{':
-            depth += 1
-        elif ch == '}':
-            depth -= 1
-            if depth == 0:
-                value = json.loads(text[start:i + 1])
-                if not isinstance(value, dict):
-                    raise ValueError('not an object')
-                return value
-    raise ValueError('unterminated JSON')
+    """Parse the first JSON object in a model reply (tolerates <think>, code fences and prose)."""
+    cleaned = strip_thinking(text)
+    if not cleaned:
+        raise ValueError('模型返回了空内容')
+    for m in _FENCE.finditer(cleaned):
+        found = _find_json_dict(m.group(1))
+        if found is not None:
+            return found
+    found = _find_json_dict(cleaned)
+    if found is not None:
+        return found
+    raise ValueError('模型未返回有效的结构化结果')
 
 
 def client_from_settings(ai: dict, api_key: str, purpose: str = 'classify') -> Client:
