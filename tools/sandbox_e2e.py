@@ -28,12 +28,12 @@ sys.path.insert(0, ROOT)
 from panxu import ai_client, paths, sandbox  # noqa: E402
 from panxu.api import Backend, Bridge  # noqa: E402
 from panxu.app import default_data_dir, legacy_key_paths  # noqa: E402
-from panxu.settings import Settings  # noqa: E402
+from panxu.settings import DEFAULTS, Settings  # noqa: E402
 
 
 class ScriptedModel:
     """Plausible answers without a network: caches are 'clean', unknown folders 'review'."""
-    model = 'scripted'
+    model = '演练内置模型'
 
     def __init__(self):
         self.usage = ai_client.Usage()
@@ -43,28 +43,52 @@ class ScriptedModel:
         out = []
         for row in json.loads(user.split('\n', 1)[1]):
             if 'subdirs' in row:
-                cache = any(w in row['path'].lower() for w in ('unity', 'playwright', 'cache'))
-                out.append({'id': row['id'], 'verdict': 'clean' if cache else 'review', 'app': '', 'reason': 'scripted',
-                            'effect': '', 'confidence': 0.85 if cache else 0.5})
+                low = row['path'].lower()
+                cache = any(w in low for w in ('unity', 'playwright', 'cache'))
+                out.append({
+                    'id': row['id'],
+                    'verdict': 'clean' if cache else 'review',
+                    'app': 'Unity' if 'unity' in low else '',
+                    'reason': '程序自动生成的缓存目录，清理后下次使用时会重新生成' if cache else '目录中可能包含个人或配置数据，建议先打开确认',
+                    'effect': '首次重新打开相关程序或工程时会稍慢' if cache else '',
+                    'confidence': 0.85 if cache else 0.5,
+                })
             elif 'group' in row:
-                out.append({'id': row['id'], 'verdict': 'review', 'what': '', 'reason': 'scripted'})
+                out.append({'id': row['id'], 'verdict': 'review', 'what': '个人文档或下载文件',
+                            'reason': '属于个人文件，请确认不再需要后再移到回收站'})
             elif 'copies' in row:  # duplicates: keep the first copy, the loose ones may go
                 out.append({'id': row['id'], 'copies': [
-                    {'n': c['n'], 'verdict': 'keep' if c['n'] == 1 else 'careful' if c.get('place') else 'delete',
-                     'reason': 'scripted'} for c in row['copies']]})
+                    {'n': c['n'],
+                     'verdict': 'keep' if c['n'] == 1 else 'careful' if c.get('place') else 'delete',
+                     'reason': ('保留这一份副本' if c['n'] == 1
+                                else '位于程序或工程目录内，删除前请确认是否仍被引用' if c.get('place')
+                                else '零散重复副本，另一处已有内容相同的文件')}
+                    for c in row['copies']]})
             elif row.get('type') == '系统服务':  # updaters need not start at boot
-                out.append({'id': row['id'], 'what': '', 'reason': 'scripted',
-                            'suggestion': 'disable' if 'update' in row['name'].lower() or '更新' in row['name'] else 'keep'})
+                is_updater = 'update' in row['name'].lower() or '更新' in row['name']
+                out.append({'id': row['id'],
+                            'what': '软件后台自动更新服务' if is_updater else '程序运行所需服务',
+                            'reason': '改为手动启动后，仍可在对应软件内正常检查更新' if is_updater else '相关程序功能可能依赖此服务，建议保持当前设置',
+                            'suggestion': 'disable' if is_updater else 'keep'})
             elif row.get('type') == '已安装的程序':  # the ad-ridden viewer may go
-                out.append({'id': row['id'], 'what': '', 'reason': 'scripted',
-                            'suggestion': 'uninstall' if row['name'] == '快看图大师' else 'keep'})
+                is_adware = row['name'] == '快看图大师'
+                out.append({'id': row['id'],
+                            'what': '第三方看图软件' if is_adware else '常用软件或运行组件',
+                            'reason': '带有常驻更新服务与资讯组件，平时不用可以考虑卸载' if is_adware else '日常使用或被其他程序依赖，建议保留',
+                            'suggestion': 'uninstall' if is_adware else 'keep'})
             else:
-                out.append({'id': row['id'], 'what': '', 'suggestion': 'optional', 'reason': 'scripted'})
+                out.append({'id': row['id'], 'what': '随系统登录自启的程序', 'suggestion': 'optional',
+                            'reason': '关闭开机自启后开机更快，需要时手动打开即可'})
         return {'results': out}
 
     def chat(self, system, messages):
         self.usage.add({})
-        return '（脚本回答）可以删除。'
+        q = (messages[-1].get('content') if messages else '') or ''
+        if '卸载' in q:
+            return '（演练模拟回答）这是一个示例程序。如果平时不用，可以点击「卸载…」运行它自带的卸载程序。'
+        if '禁用' in q or '服务' in q:
+            return '（演练模拟回答）禁用或改为手动启动后不会随开机自动运行，需要用到对应软件时仍可正常使用，且随时可在「操作记录」中撤销。'
+        return '（演练模拟回答）可以按需处理。缓存目录清理后会自动重建；个人文件建议确认不再需要后再移入回收站。'
 
 
 class Run:
@@ -103,23 +127,26 @@ def gb(n):
     return f'{(n or 0) / 1024 ** 3:.2f} GB'
 
 
-def live_key() -> tuple[str, str]:
+def live_key() -> tuple[dict, str, str]:
+    real_ai = Settings(default_data_dir()).get()['ai'] if os.path.isdir(default_data_dir()) else dict(DEFAULTS['ai'])
     key = os.environ.get('PANXU_AI_KEY', '').strip()
     if key:
-        return key, 'PANXU_AI_KEY'
-    real = Settings(default_data_dir())
-    preset = real.get()['ai']['preset']
-    key = real.get_secret('ai_key:' + preset)
-    if key:
-        return key, '盘序保存的 Key'
+        return real_ai, key, 'PANXU_AI_KEY'
+    if os.path.isdir(default_data_dir()):
+        real = Settings(default_data_dir())
+        real_ai = real.get()['ai']
+        key = real.get_secret('ai_key:' + real_ai['preset'])
+        if key or real_ai.get('preset') == 'ollama':
+            return real_ai, key, '盘序保存的 Key' if key else '本地 Ollama（无需 Key）'
     tmp = tempfile.mkdtemp(prefix='panxu-key-')
     try:
         probe = Settings(tmp)
         if probe.import_legacy_key(legacy_key_paths(default_data_dir())):
-            return probe.get_secret('ai_key:' + probe.get()['ai']['preset']), '0.x 保存的 Key'
+            ai = probe.get()['ai']
+            return ai, probe.get_secret('ai_key:' + ai['preset']), '0.x 保存的 Key'
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
-    return '', ''
+    return real_ai, '', ''
 
 
 def main():
@@ -138,10 +165,9 @@ def main():
     run.note(f'演练环境：{sb.root}（{time.time() - started:.1f} 秒）')
     try:
         if args.live:
-            key, source = live_key()
-            if not key:
+            real_ai, key, source = live_key()
+            if not key and real_ai.get('preset') != 'ollama':
                 raise SystemExit('--live: 没有找到 API Key（PANXU_AI_KEY、盘序设置或 0.x 设置）')
-            real_ai = Settings(default_data_dir()).get()['ai']
             backend.settings.update({'ai': real_ai})
             backend.settings.set_secret('ai_key:' + real_ai['preset'], key)
             run.note(f'模型：{real_ai["preset"]} / {real_ai["model"]}（Key 来源：{source}）')

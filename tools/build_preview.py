@@ -3,6 +3,7 @@
     python tools/build_preview.py [output.html] [--page junk] [--theme dark]
 """
 import argparse
+import json
 import os
 import sys
 
@@ -22,16 +23,17 @@ def main():
     html = ui_bundle.build(extra_scripts=['dev/mock.js'])
     boot = []
     if args.theme:
-        boot.append(f"PX.state.init.settings.theme='{args.theme}';PX.applyTheme('{args.theme}');")
+        t = json.dumps(args.theme)
+        boot.append(f'PX.state.init.settings.theme={t};PX.applyTheme({t});')
     if args.page:
-        boot.append(f"PX.go('{args.page}');")
+        boot.append(f'PX.go({json.dumps(args.page)});')
     if args.script:
         boot.append(args.script)
     if args.wide:
         z = 757 / args.wide
         html = html.replace('</head>', '<style>html{zoom:%.4f}.shell{height:calc(100vh / %.4f)}'
                             '@media (max-width:760px){.shell{grid-template-columns:212px 1fr}'
-                            '.nav-item span,.brand span,.nav-badge,.rail-foot{display:revert}'
+                            '.nav-item span,.brand span,.nav-badge,.rail-foot,.nav-section{display:revert}'
                             '.brand b{font-size:19px;letter-spacing:.12em}.page{padding:26px 36px 96px}}'
                             '@media (max-width:1100px){.space-grid{grid-template-columns:minmax(0,1.25fr) minmax(300px,1fr)}'
                             '.treemap-wrap{position:sticky;max-width:none}}</style></head>' % (z, z))
