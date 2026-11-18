@@ -66,4 +66,19 @@ module.exports = (async () => {
   b.PX.aiStatus.update({ ...b.state, state: 'ready', message: '模型连接正常' });
   assert.strictEqual(b.banner.hidden, true);
   assert.strictEqual(b.banner.nodes.length, 0, 'ready state clears stale banner children');
+
+  // Release updater: startup opt-out, chip visibility, manual check modal & ignore
+  const upChip = { hidden: true, textContent: '', title: '' };
+  b.PX.updater.mount({ appendChild: () => upChip });
+  b.PX.state.init.settings.update_check_on_start = false;
+  await b.PX.updater.start();
+  assert.strictEqual(b.calls.at(-1)[0], 'update_status', 'opt-out startup only reads cached update state');
+  assert.strictEqual(upChip.hidden, true);
+  b.PX.updater.update({ state: 'available', current_version: '2.5.0', latest_version: '2.6.0', has_update: true, ignored: false,
+    size_label: '15.5 MB', notes: ['更新说明'], message: '发现新版本 v2.6.0' });
+  assert.strictEqual(upChip.hidden, false);
+  assert.match(upChip.textContent, /v2\.6\.0/);
+  b.PX.updater.update({ state: 'available', current_version: '2.5.0', latest_version: '2.6.0', has_update: true, ignored: true,
+    size_label: '15.5 MB', notes: [], message: '发现新版本 v2.6.0' });
+  assert.strictEqual(upChip.hidden, true, 'ignored version hides the topbar chip');
 })().catch((error) => { console.error(error); process.exitCode = 1; });

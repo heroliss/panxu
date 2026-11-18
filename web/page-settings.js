@@ -68,6 +68,19 @@
       } });
     launch.appendChild(field('管理员模式', h('label.check', adminStart, '启动时请求管理员权限'),
       '下次启动时由 Windows 询问是否允许；取消后仍可普通运行。演练环境不请求提权。'));
+    const mkShortcutBtn = (where, label) => h('button.btn', { type: 'button', onclick: async (e) => {
+      const btn = e.currentTarget;
+      btn.disabled = true;
+      try {
+        const r = await PX.api.call('create_shortcut', { where });
+        PX.toast(`已生成快捷方式：${PX.displayPath(r.path)}`);
+      } catch (err) { PX.fail(err); }
+      btn.disabled = false;
+    } }, label);
+    launch.appendChild(field('快捷方式', h('div.inline',
+      mkShortcutBtn('desktop', '发送到桌面快捷方式'),
+      mkShortcutBtn('start_menu', '添加到开始菜单')),
+    '绿色免安装版默认不写系统快捷方式；按需生成后可直接从桌面或开始菜单启动，移动程序文件夹后再点一次即可更新指向。'));
 
     // ---- model
     const sec1 = form.appendChild(h('section', { id: 'ai-model-settings' }, h('h2', 'AI 模型')));
@@ -226,7 +239,11 @@
 
     // ---- about
     const sec5 = form.appendChild(h('section', { style: { borderBottom: 0 } }, h('h2', '关于')));
-    sec5.appendChild(field('版本', h('span', '盘序 ' + init.version)));
+    sec5.appendChild(field('版本', PX.updater ? PX.updater.panel() : h('span', '盘序 ' + init.version)));
+    sec5.appendChild(field('版本更新', h('label.inline',
+      PX.switchEl(s.update_check_on_start !== false, (e) => save({ update_check_on_start: e.target.checked }), false, '启动时自动检查新版本'),
+      h('span', '启动时自动检查新版本')),
+    '仅连接 GitHub 查询公开正式版信息（每 12 小时最多一次），不发送本机任何信息。'));
     sec5.appendChild(field('数据文件夹', h('div.inline', h('span.mono-path.small', init.data_dir),
       PX.revealButton(init.data_dir, '打开')),
     '设置、操作记录和 AI 缓存保存在这里。'));

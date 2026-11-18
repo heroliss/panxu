@@ -139,6 +139,7 @@
       lastPress = null;
       e.preventDefault(); e.stopPropagation(); windowAction('toggle_maximize');
     } }, h('div.appbar-brand', h('b', '盘序'), h('span', 'v' + PX.state.init.version))));
+    PX.updater?.mount(bar);
     PX.aiStatus?.mount(bar);
     statusButton = bar.appendChild(h('button.appbar-activity', { type: 'button', hidden: true, onclick: () => job && view(job) }));
     controls = bar.appendChild(h('div.window-controls', { hidden: true }));
@@ -157,6 +158,7 @@
       try {
         const result = await PX.api.call('activity');
         updateWindow(result.window);
+        PX.updater?.update(result.update);
         PX.aiStatus?.update(result.ai_health);
         const active = result.jobs?.[0];
         if (active) PX.trackJob(active);

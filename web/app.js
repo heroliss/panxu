@@ -321,6 +321,7 @@
     await PX.startActivity();
     PX.go(resume?.restored ? resume.page : 'home');
     PX.aiStatus?.start();
+    PX.updater?.start();
     if (resume) PX.toast(resume.message, !resume.restored);
     if (resume?.refresh_pending) {
       PX.api.run('admin_refresh', {}).then((plan) => {

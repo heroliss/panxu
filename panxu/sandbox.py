@@ -730,6 +730,39 @@ class Sandbox:
             raise AIError('演练模型连接失败')
         return {'reply': {'ok': True}, 'usage': {'requests': 1}, 'model': ai.get('model') or '演练内置模型'}
 
+    def update_probe(self, current_version: str) -> dict:
+        """Simulated GitHub release payload; the simulation never contacts GitHub."""
+        if self.state.get('update_error'):
+            from .updater import UpdateError
+            raise UpdateError('演练网络未连接')
+        custom = self.state.get('update_payload')
+        if isinstance(custom, dict):
+            return custom
+        tag = f'v{current_version}'
+        name = f'PanXu-{current_version}-win-x64.zip'
+        return {
+            'draft': False,
+            'prerelease': False,
+            'tag_name': tag,
+            'published_at': '2026-11-18T00:00:00Z',
+            'body': '- 当前已是最新正式版',
+            'assets': [{
+                'name': name,
+                'state': 'uploaded',
+                'size': 16_254_835,
+                'browser_download_url': f'https://github.com/heroliss/panxu/releases/download/{tag}/{name}',
+            }],
+        }
+
+    def create_shortcut(self, lnk_path: str, target: str, working_dir: str = '', arguments: str = '',
+                        icon: str = '', description: str = '') -> None:
+        if not paths.is_within(lnk_path, self.root):
+            raise PermissionError('演练环境只能创建演练目录内的快捷方式')
+        os.makedirs(os.path.dirname(lnk_path), exist_ok=True)
+        with open(lnk_path, 'w', encoding='utf-8') as fh:
+            json.dump({'target': target, 'working_dir': working_dir, 'arguments': arguments,
+                       'icon': icon, 'description': description}, fh, ensure_ascii=False)
+
     def is_admin(self) -> bool:
         return bool(self.state.get('admin', True))
 

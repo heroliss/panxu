@@ -108,7 +108,7 @@
     return j.snapshot = { id, kind: j.kind, status: 'done', result: typeof j.result === 'function' ? j.result() : j.result };
   }
 
-  const settings = { theme: 'system', ai: { preset: 'deepseek', base_url: 'https://api.deepseek.com', model: 'deepseek-flash', protocol: 'openai',
+  const settings = { theme: 'system', update_check_on_start: true, ai: { preset: 'deepseek', base_url: 'https://api.deepseek.com', model: 'deepseek-flash', protocol: 'openai',
     json_mode: true, thinking: 'low', anonymize_paths: true, send_file_content: false, max_requests: 8, min_dir_mb: 0, timeout: 120 },
   checkup: { space_scan: true, other_drives: true, selected_drives: null, duplicates: true, cross_drive_duplicates: true, apps_services: true, other_accounts: false,
     use_ai: true, ai_scopes: { space: true, files: true, duplicates: true, startup: true, apps: true, services: true }, auto_threshold: 7 },
@@ -360,9 +360,26 @@
     { id: 'C3D4', original: U + '\\AppData\\Local\\OldGameStudio', name: 'OldGameStudio', size: 1.1 * GB, time: now - 300 },
   ];
 
+  let mockUpdate = location.hash.includes('update')
+    ? { state: 'available', current_version: '2.5.0', latest_version: '2.6.0', tag_name: 'v2.6.0', has_update: true, ignored: false,
+      checked_at: now, release_url: 'https://github.com/heroliss/panxu/releases/tag/v2.6.0',
+      download_url: 'https://github.com/heroliss/panxu/releases/download/v2.6.0/PanXu-2.6.0-win-x64.zip',
+      asset_name: 'PanXu-2.6.0-win-x64.zip', asset_size: 16254835, size_label: '15.5 MB', published_at: '2026-11-18',
+      notes: ['内置清理规则扩充至 62 项，新增常见缓存识别', '全站实时搜索与一键排除文件夹'], message: '发现新版本 v2.6.0（15.5 MB）' }
+    : { state: 'up_to_date', current_version: '2.5.0', latest_version: '2.5.0', tag_name: 'v2.5.0', has_update: false, ignored: false,
+      checked_at: now, release_url: 'https://github.com/heroliss/panxu/releases/latest',
+      download_url: 'https://github.com/heroliss/panxu/releases/latest', asset_name: '', asset_size: 0, size_label: '', published_at: '', notes: [],
+      message: '当前已是最新版本 v2.5.0' };
+
   const handlers = {
     activity: () => ({ jobs: Object.entries(jobs).filter(([, j]) => j.kind !== 'ai_ask' && (!j.snapshot || j.snapshot.status === 'running'))
-      .map(([id, j]) => j.snapshot || { id, kind: j.kind, status: 'running', progress: {} }), window: { available: false }, ai_health: handlers.ai_health() }),
+      .map(([id, j]) => j.snapshot || { id, kind: j.kind, status: 'running', progress: {} }), window: { available: false },
+      ai_health: handlers.ai_health(), update: mockUpdate }),
+    update_status: () => mockUpdate,
+    update_check: () => mockUpdate,
+    update_ignore: ({ version }) => { mockUpdate = { ...mockUpdate, ignored: version === mockUpdate.latest_version }; return mockUpdate; },
+    open_update_url: ({ kind }) => ({ url: kind === 'download' ? mockUpdate.download_url : mockUpdate.release_url, simulated: true }),
+    create_shortcut: ({ where }) => ({ path: where === 'desktop' ? U + '\\Desktop\\盘序.lnk' : U + '\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\盘序.lnk', where }),
     ai_health: () => ({ state: hasKey ? mockAIState : 'unconfigured', signature: 'mock', model: settings.ai.model,
       message: !hasKey ? '请填写 API Key' : mockAIState === 'ready' ? '模型连接正常' : '模型设置尚未验证',
       help: '基础扫描仍可使用；配置并测试模型后，才能使用 AI 分析和问 AI。', notice_due: false }),
@@ -572,7 +589,7 @@
     sandbox_restore: ({ item_id }) => { const i = recycled.findIndex((r) => r.id === item_id); const [r] = recycled.splice(i, 1); sandbox.recycle_count -= 1; return r.original; },
     sandbox_reset: () => sandbox,
     drives: () => handlers.init().drives,
-    init: () => ({ version: '2.4.0', admin: !!sandbox || location.hash.includes('admin'), other_accounts: ['家人'], windows: true, settings, has_key: hasKey, sandbox,
+    init: () => ({ version: '2.5.0', admin: !!sandbox || location.hash.includes('admin'), other_accounts: ['家人'], windows: true, settings, has_key: hasKey, sandbox,
       plan_groups: planGroups, checkup_stages: stages,
       presets: [{ id: 'deepseek', name: 'DeepSeek', base_url: 'https://api.deepseek.com', protocol: 'openai', models: ['deepseek-flash', 'deepseek-v4-pro'], json_mode: true, thinking_toggle: true, key_url: 'x' },
         { id: 'kimi', name: 'Kimi（月之暗面）', base_url: 'https://api.moonshot.cn/v1', protocol: 'openai', models: [], json_mode: true },
