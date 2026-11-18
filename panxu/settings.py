@@ -19,6 +19,11 @@ DEFAULTS = {
     'admin_on_start': True,  # request UAC once; a refusal still opens the app normally
     'ai_check_on_start': True,
     'ai_status_notice': {'signature': '', 'state': '', 'message': '', 'time': 0},
+    'update_check_on_start': True,
+    'update_state': {
+        'checked_at': 0, 'latest_version': '', 'tag_name': '', 'release_url': '', 'download_url': '',
+        'asset_name': '', 'asset_size': 0, 'size_label': '', 'published_at': '', 'notes': [], 'ignored_version': '',
+    },
     'ai': {
         'preset': 'deepseek',
         'base_url': 'https://api.deepseek.com',

@@ -100,4 +100,97 @@
       } catch (e) { PX.toast('无法检测 AI 状态，可到设置里重新测试连接。', true); }
     },
   };
+
+  // ---- Non-blocking release update check (GitHub Releases, green portable zip) ----
+  let upState = null, upChip = null, upManual = false;
+  function renderUpdate() {
+    if (!upState) return;
+    if (upChip) {
+      const show = !!(upState.has_update && !upState.ignored);
+      upChip.hidden = !show;
+      if (show) {
+        upChip.textContent = `有新版本 v${upState.latest_version}`;
+        upChip.title = `发现盘序 v${upState.latest_version}，点击查看更新内容与下载`;
+      }
+    }
+    for (const el of document.querySelectorAll('[data-update-panel]')) {
+      const checking = upState.state === 'checking';
+      const statusText = upState.has_update
+        ? `发现新版本 v${upState.latest_version}` + (upState.size_label ? `（${upState.size_label}）` : '')
+        : upState.state === 'up_to_date' ? '当前已是最新版本'
+          : upState.state === 'checking' ? '正在检查新版本…'
+            : upState.state === 'error' ? upState.message : '';
+      PX.clear(el).append(
+        h('div.inline.update-row',
+          h('span', '盘序 ' + (PX.state.init?.version || upState.current_version || '')),
+          statusText ? h('span.update-badge' + (upState.has_update ? '.has-update' : upState.state === 'error' ? '.is-error' : ''), statusText) : null,
+          h('button.btn.small', { type: 'button', 'data-update-check': '', disabled: checking,
+            onclick: () => PX.updater.check() }, checking ? '检查中…' : '检查更新'),
+          upState.has_update ? h('button.btn.primary.small', { type: 'button',
+            onclick: () => PX.updater.openModal() }, `查看并下载 v${upState.latest_version}`) : null));
+    }
+  }
+
+  PX.updater = {
+    mount(bar) {
+      upChip = bar.appendChild(h('button.update-chip', { type: 'button', hidden: true, onclick: () => PX.updater.openModal() }));
+      renderUpdate();
+    },
+    panel() { const el = h('div.update-panel', { 'data-update-panel': '' }); setTimeout(renderUpdate); return el; },
+    openModal() {
+      const s = upState;
+      if (!s || !s.has_update) return;
+      PX.modal({
+        title: `发现新版本 v${s.latest_version}`,
+        body: h('div',
+          h('p', `当前版本 v${s.current_version}，最新正式版 v${s.latest_version}`
+            + (s.published_at ? `（发布于 ${s.published_at}）` : '')
+            + (s.size_label ? ` · 免安装包 ${s.size_label}` : '') + '。'),
+          s.notes?.length ? h('div.update-notes-wrap', h('b.small', '主要更新：'),
+            h('ul.update-notes', s.notes.map((line) => h('li', line)))) : null,
+          h('p.small.muted', '绿色免安装升级方式：下载新版压缩包并解压后即可直接双击 PanXu.exe 使用；你的设置、API Key、分析缓存和操作记录保存在本机数据目录中，不会丢失。')),
+        actions: [
+          ...(!s.ignored ? [{ label: '忽略此版本', onClick: () => PX.updater.ignore(s.latest_version) }] : [{ label: '关闭' }]),
+          { label: '查看发布页', onClick: () => PX.updater.openUrl('release') },
+          { label: '下载新版压缩包', kind: 'primary', onClick: () => PX.updater.openUrl('download') },
+        ],
+      });
+    },
+    async openUrl(kind) {
+      try {
+        const r = await PX.api.call('open_update_url', { kind });
+        if (r?.simulated) PX.toast('演练环境已模拟打开：' + r.url);
+      } catch (e) { PX.fail(e); }
+    },
+    async ignore(version) {
+      try {
+        this.update(await PX.api.call('update_ignore', { version }));
+        PX.toast(`已隐藏 v${version} 的顶栏更新提醒；仍可在「设置 > 关于」中下载`);
+      } catch (e) { PX.fail(e); }
+    },
+    update(next) {
+      if (!next) return;
+      const changed = JSON.stringify(upState) !== JSON.stringify(next);
+      upState = next;
+      if (changed) renderUpdate();
+      if (upManual && next.state !== 'checking') {
+        upManual = false;
+        if (next.has_update) PX.updater.openModal();
+        else PX.toast(next.message, next.state === 'error');
+      }
+    },
+    render: renderUpdate,
+    async check() {
+      upManual = true;
+      try {
+        this.update(await PX.api.call('update_check', { force: true }));
+      } catch (e) { upManual = false; PX.fail(e); }
+    },
+    async start() {
+      const auto = PX.state.init?.settings?.update_check_on_start !== false;
+      try {
+        this.update(await PX.api.call(auto ? 'update_check' : 'update_status', auto ? { force: false } : {}));
+      } catch (e) { /* background update check failure stays silent on startup */ }
+    },
+  };
 })();

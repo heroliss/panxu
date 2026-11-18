@@ -643,6 +643,35 @@ def open_uri(uri: str) -> None:
         os.startfile(uri)
 
 
+def create_shortcut(lnk_path: str, target: str, working_dir: str = '', arguments: str = '',
+                    icon: str = '', description: str = '') -> None:
+    """Create a Windows Shell shortcut (.lnk) on demand; simulated in 演练环境."""
+    if _sim is not None:
+        _sim.create_shortcut(lnk_path, target, working_dir, arguments, icon, description)
+        return
+    os.makedirs(os.path.dirname(os.path.abspath(lnk_path)), exist_ok=True)
+    if not IS_WINDOWS:
+        with open(lnk_path, 'w', encoding='utf-8') as fh:
+            fh.write(f'{target}\n')
+        return
+    script = (
+        '$ErrorActionPreference = "Stop";'
+        '$s = (New-Object -ComObject WScript.Shell).CreateShortcut($env:PX_LNK);'
+        '$s.TargetPath = $env:PX_TARGET;'
+        'if ($env:PX_WORKDIR) { $s.WorkingDirectory = $env:PX_WORKDIR };'
+        'if ($env:PX_ARGS) { $s.Arguments = $env:PX_ARGS };'
+        'if ($env:PX_ICON) { $s.IconLocation = $env:PX_ICON };'
+        'if ($env:PX_DESC) { $s.Description = $env:PX_DESC };'
+        '$s.Save()'
+    )
+    env = {**os.environ, 'PX_LNK': os.path.abspath(lnk_path), 'PX_TARGET': os.path.abspath(target),
+           'PX_WORKDIR': working_dir, 'PX_ARGS': arguments, 'PX_ICON': icon, 'PX_DESC': description}
+    proc = run_hidden(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', script], timeout=15, env=env)
+    if proc.returncode != 0 or not os.path.isfile(lnk_path):
+        msg = decode_console(proc.stderr or proc.stdout).strip().splitlines()
+        raise OSError(msg[-1] if msg else '无法创建快捷方式')
+
+
 def open_file(path: str) -> None:
     """Open a document with its default program, like a double-click in Explorer."""
     if IS_WINDOWS:

@@ -26,6 +26,7 @@ from .duplicates import find_duplicates, verify_unchanged
 from .jobs import BusyError, JobManager, UserError
 from .windowing import WindowControls
 from .ai_health import AIHealth
+from .updater import LATEST_RELEASE_URL, UpdateChecker, safe_github_url
 from .junk import GROUPS, RULES_BY_ID, JunkEngine
 from .knowledge import Knowledge
 from .oplog import OperationLog
@@ -120,6 +121,7 @@ class Backend:
         self.restart_ui = {}
         self.resume = None
         self.ai_health = AIHealth(self.settings, self._probe_ai)
+        self.updater = UpdateChecker(self.settings, __version__, self._probe_update)
         self.app_dirs = [os.path.dirname(os.path.abspath(__file__)), data_dir]
         if getattr(sys, 'frozen', False):
             self.app_dirs.append(os.path.dirname(sys.executable))
@@ -157,6 +159,12 @@ class Backend:
         if reply.get('ok') is not True:
             raise ai_client.AIError('连接测试未返回确认信息')
         return {'reply': reply, 'usage': client.usage.as_dict(), 'model': client.model}
+
+    def _probe_update(self, current_version: str):
+        if self.sandbox is not None:
+            return self.sandbox.update_probe(current_version)
+        from .updater import fetch_latest_payload
+        return fetch_latest_payload(current_version)
 
     def _match_app(self, folder_name: str) -> str | None:
         if self._app_index is None or time.time() - self._app_index[0] > 60:
@@ -402,7 +410,8 @@ class Backend:
 
     def m_activity(self):
         return {'jobs': [j for j in self.jobs.running() if j.get('synchronized')],
-                'window': self.window_controls.state(), 'ai_health': self.ai_health.status()}
+                'window': self.window_controls.state(), 'ai_health': self.ai_health.status(),
+                'update': self.updater.status()}
 
     def m_ai_health(self):
         return self.ai_health.status()
@@ -412,6 +421,54 @@ class Backend:
 
     def m_ai_health_ack(self, signature: str):
         return self.ai_health.acknowledge(signature)
+
+    def m_update_status(self):
+        return self.updater.status()
+
+    def m_update_check(self, force: bool = True):
+        return self.updater.check(force=bool(force))
+
+    def m_update_ignore(self, version: str = ''):
+        return self.updater.ignore(str(version or ''))
+
+    def m_open_update_url(self, kind: str = 'download'):
+        status = self.updater.status()
+        raw = status.get('download_url') if kind == 'download' else status.get('release_url')
+        url = safe_github_url(raw) or LATEST_RELEASE_URL
+        if self.sandbox is None:
+            winapi.open_uri(url)
+        return {'url': url, 'simulated': self.sandbox is not None}
+
+    def m_create_shortcut(self, where: str = 'desktop'):
+        if where not in ('desktop', 'start_menu'):
+            raise UserError('未知的快捷方式位置')
+        if where == 'desktop':
+            folder = winapi.known_folder('desktop')
+        else:
+            appdata = self.env.get('APPDATA') or os.path.join(self.env.get('USERPROFILE') or os.path.expanduser('~'), 'AppData', 'Roaming')
+            folder = os.path.join(appdata, 'Microsoft', 'Windows', 'Start Menu', 'Programs')
+        lnk_path = paths.native(os.path.join(folder, f'{APP_NAME}.lnk'))
+        desc = '盘序 · Windows 磁盘清理助手'
+        if self.sandbox is not None:
+            target = self.sandbox.native('C/Tools/PanXu/PanXu.exe')
+            workdir, args, icon = os.path.dirname(target), '', f'{target},0'
+        elif getattr(sys, 'frozen', False):
+            target = os.path.abspath(sys.executable)
+            workdir, args, icon = os.path.dirname(target), '', f'{target},0'
+        else:
+            root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            cmd = os.path.join(root, '启动盘序.cmd')
+            ico = os.path.join(root, 'assets', 'panxu.ico')
+            icon = f'{ico},0' if os.path.isfile(ico) else ''
+            if os.path.isfile(cmd):
+                target, workdir, args = cmd, root, ''
+            else:
+                target, workdir, args = os.path.abspath(sys.executable), root, f'"{os.path.join(root, "run.py")}"'
+        try:
+            winapi.create_shortcut(lnk_path, target, working_dir=workdir, arguments=args, icon=icon, description=desc)
+        except OSError as exc:
+            raise UserError(f'未能创建快捷方式：{exc}') from None
+        return {'path': lnk_path, 'where': where}
 
     def m_window_action(self, action: str):
         return self.window_controls.perform(action)
