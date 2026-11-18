@@ -79,14 +79,30 @@ def _file(data_dir, ticket):
     return os.path.join(data_dir, 'restart-' + ticket[:32] + '.json.gz')
 
 
+def _sweep_stale(data_dir: str) -> None:
+    now = time.time()
+    try:
+        with os.scandir(data_dir) as it:
+            for e in it:
+                if e.name.startswith('restart-') and e.name.endswith('.json.gz'):
+                    try:
+                        if now - e.stat(follow_symlinks=False).st_mtime > TTL:
+                            os.unlink(e.path)
+                    except OSError:
+                        pass
+    except OSError:
+        pass
+
+
 def discard(data_dir, ticket):
     try:
         os.unlink(_file(data_dir, ticket))
-    except FileNotFoundError:
+    except (FileNotFoundError, ValueError, OSError):
         pass
 
 
 def save(backend):
+    _sweep_stale(backend.data_dir)
     ticket = uuid.uuid4().hex + ':' + '0' * 64
     filename = _file(backend.data_dir, ticket)
     payload = {'version': __version__, 'created': time.time(), 'identity': identity(backend),
@@ -141,3 +157,4 @@ def consume(backend, ticket):
             backend.plan['resumed'] = True
     finally:
         discard(backend.data_dir, ticket)
+        _sweep_stale(backend.data_dir)

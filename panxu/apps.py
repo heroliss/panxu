@@ -19,8 +19,8 @@ import os
 import re
 import time
 
-from . import paths, winapi
-from .insights import compact, tokens
+from . import fsops, paths, winapi
+from .insights import GENERIC_PROGRAM_ROOTS, compact, tokens
 from .startup import HKCU, HKLM, WinRegistry, expand_vars, split_command
 
 UNINSTALL_KEYS = [
@@ -75,14 +75,14 @@ def _named_inside(folder: str, names: set[str], depth: int = 3) -> str | None:
     while stack:
         current, d = stack.pop()
         try:
-            entries = [e for e in os.scandir(current) if e.is_dir(follow_symlinks=False)]
+            entries = [e for e in os.scandir(fsops.long_path(current)) if not fsops.is_link(e) and e.is_dir(follow_symlinks=False)]
         except OSError:
             continue
         for e in entries:
             if e.name.lower() in names:
                 return e.name
             if d + 1 < depth:
-                stack.append((e.path, d + 1))
+                stack.append((os.path.join(current, e.name), d + 1))
     return None
 
 
@@ -132,7 +132,16 @@ class AppManager:
             return [dict(a) for a in self._cache[1]]
         reg = self._reg()
         prefetch = self._prefetch()
-        entries, seen = [], set()
+        entries = []
+        seen: dict[tuple[str, str], int] = {}
+
+        def _entry_usable(vals: dict) -> bool:
+            loc = expand_vars(str(vals.get('InstallLocation') or '').strip().strip('"'), self.env)
+            if loc and os.path.isdir(loc):
+                return True
+            exe, _ = split_command(str(vals.get('UninstallString') or ''), self.env)
+            return bool(exe and os.path.isfile(exe))
+
         for hive, base, scope in UNINSTALL_KEYS:
             for sub in reg.subkeys(hive, base):
                 values = dict(reg.values(hive, base + '\\' + sub))
@@ -142,8 +151,11 @@ class AppManager:
                     continue
                 dedupe = (name.lower(), str(values.get('DisplayVersion') or ''))
                 if dedupe in seen:
+                    prev_idx = seen[dedupe]
+                    if not _entry_usable(entries[prev_idx][4]) and _entry_usable(values):
+                        entries[prev_idx] = (hive, base, scope, sub, values, name)
                     continue
-                seen.add(dedupe)
+                seen[dedupe] = len(entries)
                 entries.append((hive, base, scope, sub, values, name))
         # several programs may register one parent folder (Adobe: C:\Program Files\Adobe for eight of them)
         registered: dict[str, int] = {}
@@ -154,8 +166,7 @@ class AppManager:
         out = []
         for hive, base, scope, sub, values, name in entries:
             location, own = self._own_folder(values, name, registered)
-            uninstall =str(values.get('QuietUninstallString') and values.get('UninstallString') or
-                            values.get('UninstallString') or '').strip()
+            uninstall = str(values.get('UninstallString') or '').strip()
             est = values.get('EstimatedSize')
             try:
                 size = int(est) * 1024 if est not in (None, '') else None
@@ -235,6 +246,7 @@ class AppManager:
         top = location.rstrip('\\/').count(os.sep)
         seen = 0
         for dirpath, dirnames, filenames in os.walk(location):
+            dirnames[:] = [d for d in dirnames if not fsops.path_is_link(os.path.join(dirpath, d))]
             depth = dirpath.rstrip('\\/').count(os.sep) - top
             seen += 1
             if depth >= 2 or seen > 80:
@@ -271,7 +283,8 @@ class AppManager:
 
     def _child_named(self, parent: str, name: str, values: dict) -> str:
         try:
-            children = [e.name for e in os.scandir(parent) if e.is_dir(follow_symlinks=False)]
+            children = [e.name for e in os.scandir(fsops.long_path(parent))
+                        if not fsops.is_link(e) and e.is_dir(follow_symlinks=False)]
         except OSError:
             return ''
         exact = [c for c in children if c.lower() == name.lower()]
@@ -321,6 +334,7 @@ class AppManager:
         top = folder.rstrip('\\/').count(os.sep)
         # three folders down: Illustrator keeps its exe in Support Files\Contents\Windows
         for dirpath, dirnames, filenames in (os.walk(folder) if folder else ()):
+            dirnames[:] = [d for d in dirnames if not fsops.path_is_link(os.path.join(dirpath, d))]
             depth = dirpath.rstrip('\\/').count(os.sep) - top
             found += [(depth, f) for f in filenames if f.lower().endswith('.exe') and not _helper_exe(f)]
             count += 1
@@ -340,14 +354,24 @@ class AppManager:
     def get(self, app_id: str) -> dict | None:
         return next((a for a in self.list() if a['id'] == app_id), None)
 
+    @staticmethod
+    def _safe_own_folder(app: dict) -> str:
+        own = app.get('own_location') or ''
+        if not own or not os.path.isdir(own) or paths.is_drive_root(own):
+            return ''
+        if ntpath.basename(own.rstrip('\\/')).casefold() in GENERIC_PROGRAM_ROOTS:
+            return ''
+        return own
+
     def measure(self, app_id: str) -> dict:
         from .fsops import path_size
         app = self.get(app_id)
         if app is None:
             raise ValueError('程序已不存在，请刷新列表')
-        if not app['location_exists']:
-            raise ValueError('没有找到这个程序的安装文件夹')
-        size, count = path_size(app['location'])
+        target = self._safe_own_folder(app)
+        if not target:
+            raise ValueError('没有找到这个程序独立的安装文件夹')
+        size, count = path_size(target)
         self._measured[app_id] = size
         if self._cache:
             for a in self._cache[1]:
@@ -360,9 +384,14 @@ class AppManager:
         """[{'name', 'version', 'publisher', 'keys': [compact names]}] for fuzzy name matching."""
         rows = []
         for a in self.list():
+            vendor_words = set(tokens(a['publisher']))
+            pub_key = compact(a['publisher'])
             keys = {compact(a['name']), compact(a['registry_key'])}
             words = tokens(a['name'])
-            if words:
+            non_vendor = [w for w in words if w not in vendor_words]
+            if non_vendor:
+                keys.add(non_vendor[0])
+            elif words:
                 keys.add(words[0])
             if a['location']:
                 parts = [p for p in re.split(r'[\\/]', a['location']) if p]
@@ -371,8 +400,10 @@ class AppManager:
                     if c not in _GENERIC and c not in ('application', 'bin', 'programfiles', 'programfilesx86'):
                         keys.add(c)
             keys = {k for k in keys if k and len(k) >= 2 and k not in _GENERIC}
+            vendor_only = ({pub_key} | vendor_words) - {''} if non_vendor else set()
+            product_keys = sorted(k for k in keys if k not in vendor_only)
             rows.append({'name': a['name'], 'version': a['version'], 'publisher': a['publisher'], 'keys': sorted(keys),
-                         'publisher_key': compact(a['publisher'])})
+                         'product_keys': product_keys or sorted(keys), 'publisher_key': pub_key})
         return rows
 
     def match_folder(self, folder_name: str, index: list[dict] | None = None) -> dict | None:
@@ -396,12 +427,13 @@ class AppManager:
         if app is None:
             raise ValueError('程序已不存在，请刷新列表')
         hive, base, sub = app_id.split('|', 2)
+        own_loc = self._safe_own_folder(app)
         # kept to look for leftovers once it is gone (by then the registry no longer knows it)
         self._removed[app_id] = {'name': app['name'], 'publisher': app['publisher'], 'registry_key': sub,
-                                 'location': app['location'] if app['location_exists'] else '', 'time': time.time()}
+                                 'location': own_loc, 'time': time.time()}
         sim = winapi.simulation()
         if sim is not None:
-            result = sim.uninstall(hive, base + '\\' + sub, app['location'] if app['location_exists'] else '')
+            result = sim.uninstall(hive, base + '\\' + sub, own_loc)
             self._cache = None
             self._log(app, '模拟卸载完成（程序文件夹已删除，应用数据保留）')
             return {'started': True, 'simulated': True, **result}
@@ -414,8 +446,11 @@ class AppManager:
             started = True
         else:
             exe, args = split_command(command, self.env)
-            if ntpath.basename(exe).lower() == 'msiexec.exe':
-                args = re.sub(r'/I(\{[0-9A-Fa-f-]+\})', r'/X\1', args)  # /I opens "modify", /X uninstalls
+            if ntpath.basename(exe).lower() in ('msiexec.exe', 'msiexec'):
+                args = re.sub(r'(?i)(?:^|(?<=\s))[/-]i\s*(\{[0-9a-f-]+\})', r'/X\1', args).strip()  # /I opens "modify", /X uninstalls
+                if not args:
+                    self._removed.pop(app_id, None)
+                    raise ValueError('这个程序没有提供有效的卸载参数，请在「设置 > 应用」中卸载')
             started = winapi.shell_execute(exe, args)
         if not started:
             self._removed.pop(app_id, None)
@@ -523,15 +558,18 @@ class AppManager:
 
         def subdirs(folder):
             try:
-                return [e.name for e in os.scandir(folder) if e.is_dir(follow_symlinks=False)]
+                return [e.name for e in os.scandir(fsops.long_path(folder))
+                        if not fsops.is_link(e) and e.is_dir(follow_symlinks=False)]
             except OSError:
                 return []
 
         found: list[tuple[str, str, str]] = []
         for var, where, note in self._LEFTOVER_BASES:
             if not var:
-                if gone['location'] and os.path.isdir(gone['location']):
-                    found.append((gone['location'], where, note))
+                loc = gone['location']
+                if loc and os.path.isdir(loc) and not paths.is_drive_root(loc) \
+                        and ntpath.basename(loc.rstrip('\\/')).casefold() not in GENERIC_PROGRAM_ROOTS:
+                    found.append((loc, where, note))
                 continue
             base = paths.expand(f'%{var}%', self.env)
             if not base:

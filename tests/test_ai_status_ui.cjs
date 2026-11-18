@@ -3,19 +3,21 @@
 const assert = require('assert');
 const vm = require('vm');
 const fs = require('fs');
-function fixture({ auto = true, page = 'home', modal = false, status = 'unconfigured', due = true } = {}) {
+function fixture({ auto = true, page = 'home', modal = false, status = 'unconfigured', due = true, withBanner = false } = {}) {
   const calls = [], prompts = [], toasts = [];
   const state = { state: status, notice_due: due, signature: 'config', message: '测试状态', help: '测试指引' };
   const view = { page, modal };
-  const PX = { h: () => ({}), state: { init: { settings: { ai_check_on_start: auto } } },
+  const banner = withBanner ? { hidden: true, dataset: {}, nodes: [], append(...n) { this.nodes.push(...n); } } : null;
+  const PX = { h: (tag, a, ...c) => ({ tag, a, c }), clear: (el) => { el.nodes = []; return el; },
+    state: { init: { settings: { ai_check_on_start: auto } } },
     currentPage: () => view.page, modal: (options) => prompts.push(options), toast: (...a) => toasts.push(a),
     api: { call: async (method, args) => { calls.push([method, args]); return { ...state }; } } };
   vm.runInNewContext(fs.readFileSync(require.resolve('../web/ai-status.js'), 'utf8'), {
-    PX, document: { querySelectorAll: () => [], getElementById: () => null,
+    PX, document: { querySelectorAll: () => [], getElementById: (id) => (id === 'ai-health-banner' ? banner : null),
       querySelector: () => view.modal ? {} : null }, setTimeout });
-  return { PX, calls, prompts, toasts, state, view };
+  return { PX, calls, prompts, toasts, state, view, banner };
 }
-(async () => {
+module.exports = (async () => {
   const f = fixture({ modal: true });
   await f.PX.aiStatus.start();
   assert.strictEqual(f.calls[0][0], 'ai_health_check');
@@ -45,4 +47,23 @@ function fixture({ auto = true, page = 'home', modal = false, status = 'unconfig
       assert.strictEqual(disabled.calls.at(-1)[0], 'ai_health_check', 'manual testing remains available');
     }
   }
+
+  // Banner visibility: silent startup check and ready state keep banner hidden and empty; manual check avoids duplicate prefix
+  const b = fixture({ status: 'checking', due: false, withBanner: true });
+  b.state.message = '正在检测模型连接';
+  await b.PX.aiStatus.start();
+  assert.strictEqual(b.banner.hidden, true, 'silent startup probe must not flash a page-level banner');
+  assert.strictEqual(b.banner.nodes.length, 0);
+  b.PX.aiStatus.update({ ...b.state, state: 'error', message: '连接超时' });
+  assert.strictEqual(b.banner.hidden, false);
+  assert.ok(b.banner.nodes.length > 0);
+  b.view.page = 'settings';
+  b.PX.aiStatus.render();
+  assert.strictEqual(b.banner.hidden, true, 'settings page uses its inline panel instead of a top banner');
+  b.view.page = 'home';
+  await b.PX.aiStatus.check();
+  assert.strictEqual(b.banner.hidden, false, 'manual recheck keeps banner visible without blinking');
+  b.PX.aiStatus.update({ ...b.state, state: 'ready', message: '模型连接正常' });
+  assert.strictEqual(b.banner.hidden, true);
+  assert.strictEqual(b.banner.nodes.length, 0, 'ready state clears stale banner children');
 })().catch((error) => { console.error(error); process.exitCode = 1; });

@@ -41,7 +41,12 @@ SKIP_DIRS = {'.git', '.svn', '.hg', 'node_modules', '__pycache__', '.venv', 'ven
 # removing them (even "identical copies" or empty folders) can break the program.
 CACHE_DIRS = {'cache', 'caches', 'cache_data', 'code cache', 'cachestorage', 'service worker', 'logs', 'log', 'logfiles',
               'crashes', 'crashpad', 'crashdumps', 'temp', 'tmp', 'thumbnails'}
-APP_DIRS = {'wechat files', 'xwechat_files', 'wxwork', 'tencent files', 'my games', 'adobe', 'zoom'}
+APP_DIRS = {'wechat files', 'xwechat_files', 'wxwork', 'tencent files', 'my games', 'adobe', 'zoom',
+            'jianyingpro', 'jianyingpro drafts', 'capcut', 'larkshell', 'feishu', 'dingtalk',
+            'cloudmusic', 'qqmusic', 'virtual machines', 'virtualbox vms'}
+DATASET_DIR_EXTS = ('.parquet', '.zarr', '.lance', '.arrow', '.feather')
+DATASET_MARKERS = {'_metadata', '_common_metadata', '_success', 'dataset_info.json', 'dataset_dict.json'}
+_PART_SHARD_STEM = re.compile(r'^(?:part[-_.]?)?\d+$', re.I)
 MEDIA = {'image', 'video', 'audio'}
 # kinds of files people keep several versions of; numbered app data (data_0, data_1...) is never one
 VERSION_CATEGORIES = {'document', 'image', 'video', 'audio', 'archive'}
@@ -132,14 +137,21 @@ _INSTALLER_NOISE = {
     'setup', 'installer', 'install', 'x64', 'x86', 'amd64', 'arm64', 'win64', 'win32', 'win', 'windows', 'full',
     'offline', 'online', 'user', 'system', 'latest', 'stable', 'release', 'portable', 'cn', 'zh', 'en', 'us', 'web',
     'bit', '64bit', '32bit', 'desktop', 'client', 'beta', 'x', 'v', 'msi', 'exe', 'pc', 'official', 'chs', 'sc',
-    '安装包', '安装程序', '安装', '官方版', '正式版', '中文版', '电脑版', '客户端', '最新版',
+    '安装包', '安装程序', '安装', '官方版', '正式版', '中文版', '电脑版', '客户端', '最新版', '专业版',
 }
 _COMPANY_NOISE = {'inc', 'ltd', 'llc', 'corp', 'corporation', 'co', 'company', 'gmbh', 'technology', 'technologies',
                   'software', 'network', 'the', '有限公司', '科技', 'microsoft'}
 # common Chinese product names whose installers use the English name
 ALIASES = {'微信': 'wechat', '腾讯qq': 'qq', '钉钉': 'dingtalk', '企业微信': 'wxwork', '网易云音乐': 'cloudmusic',
            '百度网盘': 'baidunetdisk', '飞书': 'feishu', '搜狗输入法': 'sogou', '有道云笔记': 'youdaonote',
+           '剪映': 'jianyingpro', 'jianying': 'jianyingpro', '腾讯会议': 'tencentmeeting', 'voovmeeting': 'tencentmeeting',
+           'qq音乐': 'qqmusic', '哔哩哔哩': 'bilibili', '夸克': 'quark', '夸克网盘': 'quark',
+           '阿里云盘': 'adrive', 'wpsoffice': 'wps', '火绒安全软件': 'huorong', 'sysdiag': 'huorong',
+           'mozillafirefox': 'firefox',
            'visualstudiocode': 'vscode', 'microsoftvisualstudiocode': 'vscode', 'googlechrome': 'chrome'}
+
+
+_CN_NOISE_SUFFIX = re.compile(r'(?:安装包|安装程序|官方版|正式版|中文版|电脑版|客户端|最新版|专业版)+$')
 
 
 def tokens(text: str) -> list[str]:
@@ -152,7 +164,11 @@ def tokens(text: str) -> list[str]:
         if t.isdigit() or t in _INSTALLER_NOISE or t in _COMPANY_NOISE:
             continue
         t = re.sub(r'^v\d+$', '', t)
-        if t:
+        if len(t) > 3:
+            stripped = _CN_NOISE_SUFFIX.sub('', t)
+            if stripped:
+                t = stripped
+        if t and t not in _INSTALLER_NOISE and t not in _COMPANY_NOISE:
             out.append(t)
     return out
 
@@ -183,10 +199,11 @@ _TAIL = [
     re.compile(r'\s*-\s*(副本|copy)(\s*[\(（]?\d{1,3}[\)）]?)?$', re.I),
     re.compile(r'\s*(的)?副本\d*$'),
     re.compile(r'^copy of\s+', re.I),
-    # explicit version words, v2 / ver2 / 版本2, dates and years -- but not bare numbers: "data_1",
-    # "Font-900" or "Replay003" are separate files, not versions of one
-    re.compile(r'[\s_\-.]*(final|最终版?|终稿|定稿|修改版?|修订版?|改|new|新版?|old|旧版?|bak|backup|备份|draft|草稿|初稿|'
-               r'第[一二三四五六七八九十\d]+版|v\d+(\.\d+)*|ver\d+|版本\d+|\d{6,8}|(19|20)\d{2})$', re.I),
+    # explicit version words, v2 / ver2 / 版本2, dates and years -- but not bare numbers ("data_1", "Font-900")
+    # and never inside a Latin word ("ipv4", "armv8", "csv1", "threshold", "renew")
+    re.compile(r'[\s_\-.]*(?:(?<![a-zA-Z])(?:final|new|old|bak|backup|draft|v\d+(?:\.\d+)*|ver\d+)|'
+               r'最终版?|终稿|定稿|修改版?|修订版?|改|新版?|旧版?|备份|草稿|初稿|'
+               r'第[一二三四五六七八九十\d]+版|版本\d+|\d{6,8}|(?:19|20)\d{2})$', re.I),
 ]
 _FAMILY = {'.doc': '.docx', '.xls': '.xlsx', '.ppt': '.pptx', '.jpeg': '.jpg', '.htm': '.html', '.tif': '.tiff'}
 
@@ -207,7 +224,9 @@ def is_copy_name(stem: str) -> bool:
     return bool(_COPY_MARK.search(stem))
 
 
-_ORDER_MARK = re.compile(r'(?:v|ver|版本)\s*(\d+(?:\.\d+)*)$|((?:19|20)\d{2})$|(\d{6,8})$|第(\d+)版$', re.I)
+_CN_NUM = {'一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9, '十': 10}
+_ORDER_MARK = re.compile(r'(?<![a-zA-Z])(?:v|ver)\s*(\d+(?:\.\d+)*)$|版本\s*(\d+(?:\.\d+)*)$|'
+                         r'((?:19|20)\d{2})$|(\d{6,8})$|第([一二三四五六七八九十]|\d+)版$', re.I)
 _DATE_MARK = re.compile(r'((?:19|20)\d{2}|\d{6,8})$')
 
 
@@ -222,14 +241,16 @@ def name_version(stem: str) -> tuple[int, ...] | None:
     if not m:
         return None
     text = next(g for g in m.groups() if g)
+    if text in _CN_NUM:
+        return (_CN_NUM[text],)
     return tuple(int(x) for x in text.split('.'))
 
 
 def managed_dir(name: str) -> bool:
-    """True for a folder a program manages itself (see CACHE_DIRS / APP_DIRS) or a tool's dot-folder."""
+    """True for a folder a program manages itself (see CACHE_DIRS / APP_DIRS), a dataset directory, or a dot-folder."""
     low = name.lower().strip()
     return (low in SKIP_DIRS or low in CACHE_DIRS or low in APP_DIRS or low.startswith('.')
-            or low.endswith(('cache', 'cache_data')))
+            or low.endswith(('cache', 'cache_data')) or low.endswith(DATASET_DIR_EXTS))
 
 
 # ---------------------------------------------------------------------------
@@ -353,15 +374,18 @@ def _hash(path: str, limit: int = 64 * 1024 * 1024, cancel=None) -> str | None:
     return h.hexdigest()
 
 
-PROJECT_FILES = {'package.json', 'pyproject.toml', 'setup.py', 'requirements.txt', 'cargo.toml', 'go.mod', 'pom.xml',
-                 'build.gradle', 'build.gradle.kts', 'cmakelists.txt', 'composer.json', 'gemfile', 'pubspec.yaml'}
+PROJECT_FILES = {'package.json', 'pnpm-workspace.yaml', 'deno.json', 'deno.jsonc', 'bun.lockb', 'bun.lock',
+                 'pyproject.toml', 'setup.py', 'requirements.txt', 'cargo.toml', 'go.mod', 'pom.xml',
+                 'build.gradle', 'build.gradle.kts', 'cmakelists.txt', 'makefile', 'meson.build',
+                 'composer.json', 'gemfile', 'pubspec.yaml', 'project.godot'}
 PROJECT_EXTS = ('.sln', '.csproj', '.vcxproj', '.uproject', '.xcodeproj')
+PROJECT_DOT_DIRS = {'.git', '.svn', '.hg', '.obsidian', '.godot'}
 
 
 def is_project_dir(files, dirs) -> bool:
     """A code project's root: version control or a build file. Its documents are named on purpose
     (treatment.md and cinematic_treatment_v9.md), and its empty folders are often there on purpose too."""
-    return (any(d.name.lower() in ('.git', '.svn', '.hg') or d.name.lower().endswith(PROJECT_EXTS) for d in dirs)
+    return (any(d.name.lower() in PROJECT_DOT_DIRS or d.name.lower().endswith(PROJECT_EXTS) for d in dirs)
             or any(e.name.lower() in PROJECT_FILES or e.name.lower().endswith(PROJECT_EXTS) for e in files))
 
 
@@ -585,7 +609,7 @@ class Insights:
                         break
                     self.files.append(FileRec(file_path, entry.name, dirpath, st.st_size,
                                               st.st_mtime, fsops.age_time(st), st.st_atime,
-                                              paths.category_of(entry.name), root, fsops.file_size(entry.path, st)))
+                                              paths.category_of(entry.name), root, fsops.file_size(file_path, st)))
                     if len(self.files) >= MAX_FILES:
                         truncated = True
                         dirs.clear()
@@ -678,8 +702,29 @@ class Insights:
         return out
 
     def _incomplete(self, claimed):
-        rows = [r for r in self.files if os.path.splitext(r.name)[1].lower() in INCOMPLETE_EXTS
-                and self._age_days(r) >= 3 and paths.key(r.path) not in claimed]
+        # Dask / Arrow / Spark datasets name partition shards 0.part, 1.part, part-00000.part
+        # (where ".part" means partition, not a partial browser download).
+        shard_counts: dict[str, int] = {}
+        marker_folders: set[str] = set()
+        for r in self.files:
+            fk = paths.key(r.folder)
+            low = r.name.lower()
+            if low in DATASET_MARKERS:
+                marker_folders.add(fk)
+            stem, ext = os.path.splitext(r.name)
+            if ext.lower() == '.part' and _PART_SHARD_STEM.match(stem):
+                shard_counts[fk] = shard_counts.get(fk, 0) + 1
+        shard_folders = marker_folders | {fk for fk, n in shard_counts.items() if n >= 2}
+
+        rows = []
+        for r in self.files:
+            stem, ext = os.path.splitext(r.name)
+            ext = ext.lower()
+            if ext not in INCOMPLETE_EXTS or self._age_days(r) < 3 or paths.key(r.path) in claimed:
+                continue
+            if ext == '.part' and _PART_SHARD_STEM.match(stem) and paths.key(r.folder) in shard_folders:
+                continue
+            rows.append(r)
         if not rows:
             return []
         files = [self._file(r, f'{int(self._age_days(r))} 天前中断', remove=True) for r in rows]
@@ -751,12 +796,14 @@ class Insights:
             siblings = by_folder.get(r.folder)
             if siblings is None:
                 try:
-                    siblings = {base_name(e.name): os.path.join(r.folder, e.name)
-                                for e in os.scandir(fsops.long_path(r.folder)) if e.is_dir(follow_symlinks=False)}
+                    siblings = {e.name.strip().lower(): os.path.join(r.folder, e.name)
+                                for e in os.scandir(fsops.long_path(r.folder))
+                                if not fsops.is_link(e) and e.is_dir(follow_symlinks=False)}
                 except OSError:
                     siblings = {}
                 by_folder[r.folder] = siblings
-            folder = siblings.get(base_name(stem))
+            clean_stem = _COPY_MARK.sub('', stem).strip().lower()
+            folder = siblings.get(stem.strip().lower()) or siblings.get(clean_stem)
             if not folder:
                 continue
             verified, total = _verify_zip(r.path, folder, self.cancel) if ext == '.zip' else (None, 0)
@@ -914,15 +961,33 @@ def _verify_zip(path: str, folder: str, cancel=None) -> tuple[bool | None, int]:
         return None, 0
     if not infos or len(infos) > 5000 or sum(i.file_size for i in infos) > 128 * 1024 * 1024:
         return None, 0
-    names = [i.filename.replace('\\', '/') for i in infos]
+    if any(i.flag_bits & 0x1 for i in infos):
+        return None, 0  # encrypted entries cannot be verified without a password
+
+    def _decoded_name(info) -> list[str]:
+        raw_name = info.filename.replace('\\', '/')
+        out = [raw_name]
+        if not (info.flag_bits & 0x800):
+            try:
+                gbk = info.filename.encode('cp437').decode('gb18030').replace('\\', '/')
+                if gbk not in out:
+                    out.append(gbk)
+            except (UnicodeEncodeError, UnicodeDecodeError):
+                pass
+        return out
+
+    names = [_decoded_name(i)[-1] for i in infos]
     prefixes = {n.split('/', 1)[0] for n in names}
     strip = len(prefixes) == 1 and all('/' in n for n in names)
 
     def found(info):
-        rel = info.filename.replace('\\', '/')
-        if rel.startswith('/') or ntpath.splitdrive(rel)[0] or any(p in ('', '.', '..') or ':' in p for p in rel.split('/')):
-            return False
-        candidates = [rel] + ([rel.split('/', 1)[1]] if strip else [])
+        candidates = []
+        for rel in _decoded_name(info):
+            if rel.startswith('/') or ntpath.splitdrive(rel)[0] or any(p in ('', '.', '..') or ':' in p for p in rel.split('/')):
+                return False
+            candidates.append(rel)
+            if strip and '/' in rel:
+                candidates.append(rel.split('/', 1)[1])
         for c in candidates:
             p = os.path.join(folder, *c.split('/'))
             try:
@@ -968,7 +1033,7 @@ def _verify_zip(path: str, folder: str, cancel=None) -> tuple[bool | None, int]:
 def _best_app(name: str, index: list[dict]) -> dict | None:
     best, score = None, 0
     for app in index:
-        for k in app['keys']:
+        for k in app.get('product_keys') or app['keys']:
             if not k or len(k) < 2:
                 continue
             if name == k:

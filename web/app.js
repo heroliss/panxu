@@ -31,14 +31,16 @@
         const lit = since !== null && since < ARRIVE_MS;
         // a re-render of the rail (a badge changed) continues the animation instead of restarting it
         rail.appendChild(h('button.nav-item' + (id === current ? '.active' : '') + (lit ? '.arrived' : ''), {
-          type: 'button', 'aria-current': id === current ? 'page' : null, onclick: () => PX.go(id, { fromRail: true }),
-          style: lit ? { '--arrive-delay': -since + 'ms' } : null, title: tip || null,
+          type: 'button', 'aria-current': id === current ? 'page' : null, 'aria-label': label,
+          onclick: () => PX.go(id, { fromRail: true }),
+          style: lit ? { '--arrive-delay': -since + 'ms' } : null, title: tip ? `${label} · ${tip}` : label,
         }, PX.icon(icon), h('span', label),
         badge === true ? h('em.nav-badge.checked', { 'aria-label': tip }, PX.icon('check'))
           : badge ? h('em.nav-badge' + (kind ? '.' + kind : ''), { 'aria-label': tip }, badge) : null));
       }
     }
-    rail.appendChild(h('button.nav-item.advisor-btn', { type: 'button', onclick: () => PX.advisor.open() }, PX.icon('spark'), h('span', 'AI 顾问')));
+    rail.appendChild(h('button.nav-item.advisor-btn', { type: 'button', title: 'AI 顾问', 'aria-label': 'AI 顾问',
+      onclick: () => PX.advisor.open() }, PX.icon('spark'), h('span', 'AI 顾问')));
     const init = PX.state.init || {};
     const foot = h('div.rail-foot');
     if (init.sandbox) {
@@ -142,6 +144,7 @@
   let pressedAt = null;
   document.addEventListener('mousedown', (e) => { pressedAt = [e.clientX, e.clientY]; }, true);
   PX.endsSelection = function (e) {
+    if (e.target && e.target.closest && e.target.closest('button, input, select, textarea, a, label, summary')) return false;
     const sel = window.getSelection();
     if (!sel || sel.isCollapsed || !sel.toString().trim()) return false;
     const moved = pressedAt && Math.hypot(e.clientX - pressedAt[0], e.clientY - pressedAt[1]) > 3;
@@ -150,6 +153,22 @@
   document.addEventListener('click', (e) => {
     if (PX.endsSelection(e)) { e.stopPropagation(); e.preventDefault(); }
   }, true);
+  // Ctrl+F / Cmd+F focuses the active page's search input (expanding the home cleanup plan if needed)
+  document.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'f') {
+      if (document.querySelector('.backdrop') || document.body.classList.contains('drawer-open')) return;
+      if (PX.isCurrent('home') && PX.home && PX.home.state.plan && !PX.home.state.planOpen) {
+        PX.home.state.planOpen = true;
+        PX.refresh('home');
+      }
+      const box = document.querySelector('#main .search-box input[type="text"]');
+      if (box) {
+        e.preventDefault();
+        box.focus();
+        box.select();
+      }
+    }
+  });
 
   // ---- a job that took a while has finished: a short message with what came out, 「查看」 when the user has
   // moved to another page meanwhile, and the taskbar button flashes when PanXu is not the active window.
@@ -164,14 +183,16 @@
     ai_analyze: [(r) => `AI 分析完成：${r.suggestions.filter((s) => !s.expanded).length} 个文件夹有了建议`, 'space'],
     insights_scan: [(r) => (r.findings.length ? `我的文件整理完成：${r.findings.length} 类文件值得看看` : '我的文件整理完成：没有发现需要注意的文件'), 'mine'],
     ai_review_files: [(r) => `AI 看完了 ${Object.keys(r.files || {}).length} 个文件，结论写在每个文件下面`, 'mine'],
+    large_ai_review: [(r) => `AI 看完了 ${Object.keys(r.files || {}).length} 个大文件，结论写在每个文件下面`, 'large'],
     dup_ai_review: [(r) => `AI 看完了 ${Object.keys(r.copies || {}).length} 个副本，建议写在每个副本下面`, 'dups'],
     dup_scan: [(r) => (r.groups.length ? `找到 ${r.groups.length} 组重复文件，可节省 ${bytes(r.stats.wasted)}` : '重复文件查找完成：没有找到'), 'dups'],
+    app_residues_scan: [(r) => `软件残留检查完成：发现 ${(r.items || []).length} 项`, 'apps'],
     ai_explain: [() => 'AI 解释完成，结论写在每一项下面', null],
     apps_measure_all: [(r) => `${Object.keys(r || {}).length} 个程序的大小算好了`, 'apps'],
   };
   // jobs whose result replaces what these pages show: an old scroll position means nothing there any more
-  const REPLACES = { checkup: ['home', 'junk', 'mine', 'dups'], junk_scan: ['junk'], space_scan: ['space', 'large'],
-    insights_scan: ['mine'], dup_scan: ['dups'] };
+  const REPLACES = { checkup: ['home', 'junk', 'space', 'large', 'mine', 'dups', 'apps', 'startup'], junk_scan: ['junk'],
+    space_scan: ['space', 'large'], insights_scan: ['mine'], dup_scan: ['dups'], app_residues_scan: ['apps'] };
   PX.jobDone = function (method, result, ms, startedOn) {
     for (const id of REPLACES[method] || []) if (!PX.isCurrent(id)) PX.forgetScroll(id);
     const done = DONE[method];

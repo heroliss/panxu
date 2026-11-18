@@ -17,8 +17,9 @@
     info: ['g-info', '体积较大但不能直接删除的东西，以及应该怎么处理。'],
   };
   // where each category is handled in detail
-  const CAT_PAGE = { 垃圾文件: ['junk', '垃圾清理'], 应用数据: ['space', '空间分析'], 重复文件: ['dups', '重复文件'],
-    开机启动: ['startup', '开机与服务'], 软件残留: ['residues', '应用·软件残留'], 旧版本数据: ['residues', '应用·软件残留'],
+  const CAT_PAGE = { 垃圾文件: ['junk', '垃圾清理'], 应用数据: ['space', '空间分析'], 其他目录: ['space', '空间分析'],
+    其他临时目录: ['space', '空间分析'], 重复文件: ['dups', '重复文件'], 开机启动: ['startup', '开机与服务'],
+    软件残留: ['residues', '应用·软件残留'], 旧版本数据: ['residues', '应用·软件残留'],
     可以卸载的程序: ['apps', '应用'], 服务: ['services', '开机与服务·服务'] };
   // inside each category of the plan (the categories keep their place)
   const PLAN_SORT = {
@@ -38,11 +39,20 @@
     executing: 0, entering: null, freeBefore: null, savingOption: null, activeOptions: null, optionsOpen: new Set(), planOpen: false,
     sort: { key: 'score', dir: 'desc' } };
   let root = null;
+  const planSearch = PX.makeSearch('搜索名称、程序或路径', () => draw(true));
+  const matchPlanItem = (it, q) => {
+    if (!q) return true;
+    const hay = [it.title, it.category, it.why, it.what, it.advice, it.location, ...(it.paths || []), PX.appsText(it.apps)]
+      .filter(Boolean).join(' ').toLowerCase();
+    return hay.includes(q);
+  };
 
   function strata(drive, reclaim, cls) {
     const total = drive.total || 1;
     const rec = Math.min(reclaim || 0, drive.used);
-    const bar = h('div.strata' + (cls ? '.' + cls : ''), { role: 'img',
+    const [health] = PX.driveHealth(drive);
+    const classes = [cls, health].filter(Boolean).join('.');
+    const bar = h('div.strata' + (classes ? '.' + classes : ''), { role: 'img',
       'aria-label': `已用 ${fmt.bytes(drive.used)}，可用 ${fmt.bytes(drive.free)}` });
     bar.appendChild(h('i.used', { style: { width: ((drive.used - rec) / total) * 100 + '%' } }));
     if (rec > 0) bar.appendChild(h('i.reclaim', { style: { width: (rec / total) * 100 + '%' } }));
@@ -56,7 +66,10 @@
   const isSel = (it) => selectable(it) && PX.sel.has(it);
   function setSel(it, on) {
     PX.sel.set(it, on);
-    if (it.kind === 'rule' && PX.junk) PX.junk.state.touched = true;  // 垃圾清理 keeps this choice
+    if (it.kind === 'rule' && PX.junk) {
+      PX.junk.state.touched = true;  // 垃圾清理 keeps this choice
+      PX.junk.syncRail?.();
+    }
   }
   function selectedItems() { return items().filter(isSel); }
   function selectedSize() { return selectedItems().reduce((s, it) => s + (it.size || 0), 0); }
@@ -68,10 +81,12 @@
       PX.sel.rules.clear(); PX.sel.paths.clear(); PX.sel.items.clear();
       for (const it of plan.items) if (it.selected && selectable(it)) PX.sel.set(it, true);
       if (PX.junk) PX.junk.state.touched = true;
+      PX.state.junkTotal = null;
       state.planId = plan.id;
       state.open = new Set();
       state.planOpen = false;
       state.picked = null;
+      planSearch.query = '';
     }
     state.plan = plan;
     state.status = 'done';
@@ -174,7 +189,7 @@
       for (const it of items()) if (it.status !== 'pending') PX.sel.set(it, false);
       PX.state.init.drives = await PX.api.call('drives');
       if (PX.sandbox) PX.sandbox.refresh();
-      if (PX.junk) PX.junk.invalidate();
+      if (PX.junk) PX.junk.reload();
     } catch (e) { if (!e.cancelled) PX.fail(e); }
     state.status = 'done';
     state.jobId = null;
@@ -230,7 +245,7 @@
     const ck = { ...(state.status === 'running' ? state.activeOptions : init.settings.checkup),
       ...(state.savingOption ? { [state.savingOption.key]: state.savingOption.value } : {}) };
     const busy = state.status === 'running' || state.status === 'executing' || !!state.savingOption;
-    const driveName = (d) => d.letter || PX.displayPath(d.root);
+    const driveName = (d) => d.letter || PX.displayPath(d.root).replace(/\\$/, '');
     const selected = PX.checkupDriveRoots(drives, ck);
     const aiReady = PX.checkupAIReady(init);
     const config = box.appendChild(h('div.checkup-config'));
@@ -278,6 +293,9 @@
         if (e.target.open) state.optionsOpen.add(key); else state.optionsOpen.delete(key);
       } }, h('summary', title)));
     }
+    if (ck.space_scan === false) {
+      toggle('space_scan', '空间与残留扫描', '统计磁盘目录占用、大文件与软件残留目录');
+    }
     toggle('apps_services', '检查应用与服务', '已安装程序的占用和最近使用、第三方服务的启动方式；只读取，不会卸载或修改');
     const duplicate = toggle('duplicates', '查找重复文件', ck.cross_drive_duplicates !== false ? '校验内容，包含盘内和跨盘重复' : '校验内容，只查同一磁盘内的重复');
     const dupDetails = advanced(duplicate, 'duplicates', '查重选项');
@@ -311,17 +329,21 @@
     const reclaim = 0;
     const [v, u] = fmt.split(sys.free);
     const name = sys.letter || sys.root.replace(/\\$/, '');
+    const [health, healthLabel, healthTag] = PX.driveHealth(sys);
+    const usedColor = health === 'crit' ? 'var(--danger)' : health === 'tight' ? 'var(--amber)' : 'var(--ink-2)';
     // after a cleanup: how much more free space the drive really has now (the Recycle Bin still holds the rest)
     const gained = state.report && state.freeBefore !== null ? sys.free - state.freeBefore : 0;
     const box = c.appendChild(h('section.hero',
       h('div.hero-top', h('span.hero-figure', v, h('small', u)),
         gained > 1024 * 1024 ? h('span.hero-gain', '+' + fmt.bytes(gained)) : null,
-        h('span.hero-caption', `${name} ${sys.label || '系统盘'}的可用空间，共 ${fmt.bytes(sys.total)}`)),
+        healthLabel ? PX.tag(healthLabel, healthTag, 'warn') : null,
+        h('span.hero-caption', `${name}${sys.label ? `（${sys.label}）` : ' 系统盘'}的可用空间，共 ${fmt.bytes(sys.total)}`)),
       strata(sys, reclaim),
       h('div.hero-legend',
-        h('span', h('span.dot', { style: { background: 'var(--ink-2)' } }), ' 已用', h('b', fmt.bytes(sys.used))),
+        h('span', h('span.dot', { style: { background: usedColor } }), ' 已用', h('b', fmt.bytes(sys.used)),
+          sys.total ? h('span.muted', `（${fmt.pct(sys.used, sys.total)}%）`) : null),
         reclaim ? h('span', h('span.dot', { style: { background: 'var(--verdigris)' } }), ' 选中的可以释放', h('b', fmt.bytes(reclaim))) : null,
-        h('span', h('span.dot', { style: { background: 'var(--rule)' } }), ' 可用', h('b', fmt.bytes(sys.free))))));
+        h('span', h('span.dot', { style: { background: 'var(--rule-2)', boxShadow: 'inset 0 0 0 1px var(--ink-3)' } }), ' 可用', h('b', fmt.bytes(sys.free))))));
     if (state.plan && state.status !== 'running') {
       const choices = box.appendChild(h('details.checkup-next', { open: state.optionsOpen.has('next'),
         ontoggle: (e) => { if (e.target.isConnected) e.target.open ? state.optionsOpen.add('next') : state.optionsOpen.delete('next'); } },
@@ -420,6 +442,8 @@
       h('div.rc-head', PX.icon(problems.length ? 'warn' : 'check'),
         h('b', problems.length ? `清理完成，${problems.length} 项没有完成` : '清理完成'),
         h('span.muted', ok ? `处理了 ${ok} 项` : ''), h('span.grow'),
+        r.recycled && r.recycled.count ? h('button.btn.small', { type: 'button',
+          onclick: () => PX.api.call('open_system_page', { page: 'recyclebin' }).catch(PX.fail) }, PX.icon('trash'), '打开回收站') : null,
         h('button.btn.small', { type: 'button', onclick: () => PX.go('history') }, '查看记录')),
       figures.length ? h('div.rc-figures', figures.map(([kind, value, label, note]) =>
         h('div.rc-figure' + (kind ? '.' + kind : ''), h('div.rc-value', value), h('div.rc-label', label), h('div.rc-note', note))))
@@ -504,7 +528,7 @@
     const p = state.plan;
     const space = p.coverage && p.coverage.space;
     const roots = space ? space.roots || [] : [];
-    const scopeLine = !p.coverage ? '' : (roots.length ? `空间分析已查看 ${roots.map(PX.displayPath).join('、')}` : '本次未运行空间分析')
+    const scopeLine = !p.coverage ? '' : (roots.length ? `空间分析已查看 ${roots.map((r) => PX.displayPath(r).replace(/\\$/, '')).join('、')}` : '本次未运行空间分析')
       + `；个人文件${p.options?.duplicates !== false ? '和重复文件' : ''}按本次范围检查，跳过系统、应用数据和排除位置。`
       + (space && space.incomplete ? `空间统计有跳过项${space.denied ? `（${fmt.count(space.denied)} 个目录无法读取）` : ''}，显示的是已检查到的占用。` : '');
     const section = c.appendChild(h('section.checkup-coverage', { 'aria-label': '本次检查情况' },
@@ -558,18 +582,19 @@
   function scoreBar(c) {
     const used = state.plan.threshold;
     const now = scoreMatch();
+    const locked = state.status === 'executing';
     const bar = c.appendChild(h('div.score-bar'));
     bar.appendChild(h('div.sb-row', h('b', '按分数勾选'),
-      PX.seg([...THRESHOLDS, ['none', '全不选']], now, (t) => selectByScore(t)),
+      PX.seg([...THRESHOLDS, ['none', '全不选']], now, (t) => { if (!locked) selectByScore(t); }),
       now === null ? h('span.small.muted', '你已经手动调整过勾选') : null,
       // the box changes what the score ticks, so it applies to the current choice at once
-      h('label.inline-check.small', h('input', { type: 'checkbox', checked: state.withMine, onchange: (e) => {
+      h('label.inline-check.small', h('input', { type: 'checkbox', checked: state.withMine, disabled: locked, onchange: (e) => {
         state.withMine = e.target.checked;
         if (typeof now === 'number') selectByScore(now, !state.withMine); else draw(true);
       } }), '包括我的文件')));
     bar.appendChild(h('div.sb-legend', PX.score(90), h('span', '8–10 建议清理'), PX.score(60), h('span', '5–7 可以考虑'),
-      PX.score(30), h('span', '0–4 看你需要'),
-      h('span.muted', `· 体检按 ≥ ${used} 分自动勾选（设置里可以改）。存档、正在使用的程序、不能撤销的操作从不按分数勾选。`)));
+      PX.score(30), h('span', '0–4 看你需要')));
+    bar.appendChild(h('div.small.muted', `体检按 ≥ ${used} 分自动勾选（设置里可以改）。存档、正在使用的程序、不能撤销的操作从不按分数勾选。`));
   }
 
   // 仅供了解: what can be done about it instead of deleting
@@ -601,16 +626,7 @@
     } else if (a.kind === 'page') {
       PX.go(a.arg);
     } else if (a.kind === 'copy') {
-      try {
-        await navigator.clipboard.writeText(a.arg);
-      } catch (e) {
-        const area = document.body.appendChild(h('textarea', { style: { position: 'fixed', opacity: '0' } }));
-        area.value = a.arg;
-        area.select();
-        document.execCommand('copy');
-        area.remove();
-      }
-      PX.toast(`已复制：${a.arg}（在 PowerShell 或终端里运行）`);
+      PX.copyText(a.arg, `已复制：${a.arg}（在 PowerShell 或终端里运行）`);
     } else if (a.kind === 'reveal') {
       PX.reveal(it.location);
     }
@@ -626,7 +642,7 @@
   const rowText = (it) => (it.group === 'info' ? it.advice || it.what || it.why : it.why || it.what);
 
   function itemRow(list, it) {
-    const can = selectable(it);
+    const can = selectable(it) && state.status !== 'executing';
     const box = h('input', { type: 'checkbox', checked: isSel(it), disabled: !can,
       'aria-label': '选择 ' + it.title, onclick: (e) => e.stopPropagation(),
       onchange: (e) => { setSel(it, e.target.checked); draw(true); } });
@@ -689,11 +705,21 @@
   // a duplicate's copies picked by hand, every one of them too (the detail then warns); the backend scores the new
   // choice by the same rules
   async function chooseCopies(it, path, want, box) {
-    const remove = new Set(it.paths);
+    if (state.status === 'executing') return;
+    const wasSelected = PX.sel.has(it);
+    const oldPaths = [...(it.paths || [])];
+    const remove = new Set(oldPaths);
     want ? remove.add(path) : remove.delete(path);
     if (!remove.size) { box.checked = true; PX.toast('至少留一份要移到回收站的；不想处理这一组，取消它前面的勾选就好'); return; }
     try {
       const fresh = await PX.api.call('plan_dup_choose', { item_id: it.id, remove: [...remove] });
+      const nextPaths = new Set(fresh.paths || []);
+      for (const p of oldPaths) if (!nextPaths.has(p)) PX.sel.paths.delete(p);
+      if (fresh.blocked) {
+        for (const p of nextPaths) PX.sel.paths.delete(p);
+      } else if (wasSelected) {
+        for (const p of nextPaths) PX.sel.paths.add(p);
+      }
       Object.assign(it, fresh);
     } catch (e) { PX.fail(e); }
     draw(true);
@@ -709,7 +735,7 @@
     if (dup) {
       // every copy, in a fixed order: ticked ones go to the Recycle Bin, any of them, all of them too
       const going = new Set(it.paths);
-      const editable = it.status === 'pending';
+      const editable = it.status === 'pending' && state.status !== 'executing';
       for (const f of it.dup_files || []) {
         const on = going.has(f.path);
         rows.push(PX.placeRow(f.path, { badge: on ? ['移到回收站', 'warn'] : ['保留', 'good'], facts: PX.copyFacts(f, true),
@@ -726,6 +752,7 @@
     const shown = rowText(it);  // the row already says this: never again below
     const fact = (text) => (text && text !== shown ? text : '');
     const everyCopy = dup && !it.keep && it.status === 'pending';
+    const canExclude = it.status === 'pending' && isFolder(it) && it.kind === 'paths' && all.length === 1 && !it.blocked;
     return PX.detailPanel({
       action: it.status === 'pending' ? it.action : null,
       warn: everyCopy ? `你选了全部 ${(it.dup_files || []).length} 份：这个文件一份都不保留，只能从回收站还原。` : it.caution,
@@ -735,26 +762,27 @@
       // 「很久没动过的大文件：1.9 年没有修改过」 when the row says 「1.9 年没有修改过」: once is enough
       score: { score: it.score, basis: (it.basis || []).filter((l) => l !== shown && l.replace(/^[^：]{1,12}：/, '') !== shown) },
       places: { title, note: dup ? `${(it.dup_files || []).length} 份，勾选的移到回收站` : all.length > 1 ? `${all.length} 项` : '', rows, more },
+      actions: canExclude ? [PX.excludeButton(all[0], () => reload(), '加入排除（以后不再提示）')] : null,
       enter: state.entering === it.id,
     });
   }
 
-  function group(c, id, name) {
-    const rows = items().filter((it) => it.group === id && it.status === 'pending');  // handled ones: see handled()
-    if (!rows.length) return;
-    const closed = state.open.has('closed:' + id);
+  function group(c, id, name, q) {
+    const rows = items().filter((it) => it.group === id && it.status === 'pending' && matchPlanItem(it, q));  // handled ones: see handled()
+    if (!rows.length) return 0;
+    const closed = !q && state.open.has('closed:' + id);
     const flip = (key) => (open) => { open ? state.open.add(key) : state.open.delete(key); draw(true); };
     const sec = c.appendChild(h('section.group-card.' + GROUP[id][0], { id: 'group-' + id }));
     sec.appendChild(PX.foldHead('div.gc-head', !closed, (open) => flip('closed:' + id)(!open),
       h('i.sw.' + GROUP[id][0]), h('h2', name), h('span.gc-count', `${rows.length} 项`),
       h('span.gc-note', GROUP[id][1]), h('span.gc-size', fmt.bytes(rows.reduce((s, it) => s + (it.size || 0), 0)))));
-    if (closed) return;
+    if (closed) return rows.length;
     const list = sec.appendChild(h('div.list'));
     const cats = [];
     for (const it of rows) { let cat = cats.find((x) => x.name === it.category); if (!cat) cats.push(cat = { name: it.category, rows: [] }); cat.rows.push(it); }
     for (const cat of cats) {
       cat.rows = PX.sortRows(cat.rows, PLAN_SORT, state.sort, 'size');
-      const can = cat.rows.filter(selectable);
+      const can = cat.rows.filter((it) => selectable(it) && state.status !== 'executing');
       const personal = cat.rows.some((it) => it.personal) && !CAT_PAGE[cat.name];
       const page = CAT_PAGE[cat.name] || (personal ? ['mine', '我的文件'] : null);
       // programs are uninstalled one at a time: their category has no box to tick them all
@@ -770,15 +798,18 @@
             `去「${page[1]}」`, PX.icon('chev')) : null));
       }
       const key = 'cat:' + id + cat.name;
-      const open = state.open.has(key);
+      const open = !!q || state.open.has(key);
       cat.rows.slice(0, PX.foldCount(cat.rows.length, open)).forEach((it) => itemRow(list, it));
-      const more = PX.foldButton(cat.rows.length, open, flip(key));
+      const more = q ? null : PX.foldButton(cat.rows.length, open, flip(key));
       if (more) list.appendChild(more);
     }
+    return rows.length;
   }
 
   function draw(keepScroll) {
     if (!root || !PX.isCurrent('home')) return;
+    if (planSearch.composing) return;
+    const focusSel = planSearch.captureFocus();
     const main = document.getElementById('main');
     const top = main.scrollTop;
     const c = PX.clear(root);
@@ -818,20 +849,28 @@
       const details = c.appendChild(h('section', { id: 'checkup-plan-details', hidden: !state.planOpen }));
       if (state.planOpen) {
         if (items().some(selectable)) scoreBar(details);
-        if (items().filter((it) => it.status === 'pending').length > 1) {
-          details.appendChild(PX.sortBar(PLAN_SORT, state.sort, (s) => { state.sort = s; draw(true); }));
+        const pendingCount = items().filter((it) => it.status === 'pending').length;
+        if (pendingCount > 1 || planSearch.query) {
+          details.appendChild(h('div.list-tools',
+            pendingCount > 1 ? PX.sortBar(PLAN_SORT, state.sort, (s) => { state.sort = s; draw(true); }) : h('span'),
+            pendingCount > 3 || planSearch.query ? h('div.list-tools-right', planSearch.box()) : null));
         }
-        for (const g of p.groups) group(details, g.id, g.name);
-        handled(details);
+        const q = planSearch.query.trim().toLowerCase();
+        let matched = 0;
+        for (const g of p.groups) matched += group(details, g.id, g.name, q);
+        if (q && !matched) details.appendChild(PX.empty('没有匹配的方案项', '换个关键词试试。'));
+        if (!q) handled(details);
       }
       toolCoverage(c);  // reference, after the plan: what was looked at, and the way into each tool
       const n = selectedItems().length;
       if (n || state.status === 'executing') {
         c.appendChild(h('div.actionbar', h('div.grow', h('span.fig', fmt.bytes(selectedSize())), h('span.muted', `  已选 ${n} 项`)),
+          state.status !== 'executing' && n ? h('button.btn', { type: 'button', onclick: () => selectByScore('none') }, '取消选择') : null,
           h('button.btn.primary', { type: 'button', disabled: state.status === 'executing' || !n, onclick: execute },
             state.status === 'executing' ? '正在清理…' : `执行选中的 ${n} 项`)));
       }
     }
+    planSearch.restoreFocus(focusSel);
     if (keepScroll) main.scrollTop = top;
   }
 

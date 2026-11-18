@@ -21,12 +21,28 @@ STATUS_LABELS = {'running': '正在运行', 'stopped': '已停止', 'paused': '�
 def classify(binpath: str, env: dict) -> tuple[str, str, dict]:
     """('windows' | 'microsoft' | 'third_party', exe path, version info)."""
     exe, _ = startup.split_command(binpath or '', env)
-    exe = startup.resolve_executable(exe, env)
+    if exe.startswith('\\??\\'):
+        exe = exe[4:]
     system_root = env.get('SystemRoot', 'C:\\Windows')
+    if exe.lower().startswith('\\systemroot\\'):
+        exe = ntpath.join(system_root, exe[12:])
+    exe = startup.resolve_executable(exe, env)
     info = winapi.file_version_info(exe) if exe and os.path.isfile(exe) else {}
     if exe and paths.is_within(exe, system_root):
         return 'windows', exe, info
-    company = info.get('CompanyName', '')
+    for var in ('ProgramData', 'ProgramFiles', 'ProgramFiles(x86)'):
+        base = env.get(var)
+        if exe and base and (paths.is_within(exe, ntpath.join(base, 'Microsoft', 'Windows Defender'))
+                             or paths.is_within(exe, ntpath.join(base, 'Windows Defender'))):
+            return 'microsoft', exe, info
+    root = itemfacts.app_root(exe)
+    pkg = itemfacts.package_name(root).lower()
+    pkg_folder = ntpath.basename(root).lower() if pkg else ''
+    if pkg and (pkg.startswith(('microsoft.', 'windows.')) or pkg_folder.endswith('__8wekyb3d8bbwe')):
+        return 'microsoft', exe, info
+    company = info.get('CompanyName', '') or itemfacts.package_publisher(root)
+    if company and 'CompanyName' not in info:
+        info = {**info, 'CompanyName': company}
     if 'microsoft' in company.lower():
         return 'microsoft', exe, info
     return 'third_party', exe, info
@@ -53,7 +69,7 @@ class ServiceManager:
         return rows
 
     def _delayed(self, name: str) -> bool:
-        if not winapi.IS_WINDOWS:
+        if self._source is not None or not winapi.IS_WINDOWS:
             return False
         import winreg
         try:

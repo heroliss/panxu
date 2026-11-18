@@ -91,7 +91,7 @@ class SpaceScan:
                     return
                 try:
                     if not (cancel is not None and cancel.is_set()):
-                        self._scan_dir(item[0], item[1], work, state)
+                        self._scan_dir(item[0], item[1], work, state, cancel)
                 except Exception:  # noqa: BLE001 - one bad directory must not stop the scan
                     item[0].flags |= FLAG_DENIED
                     state.denied += 1
@@ -115,7 +115,7 @@ class SpaceScan:
         self._finish(states, started)
         return self
 
-    def _scan_dir(self, node: Node, path: str, work: queue.Queue, state: _WorkerState):
+    def _scan_dir(self, node: Node, path: str, work: queue.Queue, state: _WorkerState, cancel=None):
         state.dirs += 1
         try:
             if self.skip and self.skip(path):
@@ -137,13 +137,16 @@ class SpaceScan:
         size = logical_size = files = 0
         newest = changed = 0.0
         with it:
-            for entry in it:
+            for index, entry in enumerate(it):
+                if cancel is not None and index & 1023 == 0 and cancel.is_set():
+                    break
                 try:
                     st = entry.stat(follow_symlinks=False)
                 except OSError:
                     node.flags |= FLAG_DENIED
                     continue
-                if self.skip and self.skip(entry.path):
+                child_path = os.path.join(path, entry.name)
+                if self.skip and self.skip(child_path):
                     node.flags |= FLAG_EXCLUDED
                     continue
                 if fsops.st_is_link(st):
@@ -153,7 +156,7 @@ class SpaceScan:
                     child = Node(entry.name, node)
                     children.append(child)
                     self.nodes.append(child)  # list.append is atomic; child index > parent index
-                    work.put((child, os.path.join(path, entry.name)))
+                    work.put((child, child_path))
                     continue
                 attrs = getattr(st, 'st_file_attributes', 0)
                 logical_size += st.st_size
@@ -163,7 +166,7 @@ class SpaceScan:
                     state.cloud_bytes += st.st_size
                     state.cloud_files += 1
                     continue  # online-only: occupies no local space
-                file_path = os.path.join(path, entry.name)
+                file_path = child_path
                 fsize = fsops.file_size(file_path, st)
                 size += fsize
                 if st.st_mtime > newest:
@@ -289,7 +292,8 @@ class SpaceScan:
         try:
             with os.scandir(fsops.long_path(path)) as it:
                 for entry in it:
-                    if self.skip and self.skip(entry.path):
+                    file_path = os.path.join(path, entry.name)
+                    if self.skip and self.skip(file_path):
                         continue
                     try:
                         st = entry.stat(follow_symlinks=False)
@@ -298,7 +302,6 @@ class SpaceScan:
                     if stat.S_ISDIR(st.st_mode) or fsops.st_is_link(st):
                         continue
                     attrs = getattr(st, 'st_file_attributes', 0)
-                    file_path = os.path.join(path, entry.name)
                     rows.append({'name': entry.name, 'path': file_path,
                                  'size': 0 if attrs & winapi.CLOUD_ATTRIBUTES else fsops.file_size(file_path, st),
                                  'logical_size': st.st_size,
@@ -323,6 +326,36 @@ class SpaceScan:
             c['top_exts'] = [e for _, e in sorted(c['top_exts'], reverse=True)[:6]]
         return out
 
+    def search_dirs(self, query: str, limit: int = 60) -> tuple[list[Node], int]:
+        """Find live directories matching ``query`` (by folder name, or full path when ``\\`` is in ``query``),
+        sorted largest first."""
+        q = (query or '').strip().lower().replace('/', '\\')
+        if not q:
+            return [], 0
+        by_path = '\\' in q or ':' in q
+        matches: list[Node] = []
+        roots = list(self.root.children or ()) if self.multiple else [self.root]
+        if not by_path:
+            stack = roots[:]
+            while stack:
+                n = stack.pop()
+                if n is not self.root and q in n.name.lower():
+                    matches.append(n)
+                if n.children:
+                    stack.extend(n.children)
+        else:
+            pstack = [(r, r.name.rstrip('\\').lower()) for r in roots]
+            while pstack:
+                n, cur = pstack.pop()
+                if q in cur:
+                    matches.append(n)
+                if n.children:
+                    prefix = cur + '\\'
+                    for c in n.children:
+                        pstack.append((c, prefix + c.name.lower()))
+        top = heapq.nlargest(max(1, int(limit)), matches, key=lambda n: n.size)
+        return top, len(matches)
+
     def remove_path(self, path: str, removed_bytes: int, removed_files: int, logical_size: int | None = None):
         """Reflect a deletion in the tree without rescanning.
 
@@ -331,23 +364,28 @@ class SpaceScan:
         """
         node = self.find(path)
         target_parent = None
+        removed_dirs = 0
         if node is not None and node is not self.root:
             target_parent = node.parent
             target_parent.children = tuple(c for c in target_parent.children or () if c is not node) or None
             removed_bytes, removed_files = node.size, node.files
+            removed_dirs = 1 + node.dirs
             logical_size = node.logical_size
         else:
-            target_parent = self.find(os.path.dirname(path))
-        key = path.lower()
+            target_parent = self.find(os.path.dirname(path.rstrip('\\/')))
+        k = paths.key(path)
         if logical_size is None:
-            logical_size = next((f['logical_size'] for f in self.top_files if f['path'].lower() == key), removed_bytes)
+            logical_size = next((f['logical_size'] for f in self.top_files if paths.key(f['path']) == k), removed_bytes)
         n = target_parent
         while n is not None:
             n.size = max(0, n.size - removed_bytes)
             n.logical_size = max(0, n.logical_size - logical_size)
             n.files = max(0, n.files - removed_files)
+            n.dirs = max(0, n.dirs - removed_dirs)
+            if n.children:
+                n.children = tuple(sorted(n.children, key=lambda c: c.size, reverse=True))
             n = n.parent
         if self.stats:
-            self.stats.update(bytes=self.root.size, logical_bytes=self.root.logical_size, files=self.root.files)
-        self.top_files = [f for f in self.top_files
-                          if f['path'].lower() != key and not f['path'].lower().startswith(key + os.sep)]
+            self.stats.update(bytes=self.root.size, logical_bytes=self.root.logical_size, files=self.root.files,
+                              dirs=max(1, self.stats.get('dirs', len(self.nodes)) - removed_dirs))
+        self.top_files = [f for f in self.top_files if not paths.is_within(f['path'], path)]

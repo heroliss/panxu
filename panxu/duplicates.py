@@ -20,7 +20,7 @@ from .insights import is_program_dir, is_project_dir
 CHUNK = 1024 * 1024
 EDGE = 64 * 1024
 # a project's build output: the build writes it again
-BUILD_DIRS = {'out', 'dist', 'build', 'target', 'bin', 'obj', 'release', 'debug', '.next', '.nuxt', 'coverage'}
+BUILD_DIRS = {'out', 'dist', 'build', 'target', 'bin', 'obj', 'release', 'debug', '.next', '.nuxt', '.godot', 'coverage'}
 # which copy of a group to keep first: a program's file, then a project's source, then a build output, then a
 # copy next to a project, then a loose copy
 PLACE_RANK = {'program': 0, 'project': 1, 'build': 2, 'near': 3, None: 4}
@@ -158,9 +158,24 @@ REF_EXTS = {
     '.ini', '.cfg', '.conf', '.properties', '.plist', '.sh', '.bat', '.cmd', '.ps1', '.sql', '.csv', '.tex', '.svg',
     '.ass', '.srt', '.vtt', '.cmake', '.mk'}
 REF_SKIP_DIRS = {'node_modules', '.git', '.svn', '.hg', '__pycache__', '.venv', 'venv', '.cache'} | BUILD_DIRS
+REF_IGNORE_BIG_FILES = {'package-lock.json', 'pnpm-lock.yaml', 'yarn.lock', 'cargo.lock', 'composer.lock', 'poetry.lock'}
 REF_MAX_FILE = 2 * 1024 * 1024
 REF_MAX_FILES = 20000
 REF_MAX_BYTES = 200 * 1024 * 1024
+
+
+def _decode_source(raw: bytes) -> str:
+    if raw.startswith((b'\xff\xfe', b'\xfe\xff')):
+        return raw.decode('utf-16', 'ignore')
+    if b'\x00' in raw[:512]:
+        try:
+            return raw.decode('utf-16-le')
+        except UnicodeDecodeError:
+            pass
+    try:
+        return raw.decode('utf-8')
+    except UnicodeDecodeError:
+        return raw.decode('gb18030', 'ignore')
 
 
 def _search_names(root: str, names: set[str], cancel=None, skip=None, max_bytes=REF_MAX_BYTES, deadline=None) -> dict:
@@ -180,23 +195,27 @@ def _search_names(root: str, names: set[str], cancel=None, skip=None, max_bytes=
             return True
         return False
 
-    for dirpath, files, dirs in fsops.walk_files(root, cancel, skip=excluded, on_error=unreadable):
+    for dirpath, files, dirs in fsops.walk_files(root, cancel, skip_dirs=frozenset(REF_SKIP_DIRS),
+                                                 skip=excluded, on_error=unreadable):
         if deadline is not None and time.monotonic() >= deadline:
             return {'found': found, 'searched': searched, 'bytes': total, 'complete': False}
-        dirs[:] = [d for d in dirs if d.name.lower() not in REF_SKIP_DIRS]
         for entry in files:
             if deadline is not None and time.monotonic() >= deadline:
                 return {'found': found, 'searched': searched, 'bytes': total, 'complete': False}
-            if os.path.splitext(entry.name)[1].lower() not in REF_EXTS:
+            low_name = entry.name.lower()
+            if os.path.splitext(low_name)[1] not in REF_EXTS:
                 continue
             try:
                 st = entry.stat(follow_symlinks=False)
             except OSError:
                 complete = False
                 continue
-            if not stat.S_ISREG(st.st_mode) or st.st_size > REF_MAX_FILE \
-                    or getattr(st, 'st_file_attributes', 0) & winapi.CLOUD_ATTRIBUTES:
+            if not stat.S_ISREG(st.st_mode) or getattr(st, 'st_file_attributes', 0) & winapi.CLOUD_ATTRIBUTES:
                 complete = False
+                continue
+            if st.st_size > REF_MAX_FILE:
+                if low_name not in REF_IGNORE_BIG_FILES:
+                    complete = False
                 continue
             if searched >= REF_MAX_FILES or total + st.st_size > max_bytes:
                 return {'found': found, 'searched': searched, 'bytes': total, 'complete': False}
@@ -207,7 +226,7 @@ def _search_names(root: str, names: set[str], cancel=None, skip=None, max_bytes=
                     if len(raw) != st.st_size:
                         complete = False
                         continue
-                    text = raw.decode('utf-8', 'ignore').lower()
+                    text = _decode_source(raw).lower()
             except OSError:
                 complete = False
                 continue
@@ -252,7 +271,7 @@ def check_references(groups: list[dict], cancel=None, progress=None, skip=None, 
     return {'bytes': total, 'complete': all(r['complete'] for r in results.values())}
 
 
-def find_duplicates(roots: list[str], *, min_size: int = 1024 * 1024, skip=None, cancel=None, progress=None,
+def find_duplicates(roots: list[str], *, min_size: int = 1024 * 1024, skip=None, ref_skip=None, cancel=None, progress=None,
                     container_roots=(), max_files: int | None = None, max_hash_bytes: int | None = None,
                     max_reference_bytes: int | None = None, max_hash_seconds=None, max_reference_seconds=None,
                     cross_drives: bool = True, drive_roots=()) -> dict:
@@ -304,7 +323,8 @@ def find_duplicates(roots: list[str], *, min_size: int = 1024 * 1024, skip=None,
                 if kind:
                     homes[paths.key(dirpath)] = (kind, dirpath)
             for entry in files:
-                if skip and skip(entry.path):
+                file_path = os.path.join(dirpath, entry.name)
+                if skip and skip(file_path):
                     continue
                 try:
                     st = entry.stat(follow_symlinks=False)
@@ -318,9 +338,9 @@ def find_duplicates(roots: list[str], *, min_size: int = 1024 * 1024, skip=None,
                     truncated = listing_done = True
                     break
                 files_seen += 1
-                bucket = (st.st_size, volume_of(entry.path, st.st_dev))
-                by_size.setdefault(bucket, []).append([os.path.join(dirpath, entry.name), st.st_mtime,
-                                                      fsops.file_size(entry.path, st)])
+                bucket = (st.st_size, volume_of(file_path, st.st_dev))
+                by_size.setdefault(bucket, []).append([file_path, st.st_mtime,
+                                                      fsops.file_size(file_path, st)])
             if files_seen % 500 == 0:
                 report('listing')
             if listing_done:
@@ -438,7 +458,7 @@ def find_duplicates(roots: list[str], *, min_size: int = 1024 * 1024, skip=None,
         g['id'] = index
     if deadline is not None and time.monotonic() >= deadline:
         timed_out = True
-    refs = check_references(groups_out, cancel, lambda p: report(**p), skip=skip,
+    refs = check_references(groups_out, cancel, lambda p: report(**p), skip=ref_skip,
                             max_bytes=max_reference_bytes, max_seconds=max_reference_seconds)
     return {'groups': groups_out, 'stats': {
         'files': files_seen, 'groups': len(groups_out), 'wasted': sum(g['wasted'] for g in groups_out),

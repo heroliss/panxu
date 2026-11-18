@@ -54,9 +54,16 @@ def main() -> int:
         print(__doc__)
         return 2
     # 盘序 allows one window at a time: with one open, the package would only say 「盘序已经在运行」
-    kernel32 = ctypes.windll.kernel32
+    from ctypes import wintypes
+    kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel32.OpenMutexW.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR]
+    kernel32.OpenMutexW.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    ctypes.set_last_error(0)
     running = kernel32.OpenMutexW(0x00100000, False, 'Local\\PanXu-SingleInstance')   # SYNCHRONIZE
-    if running or ctypes.get_last_error() == 5 or kernel32.GetLastError() == 5:       # 5: an elevated instance
+    err = ctypes.get_last_error()
+    if running or err == 5:       # 5: an elevated instance
         if running:
             kernel32.CloseHandle(running)
         print('盘序正在运行：请先关闭它再检查（同一时间只允许一个窗口），这次没有检查打包版。')
@@ -71,7 +78,8 @@ def main() -> int:
             print('PanXu\\PanXu.exe is not in the zip')
             return 1
         print(f'marked {mark_downloaded(work)} files as downloaded')
-        proc = subprocess.Popen([exe, '--sandbox', os.path.join(work, 'sandbox')])
+        proc = subprocess.Popen([exe, '--sandbox', os.path.join(work, 'sandbox'),
+                                 '--data-dir', os.path.join(work, 'data')])
         titles: list[str] = []
         end = time.time() + 60
         while time.time() < end and proc.poll() is None:
@@ -89,6 +97,8 @@ def main() -> int:
         return 1
     finally:
         if proc is not None and proc.poll() is None:
+            subprocess.run(['taskkill', '/F', '/T', '/PID', str(proc.pid)],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             proc.kill()
             proc.wait(10)
         shutil.rmtree(work, ignore_errors=True)

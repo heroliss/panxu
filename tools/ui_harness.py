@@ -54,46 +54,12 @@ def main():
 
     # one reusable folder (the server is usually stopped by killing it), inside PanXu's own protected data
     # folder rather than %TEMP%, where its tens of GB of sparse files would inflate a real junk scan
+    if args.live and args.ai_status_demo:
+        raise SystemExit('--live and --ai-status-demo cannot be combined')
     sb = sandbox.Sandbox(args.sandbox or os.path.join(default_data_dir(), 'ui-harness'))
     sandbox.activate(sb)
     window_ref = {}
     backend = Backend(os.path.join(sb.root, 'data'), sandbox=sb, window_provider=lambda: window_ref.get('w'))
-    if args.stage_delay:
-        start = backend.jobs.start
-        def delayed_start(kind, fn, *a, **kw):
-            def delayed(job):
-                update = job.update
-                def progress(**values):
-                    update(**values)
-                    if 'stage' in values:
-                        time.sleep(max(0, min(args.stage_delay, 2)))
-                job.update = progress
-                return fn(job)
-            return start(kind, delayed, *a, **kw)
-        backend.jobs.start = delayed_start
-    if args.live and args.ai_status_demo:
-        raise SystemExit('--live and --ai-status-demo cannot be combined')
-    if args.live:
-        key, source = live_key()
-        if not key:
-            raise SystemExit('--live: 没有找到 API Key')
-        ai = Settings(default_data_dir()).get()['ai']
-        backend.settings.update({'ai': ai})
-        backend.settings.set_secret('ai_key:' + ai['preset'], key)
-        print(f'model: {ai["preset"]} / {ai["model"]} (key from {source})')
-    else:
-        model = ScriptedModel()
-        backend.client_or_none = lambda purpose='classify': model
-        backend._client = lambda purpose='classify': model
-        backend.settings.set_secret('ai_key:' + backend.settings.get()['ai']['preset'], 'scripted')
-    if args.ai_status_demo:
-        backend.settings.set_secret('ai_key:' + backend.settings.get()['ai']['preset'], '' if args.ai_status_demo == 'missing' else 'scripted')
-        sb.state['ai_connection_error'] = args.ai_status_demo == 'error'
-        original_probe = backend.ai_health.probe
-        def demo_probe(ai, key):
-            time.sleep(2)
-            return original_probe(ai, key)
-        backend.ai_health.probe = demo_probe
     if args.resume_demo:
         from panxu import handoff
         # All state below belongs to the fake machine. Never request actual Windows elevation.
@@ -110,6 +76,39 @@ def main():
         sb.state['admin'] = True
         backend = Backend(backend.data_dir, sandbox=sb, window_provider=lambda: window_ref.get('w'))
         handoff.consume(backend, ticket)
+    if args.stage_delay:
+        start = backend.jobs.start
+        def delayed_start(kind, fn, *a, **kw):
+            def delayed(job):
+                update = job.update
+                def progress(**values):
+                    update(**values)
+                    if 'stage' in values:
+                        time.sleep(max(0, min(args.stage_delay, 2)))
+                job.update = progress
+                return fn(job)
+            return start(kind, delayed, *a, **kw)
+        backend.jobs.start = delayed_start
+    if args.live:
+        ai, key, source = live_key()
+        if not key and ai.get('preset') != 'ollama':
+            raise SystemExit('--live: 没有找到 API Key')
+        backend.settings.update({'ai': ai})
+        backend.settings.set_secret('ai_key:' + ai['preset'], key)
+        print(f'model: {ai["preset"]} / {ai["model"]} (key from {source})')
+    else:
+        model = ScriptedModel()
+        backend.client_or_none = lambda purpose='classify': model
+        backend._client = lambda purpose='classify': model
+        backend.settings.set_secret('ai_key:' + backend.settings.get()['ai']['preset'], 'scripted')
+    if args.ai_status_demo:
+        backend.settings.set_secret('ai_key:' + backend.settings.get()['ai']['preset'], '' if args.ai_status_demo == 'missing' else 'scripted')
+        sb.state['ai_connection_error'] = args.ai_status_demo == 'error'
+        original_probe = backend.ai_health.probe
+        def demo_probe(ai, key):
+            time.sleep(2)
+            return original_probe(ai, key)
+        backend.ai_health.probe = demo_probe
     if args.native:
         import webview
         from panxu.app import create_app_window

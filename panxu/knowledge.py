@@ -104,22 +104,120 @@ ENTRIES: list[Entry] = [
     Entry('%USERPROFILE%\\Documents\\WeChat Files', 'personal', '微信聊天文件',
           '在微信「设置 > 存储空间」中清理。直接删除会导致聊天中的图片和文件无法打开。'),
     Entry('%USERPROFILE%\\Documents\\xwechat_files', 'personal', '微信聊天文件', '在微信「设置 > 存储空间」中清理。'),
+    Entry('%USERPROFILE%\\Documents\\WXWork', 'personal', '企业微信聊天文件', '在企业微信「设置 > 文档/文件管理」中清理。'),
     Entry('%USERPROFILE%\\Documents\\Tencent Files', 'personal', 'QQ 聊天文件', '在 QQ 设置的「存储管理」中清理。'),
+    Entry('*:\\WeChat Files', 'personal', '微信聊天文件', '在微信「设置 > 存储空间」中清理。直接删除会导致聊天中的图片和文件无法打开。'),
+    Entry('*:\\xwechat_files', 'personal', '微信聊天文件', '在微信「设置 > 存储空间」中清理。'),
+    Entry('*:\\WXWork', 'personal', '企业微信聊天文件', '在企业微信设置中清理。'),
+    Entry('*:\\Tencent Files', 'personal', 'QQ 聊天文件', '在 QQ 设置的「存储管理」中清理。'),
+    Entry('*:\\BaiduNetdiskDownload', 'personal', '百度网盘下载目录', '个人下载的文件。可在「大文件」或「我的文件」中按需整理。'),
+    Entry('*:\\QuarkDownload', 'personal', '夸克网盘下载目录', '个人下载的文件。可在「大文件」或「我的文件」中按需整理。'),
+    Entry('*:\\AliyunDriveDownload', 'personal', '阿里云盘下载目录', '个人下载的文件。可在「大文件」或「我的文件」中按需整理。'),
+    Entry('*:\\阿里云盘', 'personal', '阿里云盘下载目录', '个人下载的文件。可在「大文件」或「我的文件」中按需整理。'),
+    Entry('%APPDATA%\\Apple Computer\\MobileSync\\Backup', 'personal', 'iPhone / iPad 备份',
+          'iTunes 创建的苹果设备整机备份，常占几十 GB。请在 iTunes 或 Apple Devices 的设备备份管理中删除旧备份，切勿直接删部分文件。'),
+    Entry('%USERPROFILE%\\Apple\\MobileSync\\Backup', 'personal', 'iPhone / iPad 备份',
+          'Apple Devices 创建的设备备份。请在 Apple Devices 应用里管理或删除旧备份。'),
 
     # Application data we can describe without a model
     Entry('%LOCALAPPDATA%\\Google\\Chrome\\User Data', 'appdata', 'Chrome 用户数据',
           '包含书签、密码、扩展和缓存。缓存可在「垃圾清理 > 浏览器缓存」中清理。'),
     Entry('%LOCALAPPDATA%\\Microsoft\\Edge\\User Data', 'appdata', 'Edge 用户数据',
           '包含书签、密码、扩展和缓存。缓存可在「垃圾清理 > 浏览器缓存」中清理。'),
+    Entry('%LOCALAPPDATA%\\BraveSoftware\\Brave-Browser\\User Data', 'appdata', 'Brave 用户数据',
+          '包含书签、密码、扩展和缓存。缓存可在「垃圾清理 > 浏览器缓存」中清理。'),
+    Entry('%LOCALAPPDATA%\\Vivaldi\\User Data', 'appdata', 'Vivaldi 用户数据',
+          '包含书签、密码、扩展和缓存。缓存可在「垃圾清理 > 浏览器缓存」中清理。'),
+    Entry('%LOCALAPPDATA%\\Opera Software', 'appdata', 'Opera 浏览器缓存与数据',
+          '缓存可在「垃圾清理 > 浏览器缓存」中清理。'),
+    Entry('%APPDATA%\\Opera Software', 'appdata', 'Opera 浏览器配置与数据',
+          '包含书签、密码、扩展和部分缓存。缓存可在「垃圾清理 > 浏览器缓存」中清理。'),
+    Entry('%LOCALAPPDATA%\\Mozilla\\Firefox\\Profiles', 'appdata', 'Firefox 配置与数据',
+          '包含书签、密码、扩展和缓存。缓存可在「垃圾清理 > 浏览器缓存」中清理。'),
+    Entry('%APPDATA%\\Code', 'appdata', 'VS Code 配置与状态',
+          '包含设置、工作区状态和缓存。其中的缓存和旧日志可在「垃圾清理 > 应用缓存」中清理。'),
+    Entry('%APPDATA%\\Code - Insiders', 'appdata', 'VS Code Insiders 配置与状态',
+          '包含设置、工作区状态和缓存。缓存可在「垃圾清理 > 应用缓存」中清理。'),
+    Entry('%APPDATA%\\Cursor', 'appdata', 'Cursor 配置与状态',
+          '包含设置、对话记录和缓存。其中的缓存和旧日志可在「垃圾清理 > 应用缓存」中清理。'),
+    Entry('%APPDATA%\\Windsurf', 'appdata', 'Windsurf 配置与状态',
+          '包含设置、对话记录和缓存。其中的缓存和旧日志可在「垃圾清理 > 应用缓存」中清理。'),
+    Entry('%APPDATA%\\Trae', 'appdata', 'Trae 配置与状态',
+          '包含设置、对话记录和缓存。其中的缓存和旧日志可在「垃圾清理 > 应用缓存」中清理。'),
+    Entry('%APPDATA%\\obsidian', 'appdata', 'Obsidian 配置与界面数据',
+          '包含仓库列表、插件全局设置和缓存。界面缓存可在「垃圾清理 > 应用缓存」中清理。'),
+    Entry('%APPDATA%\\Notion', 'appdata', 'Notion 本地数据与缓存',
+          '包含离线页面数据库与界面缓存。界面缓存可在「垃圾清理 > 应用缓存」中清理。'),
+    Entry('%APPDATA%\\discord', 'appdata', 'Discord 应用数据',
+          '包含登录状态、设置和缓存。网页与图片缓存可在「垃圾清理 > 应用缓存」中清理。'),
+    Entry('%APPDATA%\\Slack', 'appdata', 'Slack 应用数据',
+          '包含登录状态、设置和缓存。网页与图片缓存可在「垃圾清理 > 应用缓存」中清理。'),
+    Entry('%APPDATA%\\LarkShell', 'appdata', '飞书应用与聊天数据',
+          '请在飞书「设置 > 通用 > 存储管理」中清理缓存与聊天文件。'),
+    Entry('%LOCALAPPDATA%\\Feishu', 'appdata', '飞书应用数据',
+          '请在飞书「设置 > 通用 > 存储管理」中清理。'),
+    Entry('*:\\Feishu', 'personal', '飞书文件目录', '请在飞书「设置 > 通用 > 存储管理」中清理。'),
+    Entry('%APPDATA%\\DingTalk', 'appdata', '钉钉应用与聊天数据',
+          '请在钉钉「设置 > 通用 > 存储空间管理」中清理。'),
+    Entry('%LOCALAPPDATA%\\DingTalk', 'appdata', '钉钉应用数据',
+          '请在钉钉「设置 > 通用 > 存储空间管理」中清理。'),
+    Entry('%LOCALAPPDATA%\\JianyingPro', 'appdata', '剪映草稿与素材缓存',
+          '包含视频剪辑草稿（Drafts）与代理缓存。请在剪映首页「全局设置」中清理缓存，切勿直接删除草稿目录。'),
+    Entry('*:\\JianyingPro Drafts', 'personal', '剪映剪辑草稿',
+          '你的视频剪辑工程草稿。请在剪映首页管理或删除不需要的草稿。'),
+    Entry('%LOCALAPPDATA%\\CapCut', 'appdata', 'CapCut 草稿与素材缓存',
+          '包含视频剪辑草稿与代理缓存。请在 CapCut 设置中清理缓存，切勿直接删除草稿目录。'),
+    Entry('%LOCALAPPDATA%\\NetEase\\CloudMusic', 'appdata', '网易云音乐缓存与数据',
+          '可在网易云音乐「设置 > 下载设置」中调整缓存上限或清理试听缓存。'),
+    Entry('%APPDATA%\\Tencent\\QQMusic', 'appdata', 'QQ 音乐配置与数据',
+          '可在 QQ 音乐「设置 > 下载与缓存」中清理缓存。'),
+    Entry('%LOCALAPPDATA%\\Tencent\\QQMusic', 'appdata', 'QQ 音乐缓存与数据',
+          '可在 QQ 音乐「设置 > 下载与缓存」中清理缓存。'),
+    Entry('%APPDATA%\\kingsoft\\office6', 'appdata', 'WPS Office 配置与自动备份',
+          '包含本地文档备份与模板缓存。请在 WPS「设置 > 备份中心」管理旧备份，切勿直接删除自动备份目录。'),
+    Entry('%LOCALAPPDATA%\\kingsoft\\WPS Cloud Files', 'cloud', 'WPS 云文档缓存',
+          'WPS 云同步文档的本地缓存。请在 WPS 云文档设置中清理本地缓存。'),
     Entry('%LOCALAPPDATA%\\Docker', 'vdisk', 'Docker Desktop 数据',
           '镜像和容器存放在虚拟磁盘里。先用 docker system prune 清理，再在 Docker 设置中压缩磁盘。'),
     Entry('%LOCALAPPDATA%\\Packages\\CanonicalGroupLimited.*', 'vdisk', 'WSL Linux 发行版',
           'Linux 文件存放在 ext4.vhdx 虚拟磁盘中。在 Linux 内清理后需压缩虚拟磁盘才会释放空间。'),
     Entry('%LOCALAPPDATA%\\wsl', 'vdisk', 'WSL 虚拟磁盘', '在 Linux 内清理后需压缩虚拟磁盘才会释放空间。'),
+    Entry('%USERPROFILE%\\.android\\avd', 'vdisk', 'Android 模拟器镜像', '在 Android Studio 的 Device Manager 中删除不用的模拟器。'),
+    Entry('%USERPROFILE%\\VirtualBox VMs', 'vdisk', 'VirtualBox 虚拟机镜像',
+          '请在 VirtualBox 中删除不用的虚拟机或压缩虚拟磁盘。'),
+    Entry('%USERPROFILE%\\Documents\\Virtual Machines', 'vdisk', 'VMware 虚拟机镜像',
+          '请在 VMware 中删除不用的虚拟机或使用「清理磁盘」收缩空间。'),
+    Entry('*:\\Virtual Machines', 'vdisk', '虚拟机磁盘镜像', '请在虚拟机软件中删除不用的虚拟机或收缩虚拟磁盘。'),
     Entry('%USERPROFILE%\\.nuget\\packages', 'dev', 'NuGet 全局包', '项目还原时需要。可用 dotnet nuget locals all --clear 清理。'),
+    Entry('%LOCALAPPDATA%\\pnpm\\store', 'dev', 'pnpm 全局包存储',
+          '与各工程的 node_modules 共用硬链接，实际多占的空间通常远小于统计值。请用 pnpm store prune 清理未引用的包。'),
+    Entry('*:\\.pnpm-store', 'dev', 'pnpm 全局包存储',
+          '与各工程的 node_modules 共用硬链接。请用 pnpm store prune 清理未引用的包。'),
+    Entry('%USERPROFILE%\\.ollama\\models', 'dev', 'Ollama 本地模型文件', '大模型权重文件，可用 ollama list 查看并用 ollama rm 删除。'),
+    Entry('%USERPROFILE%\\.lmstudio\\models', 'dev', 'LM Studio 本地模型',
+          '大模型权重文件，请在 LM Studio 的 My Models 页面查看或删除。'),
+    Entry('*:\\LMStudio\\models', 'dev', 'LM Studio 本地模型',
+          '大模型权重文件，请在 LM Studio 的 My Models 页面查看或删除。'),
+    Entry('%USERPROFILE%\\.cache\\huggingface', 'dev', 'Hugging Face 模型缓存', '下载的模型和数据集缓存，确认不再使用后可按目录清理。'),
+    Entry('%USERPROFILE%\\.conda', 'dev', 'Conda 环境与包缓存',
+          '压缩包归档可在「垃圾清理 > 开发缓存」中清理；旧虚拟环境可用 conda env remove 删除。'),
+    Entry('%LOCALAPPDATA%\\pypoetry\\Cache', 'dev', 'Poetry 缓存与虚拟环境',
+          '下载缓存在「垃圾清理 > 开发缓存」中可清理；virtualenvs 子目录存放项目的 Python 虚拟环境。', final=False),
+    Entry('%LOCALAPPDATA%\\JetBrains', 'dev', 'JetBrains IDE 缓存与索引',
+          '各版本 IDE 的索引与缓存目录；旧日志可在「垃圾清理」删除，已卸载旧版本的目录可按需移入回收站。', final=False),
+    Entry('%LOCALAPPDATA%\\Pub\\Cache', 'dev', 'Flutter / Dart 包缓存',
+          '工程依赖缓存，可用 dart pub cache clean 清理；清理后打开工程需重新执行 flutter pub get。'),
+    Entry('%LOCALAPPDATA%\\UnrealEngine', 'dev', 'Unreal Engine 引擎缓存',
+          '虚幻引擎版本数据与派生缓存目录；DerivedDataCache 可在「垃圾清理 > 开发工具缓存」中清理。', final=False),
+    Entry('%USERPROFILE%\\.rustup', 'dev', 'Rust 工具链（rustup）', '可用 rustup toolchain list 查看并用 rustup toolchain uninstall 卸载旧版本。'),
+    Entry('%LOCALAPPDATA%\\Android\\Sdk', 'dev', 'Android SDK', '在 Android Studio > SDK Manager 中卸载旧版系统镜像和构建工具。'),
     Entry('%USERPROFILE%\\.vscode\\extensions', 'dev', 'VS Code 扩展', '在 VS Code 中卸载不用的扩展。'),
+    Entry('%USERPROFILE%\\.cursor\\extensions', 'dev', 'Cursor 扩展', '在 Cursor 中卸载不用的扩展。'),
     Entry('%USERPROFILE%\\.cache', 'dev', '命令行工具缓存', '通常可清理，具体看子目录对应的工具。', final=False),
     Entry('*:\\SteamLibrary', 'game', 'Steam 游戏库', '在 Steam 中卸载不玩的游戏。'),
+    Entry('*:\\Epic Games', 'game', 'Epic 游戏库', '在 Epic Games 启动器中卸载不玩的游戏。'),
+    Entry('%ProgramFiles%\\Epic Games', 'game', 'Epic 游戏', '在 Epic Games 启动器中卸载不玩的游戏。'),
+    Entry('*:\\XboxGames', 'game', 'Xbox / 微软商店游戏', '在 Xbox 应用或「设置 > 应用」中卸载不玩的游戏。'),
     # a Temp folder at the top of a drive: by convention only for temporary files -- but people park things
     # there too, so this is advice, not a cleanup rule
     Entry('*:\\Temp', 'cache', '临时文件夹',
@@ -164,15 +262,33 @@ class Knowledge:
                 continue
             if real:
                 compiled.append((_split(real), Entry(real, 'personal', label, '个人文件。')))
-        for expanded, rule in junk.known_rule_paths(self.env):
+        for expanded, rule in junk.known_rule_paths(self.env, include_finders=False):
             compiled.append((_split(expanded), Entry(expanded, 'cache', '可清理：' + rule.name,
                                                      rule.description, rule=rule.id)))
         # most specific first
         compiled.sort(key=lambda item: len(item[0]), reverse=True)
         self._entries = compiled
+        self._finders_loaded = False
+        self._finder_bases = [self.env[k] for k in ('APPDATA', 'LOCALAPPDATA') if self.env.get(k)]
+
+    def _ensure_finders(self, path: str) -> None:
+        if self._finders_loaded or not any(paths.is_within(path, b) for b in self._finder_bases):
+            return
+        self._finders_loaded = True
+        extra = []
+        for rule in junk.RULES:
+            if rule.finder:
+                for _, root, _ in junk.rule_entries(rule, self.env):
+                    extra.append((_split(root), Entry(root, 'cache', '可清理：' + rule.name,
+                                                      rule.description, rule=rule.id)))
+        if extra:
+            merged = self._entries + extra
+            merged.sort(key=lambda item: len(item[0]), reverse=True)
+            self._entries = merged
 
     def match(self, path: str) -> tuple[Entry | None, bool]:
         """(entry, exact) — the most specific entry at or above ``path``."""
+        self._ensure_finders(path)
         parts = _split(path)
         for pattern, entry in self._entries:
             if len(pattern) > len(parts):

@@ -5,9 +5,17 @@
 
   const state = { status: 'idle', results: {}, selected: PX.sel.rules, progress: {}, expanded: new Set(),
     openGroups: new Set(), lastClean: null, jobId: null, touched: false, sort: { key: 'size', dir: 'desc' } };
+  const search = PX.makeSearch('搜索规则或程序', () => rerender(true));
 
   const rules = () => PX.state.init.rules;
   const ruleById = (id) => rules().find((r) => r.id === id);
+  const matchRule = (r, q) => {
+    if (!q) return true;
+    const res = state.results[r.id] || {};
+    const hay = [r.name, r.description, ...(r.processes || []), PX.appsText(res.apps), ...(res.locations || [])]
+      .filter(Boolean).join(' ').toLowerCase();
+    return hay.includes(q);
+  };
   const SORT = {
     size: { label: '大小', kind: 'num', get: (r) => (state.results[r.id] || {}).size ?? null },
     score: { label: '建议清理度', kind: 'num', get: (r) => (state.results[r.id] || {}).score ?? null },
@@ -52,6 +60,11 @@
     return sum;
   }
 
+  function syncRail() {
+    PX.state.junkTotal = Object.keys(state.results).length ? selectedSize() : null;
+    PX.renderRail();
+  }
+
   function adopt(rows) {
     state.results = Object.fromEntries(rows.map((row) => [row.id, row]));
     if (!state.touched) {
@@ -64,8 +77,7 @@
       }
     }
     state.status = 'done';
-    PX.state.junkTotal = recommended();
-    PX.renderRail();
+    syncRail();
   }
 
   async function loadExisting() {
@@ -73,7 +85,6 @@
     try {
       const rows = await PX.api.call('junk_result');
       if (rows !== null) { adopt(rows); rerender(true); }
-      else if (!PX.home || PX.home.state.status !== 'running') await scan();
     } catch (e) { PX.fail(e); }
   }
 
@@ -84,14 +95,15 @@
     state.progress = {};
     rerender();
     try {
-      const rows = await PX.api.run('junk_scan', {}, (p) => { state.progress = p; rerender(true); });
+      const rows = await PX.api.run('junk_scan', {}, (p) => { state.progress = p; rerender(true); },
+        (jobId) => { state.jobId = jobId; });
       adopt(rows);
     } catch (e) {
-      state.status = 'idle';
+      state.status = Object.keys(state.results).length ? 'done' : 'idle';
       if (!e.cancelled) PX.fail(e);
     }
-    PX.state.junkTotal = recommended();
-    PX.renderRail();
+    state.jobId = null;
+    syncRail();
     rerender();
     if (PX.isCurrent('home')) PX.refresh('home');
   }
@@ -132,7 +144,13 @@
     }
     state.status = 'done';
     state.jobId = null;
-    scan();
+    try {
+      const rows = await PX.api.call('junk_result');
+      if (rows !== null) adopt(rows);
+    } catch (e) { /* keep current state */ }
+    PX.refreshNav?.();
+    if (PX.home) PX.home.reload();
+    rerender();
   }
 
   // the biggest item sets the scale of the size meters
@@ -157,25 +175,27 @@
     container.appendChild(PX.chartCard('垃圾都在哪里', '点一行跳到那一组', PX.barList(rows, [['s-hi', '已选'], ['s-lo', '没选']])));
   }
 
-  function row(rule) {
+  function row(rule, busy) {
     const res = state.results[rule.id];
     const blocked = blockedReason(rule, res);
     const checked = state.selected.has(rule.id);
     const flags = h('div.flags');
     if (blocked) flags.appendChild(PX.tag(blocked, blocked.startsWith('需要') ? 'info' : 'warn', blocked.startsWith('需要') ? 'lock' : 'warn'));
-    if (blocked && !blocked.startsWith('需要')) flags.appendChild(PX.closedButton());
+    if (blocked && blocked.startsWith('请先关闭')) flags.appendChild(PX.closedButton());
     else if (res.needs_admin) flags.appendChild(PX.tag('部分需要管理员', 'info', 'lock'));
     if (rule.slow) flags.appendChild(PX.tag('耗时较长'));
-    const box = h('input', { type: 'checkbox', checked, disabled: !!blocked, 'aria-label': '选择 ' + rule.name,
+    const box = h('input', { type: 'checkbox', checked, disabled: !!blocked || !!busy, 'aria-label': '选择 ' + rule.name,
       onclick: (e) => e.stopPropagation(),
-      onchange: (e) => { state.touched = true; e.target.checked ? state.selected.add(rule.id) : state.selected.delete(rule.id); rerender(true); } });
+      onchange: (e) => { state.touched = true; e.target.checked ? state.selected.add(rule.id) : state.selected.delete(rule.id); syncRail(); rerender(true); } });
     const sizeText = res.size === null ? '—' : (blocked && blocked.startsWith('需要') && !res.size) ? '—' : fmt.bytes(res.size);
-    const el = h('div.row.junk-row' + (blocked ? '.disabled' : ''), {
-      onclick: () => { state.expanded.has(rule.id) ? state.expanded.delete(rule.id) : state.expanded.add(rule.id); rerender(true); },
+    const isOpen = state.expanded.has(rule.id);
+    const el = h('div.row.junk-row' + (blocked ? '.disabled' : '') + (isOpen ? '.open' : ''), {
+      onclick: () => { isOpen ? state.expanded.delete(rule.id) : state.expanded.add(rule.id); rerender(true); },
     }, box, h('div.cell-main', h('div.name', rule.name), h('div.desc', rule.description)), flags,
     h('div.size', sizeText, res.size ? PX.meter(res.size / largest, checked ? 's-hi' : '') : null),
     h('button.btn.quiet.small', { type: 'button', title: '问 AI', onclick: (e) => { e.stopPropagation(); PX.ask({ type: 'rule', id: rule.id }, rule.name); } },
-      PX.icon('spark'), '问 AI'));
+      PX.icon('spark'), '问 AI'),
+    PX.icon('chev', 'row-chev'));
     const out = [el];
     if (state.expanded.has(rule.id)) {
       const locs = res.locations || [];
@@ -188,7 +208,7 @@
           ['扫描范围', res.error],
           ['占用空间', PX.sizeDifference(res)],
           ['大小说明', res.size_note],
-          ['怎么清理', rule.mode === 'command' ? '通过系统命令清理' : locs.length ? '' : '没有找到对应的位置']],
+          ['怎么清理', rule.mode === 'recycle_bin' ? '清空所有磁盘的回收站' : rule.mode === 'command' ? '通过系统命令清理' : locs.length ? '' : '没有找到对应的位置']],
         places: { title: '清理这些位置', note: locs.length > 1 ? `${locs.length} 个` : '', rows: locs.map((loc) => PX.placeRow(loc, { folder: true })) },
       }));
     }
@@ -198,20 +218,25 @@
   let root = null;
   function rerender(soft) {
     if (!root || !PX.isCurrent('junk')) return;
+    if (search.composing) return;
+    const focusSel = search.captureFocus();
     const main = document.getElementById('main');
     const top = main.scrollTop;
     PX.clear(root);
     draw(root);
+    search.restoreFocus(focusSel);
     if (soft) main.scrollTop = top;
   }
 
   function draw(container) {
     const init = PX.state.init;
     const busy = state.status === 'scanning' || state.status === 'cleaning';
+    const hasResults = Object.keys(state.results).length > 0;
     const head = h('div.page-head',
       h('div.grow', h('h1', '垃圾清理'),
-        h('div.sub', state.status === 'done' ? `共发现 ${fmt.bytes(total())} 可清理` : state.status === 'cleaning' ? '正在清理' : '正在扫描')),
-      h('div.actions', h('button.btn', { type: 'button', disabled: busy, onclick: scan }, PX.icon('refresh'), '重新扫描')));
+        h('div.sub', state.status === 'done' ? `共发现 ${fmt.bytes(total())} 可清理 · 点击任意一项查看位置与评分依据`
+          : state.status === 'cleaning' ? '正在清理' : state.status === 'scanning' ? '正在扫描' : '扫描可重建的系统、浏览器和应用缓存')),
+      hasResults || busy ? h('div.actions', h('button.btn', { type: 'button', disabled: busy, onclick: scan }, PX.icon('refresh'), '重新扫描')) : null);
     container.appendChild(head);
     if (PX.home && PX.home.state.plan) {
       container.appendChild(PX.notice('这里的勾选和首页「清理方案」里的垃圾文件是同一份：在哪里勾都一样。', 'info',
@@ -245,7 +270,7 @@
       container.appendChild(h('div.working',
         h('div.line', state.status === 'cleaning' ? h('span.big', fmt.bytes(p.freed || 0)) : null,
           h('span.muted', state.status === 'cleaning' ? '已释放' : '正在检查'),
-          state.status === 'cleaning' && state.jobId ? h('button.btn.small', { type: 'button', onclick: () => PX.api.cancel(state.jobId) }, '停止') : null),
+          state.jobId ? h('button.btn.small', { type: 'button', onclick: () => PX.api.cancel(state.jobId) }, '停止') : null),
         PX.progressBar(frac, 'junk'), h('div.cur', p.current || '')));
     }
     if (state.status === 'idle' && !Object.keys(state.results).length) {
@@ -256,27 +281,34 @@
     if (!Object.keys(state.results).length) return;
 
     largest = Math.max(1, ...rules().filter(visible).map((r) => state.results[r.id].size || 0));
-    if (!busy) overview(container);
-    if (rules().filter(visible).length > 1) container.appendChild(PX.sortBar(SORT, state.sort, (s) => { state.sort = s; rerender(true); }));
+    const q = search.query.trim().toLowerCase();
+    if (!busy && !q) overview(container);
+    container.appendChild(h('div.list-tools',
+      rules().filter(visible).length > 1 ? PX.sortBar(SORT, state.sort, (s) => { state.sort = s; rerender(true); }) : h('span'),
+      h('div.list-tools-right', search.box())));
+    let matchedGroups = 0;
     for (const g of init.groups) {
-      const inGroup = rules().filter((r) => r.group === g.id);
+      const inGroup = rules().filter((r) => r.group === g.id && matchRule(r, q));
+      if (q && !inGroup.length) continue;
+      matchedGroups += 1;
       const shown = PX.sortRows(inGroup.filter(visible), SORT, state.sort, 'size');
       const hidden = inGroup.length - shown.length;
       const gsize = shown.reduce((s, r) => s + (state.results[r.id].size || 0), 0);
-      const can = shown.filter((r) => !blockedReason(r, state.results[r.id]));
+      const can = busy ? [] : shown.filter((r) => !blockedReason(r, state.results[r.id]));
       const box = PX.groupBox(can.length, can.filter((r) => state.selected.has(r.id)).length, (on) => {
         state.touched = true;
         for (const r of can) on ? state.selected.add(r.id) : state.selected.delete(r.id);
+        syncRail();
         rerender(true);
       }, '选择「' + g.name + '」这一组');
       const sec = h('section.group', { id: 'junk-' + g.id }, h('div.group-head.with-box', box, h('h2', g.name), h('span.size', gsize ? fmt.bytes(gsize) : '')));
       const list = sec.appendChild(h('div.list'));
-      for (const r of shown) for (const el of row(r)) list.appendChild(el);
+      for (const r of shown) for (const el of row(r, busy)) list.appendChild(el);
       if (hidden) {
-        if (state.openGroups.has(g.id)) {
+        if (q || state.openGroups.has(g.id)) {
           for (const r of inGroup.filter((x) => !visible(x))) {
             list.appendChild(h('div.row.junk-row.disabled', h('span'), h('div.cell-main', h('div.name', r.name), h('div.desc', r.description)),
-              h('div.flags'), h('div.size.faint', '未发现'), h('span')));
+              h('div.flags'), h('div.size.faint', '未发现'), h('span'), h('span')));
           }
         } else {
           list.appendChild(h('button.fold', { type: 'button', onclick: () => { state.openGroups.add(g.id); rerender(true); } },
@@ -285,10 +317,14 @@
       }
       container.appendChild(sec);
     }
+    if (q && !matchedGroups) container.appendChild(PX.empty('没有匹配的清理规则', '换个关键词试试。'));
     const n = state.selected.size;
-    container.appendChild(h('div.actionbar',
-      h('div.grow', n ? h('span', `已选 ${n} 项，约 `, h('span.fig', fmt.bytes(selectedSize()))) : h('span.muted', '勾选要清理的项目')),
-      h('button.btn.primary', { type: 'button', disabled: !n || busy, onclick: clean }, PX.icon('broom'), '清理选中项')));
+    if (n || state.status === 'cleaning') {
+      container.appendChild(h('div.actionbar',
+        h('div.grow', h('span.fig', fmt.bytes(selectedSize())), h('span.muted', `  已选 ${n} 项`)),
+        !busy && n ? h('button.btn', { type: 'button', onclick: () => { state.touched = true; state.selected.clear(); syncRail(); rerender(true); } }, '取消选择') : null,
+        h('button.btn.primary', { type: 'button', disabled: !n || busy, onclick: clean }, PX.icon('broom'), state.status === 'cleaning' ? '正在清理…' : '清理选中项')));
+    }
   }
 
   // fresh 「请先关闭」 state from the backend (no rescan): unlock rows whose program was closed
@@ -305,8 +341,7 @@
       else if (res.selected && !state.touched && visible(rule) && !blockedReason(rule, res) && (res.size || 0) > 0) state.selected.add(id);
     }
     if (!changed) return;
-    PX.state.junkTotal = recommended();
-    PX.renderRail();
+    syncRail();
     rerender(true);
   }
   const waitingForPrograms = () => Object.values(state.results).some((r) => r.running && r.running.length);
@@ -315,9 +350,20 @@
     if (state.status === 'scanning' || state.status === 'cleaning') return;
     state.status = 'idle';
     state.results = {};
+    PX.state.junkTotal = null;
+    PX.renderRail();
   }
 
-  PX.junk = { state, scan, total, recommended, applyRunning, waitingForPrograms, invalidate };
+  async function reload() {
+    if (state.status === 'scanning' || state.status === 'cleaning') return;
+    try {
+      const rows = await PX.api.call('junk_result');
+      if (rows !== null) { adopt(rows); rerender(true); return; }
+    } catch (e) { /* ignore */ }
+    invalidate();
+  }
+
+  PX.junk = { state, scan, total, recommended, syncRail, applyRunning, waitingForPrograms, invalidate, reload };
   PX.pages.junk = {
     render(container) {
       root = container;

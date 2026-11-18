@@ -76,8 +76,13 @@ def check_plan(plan: dict, env: dict, insights: dict | None = None, junk_rows: l
                 asked = plan.get('options', {}).get('other_accounts') and item.get('account') and item.get('personal')
                 if not asked or item['selected']:
                     add('severe', f'方案里出现了其他账户的文件：{p}')
-            if item.get('personal') and home and paths.is_within(p, home):
-                below = p[len(home.rstrip('\\/')):].replace('/', '\\').strip('\\').split('\\')
+            if item.get('personal'):
+                anon = paths.anonymize(p, env).replace('/', '\\')
+                if anon.startswith('%') and '%' in anon[1:]:
+                    rel = anon.split('%', 2)[2]
+                else:
+                    rel = os.path.splitdrive(anon)[1]
+                below = [x for x in rel.strip('\\').split('\\') if x]
                 if any(managed_dir(x) for x in below[:-1]):
                     add('severe', f'程序自己管理的文件夹里的文件被当成了个人文件：{p}')
         blocked = item.get('blocked') or ''

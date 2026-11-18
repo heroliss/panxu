@@ -4,7 +4,7 @@ const assert = require('assert');
 global.window = global;
 const PX = require('../web/ui.js');
 require('./test_activity_ui.cjs');
-require('./test_ai_status_ui.cjs');
+const aiStatusDone = require('./test_ai_status_ui.cjs');
 
 // Home-only defaults migrate without changing standalone tools; an empty disk selection stays empty.
 const homeDisks = [{ root: 'C:\\', fixed: true, system: true }, { root: 'D:\\', fixed: true }, { root: 'F:\\', removable: true }];
@@ -206,10 +206,36 @@ assert.strictEqual(PX.navMark('mine', { size: 2 * 1024 ** 3, count: 4 })[2], '')
 assert.strictEqual(PX.navMark('dups', { size: 10, count: 0 })[0], true);
 assert.strictEqual(PX.navMark('startup', { count: 2 })[0], '2 项');
 assert.strictEqual(PX.navMark('space', { size: 0 })[0], true);
-console.log('ui tests passed');
 // Elevation is another process: explicit shared choices must survive its UI initialization.
 PX.sel.rules.add('user_temp'); PX.sel.paths.add('D:\\keep.txt'); PX.sel.items.add('startup:sample');
 const restartChoice = PX.sel.export();
 PX.sel.rules.clear(); PX.sel.paths.clear(); PX.sel.items.clear();
 PX.sel.restore(restartChoice);
 assert.deepStrictEqual(PX.sel.export(), restartChoice);
+
+// Audit regressions: basisKind caution precedence, trailing dot/space executable guard, and prototype-safe icons
+for (const warnLine of [
+  'AI 只看了文件名，没有看内容：旧版可能还有新版删掉的段落，所以分数不因此提高',
+  '绿色软件和未登记的程序也可能使用它，未匹配不等于已卸载',
+  '这 3 份都会移到回收站：这个文件一份都不剩了',
+  '删除后失去回退旧系统的机会',
+  '没有运行记录，但不知道最近有没有用过',
+]) assert.strictEqual(PX.basisKind(warnLine), 'warn', warnLine);
+assert.strictEqual(PX.basisKind('AI 建议卸载：常驻弹窗'), 'ai');
+for (const dangerous of ['C:\\a\\script.py', 'C:\\a\\help.chm', 'C:\\a\\evil.exe.', 'C:\\a\\evil.exe ', 'C:\\a\\drop.scf']) {
+  assert.ok(!PX.canOpen(dangerous), dangerous);
+}
+assert.ok(/\[hidden\],\s*\.hidden\s*\{\s*display:\s*none\s*!important;\s*\}/.test(css),
+  '[hidden] must always beat display:flex on banners such as #ai-health-banner');
+
+// Drive space health indicator thresholds (normal / tight / critical)
+const GB = 1024 ** 3;
+assert.deepStrictEqual(PX.driveHealth({ total: 500 * GB, free: 120 * GB, system: true }), ['', '', '']);
+assert.deepStrictEqual(PX.driveHealth({ total: 250 * GB, free: 15 * GB, system: true }), ['tight', '空间紧张', 'warn']);
+assert.deepStrictEqual(PX.driveHealth({ total: 500 * GB, free: 6 * GB, system: true }), ['crit', '空间告急', 'bad']);
+assert.deepStrictEqual(PX.driveHealth({ total: 1000 * GB, free: 90 * GB, system: false }), ['tight', '空间紧张', 'warn']);
+assert.deepStrictEqual(PX.driveHealth({ total: 1000 * GB, free: 40 * GB, system: false }), ['crit', '空间告急', 'bad']);
+
+Promise.resolve(aiStatusDone).then(() => {
+  if (!process.exitCode) console.log('ui tests passed');
+});

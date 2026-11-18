@@ -52,7 +52,7 @@ New-Item -ItemType Directory -Path $webStage -Force | Out-Null
 Get-ChildItem -LiteralPath (Join-Path $root 'web') -File | Where-Object { $_.Extension -in '.html', '.css', '.js' } |
     ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $webStage }
 
-$parts = $version.Split('.') + @('0')
+$parts = @(($version -split '[^0-9]+' | Where-Object { $_ }) + @('0', '0', '0', '0'))
 $tuple = ($parts[0..3] -join ', ')
 $versionFile = Join-Path $build 'version.txt'
 $versionText = @"

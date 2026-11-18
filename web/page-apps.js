@@ -7,6 +7,13 @@
     sort: { key: 'name', dir: 'asc' }, residueSort: { key: 'size', dir: 'desc' },
     icons: {}, refreshing: false, uninstalling: new Map(), removed: null, tab: 'installed', residues: null, residueBusy: false };
   let root = null;
+  let composing = false, pendingDraw = false;
+  const searchInput = h('input', {
+    type: 'text', placeholder: '搜索程序', 'aria-label': '搜索程序',
+    oncompositionstart: () => { composing = true; },
+    oncompositionend: (e) => { composing = false; state.query = e.target.value; pendingDraw = false; draw(); },
+    oninput: (e) => { state.query = e.target.value; if (!e.isComposing && !composing) draw(); },
+  });
   const APP_SORT = {
     name: { label: '程序', kind: 'text', get: (a) => a.name },
     kind: { label: '类型', kind: 'text', get: (a) => a.kind_label || '应用' },
@@ -71,8 +78,10 @@
         h('div.cell-main', h('div.name', item.title), h('div.small.muted', PX.displayPath(path)),
           h('div.small', item.why), item.blocked ? PX.tag(item.blocked, 'warn') : null, detail),
         h('div.size', fmt.bytes(item.size), h('div.small.muted', `${PX.points(item.score)} 分`)),
-        h('div.actions', PX.revealButton(path), h('button.btn.quiet.small', { type: 'button',
-          onclick: () => PX.ask({ type: 'path', path }, item.title) }, PX.icon('spark'), '问 AI'))));
+        h('div.actions', PX.copyPathButton(path), PX.revealButton(path),
+          !item.blocked ? PX.excludeButton(path, () => { loadResidues(); if (PX.home) PX.home.reload(); }) : null,
+          h('button.btn.quiet.small', { type: 'button',
+            onclick: () => PX.ask({ type: 'path', path }, item.title) }, PX.icon('spark'), '问 AI'))));
     }
     c.appendChild(h('h2.section-title', '可能失效的软件登记'));
     c.appendChild(h('div.small.muted', '只列出安装目录和卸载程序都缺失的登记。此处只提供解释和修复建议，不删除注册表，也不计入可释放空间。'));
@@ -83,11 +92,18 @@
           h('div.small.muted', '安装目录：' + PX.displayPath(issue.location)), h('div.small.muted', '卸载程序：' + PX.displayPath(issue.uninstaller)))),
       PX.tag('待核实', 'warn'), h('button.btn.quiet.small', { type: 'button', onclick: () => PX.ask(issue.ask, issue.title) }, PX.icon('spark'), '问 AI')));
     const chosen = rows.filter((item) => !item.blocked && PX.sel.has(item));
-    if (chosen.length) c.appendChild(h('div.actionbar', h('div.grow', `已选 ${chosen.length} 项 · ${fmt.bytes(chosen.reduce((n, item) => n + item.size, 0))}`),
+    if (chosen.length) c.appendChild(h('div.actionbar',
+      h('div.grow', h('span.fig', fmt.bytes(chosen.reduce((n, item) => n + item.size, 0))), h('span.muted', `  已选 ${chosen.length} 项`)),
+      h('button.btn', { type: 'button', disabled: state.residueBusy, onclick: () => { for (const item of chosen) PX.sel.set(item, false); draw(); } }, '取消选择'),
       h('button.btn.primary', { type: 'button', disabled: state.residueBusy, onclick: async () => {
         const paths = chosen.flatMap((item) => item.paths);
         const removed = await PX.deleteFlow({ paths, title: '将选中的软件残留移到回收站', allowPermanent: false, source: 'leftovers' });
-        if (removed) { for (const item of chosen) if (item.paths.every((p) => removed.done.includes(p))) PX.sel.set(item, false); await loadResidues(); }
+        if (removed) {
+          for (const item of chosen) if (item.paths.every((p) => removed.done.includes(p))) PX.sel.set(item, false);
+          PX.refreshNav?.();
+          if (PX.home) PX.home.reload();
+          await loadResidues();
+        }
       } }, '移到回收站…')));
   }
 
@@ -114,7 +130,7 @@
     loadIcons();
   }
 
-  // icons come after the list: extracting them takes a moment the first time
+  // icons come after the list: patch avatars in place so arriving batches never tear down rows mid-click
   async function loadIcons() {
     const ids = (state.apps || []).map((a) => a.id).filter((id) => !(id in state.icons));
     for (let i = 0; i < ids.length; i += 40) {
@@ -122,12 +138,12 @@
       try {
         const got = await PX.api.call('app_icons', { ids: batch });
         for (const id of batch) state.icons[id] = got[id] || null;
+        if (PX.isCurrent('apps')) PX.patchAvatars(root, got);
       } catch (e) { return; }
-      if (PX.isCurrent('apps')) draw();
     }
   }
 
-  const avatar = (a) => PX.avatar(a.name, state.icons[a.id]);
+  const avatar = (a) => PX.avatar(a.name, state.icons[a.id], a.id in state.icons ? null : a.id);
 
   async function explain() {
     const init = PX.state.init;
@@ -292,7 +308,7 @@
         ? h('div.row-actions', h('button.btn.small.primary', { type: 'button', title: '卸载程序结束后会自动发现；也可以点这里马上检查',
           onclick: () => check(true, a.id) }, PX.icon('refresh'), '检查是否卸载完成'))
         : h('div.row-actions',
-          a.location_exists ? h('button.btn.quiet.small.reveal', { type: 'button', title: '打开安装位置', onclick: () => PX.reveal(a.location) }, PX.icon('folder')) : null,
+          a.location_exists ? h('button.btn.quiet.small.reveal', { type: 'button', title: '打开安装位置', 'aria-label': '打开安装位置', onclick: () => PX.reveal(a.location) }, PX.icon('folder')) : null,
           h('button.btn.quiet.small', { type: 'button', onclick: () => PX.ask({ type: 'app', id: a.id }, a.name) }, PX.icon('spark'), '问 AI'),
           h('button.btn.small', { type: 'button', disabled: !a.can_uninstall, title: a.can_uninstall ? '' : '这个程序没有提供卸载程序',
             onclick: () => uninstall(a) }, '卸载…'))));
@@ -303,22 +319,31 @@
 
   function draw() {
     if (!root || !PX.isCurrent('apps')) return;
+    if (composing && document.activeElement === searchInput) { pendingDraw = true; return; }
+    const restoreSearch = document.activeElement === searchInput ? [searchInput.selectionStart, searchInput.selectionEnd] : null;
+    if (!restoreSearch && searchInput.value !== state.query) searchInput.value = state.query;
     const main = document.getElementById('main');
     const top = main.scrollTop;
     const c = PX.clear(root);
     if (state.tab === 'residues') {
-      c.appendChild(h('h1', '应用')); c.appendChild(tabs()); drawResidues(c); main.scrollTop = top; return;
+      c.appendChild(h('div.page-head', h('div.grow', h('h1', '应用'), h('div.sub', '电脑上安装的程序与卸载残留'))));
+      c.appendChild(tabs());
+      drawResidues(c);
+      main.scrollTop = top;
+      return;
     }
     c.appendChild(h('div.page-head', h('div.grow', h('h1', '应用'), h('div.sub', '电脑上安装的程序。卸载时会打开程序自己的卸载程序')),
       h('div.actions',
-        h('input', { type: 'text', placeholder: '搜索程序', value: state.query, 'aria-label': '搜索程序', oninput: (e) => {
-          state.query = e.target.value; const pos = e.target.selectionStart; draw();
-          const i = root.querySelector('input[type=text]'); if (i) { i.focus(); i.setSelectionRange(pos, pos); } } }),
+        PX.searchBox(searchInput, state.query, () => { state.query = ''; draw(); }),
         state.apps && state.apps.some((a) => !a.size && a.location_exists) ? h('button.btn', { type: 'button', disabled: !!state.measuring, onclick: measureAll },
           state.measuring ? `正在计算 ${state.measuring.done || 0}/${state.measuring.total || '…'}` : '计算全部大小') : null,
         h('button.btn', { type: 'button', disabled: state.aiBusy || !state.apps || !state.apps.length, onclick: explain }, PX.icon('spark'), state.aiBusy ? '正在分析…' : 'AI 解释这些程序'),
         h('button.btn', { type: 'button', disabled: state.refreshing, onclick: () => load(true) }, PX.icon('refresh'),
           state.refreshing ? '正在刷新…' : '刷新'))));
+    if (restoreSearch) {
+      searchInput.focus({ preventScroll: true });
+      if (restoreSearch[0] !== null) searchInput.setSelectionRange(restoreSearch[0], restoreSearch[1]);
+    }
     c.appendChild(tabs());
     if (!state.apps) { c.appendChild(PX.progressBar(null)); return; }
     if (state.removed) {
@@ -335,7 +360,7 @@
         PX.state.init.admin ? null : h('button.btn.small', { type: 'button', onclick: PX.restartAsAdmin }, '以管理员身份重启')));
     }
     const q = state.query.trim().toLowerCase();
-    const match = (a) => !q || (a.name + a.publisher).toLowerCase().includes(q);
+    const match = (a) => !q || ((a.name || '') + ' ' + (a.publisher || '')).toLowerCase().includes(q);
     const main_ = sorted(state.apps.filter((a) => (a.kind === 'app' || a.kind === 'game') && match(a)));
     const system = sorted(state.apps.filter((a) => (a.kind === 'runtime' || a.kind === 'driver') && match(a)));
     rowEls.clear();

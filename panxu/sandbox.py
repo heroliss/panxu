@@ -258,6 +258,12 @@ def _layout() -> tuple[list[_Spec], list[tuple[str, float]]]:
     for app in ('Code - Insiders', 'obsidian'):
         add(F(f'{R}/{app}/Code Cache/js/demo', 1 * MB, age=40))
         add(F(f'{R}/{app}/IndexedDB/keep-data', data=b'KEEP USER DATA', age=40))
+    add(F(f'{R}/Windsurf/Cache/Cache_Data/data_1', 28 * MB, age=15))
+    add(F(f'{R}/Windsurf/User/settings.json', data=b'{"editor.tabSize": 2}', age=15))
+    add(F(f'{L}/pypoetry/Cache/artifacts/a1/demo-1.0-py3-none-any.whl', 19 * MB, age=60))
+    add(F(f'{L}/pypoetry/Cache/virtualenvs/demo-app-py3.12/pyvenv.cfg', data=b'KEEP VIRTUALENV', age=10))
+    add(F(f'{u}/.conda/pkgs/pytorch-2.5.1-py312.conda', 95 * MB, age=80))
+    add(F(f'{u}/.conda/pkgs/pytorch-2.5.1-py312/info/index.json', data=b'{"name": "pytorch"}', age=80))
     # programs with a Chromium inside (Electron, WebView2): their caches are found by structure
     # (junk.find_chromium_caches), not by a rule per product. The caches go; everything next to them stays.
     for app, mb in (('NoteFlow', 96), ('MusicBox', 210)):
@@ -722,7 +728,7 @@ class Sandbox:
         if self.state.get('ai_connection_error'):
             from .ai_client import AIError
             raise AIError('演练模型连接失败')
-        return {'reply': {'ok': True}, 'usage': {'requests': 1}, 'model': ai.get('model', 'scripted')}
+        return {'reply': {'ok': True}, 'usage': {'requests': 1}, 'model': ai.get('model') or '演练内置模型'}
 
     def is_admin(self) -> bool:
         return bool(self.state.get('admin', True))
@@ -790,9 +796,10 @@ class Sandbox:
         with self.lock:
             return {r['original'] for r in self.state.get('recycle', []) if r.get('time', 0) >= since - 2}
 
-    def recycle_bin_info(self) -> tuple[int, int]:
+    def recycle_bin_info(self, root: str | None = None) -> tuple[int, int]:
         with self.lock:
-            rows = [r for r in self.state.get('recycle', []) if os.path.lexists(r['stored'])]
+            rows = [r for r in self.state.get('recycle', []) if os.path.lexists(r['stored'])
+                    and (root is None or paths.is_within(r['original'], root))]
             return sum(r['size'] for r in rows), len(rows)
 
     def recycle_items(self) -> list[dict]:
@@ -804,6 +811,8 @@ class Sandbox:
             row = next((r for r in self.state.get('recycle', []) if r['id'] == ident), None)
             if row is None or not os.path.lexists(row['stored']):
                 raise FileNotFoundError('回收站里没有这一项')
+            if not paths.is_within(row['original'], self.root) or not paths.is_within(row['stored'], self.root):
+                raise PermissionError('演练环境中只能还原演练目录里的文件')
             if os.path.lexists(row['original']):
                 raise FileExistsError('原位置已经有同名文件')
             os.makedirs(os.path.dirname(row['original']), exist_ok=True)
@@ -812,14 +821,19 @@ class Sandbox:
             self.save()
             return row['original']
 
-    def empty_recycle_bin(self) -> bool:
+    def empty_recycle_bin(self, root: str | None = None) -> bool:
         from . import fsops
         with self.lock:
             for drive in DRIVES:
+                if root is not None and not paths.is_within(root, self.native(drive)):
+                    continue
                 bin_dir = self.recycle_dir(drive)
                 if os.path.isdir(bin_dir):
                     fsops.delete_path(bin_dir)
-            self.state['recycle'] = []
+            if root is None:
+                self.state['recycle'] = []
+            else:
+                self.state['recycle'] = [r for r in self.state.get('recycle', []) if not paths.is_within(r['original'], root)]
             self.save()
             return True
 
@@ -831,7 +845,7 @@ class Sandbox:
             if paths.is_within(root, drive):
                 used = min(total, base + _tree_size(drive))
                 return usage(total, used, total - used)
-        return shutil.disk_usage(root)
+        raise OSError('磁盘不存在')
 
     def drives(self) -> list[dict]:
         out = []

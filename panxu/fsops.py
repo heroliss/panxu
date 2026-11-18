@@ -27,9 +27,10 @@ def long_path(path: str) -> str:
     """Prefix long Windows paths with \\\\?\\ so they work without LongPathsEnabled."""
     if not winapi.IS_WINDOWS or len(path) < 240 or path.startswith('\\\\?\\'):
         return path
-    if path.startswith('\\\\'):
-        return '\\\\?\\UNC\\' + path[2:]
-    return '\\\\?\\' + os.path.abspath(path)
+    full = os.path.abspath(path)
+    if full.startswith('\\\\'):
+        return '\\\\?\\UNC\\' + full[2:]
+    return '\\\\?\\' + full
 
 
 def entry_attrs(entry: os.DirEntry) -> int:
@@ -291,7 +292,8 @@ def walk_files(root: str, cancel=None, recursive=True, skip_dirs: frozenset = fr
             with os.scandir(long_path(current)) as it:
                 for entry in it:
                     try:
-                        if skip and skip(entry.path):
+                        entry_path = os.path.join(current, entry.name)
+                        if skip and skip(entry_path):
                             continue
                         if is_link(entry):
                             continue
@@ -435,17 +437,23 @@ def path_size(path: str, cancel=None) -> tuple[int, int]:
 
 
 def _arrived_in_bin(gone: list[str], since: float) -> set[str] | None:
-    """Of the paths that left their place, the ones the Recycle Bin now holds (normcased), or None when a bin
-    could not be read -- then they are taken to be there, as before."""
+    """Normalised paths among ``gone`` that reached the Recycle Bin (or whose volume's bin could not be checked),
+    or None when no volume's bin could be checked."""
     if not gone:
-        return set()
-    out: set[str] = set()
-    for root in {os.path.splitdrive(os.path.abspath(p))[0] + os.sep for p in gone}:
-        found = winapi.recycled_since(root, since)
+        return None
+    by_vol: dict[str, list[str]] = {}
+    for p in gone:
+        by_vol.setdefault(winapi.volume_root(p), []).append(p)
+    arrived: set[str] = set()
+    any_checked = False
+    for vol, vol_paths in by_vol.items():
+        found = winapi.recycled_since(vol, since)
         if found is None:
-            return None
-        out |= {os.path.normcase(os.path.abspath(p)) for p in found}
-    return out
+            arrived.update(os.path.normcase(os.path.abspath(p)) for p in vol_paths)
+            continue
+        any_checked = True
+        arrived.update(os.path.normcase(os.path.abspath(p)) for p in found)
+    return arrived if any_checked else None
 
 
 IN_USE = '正在被其他程序使用'
@@ -516,7 +524,12 @@ def programs_using_each(items: list[str], cancel=None) -> dict[str, list[str] | 
         files = [f for _, own in round_items for f in own]
         found = _ask(files, cancel, first_hit=True) if files else []
         for path, own in round_items:
-            out[path] = [] if found == [] else _ask(own, cancel, USE_CHECK_PIECE, first_hit=True)
+            if found == [] or found is None:
+                out[path] = found
+            elif len(round_items) == 1:
+                out[path] = found
+            else:
+                out[path] = _ask(own, cancel, USE_CHECK_PIECE, first_hit=True)
         round_items, count = [], 0
     for path in items:
         own = _files_to_ask_about(path, cancel)
@@ -632,7 +645,7 @@ def recycle(paths: list[str], *, batch: int = 64, cancel=None, progress=None, hw
         started = time.time()
         stuck, aborted = _shell_recycle([p[0] for p in free], hwnd, cancel) if free else ({}, False)
         gone = [path for path, _, _, _ in free if path not in stuck]
-        binned = _arrived_in_bin(gone, started)
+        arrived = _arrived_in_bin(gone, started)
         for path, size, logical, count in free:
             if path in stuck:
                 continue
@@ -640,7 +653,7 @@ def recycle(paths: list[str], *, batch: int = 64, cancel=None, progress=None, hw
             stats.bytes += size
             stats.measured[path] = (size, logical, count)
             done.append(path)
-            if binned is not None and os.path.normcase(os.path.abspath(path)) not in binned:
+            if arrived is not None and os.path.normcase(os.path.abspath(path)) not in arrived:
                 stats.permanent.append(path)
                 stats.permanent_bytes += size
         stopped = cancel is not None and cancel.is_set()
@@ -665,6 +678,8 @@ def recycle(paths: list[str], *, batch: int = 64, cancel=None, progress=None, hw
             if progress:
                 progress(stats)
             aborted = _recycle_pieces(path, hwnd, cancel, [PIECE_CALLS])
+            if os.path.lexists(long_path(path)):
+                remove_dir(path)
             after, _, left = path_sizes(path) if os.path.lexists(long_path(path)) else (0, 0, 0)
             moved, files_moved = max(0, size - after), max(0, count - left)
             if not os.path.lexists(long_path(path)):
@@ -672,11 +687,16 @@ def recycle(paths: list[str], *, batch: int = 64, cancel=None, progress=None, hw
                 stats.bytes += size
                 stats.measured[path] = (size, logical, count)
                 done.append(path)
-            elif files_moved:
+            elif files_moved and left > 0:
                 stats.files += files_moved
                 stats.bytes += moved
                 stats.in_use += 1
                 stats.partial[path] = {'left': left, 'bytes': moved, 'files': files_moved}
+            elif files_moved:
+                stats.files += files_moved
+                stats.bytes += moved
+                stats.measured[path] = (moved, logical, files_moved)
+                done.append(path)
             elif aborted:
                 stats.fail(path, '已取消')
             else:

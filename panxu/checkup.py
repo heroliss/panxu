@@ -58,7 +58,8 @@ NEVER_AUTO_RULES = {'recycle_bin', 'windows_old', 'component_store', 'maven', 'd
 # profiles, backups. A folder containing one is never pre-ticked.
 VALUABLE_DIRS = {'save', 'saves', 'savegames', 'savedgames', 'saved games', 'savedata', 'save data', '存档',
                  'profile', 'profiles', 'user data', 'userdata', 'backup', 'backups', '备份', 'license', 'licenses',
-                 'user', 'history', 'local history', 'local storage', 'indexeddb', 'databases', 'vault', 'vaults'}
+                 'user', 'history', 'local history', 'local storage', 'indexeddb', 'databases', 'vault', 'vaults',
+                 'drafts', '草稿', 'projects', '工程'}
 LEFTOVER_MIN = 10 * 1024 * 1024
 OLD_VERSION_MIN = 20 * 1024 * 1024
 RESIDUE_CATEGORIES = {'软件残留', '旧版本数据'}
@@ -87,7 +88,12 @@ INFO_TARGETS = [
     '%SystemRoot%\\WinSxS', '%LOCALAPPDATA%\\Docker', '%LOCALAPPDATA%\\wsl',
     '%LOCALAPPDATA%\\Packages\\CanonicalGroupLimited.*', '%ProgramFiles(x86)%\\Steam\\steamapps',
     '%USERPROFILE%\\Documents\\WeChat Files', '%USERPROFILE%\\Documents\\xwechat_files',
-    '%USERPROFILE%\\Documents\\Tencent Files',
+    '%USERPROFILE%\\Documents\\WXWork', '%USERPROFILE%\\Documents\\Tencent Files',
+    '%APPDATA%\\LarkShell', '%APPDATA%\\DingTalk', '%LOCALAPPDATA%\\JianyingPro',
+    '%APPDATA%\\Apple Computer\\MobileSync\\Backup', '%USERPROFILE%\\Apple\\MobileSync\\Backup',
+    '%LOCALAPPDATA%\\pnpm\\store', '%USERPROFILE%\\.ollama\\models', '%USERPROFILE%\\.lmstudio\\models',
+    '%USERPROFILE%\\.cache\\huggingface', '%USERPROFILE%\\VirtualBox VMs',
+    '%USERPROFILE%\\Documents\\Virtual Machines',
 ]
 
 
@@ -100,11 +106,18 @@ INFO_ACTIONS = {
     'winsxs': [{'kind': 'page', 'arg': 'junk', 'label': '去垃圾清理做「组件存储清理」'}],
     'docker': [{'kind': 'copy', 'arg': 'docker system prune', 'label': '复制清理命令'}, _REVEAL],
     'steamapps': [{'kind': 'page', 'arg': 'apps', 'label': '在「应用」里卸载不玩的游戏'}, _REVEAL],
+    'store': [{'kind': 'copy', 'arg': 'pnpm store prune', 'label': '复制清理命令'}, _REVEAL],
+    'models': [{'kind': 'copy', 'arg': 'ollama list', 'label': '复制查看命令'}, _REVEAL],
 }
 
 
 def info_actions(path: str) -> list[dict]:
     name = os.path.basename(path.rstrip('\\/')).lower()
+    k = paths.key(path)
+    if name == 'models' and 'ollama' not in k:
+        return [_REVEAL] if os.path.isdir(path) else []
+    if name == 'store' and 'pnpm' not in k:
+        return [_REVEAL] if os.path.isdir(path) else []
     return INFO_ACTIONS.get(name, [_REVEAL] if os.path.isdir(path) else [])
 
 
@@ -123,9 +136,8 @@ def personal_roots(env: dict, settings: dict) -> list[str]:
     return out
 
 
-# profiles Windows keeps for itself; nobody's personal files
-SYSTEM_PROFILES = {'default', 'default user', 'all users', 'public', 'defaultuser0', 'defaultapppool',
-                   'defaultaccount', 'wdagutilityaccount'}
+# profiles Windows or local sandboxes keep for themselves; nobody's personal files
+SYSTEM_PROFILES = paths.SYSTEM_PROFILES
 ACCOUNT_FOLDERS = ('Desktop', 'Documents', 'Downloads', 'Pictures', 'Videos', 'Music')
 
 
@@ -142,7 +154,7 @@ def other_account_roots(env: dict) -> list[str]:
         with os.scandir(fsops.long_path(users)) as entries:
             for e in entries:
                 path = os.path.join(users, e.name)
-                if e.name.lower() in SYSTEM_PROFILES or e.name.startswith('.') or paths.key(path) in mine:
+                if paths.is_system_profile(e.name) or e.name.startswith('.') or paths.key(path) in mine:
                     continue
                 if fsops.is_link(e) or not e.is_dir(follow_symlinks=False):
                     continue
@@ -374,7 +386,7 @@ def rule_assessment(row: dict) -> dict:
                  '只取缓存本身，登录状态、设置和本地数据不动；正在运行的程序会整个跳过']
     elif rule.id == 'browser_downloads':
         score, basis = 55, ['可以重新下载，但体积大、下载慢；仍在跑自动化测试的工程需要它']
-    elif rule.id in ('shader_cache', 'adobe_media_cache', 'gradle'):
+    elif rule.id in ('shader_cache', 'adobe_media_cache', 'gradle', 'unity_gi_cache', 'unreal_ddc'):
         score, basis = 60, ['可以重建，但重新编译、分析媒体或构建的成本较高']
     elif rule.id == 'crash_dumps':
         score, basis = 70, ['崩溃快照不影响正常使用，但排查故障时仍可能需要']
@@ -413,18 +425,35 @@ class PlanBuilder:
         # ticks eligible items whose score reaches the threshold (0-10).
         self.threshold = threshold
         self.items: list[dict] = []
-        self._claimed: list[str] = []
+        self._claimed_keys: set[str] = set()
+        self._claimed_ancestors: set[str] = set()
+        self._reserved_finders: set[str] = set()
+
+    def _claim(self, paths_iter) -> None:
+        for p in paths_iter:
+            if not p:
+                continue
+            k = paths.key(p)
+            if not k or k in self._claimed_keys:
+                continue
+            self._claimed_keys.add(k)
+            up = paths.key(ntpath.dirname(k))
+            while up and up != k and up not in self._claimed_ancestors:
+                self._claimed_ancestors.add(up)
+                k, up = up, paths.key(ntpath.dirname(up))
 
     def _taken(self, path: str) -> bool:
-        return any(paths.is_within(path, c) or paths.is_within(c, path) for c in self._claimed)
+        return paths.within_any(path, self._claimed_keys) or paths.key(path) in self._claimed_ancestors
 
     def _unclaimed_nodes(self, scan, node):
         """Split around rule-covered children instead of losing an entire old-version cache."""
+        if node is None:
+            return
         stack = [node]
         while stack:
             n = stack.pop()
             path = scan.path_of(n)
-            if any(paths.is_within(path, c) for c in self._claimed):
+            if paths.within_any(path, self._claimed_keys):
                 continue
             if self._taken(path):
                 stack.extend(n.children or ())
@@ -448,7 +477,7 @@ class PlanBuilder:
                 item['blocked'] = blocked
                 item['selected'] = False
             item['caution'] = next((c for c in (self.policy.caution(p) for p in fresh) if c), None)
-            self._claimed.extend(fresh)
+            self._claim(fresh)
         if item['group'] != 'info':
             item['eligible'] = bool(item.get('eligible')) and not item.get('personal')
             item['selected'] = (item['eligible'] and not item['blocked'] and item['score'] is not None
@@ -484,9 +513,10 @@ class PlanBuilder:
                 'locations': row.get('locations', [])[:5], 'apps': row.get('apps', []), **rule_assessment(row)})
             # A rule may delete only old files or only one pattern inside these roots.
             # Never also offer their parent as an entire-folder AI/heuristic cleanup.
-            self._claimed.extend(row.get('locations', []))
-            if rule.finder:   # the result lists only the first locations; claim every one
-                self._claimed.extend(root for _, root, _ in rule_entries(rule, self.policy.env))
+            self._claim(row.get('locations', []))
+            if rule.finder and rule.id not in self._reserved_finders:
+                self._reserved_finders.add(rule.id)
+                self._claim(root for _, root, _ in rule_entries(rule, self.policy.env))
 
     def _folder_guards(self, path: str, node, owner: str | None, basis: list[str]) -> str | None:
         """Reasons a folder must not be pre-ticked whatever the score (also added to the basis)."""
@@ -513,7 +543,11 @@ class PlanBuilder:
     def reserve_rule_locations(self, env):
         """Residual-folder suggestions must not repackage rule caches or bypass their age filters."""
         for rule in RULES_BY_ID.values():
-            self._claimed.extend(root for _, root, _ in rule_entries(rule, env))
+            if rule.finder and rule.id in self._reserved_finders:
+                continue
+            if rule.finder:
+                self._reserved_finders.add(rule.id)
+            self._claim(root for _, root, _ in rule_entries(rule, env))
 
     def add_ai_dirs(self, suggestions: list[dict], env: dict, analyst=None, scan=None):
         app_bases = [env.get(k) for k in ('LOCALAPPDATA', 'APPDATA', 'LOCALLOW', 'ProgramData') if env.get(k)]
@@ -562,8 +596,8 @@ class PlanBuilder:
                 hold = hold or f'AI 的把握不到 {round(MIN_AI_CONFIDENCE * 100)}%'
             self.add({
                 'id': _ident('dir', s['path']), 'kind': 'paths',
-                'category': '软件残留' if in_app_data and owner == '' and s['verdict'] == 'review'
-                    and changed and self.now - changed > 180 * 86400 else '应用数据',
+                'category': ('其他目录' if not in_app_data else '软件残留' if owner == '' and s['verdict'] == 'review'
+                             and changed and self.now - changed > 180 * 86400 else '应用数据'),
                 'title': s.get('app') if s.get('app') not in (None, '', '未知') else
                 os.path.basename(s['path']), 'size': s['size'],
                 'logical_size': getattr(node, 'logical_size', s.get('logical_size', s['size'])),
@@ -589,20 +623,21 @@ class PlanBuilder:
             old = changed and self.now - changed > 180 * 86400
             candidates = [(node, path)] + [(c, scan.path_of(c)) for c in node.children or () if c.size >= OLD_VERSION_MIN]
             for n, p in candidates:
-                n_old = n.mtime and self.now - n.mtime > YEAR
+                n_changed = max(n.mtime or 0, getattr(n, 'changed', 0) or 0)
+                n_old = n_changed and self.now - n_changed > YEAR
                 newer = newer_sibling(n) if n_old else None
                 if newer:
                     for candidate, location in self._unclaimed_nodes(scan, n):
                         if self.policy.reason(location):
                             continue
-                        basis = [f'旧版本「{n.name}」旁边有更新的版本「{newer}」', f'{_ago(n.mtime, self.now)}没有修改过']
+                        basis = [f'旧版本「{n.name}」旁边有更新的版本「{newer}」', f'{_ago(n_changed, self.now)}没有修改过']
                         hold = self._folder_guards(location, candidate, None, basis)
                         if not cache_like(candidate.name):
                             hold = hold or '旧版本数据可能包含设置或本地历史，需要你确认'
                         self.add({'id': _ident('dir', location), 'kind': 'paths', 'category': '旧版本数据', 'title': candidate.name,
                               'eligible': not hold,
                               'size': candidate.size, 'logical_size': candidate.logical_size, 'count': candidate.files, 'what': '',
-                              'why': f'可能是旧版本留下的：{_ago(n.mtime, self.now)}没有修改过。',
+                              'why': f'可能是旧版本留下的：{_ago(n_changed, self.now)}没有修改过。',
                               'effect': '如果还在用旧版本，它的设置和缓存会丢失。', 'action': 'recycle',
                               'source': 'heuristic', 'confidence': 0.6, 'paths': [location], 'score': 30 if hold else 60, 'basis': basis,
                               'auto_reason': '旧版本留下的数据，进回收站可以还原', 'hold_reason': hold})
@@ -657,25 +692,32 @@ class PlanBuilder:
 
     def add_insights(self, findings: list[dict], file_ai: dict | None = None):
         file_ai = file_ai or {}
+        per_kind_count: dict[str, int] = {}
         for f in findings:
             if f['kind'] == 'empty_folders':
-                # nothing to free: one item for all of them instead of a row per folder
-                folders = [x['path'] for x in f['files']]
-                owners = sorted({x['account'] for x in f['files'] if x.get('account')})
-                self.add({'id': 'empty:' + f['id'], 'kind': 'paths', 'group': 'review', 'category': f['kind_label'],
-                          'finding': f['id'], 'finding_kind': f['kind'], 'title': f'{len(folders)} 个空文件夹', 'size': 0,
-                          'count': 0, 'what': '', 'advice': f['advice'], 'why': f['reason'],
-                          'effect': '不释放空间，只是更整洁。', 'action': 'recycle',
-                          'source': 'insight', 'confidence': f['confidence'], 'paths': folders, 'personal': True,
-                          'account': '、'.join(owners) if owners else None,
-                          'score': KIND_SCORE['empty_folders'], 'basis': ['里面没有任何文件（包括子文件夹）']})
+                # nothing to free: one item for all of them instead of a row per folder (split own vs other accounts)
+                by_owner: dict[str | None, list[str]] = {}
+                for x in f['files']:
+                    if not self.policy.reason(x['path']):
+                        by_owner.setdefault(x.get('account') or None, []).append(x['path'])
+                for owner, folders in by_owner.items():
+                    suffix = f':{owner}' if owner else ''
+                    self.add({'id': 'empty:' + f['id'] + suffix, 'kind': 'paths', 'group': 'review', 'category': f['kind_label'],
+                              'finding': f['id'], 'finding_kind': f['kind'], 'title': f'{len(folders)} 个空文件夹', 'size': 0,
+                              'count': 0, 'what': '', 'advice': f['advice'], 'why': f['reason'],
+                              'effect': '不释放空间，只是更整洁。', 'action': 'recycle',
+                              'source': 'insight', 'confidence': f['confidence'], 'paths': folders, 'personal': True,
+                              'account': owner,
+                              'score': KIND_SCORE['empty_folders'], 'basis': ['里面没有任何文件（包括子文件夹）']})
                 continue
             files = [x for x in f['files'] if x.get('remove') or f['kind'] in ('stale_large', 'old_downloads',
-                                                                             'installer_old')]
+                                                                             'installer_old', 'name_versions')]
             if f['kind'] == 'name_versions':
-                files = [x for x in f['files'] if (x.get('score') or 0) > 10]  # never the copy to keep
+                files = [x for x in files if (x.get('score') or 0) > 10]  # never the copy to keep
             files = [x for x in files if x['size'] >= PLAN_MIN_FILE]
-            for x in sorted(files, key=lambda x: (not x.get('remove'), -x['size']))[:PERSONAL_PER_KIND]:
+            room = max(0, PERSONAL_PER_KIND * (2 if f['kind'] == 'name_versions' else 1) - per_kind_count.get(f['kind'], 0))
+            for x in sorted(files, key=lambda x: (not x.get('remove'), -x['size']))[:min(PERSONAL_PER_KIND, room)]:
+                per_kind_count[f['kind']] = per_kind_count.get(f['kind'], 0) + 1
                 ai = file_ai.get(x['path'])
                 why = x.get('note') or f['reason']
                 base_score = x.get('score', file_score(f['kind'], x))
@@ -718,7 +760,7 @@ class PlanBuilder:
             # (api.m_plan_dup_choose) is scored by the same rules
             copies = [{**{k: f[k] for k in ('path', 'mtime', 'size', 'logical_size', 'place', 'place_root', 'refs') if k in f}, 'ai': ai(f)}
                       for f in files]
-            self._claimed.extend(f['path'] for f in keepers)  # what stays must not be offered by anything else
+            self._claim(f['path'] for f in keepers)  # what stays must not be offered by anything else
             self.add({
                 'id': f'dup:{_ident("g", "|".join(sorted(f["path"] for f in files)))[2:]}', 'kind': 'dup',
                 'group': 'review', 'category': '重复文件', 'what': '', 'action': 'recycle', 'source': 'dup',
@@ -837,10 +879,26 @@ class PlanBuilder:
 
     # -- result ---------------------------------------------------------------------
     def plan(self, extra: dict | None = None) -> dict:
-        order = {'safe': 0, 'review': 1, 'info': 2}
-        self.items.sort(key=lambda i: (order[i['group']], i.get('personal', False), -(i['score'] or 0), -(i['size'] or 0)))
+        sort_plan_items(self.items)
         return {'id': uuid.uuid4().hex[:10], 'created': time.time(), 'items': self.items, 'threshold': self.threshold,
                 'groups': [{'id': g, 'name': n} for g, n in GROUPS.items()], **(extra or {})}
+
+
+def sort_plan_items(items: list[dict]) -> None:
+    order = {'safe': 0, 'review': 1, 'info': 2}
+    items.sort(key=lambda i: (order.get(i['group'], 1), i.get('personal', False), -(i['score'] or 0), -(i['size'] or 0)))
+
+
+def default_keepers(copies: list[dict]) -> set[str]:
+    """Default keeper paths for a duplicate group when recomputing after partial deletions."""
+    def plain_first(f):
+        return is_copy_name(os.path.splitext(os.path.basename(f['path']))[0]), f.get('mtime', 0)
+    stay = [f for f in copies if must_stay(f, f.get('ai'))]
+    if stay and len(stay) < len(copies):
+        return {f['path'] for f in stay}
+    best = min(copies, key=lambda f: (PLACE_RANK[f.get('place')], not (f.get('refs') or {}).get('count'),
+                                      AI_RANK.get((f.get('ai') or {}).get('verdict'), 1), *plain_first(f)))
+    return {best['path']}
 
 
 def dup_choice(size: int, copies: list[dict], keep: set[str]) -> dict:
@@ -894,6 +952,7 @@ def assess_ai_dirs(suggestions: list[dict], policy, env: dict, analyst=None, sca
     """Write the check-up's judgement onto 空间分析's AI suggestions: the same 建议清理度, basis and
     auto-tick, so a folder is ticked there exactly when it would be in the plan on 首页."""
     builder = PlanBuilder(policy, threshold=threshold)
+    builder.reserve_rule_locations(env)
     builder.add_ai_dirs(suggestions, env, analyst, scan)
     by_path = {paths.key(item['paths'][0]): item for item in builder.items}
     for s in suggestions:
@@ -905,6 +964,10 @@ def assess_ai_dirs(suggestions: list[dict], policy, env: dict, analyst=None, sca
         elif s.get('source') == 'knowledge':  # recognised without the model; may hold what someone parked there
             s.update(score=40, basis=[f'盘序认得：{s.get("app") or "已知位置"}，没有问 AI',
                                       '没有自动勾选：里面也可能有别人临时放的东西，请你看一眼再决定'], selected=False)
+        elif s.get('verdict') in ('clean', 'review') and not s.get('expanded') and s.get('source') != 'none' \
+                and builder._taken(s['path']):
+            s.update(score=30, basis=['其中包含「垃圾清理」规则管理的缓存或日志，外层目录可能同时存有设置或登录状态',
+                                      '没有自动勾选：请用「垃圾清理」安全清理其中的缓存'], selected=False)
         else:  # 建议保留, or folders the model looked inside
             pct = round(float(s.get('confidence') or 0) * 100)
             s.update(score=None, basis=[f'AI：{s.get("verdict_label", "")}（把握 {pct}%）'], selected=False)
@@ -1045,9 +1108,12 @@ def run(backend, job, options: dict | None = None) -> dict:
     if opts.get('duplicates', True):
         stage('dups')
         min_mb = float(settings.get('duplicates', {}).get('min_size_mb', 1))
+        excl_keys = {paths.key(p) for p in policy.excluded}
         dups = find_duplicates(broad_roots, min_size=int(min_mb * 1024 * 1024),
                                cross_drives=opts.get('cross_drive_duplicates', True), drive_roots=[d['root'] for d in drives],
-                               skip=system_skip(env, policy, broad_roots), cancel=job.cancel,
+                               skip=system_skip(env, policy, broad_roots),
+                               ref_skip=(lambda p: paths.within_any(p, excl_keys)) if excl_keys else None,
+                               cancel=job.cancel,
                                container_roots=personal_roots(env, {}) + [d['root'] for d in drives]
                                                + [env.get('USERPROFILE'), env.get('PUBLIC')],
                                **DUP_BOUNDS,
@@ -1245,9 +1311,10 @@ def load_timings(data_dir: str) -> dict:
 
 def save_timings(data_dir: str, timings: dict) -> None:
     try:
+        merged = {**load_timings(data_dir), **timings}
         tmp = os.path.join(data_dir, TIMINGS_FILE + '.tmp')
         with open(tmp, 'w', encoding='utf-8') as fh:
-            json.dump(timings, fh)
+            json.dump(merged, fh)
         os.replace(tmp, os.path.join(data_dir, TIMINGS_FILE))
     except OSError:
         pass  # only the next progress bar's proportions depend on it
@@ -1317,10 +1384,15 @@ def execute(backend, plan: dict, item_ids: list[str], job) -> dict:
             else:
                 report['deleted']['count'] += row['files']
                 report['deleted']['bytes'] += row['freed']
-                done(item, 'done', '已清理', freed=row['freed'])
-                if row['failed']:
-                    report['skipped'].append({'title': item['title'], 'left': row['failed'],
-                                              'reason': f'{row["failed"]} 个文件正在使用，已跳过'})
+                note = '已清理（系统目录需管理员权限）' if row.get('partial_admin') else '已清理'
+                done(item, 'done', note, freed=row['freed'])
+                in_use_n = int(row.get('in_use') or 0)
+                other_failed = max(0, int(row['failed'] or 0) - in_use_n)
+                if in_use_n:
+                    report['skipped'].append({'title': item['title'], 'left': in_use_n,
+                                              'reason': f'{in_use_n} 个文件正在使用，已跳过'})
+                if other_failed:
+                    report['failures'].append({'title': item['title'], 'reason': f'{other_failed} 个文件无法删除'})
                 if row.get('held'):
                     names = [h['app'] for h in row['held']]
                     report['skipped'].append({
@@ -1328,32 +1400,50 @@ def execute(backend, plan: dict, item_ids: list[str], job) -> dict:
                         'reason': f'{len(names)} 个程序正在运行，它们的缓存整个跳过：' + '、'.join(names[:6])
                                   + (' 等' if len(names) > 6 else '')})
 
+    if job.cancel.is_set():
+        plan['summary'] = summarize(plan)
+        report['summary'] = plan['summary']
+        return report
+
     # 2. folders and personal files -> Recycle Bin (each path re-checked against the policy)
     to_recycle: list[tuple[dict, str]] = []
     for item in chosen:
         if item['kind'] == 'paths':
+            item_ok = False
+            first_reason = ''
             for p in item['paths']:
                 reason = policy.reason(p)
                 if reason:
+                    first_reason = first_reason or reason
                     report['failures'].append({'title': item['title'], 'path': p, 'reason': reason})
                 else:
+                    item_ok = True
                     to_recycle.append((item, p))
+            if not item_ok and first_reason:
+                done(item, 'failed', first_reason)
         elif item['kind'] == 'dup':
             files = {paths.key(f['path']): f for f in item['dup_files']}
-            changed = [p for p in item['paths'] if not verify_unchanged(p, item['dup_size'],
-                                                                          files[paths.key(p)]['mtime'])]
-            keeper_ok = not item['keep'] or verify_unchanged(item['keep'], item['dup_size'],
-                                                             files[paths.key(item['keep'])]['mtime'])
+            changed = [p for p in item['paths'] if paths.key(p) not in files
+                       or not verify_unchanged(p, item['dup_size'], files[paths.key(p)]['mtime'])]
+            keeper_ok = not item['keep'] or (paths.key(item['keep']) in files
+                                             and verify_unchanged(item['keep'], item['dup_size'],
+                                                                  files[paths.key(item['keep'])]['mtime']))
             if changed or not keeper_ok:
                 done(item, 'skipped', '文件在体检后被修改过，请重新体检')
                 report['failures'].append({'title': item['title'], 'reason': '文件在体检后被修改过'})
                 continue
+            item_ok = False
+            first_reason = ''
             for p in item['paths']:
                 reason = policy.reason(p)
                 if reason:
+                    first_reason = first_reason or reason
                     report['failures'].append({'title': item['title'], 'path': p, 'reason': reason})
                 else:
+                    item_ok = True
                     to_recycle.append((item, p))
+            if not item_ok and first_reason:
+                done(item, 'failed', first_reason)
     if to_recycle:
         job.update(stage='recycle', detail='移到回收站')
         unique, taken = [], set()
@@ -1372,11 +1462,13 @@ def execute(backend, plan: dict, item_ids: list[str], job) -> dict:
             mixed = {p for item, p in to_recycle if item['category'] == '其他临时目录'}
             for item, _ in to_recycle:
                 item.pop('in_use', None)   # what an earlier run said; this run finds out again
-            stats, recycled = fsops.recycle(unique, cancel=job.cancel, hwnd=winapi.find_window(APP_NAME),
+            hwnd = backend.window_controls.hwnd() or winapi.find_window(APP_NAME)
+            stats, recycled = fsops.recycle(unique, cancel=job.cancel, hwnd=hwnd,
                                             progress=on_progress, piecewise=mixed)
         except fsops.Cancelled:
             backend.oplog.drop(pending)  # stopped while sizing, before anything moved
             raise
+        cancelled = job.cancel.is_set()
         gone = {paths.key(p) for p in recycled}
         nuked = [p for p in stats.permanent]  # too large for the bin: Windows deleted them on the user's yes
         nuked_keys = {paths.key(p) for p in nuked}
@@ -1384,10 +1476,12 @@ def execute(backend, plan: dict, item_ids: list[str], job) -> dict:
         report['recycled']['bytes'] += stats.bytes - stats.permanent_bytes
         report['permanent'] = {'count': len(nuked), 'bytes': stats.permanent_bytes, 'paths': nuked[:50]}
         for f in stats.problems():
-            report['failures'].append({'path': f.get('path'), 'reason': f.get('reason')})
+            if f.get('reason') != '已取消':
+                report['failures'].append({'path': f.get('path'), 'reason': f.get('reason')})
         titles = {paths.key(p): item['title'] for item, p in to_recycle}
         report['skipped'] += [{**s, 'title': titles.get(paths.key(s['path']))} for s in stats.skipped()]
         in_use = {paths.key(s['path']): s for s in stats.skipped()}
+        cancelled_paths = {paths.key(f['path']) for f in stats.failures if f.get('reason') == '已取消' and f.get('path')}
         for item in {id(i): i for i, _ in to_recycle}.values():
             ok = [p for p in item['paths'] if paths.key(p) in gone or any(paths.is_within(p, g) for g in recycled)]
             share = sum(stats.measured[p][0] for p in ok if p in stats.measured)
@@ -1416,21 +1510,31 @@ def execute(backend, plan: dict, item_ids: list[str], job) -> dict:
                 item['in_use'] = '「' + '、'.join(names[:3]) + ('」等' if len(names) > 3 else '」') + '正在使用' if names \
                     else '正在被其他程序使用'
                 report['items'][item['id']] = {'status': 'held', 'note': item['in_use'], 'freed': None}
+            elif cancelled or any(paths.within_any(p, cancelled_paths) for p in item['paths']):
+                pass  # stopped before reaching this item: keep pending so the user can resume later
             else:
                 done(item, 'failed', '没有移到回收站')
-        if recycled or stats.failed or stats.partial:
+        real_problems = [f for f in stats.problems() if f.get('reason') != '已取消']
+        if recycled or real_problems or stats.partial or stats.held:
             title = f'清理方案：移到回收站 {len(recycled) - len(nuked) + len(stats.partial)} 项' + (
-                f'，{len(nuked)} 项回收站放不下、已直接删除' if nuked else '')
+                f'，{len(nuked)} 项回收站放不下、已直接删除' if nuked else '') + ('（已停止）' if cancelled else '')
             backend.oplog.add('recycle', title, freed=stats.bytes, items=recycled + list(stats.partial),
-                              failures=stats.problems() + stats.skipped(),
-                              details={'source': 'plan', 'mode': 'recycle', 'permanent': nuked[:200],
-                                       'permanent_bytes': stats.permanent_bytes}, replaces=pending)
+                              failures=real_problems + stats.skipped(),
+                              details={'source': 'plan', 'mode': 'recycle', 'cancelled': cancelled,
+                                       'permanent': nuked[:200], 'permanent_bytes': stats.permanent_bytes}, replaces=pending)
         else:
             backend.oplog.drop(pending)
         backend.forget_paths(recycled, stats.measured)
 
+    if job.cancel.is_set():
+        plan['summary'] = summarize(plan)
+        report['summary'] = plan['summary']
+        return report
+
     # 3. startup items
     for item in chosen:
+        if job.cancel.is_set():
+            break
         if item['kind'] != 'startup':
             continue
         try:
@@ -1441,6 +1545,11 @@ def execute(backend, plan: dict, item_ids: list[str], job) -> dict:
             done(item, 'failed', str(exc))
             report['failures'].append({'title': item['title'], 'reason': str(exc)})
 
+    if job.cancel.is_set():
+        plan['summary'] = summarize(plan)
+        report['summary'] = plan['summary']
+        return report
+
     # 4. services: not started at boot any more (the operation log keeps the old start type, so it can be undone)
     services = [i for i in chosen if i['kind'] == 'service']
     current = {}
@@ -1450,6 +1559,8 @@ def execute(backend, plan: dict, item_ids: list[str], job) -> dict:
         except Exception:  # noqa: BLE001 - as in run(): then set_start_type reports the problem per service
             current = {}
     for item in services:
+        if job.cancel.is_set():
+            break
         job.update(stage='services', detail=item['title'])
         if current.get(item['service_name'], 'auto') not in ('auto', 'delayed'):
             # changed elsewhere since the check-up (to manual, or disabled on purpose): leave it as it is
